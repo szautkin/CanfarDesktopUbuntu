@@ -1,0 +1,119 @@
+/* Verbinal - CANFAR Science Portal Companion */
+
+/* Status colors for progress bars */
+progressbar.warning > trough > progress {
+    background-color: #ff9800;
+}
+
+progressbar.error > trough > progress {
+    background-color: #f44336;
+}
+
+/* Caption heading style */
+.caption-heading {
+    font-weight: bold;
+    font-size: 0.85em;
+}
+
+/* Card styling */
+.card {
+    background-color: alpha(@card_bg_color, 0.8);
+    border-radius: 12px;
+    border: 1px solid alpha(@borders, 0.5);
+}
+
+/* Error text */
+label.error {
+    color: #f44336;
+}
+
+/* Dim label */
+.dim-label {
+    opacity: 0.6;
+}
+
+/* Session card hover */
+.card:hover {
+    background-color: alpha(@card_bg_color, 1.0);
+}
+
+/* Session type badges */
+.session-type-notebook {
+    background-color: #e65100;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.session-type-desktop {
+    background-color: #1565c0;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.session-type-carta {
+    background-color: #2e7d32;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.session-type-contributed {
+    background-color: #6a1b9a;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.session-type-firefly {
+    background-color: #f57f17;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.session-type-headless {
+    background-color: #546e7a;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+/* Status badges */
+.status-running {
+    background-color: #4caf50;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.status-pending {
+    background-color: #ff9800;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.status-failed, .status-error {
+    background-color: #f44336;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+.status-terminating {
+    background-color: #9e9e9e;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+/* Flex resources badge */
+.flex-badge {
+    background-color: #2196f3;
+    color: white;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+}
