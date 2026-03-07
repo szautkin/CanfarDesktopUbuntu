@@ -39,15 +39,11 @@ impl ApiEndpoints {
     }
 
     pub fn login_url(&self) -> String {
-        format!(
-            "https://ws-cadc.canfar.net/ac/login"
-        )
+        "https://ws-cadc.canfar.net/ac/login".to_string()
     }
 
     pub fn whoami_url(&self) -> String {
-        format!(
-            "https://ws-cadc.canfar.net/ac/whoami"
-        )
+        "https://ws-cadc.canfar.net/ac/whoami".to_string()
     }
 
     pub fn sessions_url(&self) -> String {
@@ -85,6 +81,13 @@ impl ApiEndpoints {
         )
     }
 
+    pub fn repository_url(&self) -> String {
+        format!(
+            "{}{}/repository",
+            self.config.api_base_url, self.config.skaha_api_path
+        )
+    }
+
     pub fn images_url(&self) -> String {
         format!(
             "{}{}/image",
@@ -115,5 +118,94 @@ impl ApiEndpoints {
 
     pub fn config(&self) -> &AppConfig {
         &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn endpoints() -> ApiEndpoints {
+        ApiEndpoints::new(AppConfig::default())
+    }
+
+    #[test]
+    fn sessions_url() {
+        assert_eq!(
+            endpoints().sessions_url(),
+            "https://ws-uv.canfar.net/skaha/v1/session"
+        );
+    }
+
+    #[test]
+    fn session_url() {
+        assert_eq!(
+            endpoints().session_url("abc123"),
+            "https://ws-uv.canfar.net/skaha/v1/session/abc123"
+        );
+    }
+
+    #[test]
+    fn session_renew_url() {
+        assert_eq!(
+            endpoints().session_renew_url("abc123"),
+            "https://ws-uv.canfar.net/skaha/v1/session/abc123/renew"
+        );
+    }
+
+    #[test]
+    fn session_events_url() {
+        assert_eq!(
+            endpoints().session_events_url("abc123"),
+            "https://ws-uv.canfar.net/skaha/v1/session/abc123?view=events"
+        );
+    }
+
+    #[test]
+    fn session_logs_url() {
+        assert_eq!(
+            endpoints().session_logs_url("abc123"),
+            "https://ws-uv.canfar.net/skaha/v1/session/abc123?view=logs"
+        );
+    }
+
+    #[test]
+    fn images_url() {
+        assert_eq!(
+            endpoints().images_url(),
+            "https://ws-uv.canfar.net/skaha/v1/image"
+        );
+    }
+
+    #[test]
+    fn repository_url() {
+        assert_eq!(
+            endpoints().repository_url(),
+            "https://ws-uv.canfar.net/skaha/v1/repository"
+        );
+    }
+
+    #[test]
+    fn storage_url() {
+        assert_eq!(
+            endpoints().storage_url("testuser"),
+            "https://ws-uv.canfar.net/arc/nodes/home/testuser?limit=0"
+        );
+    }
+
+    #[test]
+    fn login_url_is_cadc() {
+        assert_eq!(
+            endpoints().login_url(),
+            "https://ws-cadc.canfar.net/ac/login"
+        );
+    }
+
+    #[test]
+    fn default_config_values() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.default_cores, 2);
+        assert_eq!(cfg.default_ram, 8);
+        assert_eq!(cfg.default_session_type, "notebook");
     }
 }

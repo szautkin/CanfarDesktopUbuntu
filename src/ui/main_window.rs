@@ -24,6 +24,11 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     header.set_show_title(true);
 
     let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    title_box.set_valign(gtk::Align::Center);
+
+    let app_icon = load_app_icon(24);
+    title_box.append(&app_icon);
+
     let title_label = gtk::Label::new(Some("Verbinal - a CANFAR Science Portal"));
     title_label.add_css_class("title");
     title_box.append(&title_label);
@@ -201,11 +206,12 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
                         // Fetch user profile
                         let svc = services.clone();
                         let tok = stored_token.clone();
-                        let user_info = services
-                            .spawn(async move {
-                                svc.auth.get_user_info(&tok).await.unwrap_or_default()
-                            })
-                            .await;
+                        let user_info =
+                            services
+                                .spawn(async move {
+                                    svc.auth.get_user_info(&tok).await.unwrap_or_default()
+                                })
+                                .await;
 
                         let svc = services.clone();
                         let info = user_info.clone();
@@ -353,7 +359,7 @@ async fn navigate_to_dashboard(
 fn show_about_dialog(window: &adw::ApplicationWindow) {
     let dialog = adw::AboutWindow::builder()
         .application_name("Verbinal")
-        .application_icon("help-about")
+        .application_icon("net.canfar.Verbinal")
         .version("1.0.0")
         .comments("A CANFAR Science Portal Companion\n\nLaunch, monitor, and manage your interactive computing sessions (Notebook, Desktop, CARTA, Firefly) directly from your desktop without needing a browser.\n\nCANFAR is operated by the Canadian Astronomy Data Centre (CADC) and the Digital Research Alliance of Canada.")
         .website("https://www.canfar.net")
@@ -376,4 +382,32 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
     );
 
     dialog.present();
+}
+
+fn load_app_icon(pixel_size: i32) -> gtk::Image {
+    let bytes = include_bytes!("../../assets/verbinal-256.png");
+    let gbytes = gtk::glib::Bytes::from_static(bytes);
+    let stream = gtk::gio::MemoryInputStream::from_bytes(&gbytes);
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream(&stream, gtk::gio::Cancellable::NONE);
+
+    match pixbuf {
+        Ok(pb) => {
+            let scaled = pb
+                .scale_simple(
+                    pixel_size,
+                    pixel_size,
+                    gtk::gdk_pixbuf::InterpType::Bilinear,
+                )
+                .unwrap_or(pb);
+            let texture = gtk::gdk::Texture::for_pixbuf(&scaled);
+            let image = gtk::Image::from_paintable(Some(&texture));
+            image.set_pixel_size(pixel_size);
+            image
+        }
+        Err(_) => {
+            let image = gtk::Image::from_icon_name("help-about-symbolic");
+            image.set_pixel_size(pixel_size);
+            image
+        }
+    }
 }

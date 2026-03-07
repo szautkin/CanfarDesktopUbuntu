@@ -1,8 +1,11 @@
 use crate::models::Session;
+use crate::ui::session_icon::session_type_icon;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+pub type ActionCallback = Rc<RefCell<Box<dyn Fn(SessionAction)>>>;
 
 pub struct SessionCard {
     pub container: gtk::Box,
@@ -17,29 +20,32 @@ pub enum SessionAction {
 }
 
 impl SessionCard {
-    pub fn new(session: &Session, on_action: Rc<RefCell<Box<dyn Fn(SessionAction)>>>) -> Self {
+    pub fn new(session: &Session, on_action: ActionCallback) -> Self {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        container.set_width_request(320);
+        container.set_size_request(220, -1);
+        container.set_hexpand(false);
+        container.set_halign(gtk::Align::Start);
+        container.set_valign(gtk::Align::Start);
         container.add_css_class("card");
         container.set_margin_start(4);
         container.set_margin_end(4);
         container.set_margin_top(4);
         container.set_margin_bottom(4);
 
-        let inner = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        inner.set_margin_start(16);
-        inner.set_margin_end(16);
-        inner.set_margin_top(12);
+        // Session type icon centered at top
+        let icon = session_type_icon(&session.session_type, 48);
+        icon.set_margin_top(12);
+        icon.set_halign(gtk::Align::Center);
+        container.append(&icon);
+
+        let inner = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        inner.set_margin_start(12);
+        inner.set_margin_end(12);
+        inner.set_margin_top(8);
         inner.set_margin_bottom(12);
 
-        // Header: type badge + name + status
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.set_valign(gtk::Align::Center);
-
-        let type_badge = gtk::Label::new(Some(session.type_display()));
-        type_badge.add_css_class("caption");
-        type_badge.add_css_class(&format!("session-type-{}", session.session_type.to_lowercase()));
-        header.append(&type_badge);
+        // Name + status row
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
         let name_label = gtk::Label::new(Some(&session.name));
         name_label.add_css_class("heading");
@@ -106,8 +112,7 @@ impl SessionCard {
         res_box.append(&ram_label);
 
         if session.requested_gpu_cores != "0" {
-            let gpu_label =
-                gtk::Label::new(Some(&format!("GPU: {}", session.requested_gpu_cores)));
+            let gpu_label = gtk::Label::new(Some(&format!("GPU: {}", session.requested_gpu_cores)));
             gpu_label.add_css_class("caption");
             res_box.append(&gpu_label);
         }
@@ -178,15 +183,12 @@ impl SessionCard {
         inner.append(&actions);
         container.append(&inner);
 
-        SessionCard {
-            container,
-        }
+        SessionCard { container }
     }
 
     pub fn widget(&self) -> &gtk::Box {
         &self.container
     }
-
 }
 
 fn format_time(iso: &str) -> String {

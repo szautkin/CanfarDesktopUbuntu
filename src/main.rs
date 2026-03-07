@@ -9,16 +9,6 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 use state::AppServices;
 
-/// Debug log to file (visible without terminal)
-pub fn log(msg: &str) {
-    use std::io::Write;
-    let path = std::env::temp_dir().join("canfar-debug.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let now = chrono::Local::now().format("%H:%M:%S%.3f");
-        let _ = writeln!(f, "[{}] {}", now, msg);
-    }
-}
-
 fn main() {
     // Start a background tokio runtime for async HTTP
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -42,6 +32,15 @@ fn main() {
             &gtk4::gdk::Display::default().expect("Could not get default display"),
             &css,
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
+        // Register the Verbinal icon so GTK can find it by name
+        let display = gtk4::gdk::Display::default().expect("Could not get default display");
+        let theme = gtk4::IconTheme::for_display(&display);
+        theme.add_search_path(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets")
+                .join("icons"),
         );
 
         let services = AppServices::new(handle.clone());

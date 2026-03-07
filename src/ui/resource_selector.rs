@@ -63,8 +63,7 @@ impl ResourceSelector {
 
     pub fn set_core_options(&self, options: &[u32], default: u32) {
         if let (Some(&min), Some(&max)) = (options.first(), options.last()) {
-            self.cores_spin
-                .set_range(min as f64, max as f64);
+            self.cores_spin.set_range(min as f64, max as f64);
         }
         self.cores_spin.set_value(default as f64);
     }

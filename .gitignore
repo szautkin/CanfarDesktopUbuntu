@@ -14,3 +14,6 @@ Thumbs.db
 
 # Debug logs
 /canfar-debug.log
+
+# Claude Code
+.claude/

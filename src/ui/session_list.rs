@@ -1,6 +1,7 @@
 use crate::models::Session;
 use crate::state::AppServices;
-use crate::ui::session_card::{SessionAction, SessionCard};
+use crate::ui::card_header::card_header;
+use crate::ui::session_card::{ActionCallback, SessionAction, SessionCard};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -8,16 +9,21 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+type OptionalCallback<T> = Rc<RefCell<Option<Box<dyn Fn(T)>>>>;
+
+const AUTO_REFRESH_SECS: u32 = 15;
+
 pub struct SessionListView {
     pub container: gtk::Box,
     cards_box: gtk::Box,
     empty_label: gtk::Label,
     loading_spinner: gtk::Spinner,
     count_label: gtk::Label,
+    countdown_label: gtk::Label,
     sessions: Rc<RefCell<Vec<Session>>>,
     services: Arc<AppServices>,
-    on_action: Rc<RefCell<Box<dyn Fn(SessionAction)>>>,
-    on_sessions_changed: Rc<RefCell<Option<Box<dyn Fn(usize)>>>>,
+    on_action: ActionCallback,
+    on_sessions_changed: OptionalCallback<usize>,
 }
 
 impl SessionListView {
@@ -29,33 +35,22 @@ impl SessionListView {
         container.set_margin_top(8);
         container.set_vexpand(true);
 
-        // Header
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.set_margin_start(16);
-        header.set_margin_end(16);
-        header.set_margin_top(12);
+        let (header, loading_spinner, refresh_btn) = card_header("Active Sessions");
 
-        let title = gtk::Label::new(Some("Active Sessions"));
-        title.add_css_class("title-4");
-        title.set_halign(gtk::Align::Start);
-        title.set_hexpand(true);
-        header.append(&title);
+        let countdown_label = gtk::Label::new(None);
+        countdown_label.add_css_class("dim-label");
+        countdown_label.add_css_class("caption");
+        countdown_label.set_visible(false);
+        // Insert after title
+        header.insert_child_after(&countdown_label, Some(&header.first_child().unwrap()));
 
         let count_label = gtk::Label::new(Some("0 sessions"));
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
-        header.append(&count_label);
-
-        let refresh_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_btn.set_tooltip_text(Some("Refresh (F5)"));
-        header.append(&refresh_btn);
+        // Insert after countdown
+        header.insert_child_after(&count_label, Some(&countdown_label));
 
         container.append(&header);
-
-        let loading_spinner = gtk::Spinner::new();
-        loading_spinner.set_visible(false);
-        loading_spinner.set_margin_top(8);
-        container.append(&loading_spinner);
 
         let empty_label = gtk::Label::new(Some("No active sessions"));
         empty_label.add_css_class("dim-label");
@@ -77,8 +72,7 @@ impl SessionListView {
         scrolled.set_child(Some(&cards_box));
         container.append(&scrolled);
 
-        let on_action: Rc<RefCell<Box<dyn Fn(SessionAction)>>> =
-            Rc::new(RefCell::new(Box::new(|_| {})));
+        let on_action: ActionCallback = Rc::new(RefCell::new(Box::new(|_| {})));
 
         let view = Rc::new(SessionListView {
             container,
@@ -86,6 +80,7 @@ impl SessionListView {
             empty_label,
             loading_spinner,
             count_label,
+            countdown_label,
             sessions: Rc::new(RefCell::new(Vec::new())),
             services,
             on_action,
@@ -118,15 +113,21 @@ impl SessionListView {
         self.loading_spinner.set_visible(true);
         self.loading_spinner.start();
 
+        // Yield so GTK renders the spinner before the async call
+        glib::timeout_future(std::time::Duration::from_millis(50)).await;
+
         let svc = self.services.clone();
-        let result = self.services.spawn(async move {
-            let token = svc.get_token().await;
-            if let Some(token) = token {
-                svc.sessions.get_sessions(&token).await.ok()
-            } else {
-                None
-            }
-        }).await;
+        let result = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                if let Some(token) = token {
+                    svc.sessions.get_sessions(&token).await.ok()
+                } else {
+                    None
+                }
+            })
+            .await;
 
         if let Some(sessions) = result {
             self.update_sessions(sessions);
@@ -142,8 +143,11 @@ impl SessionListView {
         }
 
         let count = sessions.len();
-        self.count_label
-            .set_text(&format!("{} session{}", count, if count == 1 { "" } else { "s" }));
+        self.count_label.set_text(&format!(
+            "{} session{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        ));
         self.empty_label.set_visible(count == 0);
 
         for session in &sessions {
@@ -158,30 +162,45 @@ impl SessionListView {
             cb(count);
         }
 
-        // Auto-poll if there are pending sessions
+        // Auto-poll every 15s while any session is pending, with countdown
         if has_pending {
             let services = self.services.clone();
             let sessions_ref = self.sessions.clone();
             let cards_box = self.cards_box.clone();
             let count_label = self.count_label.clone();
+            let countdown_label = self.countdown_label.clone();
             let empty_label = self.empty_label.clone();
             let on_action = self.on_action.clone();
             let on_changed = self.on_sessions_changed.clone();
 
+            countdown_label.set_visible(true);
+
             glib::spawn_future_local(async move {
-                glib::timeout_future_seconds(60).await;
-
-                let svc = services.clone();
-                let result = services.spawn(async move {
-                    let token = svc.get_token().await;
-                    if let Some(token) = token {
-                        svc.sessions.get_sessions(&token).await.ok()
-                    } else {
-                        None
+                loop {
+                    // Countdown from 15 to 1
+                    for remaining in (1..=AUTO_REFRESH_SECS).rev() {
+                        countdown_label.set_text(&format!("refresh in {}s", remaining));
+                        glib::timeout_future_seconds(1).await;
                     }
-                }).await;
+                    countdown_label.set_text("refreshing...");
 
-                if let Some(new_sessions) = result {
+                    let svc = services.clone();
+                    let result = services
+                        .spawn(async move {
+                            let token = svc.get_token().await;
+                            if let Some(token) = token {
+                                svc.sessions.get_sessions(&token).await.ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .await;
+
+                    let Some(new_sessions) = result else {
+                        countdown_label.set_visible(false);
+                        break;
+                    };
+
                     while let Some(child) = cards_box.first_child() {
                         cards_box.remove(&child);
                     }
@@ -199,14 +218,35 @@ impl SessionListView {
                     if let Some(ref cb) = *on_changed.borrow() {
                         cb(count);
                     }
+
+                    let still_pending = new_sessions.iter().any(|s| s.is_pending());
                     *sessions_ref.borrow_mut() = new_sessions;
+
+                    if !still_pending {
+                        countdown_label.set_visible(false);
+                        break;
+                    }
                 }
             });
+        } else {
+            self.countdown_label.set_visible(false);
         }
     }
 
     pub fn session_count(&self) -> usize {
         self.sessions.borrow().len()
+    }
+
+    pub fn session_count_by_type(&self, session_type: &str) -> usize {
+        self.sessions
+            .borrow()
+            .iter()
+            .filter(|s| s.session_type.eq_ignore_ascii_case(session_type))
+            .count()
+    }
+
+    pub fn sessions_ref(&self) -> Rc<RefCell<Vec<Session>>> {
+        self.sessions.clone()
     }
 
     pub fn widget(&self) -> &gtk::Box {

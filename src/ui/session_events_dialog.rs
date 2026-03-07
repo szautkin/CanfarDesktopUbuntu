@@ -11,7 +11,7 @@ pub async fn show_events_dialog(
     logs: &str,
 ) {
     let window = gtk::Window::builder()
-        .title(&format!("Events/Logs: {}", session_name))
+        .title(format!("Events/Logs: {}", session_name))
         .default_width(600)
         .default_height(500)
         .modal(true)
@@ -34,9 +34,11 @@ pub async fn show_events_dialog(
     events_view.set_margin_top(8);
     events_view.set_margin_bottom(8);
     events_view.set_wrap_mode(gtk::WrapMode::Word);
-    events_view
-        .buffer()
-        .set_text(if events.is_empty() { "No events available" } else { events });
+    events_view.buffer().set_text(if events.is_empty() {
+        "No events available"
+    } else {
+        events
+    });
     events_scroll.set_child(Some(&events_view));
     notebook.append_page(&events_scroll, Some(&gtk::Label::new(Some("Events"))));
 
@@ -51,9 +53,11 @@ pub async fn show_events_dialog(
     logs_view.set_margin_top(8);
     logs_view.set_margin_bottom(8);
     logs_view.set_wrap_mode(gtk::WrapMode::Word);
-    logs_view
-        .buffer()
-        .set_text(if logs.is_empty() { "No logs available" } else { logs });
+    logs_view.buffer().set_text(if logs.is_empty() {
+        "No logs available"
+    } else {
+        logs
+    });
     logs_scroll.set_child(Some(&logs_view));
     notebook.append_page(&logs_scroll, Some(&gtk::Label::new(Some("Logs"))));
 

@@ -40,7 +40,11 @@ impl MetricBar {
             label,
             available,
             total,
-            if unit.is_empty() { String::new() } else { format!(" {}", unit) },
+            if unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", unit)
+            },
         ));
 
         self.progress.remove_css_class("warning");

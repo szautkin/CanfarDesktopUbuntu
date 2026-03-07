@@ -7,7 +7,10 @@ use std::rc::Rc;
 
 pub async fn show_delete_dialog(parent: &impl IsA<gtk::Widget>, session_name: &str) -> bool {
     let dialog = adw::MessageDialog::new(
-        parent.root().and_then(|r| r.downcast::<gtk::Window>().ok()).as_ref(),
+        parent
+            .root()
+            .and_then(|r| r.downcast::<gtk::Window>().ok())
+            .as_ref(),
         Some("Delete Session"),
         Some(&format!(
             "Are you sure you want to delete session '{}'?\n\nThis action cannot be undone.",

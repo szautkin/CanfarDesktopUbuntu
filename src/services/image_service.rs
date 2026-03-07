@@ -39,13 +39,34 @@ impl ImageService {
             .map_err(|e| format!("Network error: {}", e))?;
 
         if resp.status().is_success() {
-            let images: Vec<RawImage> =
-                resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+            let images: Vec<RawImage> = resp
+                .json()
+                .await
+                .map_err(|e| format!("Parse error: {}", e))?;
             let mut cache = self.cache.lock().await;
             *cache = Some((std::time::Instant::now(), images.clone()));
             Ok(images)
         } else {
             Err(format!("Failed to fetch images ({})", resp.status()))
+        }
+    }
+
+    pub async fn get_repositories(&self, token: &str) -> Result<Vec<String>, String> {
+        let url = self.endpoints.repository_url();
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
+
+        if resp.status().is_success() {
+            resp.json::<Vec<String>>()
+                .await
+                .map_err(|e| format!("Parse error: {}", e))
+        } else {
+            Err(format!("Failed to fetch repositories ({})", resp.status()))
         }
     }
 
@@ -67,5 +88,4 @@ impl ImageService {
             Err(format!("Failed to fetch context ({})", resp.status()))
         }
     }
-
 }

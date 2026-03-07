@@ -29,7 +29,8 @@ impl StorageService {
             parse_vospace_xml(&xml_text)
         } else {
             let status = resp.status();
-            Err(format!("Storage error ({})", status))
+            let body = resp.text().await.unwrap_or_default();
+            Err(format!("{} → {} {}", url, status, body))
         }
     }
 }

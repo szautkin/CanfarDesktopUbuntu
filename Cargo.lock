@@ -74,6 +74,7 @@ dependencies = [
 name = "canfar-ubuntu"
 version = "1.0.0"
 dependencies = [
+ "base64",
  "chrono",
  "directories",
  "gtk4",

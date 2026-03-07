@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Verbinal
+Comment=A CANFAR Science Portal Companion
+Exec=verbinal
+Icon=net.canfar.Verbinal
+Terminal=false
+Type=Application
+Categories=Science;Education;Network;
+Keywords=CANFAR;astronomy;science;sessions;notebook;desktop;
+StartupNotify=true

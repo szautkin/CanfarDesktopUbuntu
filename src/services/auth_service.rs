@@ -76,14 +76,22 @@ impl AuthService {
             .client
             .get(&url)
             .bearer_auth(token)
-            .header("Accept", "text/plain")
             .send()
             .await
             .map_err(|e| format!("Network error: {}", e))?;
 
         if resp.status().is_success() {
-            let username = resp.text().await.map_err(|e| e.to_string())?;
-            Ok(username.trim().to_string())
+            let body = resp.text().await.map_err(|e| e.to_string())?;
+            let body = body.trim();
+
+            // Server may return XML or plain text depending on Accept header
+            if body.starts_with("<?xml") || body.starts_with("<user") {
+                let info = parse_whoami_xml(body)?;
+                info.username
+                    .ok_or_else(|| "No username in response".to_string())
+            } else {
+                Ok(body.to_string())
+            }
         } else {
             Err(format!("Token invalid ({})", resp.status()))
         }
@@ -108,9 +116,8 @@ impl AuthService {
     }
 }
 
-fn parse_whoami_xml(xml: &str) -> Result<UserInfo, String> {
-    let doc = roxmltree::Document::parse(xml)
-        .map_err(|e| format!("XML parse error: {}", e))?;
+pub(crate) fn parse_whoami_xml(xml: &str) -> Result<UserInfo, String> {
+    let doc = roxmltree::Document::parse(xml).map_err(|e| format!("XML parse error: {}", e))?;
 
     let text_of = |tag: &str| -> Option<String> {
         doc.descendants()
@@ -128,4 +135,54 @@ fn parse_whoami_xml(xml: &str) -> Result<UserInfo, String> {
         username: text_of("username"),
         internal_id: text_of("internalID"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_whoami_xml_full() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <user>
+            <username>jdoe</username>
+            <firstName>John</firstName>
+            <lastName>Doe</lastName>
+            <email>jdoe@example.com</email>
+            <institute>CADC</institute>
+            <internalID>12345</internalID>
+        </user>"#;
+
+        let info = parse_whoami_xml(xml).unwrap();
+        assert_eq!(info.username.as_deref(), Some("jdoe"));
+        assert_eq!(info.first_name.as_deref(), Some("John"));
+        assert_eq!(info.last_name.as_deref(), Some("Doe"));
+        assert_eq!(info.email.as_deref(), Some("jdoe@example.com"));
+        assert_eq!(info.institute.as_deref(), Some("CADC"));
+        assert_eq!(info.internal_id.as_deref(), Some("12345"));
+    }
+
+    #[test]
+    fn parse_whoami_xml_minimal() {
+        let xml = r#"<user><username>alice</username></user>"#;
+        let info = parse_whoami_xml(xml).unwrap();
+        assert_eq!(info.username.as_deref(), Some("alice"));
+        assert!(info.first_name.is_none());
+        assert!(info.email.is_none());
+    }
+
+    #[test]
+    fn parse_whoami_xml_empty_tags() {
+        let xml = r#"<user><username>  </username><firstName></firstName></user>"#;
+        let info = parse_whoami_xml(xml).unwrap();
+        // Whitespace-only and empty are filtered out
+        assert!(info.username.is_none());
+        assert!(info.first_name.is_none());
+    }
+
+    #[test]
+    fn parse_whoami_xml_invalid() {
+        let result = parse_whoami_xml("not xml at all <>");
+        assert!(result.is_err());
+    }
 }

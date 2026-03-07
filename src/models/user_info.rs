@@ -19,3 +19,45 @@ impl UserInfo {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_name_full() {
+        let info = UserInfo {
+            first_name: Some("John".to_string()),
+            last_name: Some("Doe".to_string()),
+            username: Some("jdoe".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(info.display_name(), "John Doe");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_username() {
+        let info = UserInfo {
+            username: Some("jdoe".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(info.display_name(), "jdoe");
+    }
+
+    #[test]
+    fn display_name_empty_names_falls_back() {
+        let info = UserInfo {
+            first_name: Some("".to_string()),
+            last_name: Some("".to_string()),
+            username: Some("jdoe".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(info.display_name(), "jdoe");
+    }
+
+    #[test]
+    fn display_name_no_info() {
+        let info = UserInfo::default();
+        assert_eq!(info.display_name(), "Unknown");
+    }
+}

@@ -37,13 +37,9 @@ pub async fn show_login_dialog(
     title.add_css_class("title-4");
     content.append(&title);
 
-    let username_row = adw::EntryRow::builder()
-        .title("Username")
-        .build();
+    let username_row = adw::EntryRow::builder().title("Username").build();
 
-    let password_row = adw::PasswordEntryRow::builder()
-        .title("Password")
-        .build();
+    let password_row = adw::PasswordEntryRow::builder().title("Password").build();
 
     let prefs_group = adw::PreferencesGroup::new();
     prefs_group.add(&username_row);
@@ -129,9 +125,9 @@ pub async fn show_login_dialog(
                     let svc = services.clone();
                     let u = username.clone();
                     let p = password.clone();
-                    services.spawn(async move {
-                        svc.auth.login(&u, &p).await
-                    }).await
+                    services
+                        .spawn(async move { svc.auth.login(&u, &p).await })
+                        .await
                 };
 
                 if auth_result.success {
@@ -144,22 +140,29 @@ pub async fn show_login_dialog(
                         let tok = token.clone();
                         let user = username.clone();
                         let svc = services.clone();
-                        services.spawn(async move {
-                            svc.set_auth(tok, user).await;
-                        }).await;
+                        services
+                            .spawn(async move {
+                                svc.set_auth(tok, user).await;
+                            })
+                            .await;
 
                         // Fetch user profile info
                         let svc = services.clone();
                         let tok = token.clone();
-                        let user_info = services.spawn(async move {
-                            svc.auth.get_user_info(&tok).await.unwrap_or_default()
-                        }).await;
+                        let user_info =
+                            services
+                                .spawn(async move {
+                                    svc.auth.get_user_info(&tok).await.unwrap_or_default()
+                                })
+                                .await;
 
                         let svc = services.clone();
                         let info = user_info.clone();
-                        services.spawn(async move {
-                            svc.set_user_info(info).await;
-                        }).await;
+                        services
+                            .spawn(async move {
+                                svc.set_user_info(info).await;
+                            })
+                            .await;
 
                         *result.borrow_mut() = Some((username, token.clone(), user_info));
                         dialog.close();

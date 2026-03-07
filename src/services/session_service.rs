@@ -24,8 +24,10 @@ impl SessionService {
             .map_err(|e| format!("Network error: {}", e))?;
 
         if resp.status().is_success() {
-            let raw: Vec<SkahaSessionResponse> =
-                resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+            let raw: Vec<SkahaSessionResponse> = resp
+                .json()
+                .await
+                .map_err(|e| format!("Parse error: {}", e))?;
             Ok(raw.into_iter().map(Session::from).collect())
         } else {
             Err(format!("Failed to fetch sessions ({})", resp.status()))
@@ -40,21 +42,20 @@ impl SessionService {
         let url = self.endpoints.sessions_url();
         let form_pairs = params.to_form_pairs();
 
-        let mut req = self
-            .client
-            .post(&url)
-            .bearer_auth(token)
-            .form(&form_pairs);
+        let mut req = self.client.post(&url).bearer_auth(token).form(&form_pairs);
 
-        if let (Some(ref user), Some(ref secret)) =
-            (&params.registry_username, &params.registry_secret)
-        {
-            req = req
-                .header("x-skaha-registry-username", user.as_str())
-                .header("x-skaha-registry-secret", secret.as_str());
+        if let Some(ref user) = params.registry_username {
+            use base64::Engine;
+            let secret = params.registry_secret.as_deref().unwrap_or("");
+            let auth_value =
+                base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, secret));
+            req = req.header("x-skaha-registry-auth", &auth_value);
         }
 
-        let resp = req.send().await.map_err(|e| format!("Network error: {}", e))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
 
         if resp.status().is_success() {
             let body = resp.text().await.map_err(|e| e.to_string())?;

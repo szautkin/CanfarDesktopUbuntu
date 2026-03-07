@@ -1,5 +1,6 @@
 use crate::models::RecentLaunch;
 use crate::state::AppServices;
+use crate::ui::session_icon::session_type_icon;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
@@ -13,6 +14,7 @@ pub struct RecentLaunchesView {
     list_box: gtk::ListBox,
     filter_entry: gtk::SearchEntry,
     services: Arc<AppServices>,
+    #[allow(clippy::type_complexity)]
     on_relaunch: Rc<RefCell<Option<Box<dyn Fn(RecentLaunch)>>>>,
     session_limit_reached: Rc<RefCell<bool>>,
 }
@@ -123,7 +125,7 @@ impl RecentLaunchesView {
 
             let row = adw::ActionRow::builder()
                 .title(&launch.name)
-                .subtitle(&format!(
+                .subtitle(format!(
                     "{} | {} | CPU:{} RAM:{}G",
                     launch.type_display(),
                     launch.display_image(),
@@ -131,6 +133,9 @@ impl RecentLaunchesView {
                     launch.ram,
                 ))
                 .build();
+
+            let icon = session_type_icon(&launch.session_type, 32);
+            row.add_prefix(&icon);
 
             let relaunch_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
             relaunch_btn.set_tooltip_text(Some("Relaunch"));

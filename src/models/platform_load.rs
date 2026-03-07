@@ -36,14 +36,20 @@ impl CoreStats {
     pub fn requested(&self) -> f64 {
         self.requested_cpu_cores
             .as_ref()
-            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .and_then(|v| {
+                v.as_f64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .unwrap_or(0.0)
     }
 
     pub fn available(&self) -> f64 {
         self.cpu_cores_available
             .as_ref()
-            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .and_then(|v| {
+                v.as_f64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .unwrap_or(0.0)
     }
 

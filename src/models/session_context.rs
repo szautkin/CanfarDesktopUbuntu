@@ -30,11 +30,14 @@ impl SessionContext {
             .and_then(|c| c.available_values.as_ref())
             .map(|v| v.iter().filter_map(|s| s.parse().ok()).collect())
             .or_else(|| {
-                self.cores.as_ref().and_then(|c| c.options.as_ref()).map(|v| {
-                    v.iter()
-                        .filter_map(|s| s.as_u64().map(|n| n as u32))
-                        .collect()
-                })
+                self.cores
+                    .as_ref()
+                    .and_then(|c| c.options.as_ref())
+                    .map(|v| {
+                        v.iter()
+                            .filter_map(|s| s.as_u64().map(|n| n as u32))
+                            .collect()
+                    })
             })
             .unwrap_or_else(|| vec![1, 2, 4, 8, 16])
     }
