@@ -108,7 +108,10 @@ mod tests {
         let resp: SkahaSessionResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.id, "abc123");
         assert_eq!(resp.session_type.as_deref(), Some("notebook"));
-        assert_eq!(resp.connect_url.as_deref(), Some("https://example.com/session/abc123"));
+        assert_eq!(
+            resp.connect_url.as_deref(),
+            Some("https://example.com/session/abc123")
+        );
         assert_eq!(resp.requested_ram.as_deref(), Some("8G"));
         assert_eq!(resp.requested_cpu_cores.as_deref(), Some("2"));
         assert_eq!(resp.requested_gpu_cores.as_deref(), Some("0"));

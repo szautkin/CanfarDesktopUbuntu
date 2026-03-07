@@ -179,11 +179,8 @@ mod tests {
     #[test]
     fn projects_for_type_and_registry() {
         let images = sample_images();
-        let projects = ImageParser::projects_for_type_and_registry(
-            &images,
-            "notebook",
-            "images.canfar.net",
-        );
+        let projects =
+            ImageParser::projects_for_type_and_registry(&images, "notebook", "images.canfar.net");
         assert_eq!(projects, vec!["skaha"]);
     }
 

@@ -107,8 +107,7 @@ mod tests {
 
     #[test]
     fn parse_image_id_deep_path() {
-        let (reg, proj, name, ver) =
-            parse_image_id("registry.example.com/org/sub/image:v2.3");
+        let (reg, proj, name, ver) = parse_image_id("registry.example.com/org/sub/image:v2.3");
         assert_eq!(reg, "registry.example.com");
         assert_eq!(proj, "org/sub");
         assert_eq!(name, "image");

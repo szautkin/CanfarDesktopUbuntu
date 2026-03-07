@@ -61,7 +61,10 @@ mod tests {
         let pairs = params.to_form_pairs();
         assert_eq!(pairs.len(), 5);
         assert_eq!(pairs[0], ("name", "test1".to_string()));
-        assert_eq!(pairs[1], ("image", "images.canfar.net/skaha/notebook:1.0".to_string()));
+        assert_eq!(
+            pairs[1],
+            ("image", "images.canfar.net/skaha/notebook:1.0".to_string())
+        );
         assert_eq!(pairs[2], ("type", "notebook".to_string()));
         assert_eq!(pairs[3], ("cores", "2".to_string()));
         assert_eq!(pairs[4], ("ram", "8".to_string()));
