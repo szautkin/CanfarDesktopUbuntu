@@ -4,7 +4,9 @@ A native Linux desktop companion for the [CANFAR Science Portal](https://www.can
 
 This is the Linux counterpart of [Verbinal for Windows](https://github.com/szautkin/CanfarDesktop) (C#/WinUI 3).
 
-![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
+[![CI](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/ci.yml/badge.svg)](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/ci.yml)
+[![Release](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/release.yml/badge.svg)](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/release.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 ## Features
 
@@ -55,7 +57,24 @@ cargo build --release
 cargo run --release
 ```
 
-The release binary will be at `target/release/canfar-ubuntu`.
+The release binary will be at `target/release/verbinal`.
+
+## Installing from .deb
+
+Download the latest `.deb` from [Releases](https://github.com/szautkin/CanfarDesktopUbuntu/releases), then:
+
+```bash
+sudo dpkg -i verbinal_*_amd64.deb
+sudo apt-get install -f  # install any missing dependencies
+```
+
+Or build the `.deb` yourself:
+
+```bash
+cargo install cargo-deb
+cargo build --release
+cargo deb --no-build
+```
 
 ## Running Tests
 

@@ -1,10 +1,15 @@
 [package]
-name = "canfar-ubuntu"
+name = "verbinal"
 version = "1.0.0"
 edition = "2021"
 description = "Verbinal - a CANFAR Science Portal companion for Linux"
 license = "AGPL-3.0"
 authors = ["Serhii Zautkin"]
+repository = "https://github.com/szautkin/CanfarDesktopUbuntu"
+homepage = "https://www.canfar.net"
+readme = "README.md"
+keywords = ["canfar", "astronomy", "science", "gtk4"]
+categories = ["science", "gui"]
 
 [dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
@@ -21,3 +26,25 @@ open = "5"
 once_cell = "1"
 url = "2"
 base64 = "0.22"
+
+[package.metadata.deb]
+maintainer = "Serhii Zautkin"
+copyright = "2025 Serhii Zautkin"
+section = "science"
+priority = "optional"
+depends = "libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.4), libglib2.0-0 (>= 2.76)"
+assets = [
+    ["target/release/verbinal", "usr/bin/", "755"],
+    ["data/net.canfar.Verbinal.desktop", "usr/share/applications/", "644"],
+    ["assets/icons/hicolor/16x16/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
+    ["assets/icons/hicolor/24x24/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/24x24/apps/", "644"],
+    ["assets/icons/hicolor/32x32/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/32x32/apps/", "644"],
+    ["assets/icons/hicolor/48x48/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
+    ["assets/icons/hicolor/64x64/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["assets/icons/hicolor/128x128/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["assets/icons/hicolor/256x256/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["assets/icons/hicolor/512x512/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["assets/icons/hicolor/scalable/apps/net.canfar.Verbinal.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["README.md", "usr/share/doc/verbinal/", "644"],
+    ["LICENSE", "usr/share/doc/verbinal/", "644"],
+]

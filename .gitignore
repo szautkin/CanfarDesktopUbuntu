@@ -17,3 +17,9 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Packaging
+*.deb
+*.rpm
+*.AppImage
+*.snap
