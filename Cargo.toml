@@ -1,6 +1,6 @@
 [package]
 name = "verbinal"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Verbinal - a CANFAR Science Portal companion for Linux"
 license = "AGPL-3.0"
