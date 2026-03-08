@@ -62,7 +62,7 @@ impl ApiEndpoints {
 
     pub fn session_renew_url(&self, session_id: &str) -> String {
         format!(
-            "{}{}/session/{}/renew",
+            "{}{}/session/{}?action=renew",
             self.config.api_base_url, self.config.skaha_api_path, session_id
         )
     }
@@ -149,7 +149,7 @@ mod tests {
     fn session_renew_url() {
         assert_eq!(
             endpoints().session_renew_url("abc123"),
-            "https://ws-uv.canfar.net/skaha/v1/session/abc123/renew"
+            "https://ws-uv.canfar.net/skaha/v1/session/abc123?action=renew"
         );
     }
 
