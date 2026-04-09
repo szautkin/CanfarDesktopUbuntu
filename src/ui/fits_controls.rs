@@ -4,13 +4,15 @@ use gtk4::{self as gtk};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+type OnChangedCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
 pub struct FitsControls {
     widget: gtk::Box,
     stretch_combo: gtk::DropDown,
     colormap_combo: gtk::DropDown,
     min_spin: gtk::SpinButton,
     max_spin: gtk::SpinButton,
-    on_changed: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+    on_changed: OnChangedCallback,
 }
 
 impl FitsControls {
@@ -23,14 +25,14 @@ impl FitsControls {
 
         // Stretch
         widget.append(&gtk::Label::new(Some("Stretch:")));
-        let stretch_items = gtk::StringList::new(&["Linear", "Log", "Sqrt", "Histogram Eq"]);
+        let stretch_items = gtk::StringList::new(&["Linear", "Log", "Sqrt", "Squared", "Asinh", "Histogram Eq"]);
         let stretch_combo = gtk::DropDown::new(Some(stretch_items), gtk::Expression::NONE);
         stretch_combo.set_selected(0);
         widget.append(&stretch_combo);
 
         // Color map
         widget.append(&gtk::Label::new(Some("Color:")));
-        let cmap_items = gtk::StringList::new(&["Grayscale", "Heat", "Viridis"]);
+        let cmap_items = gtk::StringList::new(&["Grayscale", "Inverted", "Heat", "Viridis", "Plasma", "Inferno", "Magma", "CoolWarm"]);
         let colormap_combo = gtk::DropDown::new(Some(cmap_items), gtk::Expression::NONE);
         colormap_combo.set_selected(0);
         widget.append(&colormap_combo);
@@ -48,7 +50,7 @@ impl FitsControls {
         max_spin.set_width_chars(8);
         widget.append(&max_spin);
 
-        let on_changed: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let on_changed: OnChangedCallback = Rc::new(RefCell::new(None));
 
         let controls = Rc::new(FitsControls {
             widget,
@@ -103,17 +105,36 @@ impl FitsControls {
         match self.stretch_combo.selected() {
             1 => Stretch::Log,
             2 => Stretch::Sqrt,
-            3 => Stretch::HistogramEq,
+            3 => Stretch::Squared,
+            4 => Stretch::Asinh,
+            5 => Stretch::HistogramEq,
             _ => Stretch::Linear,
         }
     }
 
     pub fn colormap(&self) -> ColorMap {
         match self.colormap_combo.selected() {
-            1 => ColorMap::Heat,
-            2 => ColorMap::Viridis,
+            1 => ColorMap::Inverted,
+            2 => ColorMap::Heat,
+            3 => ColorMap::Viridis,
+            4 => ColorMap::Plasma,
+            5 => ColorMap::Inferno,
+            6 => ColorMap::Magma,
+            7 => ColorMap::CoolWarm,
             _ => ColorMap::Grayscale,
         }
+    }
+
+    pub fn set_range(&self, vmin: f64, vmax: f64) {
+        let step = ((vmax - vmin) / 100.0).max(0.01);
+        self.min_spin.adjustment().set_lower(vmin);
+        self.min_spin.adjustment().set_upper(vmax);
+        self.min_spin.adjustment().set_step_increment(step);
+        self.min_spin.set_value(vmin);
+        self.max_spin.adjustment().set_lower(vmin);
+        self.max_spin.adjustment().set_upper(vmax);
+        self.max_spin.adjustment().set_step_increment(step);
+        self.max_spin.set_value(vmax);
     }
 
     pub fn range(&self) -> (f64, f64) {

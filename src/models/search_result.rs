@@ -247,11 +247,9 @@ pub struct ResultColumnInfo {
 /// Removes quotes, spaces, dots, lowercases.
 pub fn clean_key(header: &str) -> String {
     header
-        .replace('"', "")
+        .replace(['"', ' ', '.'], "")
         .trim()
         .to_lowercase()
-        .replace(' ', "")
-        .replace('.', "")
 }
 
 /// Default visible keys (cleaned form) matching the Windows app.

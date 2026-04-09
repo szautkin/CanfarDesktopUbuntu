@@ -735,7 +735,7 @@ impl SearchPage {
             search_radius: self.radius.value(),
             pixel_scale_max: ps_max,
             pixel_scale_unit: pixel_scale_units
-                .get(0) // TODO: add pixel scale unit dropdown to UI
+                .first() // TODO: add pixel scale unit dropdown to UI
                 .unwrap_or(&"arcsec")
                 .to_string(),
             spatial_cutout: self.spatial_cutout.is_active(),
@@ -966,7 +966,7 @@ impl SearchPage {
         if ps == 0 {
             return 0;
         }
-        (rows.len() + ps - 1) / ps
+        rows.len().div_ceil(ps)
     }
 
     fn render_results_page(self: &Rc<Self>) {
@@ -981,7 +981,7 @@ impl SearchPage {
         let total = processed.len();
         let start = page * ps;
         let end = (start + ps).min(total);
-        let total_pages = if ps > 0 { (total + ps - 1) / ps } else { 0 };
+        let total_pages = if ps > 0 { total.div_ceil(ps) } else { 0 };
 
         // Update status
         let store = self.results_store.borrow();
@@ -1096,8 +1096,7 @@ impl SearchPage {
             .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         // Data rows
-        for (i, row) in processed.iter().skip(start).take(ps).enumerate() {
-            let row: &SearchResultRow = row;
+        for row in processed.iter().skip(start).take(ps) {
             let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row_box.set_margin_start(8);
             row_box.set_margin_end(8);
@@ -1308,28 +1307,25 @@ impl SearchPage {
         filters.append(&filter);
 
         let dialog = gtk::FileDialog::builder()
-            .title(&format!("Export as {}", ext.to_uppercase()))
-            .initial_name(&format!("search_results.{}", ext))
+            .title(format!("Export as {}", ext.to_uppercase()))
+            .initial_name(format!("search_results.{}", ext))
             .filters(&filters)
             .build();
 
-        match dialog.save_future(root.as_ref()).await {
-            Ok(file) => {
-                if let Some(path) = file.path() {
-                    match std::fs::write(&path, &content) {
-                        Ok(()) => {
-                            self.status_label.set_text(&format!(
-                                "Exported to {}",
-                                path.file_name().unwrap_or_default().to_string_lossy()
-                            ));
-                        }
-                        Err(e) => {
-                            self.status_label.set_text(&format!("Export failed: {}", e));
-                        }
+        if let Ok(file) = dialog.save_future(root.as_ref()).await {
+            if let Some(path) = file.path() {
+                match std::fs::write(&path, &content) {
+                    Ok(()) => {
+                        self.status_label.set_text(&format!(
+                            "Exported to {}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ));
+                    }
+                    Err(e) => {
+                        self.status_label.set_text(&format!("Export failed: {}", e));
                     }
                 }
             }
-            Err(_) => {} // User cancelled
         }
     }
 
@@ -1374,7 +1370,7 @@ impl SearchPage {
         grid.set_margin_bottom(16);
         grid.set_column_homogeneous(true);
 
-        let rows_per_col = (columns.len() + 2) / 3;
+        let rows_per_col = columns.len().div_ceil(3);
         let checks: Rc<RefCell<Vec<(String, gtk::CheckButton)>>> =
             Rc::new(RefCell::new(Vec::new()));
 
@@ -1565,7 +1561,6 @@ impl SearchPage {
             let services_ref = self.services.clone();
             let name_for_del = saved.name.clone();
             let saved_list = self.saved_list.clone();
-            let services = self.services.clone();
             del_btn.connect_clicked(move |_| {
                 let _ = services_ref.search_store.delete_saved(&name_for_del);
                 // Clear and refresh would need self — just clear for now
@@ -1673,7 +1668,6 @@ impl SearchPage {
 
                 // Wire toggle → cascade
                 let mgr_ref = self.train_manager.clone();
-                let train_lists = self.train_lists.clone();
                 let value_owned = value.clone();
                 let col_idx = idx;
                 let this_status = self.status_label.clone();

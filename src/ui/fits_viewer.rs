@@ -126,13 +126,10 @@ impl FitsViewer {
             .filters(&filters)
             .build();
 
-        match dialog.open_future(root.as_ref()).await {
-            Ok(file) => {
-                if let Some(path) = file.path() {
-                    self.load_file(&path);
-                }
+        if let Ok(file) = dialog.open_future(root.as_ref()).await {
+            if let Some(path) = file.path() {
+                self.load_file(&path);
             }
-            Err(_) => {} // User cancelled
         }
     }
 

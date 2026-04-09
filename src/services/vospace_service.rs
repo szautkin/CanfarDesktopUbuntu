@@ -78,6 +78,28 @@ impl VoSpaceService {
         Ok(())
     }
 
+    /// Upload a file to the given path under the user's home.
+    pub async fn upload_file(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+        data: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), ApiError> {
+        let url = self.endpoints.vospace_files_url(username, path);
+        let resp = self
+            .client
+            .put(&url)
+            .bearer_auth(token)
+            .header("Content-Type", content_type)
+            .body(data)
+            .send()
+            .await?;
+        check_response(resp).await?;
+        Ok(())
+    }
+
     /// Get the download URL for a file.
     pub fn download_url(&self, username: &str, path: &str) -> String {
         self.endpoints.vospace_files_url(username, path)

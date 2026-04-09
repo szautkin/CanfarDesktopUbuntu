@@ -2,8 +2,11 @@ use crate::models::UserInfo;
 use crate::services::TokenStorage;
 use crate::state::AppServices;
 use crate::ui::dashboard::DashboardView;
+use crate::ui::file_panel::{FilePanel, FileType};
 use crate::ui::fits_viewer::FitsViewer;
 use crate::ui::login_dialog::show_login_dialog;
+use crate::ui::notebook_host::NotebookTabHost;
+use crate::ui::research_page::ResearchPage;
 use crate::ui::search_page::SearchPage;
 use crate::ui::settings_page::{self, SettingsPage};
 use crate::ui::vospace_browser::VoSpaceBrowser;
@@ -30,7 +33,13 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
 
     let header = adw::HeaderBar::new();
 
-    // --- Left side: About button + status ---
+    // --- Left side: Files toggle, About button + status ---
+    let files_btn = gtk::ToggleButton::new();
+    files_btn.set_icon_name("folder-symbolic");
+    files_btn.set_tooltip_text(Some("Toggle File Panel (Ctrl+B)"));
+    files_btn.add_css_class("flat");
+    header.pack_start(&files_btn);
+
     let about_btn = gtk::Button::from_icon_name("help-about-symbolic");
     about_btn.set_tooltip_text(Some("About"));
     header.pack_start(&about_btn);
@@ -69,13 +78,28 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     user_menu_btn.set_menu_model(Some(&user_menu));
     header.pack_end(&user_menu_btn);
 
+    // --- File panel (hidden by default) ---
+    let file_panel = FilePanel::new();
+    file_panel.widget().set_visible(false);
+
     // --- Toast Overlay wrapping the ViewStack ---
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&view_stack));
 
+    // --- Paned: file panel (left) + toast overlay (right) ---
+    let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+    paned.set_start_child(Some(file_panel.widget()));
+    paned.set_end_child(Some(&toast_overlay));
+    paned.set_position(280);
+    // Allow squishing end panel but keep file panel at its preferred width
+    paned.set_shrink_start_child(false);
+    paned.set_shrink_end_child(true);
+    paned.set_resize_start_child(false);
+    paned.set_resize_end_child(true);
+
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header);
-    toolbar_view.set_content(Some(&toast_overlay));
+    toolbar_view.set_content(Some(&paned));
 
     window.set_content(Some(&toolbar_view));
 
@@ -96,17 +120,12 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     // Search module (real implementation)
     let search_page = SearchPage::new(services.clone());
 
-    // Placeholder pages for modules not yet implemented
-    let research_placeholder = build_placeholder_page(
-        "document-open-recent-symbolic",
-        "Research",
-        "Research module is coming soon.\nManage your downloaded observations here.",
-    );
-    let notebook_placeholder = build_placeholder_page(
-        "accessories-text-editor-symbolic",
-        "Notebook",
-        "Notebook module is coming soon.\nOpen and run Jupyter .ipynb files locally.",
-    );
+    // Research module (real implementation)
+    let research_page = ResearchPage::new();
+    research_page.set_application(app);
+
+    // Notebook module (real implementation)
+    let notebook_host = NotebookTabHost::new(services.clone());
 
     view_stack.add_titled_with_icon(
         &dashboard_placeholder,
@@ -133,13 +152,13 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         "system-search-symbolic",
     );
     view_stack.add_titled_with_icon(
-        &research_placeholder,
+        research_page.widget(),
         Some("research"),
         "Research",
         "document-open-recent-symbolic",
     );
     view_stack.add_titled_with_icon(
-        &notebook_placeholder,
+        notebook_host.widget(),
         Some("notebook"),
         "Notebook",
         "accessories-text-editor-symbolic",
@@ -182,6 +201,66 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
             }
         });
         app.add_action(&profile_action);
+    }
+
+    // Give the VOSpace browser a reference to the toast overlay so it can show notifications
+    vospace_browser.set_toast_overlay(toast_overlay.clone());
+
+    // Open FITS file action — triggered by VOSpace browser "Open in FITS Viewer"
+    {
+        let fits_viewer = fits_viewer.clone();
+        let view_stack = view_stack.clone();
+        let open_fits_action =
+            gtk::gio::SimpleAction::new("open-fits-file", Some(glib::VariantTy::STRING));
+        open_fits_action.connect_activate(move |_, param| {
+            if let Some(path_str) = param.and_then(|v| v.str()) {
+                let path = std::path::PathBuf::from(path_str);
+                fits_viewer.load_from_path(&path);
+                view_stack.set_visible_child_name("fits");
+            }
+        });
+        app.add_action(&open_fits_action);
+    }
+
+    // Open notebook file action — triggered by VOSpace browser "Open in Notebook"
+    {
+        let notebook_host = notebook_host.clone();
+        let view_stack = view_stack.clone();
+        let open_notebook_action =
+            gtk::gio::SimpleAction::new("open-notebook-file", Some(glib::VariantTy::STRING));
+        open_notebook_action.connect_activate(move |_, param| {
+            if let Some(path_str) = param.and_then(|v| v.str()) {
+                notebook_host.load_from_path(&std::path::PathBuf::from(path_str));
+                view_stack.set_visible_child_name("notebook");
+            }
+        });
+        app.add_action(&open_notebook_action);
+    }
+
+    // File panel — open-file callback
+    {
+        let fits_viewer = fits_viewer.clone();
+        let view_stack = view_stack.clone();
+        let notebook_host = notebook_host.clone();
+        file_panel.set_on_open_file(move |path, file_type| match file_type {
+            FileType::Fits => {
+                fits_viewer.load_from_path(&path);
+                view_stack.set_visible_child_name("fits");
+            }
+            FileType::Notebook => {
+                notebook_host.load_from_path(&path);
+                view_stack.set_visible_child_name("notebook");
+            }
+            FileType::Other => {}
+        });
+    }
+
+    // Files toggle button
+    {
+        let file_panel = file_panel.clone();
+        files_btn.connect_toggled(move |btn| {
+            file_panel.widget().set_visible(btn.is_active());
+        });
     }
 
     // Logout action
@@ -352,7 +431,7 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     }
 
     // Keyboard shortcuts
-    setup_keyboard_shortcuts(&window, &view_stack);
+    setup_keyboard_shortcuts(&window, &view_stack, &file_panel, &files_btn);
 
     window.present();
 }
@@ -361,9 +440,16 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
 // Keyboard shortcuts
 // ---------------------------------------------------------------------------
 
-fn setup_keyboard_shortcuts(window: &adw::ApplicationWindow, view_stack: &adw::ViewStack) {
+fn setup_keyboard_shortcuts(
+    window: &adw::ApplicationWindow,
+    view_stack: &adw::ViewStack,
+    file_panel: &Rc<FilePanel>,
+    files_btn: &gtk::ToggleButton,
+) {
     let controller = gtk::EventControllerKey::new();
     let vs = view_stack.clone();
+    let fp = Rc::clone(file_panel);
+    let fb = files_btn.clone();
     controller.connect_key_pressed(move |_, key, _code, modifier| {
         let ctrl = modifier.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
         if ctrl {
@@ -382,6 +468,29 @@ fn setup_keyboard_shortcuts(window: &adw::ApplicationWindow, view_stack: &adw::V
                 }
                 gtk4::gdk::Key::_3 => {
                     vs.set_visible_child_name("fits");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::_4 => {
+                    vs.set_visible_child_name("search");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::_5 => {
+                    vs.set_visible_child_name("research");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::_6 => {
+                    vs.set_visible_child_name("notebook");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::_7 => {
+                    vs.set_visible_child_name("settings");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::b => {
+                    // Toggle file panel visibility and keep toggle button in sync
+                    let new_visible = !fp.widget().is_visible();
+                    fp.widget().set_visible(new_visible);
+                    fb.set_active(new_visible);
                     return gtk::glib::Propagation::Stop;
                 }
                 _ => {}
@@ -681,29 +790,6 @@ fn build_welcome_page(view_stack: &adw::ViewStack) -> gtk::Box {
 
     scrolled.set_child(Some(&content));
     page.append(&scrolled);
-    page
-}
-
-fn build_placeholder_page(icon_name: &str, title: &str, message: &str) -> gtk::Box {
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    page.set_vexpand(true);
-    page.set_valign(gtk::Align::Center);
-    page.set_halign(gtk::Align::Center);
-
-    let icon = gtk::Image::from_icon_name(icon_name);
-    icon.set_pixel_size(64);
-    icon.add_css_class("dim-label");
-    page.append(&icon);
-
-    let label = gtk::Label::new(Some(title));
-    label.add_css_class("title-2");
-    page.append(&label);
-
-    let desc = gtk::Label::new(Some(message));
-    desc.add_css_class("dim-label");
-    desc.set_justify(gtk::Justification::Center);
-    page.append(&desc);
-
     page
 }
 

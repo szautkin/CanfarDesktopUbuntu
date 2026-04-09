@@ -136,6 +136,8 @@ pub async fn show_login_dialog(
                         if remember {
                             let _ = TokenStorage::save_token(token);
                             let _ = TokenStorage::save_username(&username);
+                            // Best-effort: store password for silent re-auth on token expiry.
+                            let _ = TokenStorage::save_password(&password);
                         }
                         let tok = token.clone();
                         let user = username.clone();

@@ -1,5 +1,4 @@
 /// Unit conversion utilities matching the Windows implementation.
-
 const SPEED_OF_LIGHT: f64 = 299_792_458.0; // m/s
 const PLANCK_CONSTANT: f64 = 6.626_070_15e-34; // J*s
 const EV_TO_JOULES: f64 = 1.602_176_634e-19; // J/eV

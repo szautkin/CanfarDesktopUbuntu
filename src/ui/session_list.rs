@@ -20,6 +20,7 @@ pub struct SessionListView {
     loading_spinner: gtk::Spinner,
     count_label: gtk::Label,
     countdown_label: gtk::Label,
+    filter_dropdown: gtk::DropDown,
     sessions: Rc<RefCell<Vec<Session>>>,
     services: Arc<AppServices>,
     on_action: ActionCallback,
@@ -49,6 +50,12 @@ impl SessionListView {
         count_label.add_css_class("caption");
         // Insert after countdown
         header.insert_child_after(&count_label, Some(&countdown_label));
+
+        let filter_types =
+            gtk::StringList::new(&["All", "notebook", "desktop", "carta", "contributed", "firefly"]);
+        let filter_dropdown = gtk::DropDown::new(Some(filter_types), gtk::Expression::NONE);
+        filter_dropdown.set_valign(gtk::Align::Center);
+        header.insert_child_after(&filter_dropdown, Some(&count_label));
 
         container.append(&header);
 
@@ -81,11 +88,24 @@ impl SessionListView {
             loading_spinner,
             count_label,
             countdown_label,
+            filter_dropdown,
             sessions: Rc::new(RefCell::new(Vec::new())),
             services,
             on_action,
             on_sessions_changed: Rc::new(RefCell::new(None)),
         });
+
+        // Filter dropdown
+        {
+            let view_weak = Rc::downgrade(&view);
+            let filter_dropdown = view.filter_dropdown.clone();
+            filter_dropdown.connect_selected_notify(move |_| {
+                if let Some(view) = view_weak.upgrade() {
+                    let sessions = view.sessions.borrow().clone();
+                    view.update_sessions(sessions);
+                }
+            });
+        }
 
         // Refresh button
         {
@@ -137,10 +157,28 @@ impl SessionListView {
         self.loading_spinner.set_visible(false);
     }
 
+    fn active_filter(&self) -> Option<String> {
+        let types = ["All", "notebook", "desktop", "carta", "contributed", "firefly"];
+        let idx = self.filter_dropdown.selected() as usize;
+        match types.get(idx) {
+            Some(&"All") | None => None,
+            Some(t) => Some(t.to_string()),
+        }
+    }
+
     fn update_sessions(&self, sessions: Vec<Session>) {
         while let Some(child) = self.cards_box.first_child() {
             self.cards_box.remove(&child);
         }
+
+        let filter = self.active_filter();
+        let visible: Vec<&Session> = sessions
+            .iter()
+            .filter(|s| match &filter {
+                None => true,
+                Some(f) => s.session_type.eq_ignore_ascii_case(f),
+            })
+            .collect();
 
         let count = sessions.len();
         self.count_label.set_text(&format!(
@@ -148,9 +186,9 @@ impl SessionListView {
             count,
             if count == 1 { "" } else { "s" }
         ));
-        self.empty_label.set_visible(count == 0);
+        self.empty_label.set_visible(visible.is_empty());
 
-        for session in &sessions {
+        for session in &visible {
             let card = SessionCard::new(session, self.on_action.clone());
             self.cards_box.append(card.widget());
         }
@@ -181,10 +219,14 @@ impl SessionListView {
             let on_action = self.on_action.clone();
             let on_changed = self.on_sessions_changed.clone();
             let container = self.container.clone();
+            let filter_dropdown = self.filter_dropdown.clone();
 
             countdown_label.set_visible(true);
 
             glib::spawn_future_local(async move {
+                let filter_types =
+                    ["All", "notebook", "desktop", "carta", "contributed", "firefly"];
+
                 loop {
                     // Countdown from 15 to 1
                     for remaining in (1..=AUTO_REFRESH_SECS).rev() {
@@ -210,6 +252,11 @@ impl SessionListView {
                         break;
                     };
 
+                    let active_filter = match filter_types.get(filter_dropdown.selected() as usize) {
+                        Some(&"All") | None => None,
+                        Some(t) => Some(*t),
+                    };
+
                     while let Some(child) = cards_box.first_child() {
                         cards_box.remove(&child);
                     }
@@ -219,8 +266,15 @@ impl SessionListView {
                         count,
                         if count == 1 { "" } else { "s" }
                     ));
-                    empty_label.set_visible(count == 0);
-                    for session in &new_sessions {
+                    let visible: Vec<&Session> = new_sessions
+                        .iter()
+                        .filter(|s| match active_filter {
+                            None => true,
+                            Some(f) => s.session_type.eq_ignore_ascii_case(f),
+                        })
+                        .collect();
+                    empty_label.set_visible(visible.is_empty());
+                    for session in visible {
                         let card = SessionCard::new(session, on_action.clone());
                         cards_box.append(card.widget());
                     }

@@ -1,6 +1,7 @@
 pub mod auth_result;
 pub mod container_image;
 pub mod fits_image;
+pub mod notebook_document;
 pub mod platform_load;
 pub mod recent_launch;
 pub mod search_result;

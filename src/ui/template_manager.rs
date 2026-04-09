@@ -8,11 +8,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+type OnLaunchCallback = Rc<RefCell<Option<Box<dyn Fn(SessionTemplate)>>>>;
+
 pub struct TemplateManager {
     widget: gtk::Box,
     list_box: gtk::ListBox,
     services: Arc<AppServices>,
-    on_launch: Rc<RefCell<Option<Box<dyn Fn(SessionTemplate)>>>>,
+    on_launch: OnLaunchCallback,
 }
 
 impl TemplateManager {

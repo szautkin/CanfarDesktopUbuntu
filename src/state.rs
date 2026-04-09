@@ -95,4 +95,30 @@ impl AppServices {
     pub async fn get_username(&self) -> Option<String> {
         self.username.read().await.clone()
     }
+
+    /// Attempt silent re-authentication using credentials stored in the keyring.
+    ///
+    /// Returns `true` and refreshes the in-memory token if successful.
+    /// Returns `false` if credentials are missing or the login request fails.
+    /// This never panics; errors are handled gracefully so callers can fall back
+    /// to showing the interactive login dialog.
+    pub async fn try_silent_reauth(&self) -> bool {
+        let (username, password) = match TokenStorage::get_credentials() {
+            Some(creds) => creds,
+            None => return false,
+        };
+
+        let auth_result = self.auth.login(&username, &password).await;
+
+        if auth_result.success {
+            if let Some(token) = auth_result.token {
+                // Persist the refreshed token so the next cold start picks it up.
+                let _ = TokenStorage::save_token(&token);
+                self.set_auth(token, username).await;
+                return true;
+            }
+        }
+
+        false
+    }
 }

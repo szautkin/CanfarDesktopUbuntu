@@ -3,6 +3,8 @@ pub mod data_train_manager;
 pub mod fits_loader;
 pub mod fits_renderer;
 pub mod image_parser;
+pub mod notebook_parser;
+pub mod python_discovery;
 pub mod range_parser;
 pub mod result_filter;
 pub mod unit_converter;
