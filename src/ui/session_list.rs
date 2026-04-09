@@ -155,6 +155,14 @@ impl SessionListView {
             self.cards_box.append(card.widget());
         }
 
+        // Fire desktop notifications for state transitions
+        check_notifications(
+            &self.sessions.borrow(),
+            &sessions,
+            &self.services.notifications,
+            &self.container,
+        );
+
         let has_pending = sessions.iter().any(|s| s.is_pending());
         *self.sessions.borrow_mut() = sessions;
 
@@ -172,6 +180,7 @@ impl SessionListView {
             let empty_label = self.empty_label.clone();
             let on_action = self.on_action.clone();
             let on_changed = self.on_sessions_changed.clone();
+            let container = self.container.clone();
 
             countdown_label.set_visible(true);
 
@@ -219,6 +228,14 @@ impl SessionListView {
                         cb(count);
                     }
 
+                    // Notify on state transitions during poll
+                    check_notifications(
+                        &sessions_ref.borrow(),
+                        &new_sessions,
+                        &services.notifications,
+                        &container,
+                    );
+
                     let still_pending = new_sessions.iter().any(|s| s.is_pending());
                     *sessions_ref.borrow_mut() = new_sessions;
 
@@ -251,5 +268,57 @@ impl SessionListView {
 
     pub fn widget(&self) -> &gtk::Box {
         &self.container
+    }
+}
+
+/// Check for session state transitions and fire desktop notifications.
+fn check_notifications(
+    old: &[Session],
+    new: &[Session],
+    notifications: &crate::services::NotificationService,
+    widget: &gtk::Box,
+) {
+    // Get the GIO Application from the widget tree
+    let Some(app) = widget
+        .root()
+        .and_then(|r| r.downcast::<gtk::Window>().ok())
+        .and_then(|w| w.application())
+    else {
+        return;
+    };
+    let gio_app: &gtk4::gio::Application = app.upcast_ref();
+
+    for session in new {
+        let was_pending = old.iter().any(|s| s.id == session.id && s.is_pending());
+
+        // Pending → Running
+        if session.is_running() && was_pending {
+            notifications.notify_session_ready(
+                gio_app,
+                &session.id,
+                &session.name,
+                &session.session_type,
+            );
+        }
+
+        // Became Failed (and wasn't already Failed)
+        if session.status.eq_ignore_ascii_case("failed") {
+            let was_failed = old
+                .iter()
+                .any(|s| s.id == session.id && s.status.eq_ignore_ascii_case("failed"));
+            if !was_failed {
+                notifications.notify_session_failed(gio_app, &session.id, &session.name);
+            }
+        }
+
+        // Expiring within 1 hour
+        if session.is_running() {
+            if let Ok(expiry) = chrono::DateTime::parse_from_rfc3339(&session.expiry_time) {
+                let remaining = expiry.signed_duration_since(chrono::Utc::now());
+                if remaining.num_hours() < 1 && remaining.num_seconds() > 0 {
+                    notifications.notify_session_expiring(gio_app, &session.id, &session.name);
+                }
+            }
+        }
     }
 }

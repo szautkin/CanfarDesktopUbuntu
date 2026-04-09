@@ -93,6 +93,17 @@ impl SessionCard {
                 expiry_box.append(&expiry_icon);
                 let expiry_text = gtk::Label::new(Some(&format_time(&session.expiry_time)));
                 expiry_text.add_css_class("caption");
+
+                // Highlight if expiring soon
+                if let Ok(expiry_dt) = chrono::DateTime::parse_from_rfc3339(&session.expiry_time) {
+                    let remaining = expiry_dt.signed_duration_since(chrono::Utc::now());
+                    if remaining.num_hours() < 1 && remaining.num_seconds() > 0 {
+                        expiry_text.add_css_class("error");
+                    } else if remaining.num_hours() < 24 {
+                        expiry_text.add_css_class("warning");
+                    }
+                }
+
                 expiry_box.append(&expiry_text);
                 times_box.append(&expiry_box);
             }
@@ -125,6 +136,32 @@ impl SessionCard {
         }
 
         inner.append(&res_box);
+
+        // In-use resources (only for running sessions with non-zero usage)
+        if session.is_running()
+            && (!session.cpu_cores_in_use.is_empty() || !session.ram_in_use.is_empty())
+        {
+            let has_cpu = !session.cpu_cores_in_use.is_empty() && session.cpu_cores_in_use != "0";
+            let has_ram = !session.ram_in_use.is_empty() && session.ram_in_use != "0";
+            if has_cpu || has_ram {
+                let usage_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                let prefix = gtk::Label::new(Some("In use:"));
+                prefix.add_css_class("caption");
+                prefix.add_css_class("dim-label");
+                usage_box.append(&prefix);
+                if has_cpu {
+                    let lbl = gtk::Label::new(Some(&format!("CPU: {}", session.cpu_cores_in_use)));
+                    lbl.add_css_class("caption");
+                    usage_box.append(&lbl);
+                }
+                if has_ram {
+                    let lbl = gtk::Label::new(Some(&format!("RAM: {}", session.ram_in_use)));
+                    lbl.add_css_class("caption");
+                    usage_box.append(&lbl);
+                }
+                inner.append(&usage_box);
+            }
+        }
 
         // Action buttons
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 4);

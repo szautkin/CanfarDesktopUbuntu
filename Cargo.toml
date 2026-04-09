@@ -1,6 +1,6 @@
 [package]
 name = "verbinal"
-version = "1.0.1"
+version = "1.2.0"
 edition = "2021"
 description = "Verbinal - a CANFAR Science Portal companion for Linux"
 license = "AGPL-3.0"
@@ -25,14 +25,21 @@ chrono = { version = "0.4", features = ["serde"] }
 open = "5"
 once_cell = "1"
 url = "2"
+urlencoding = "2"
 base64 = "0.22"
+fitsio = { version = "0.21", optional = true }
+cairo-rs = { version = "0.20", features = ["v1_16"] }
+
+[features]
+default = []
+fits = ["fitsio"]
 
 [package.metadata.deb]
 maintainer = "Serhii Zautkin"
 copyright = "2025 Serhii Zautkin"
 section = "science"
 priority = "optional"
-depends = "libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.4), libglib2.0-0 (>= 2.76)"
+depends = "libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.4), libglib2.0-0 (>= 2.76), libcfitsio9 | libcfitsio10"
 assets = [
     ["target/release/verbinal", "usr/bin/", "755"],
     ["data/net.canfar.Verbinal.desktop", "usr/share/applications/", "644"],

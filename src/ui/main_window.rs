@@ -2,7 +2,11 @@ use crate::models::UserInfo;
 use crate::services::TokenStorage;
 use crate::state::AppServices;
 use crate::ui::dashboard::DashboardView;
+use crate::ui::fits_viewer::FitsViewer;
 use crate::ui::login_dialog::show_login_dialog;
+use crate::ui::search_page::SearchPage;
+use crate::ui::settings_page::{self, SettingsPage};
+use crate::ui::vospace_browser::VoSpaceBrowser;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -13,6 +17,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
+    // Apply saved theme on startup
+    let config = services.settings.load();
+    settings_page::apply_theme(&config.theme);
+
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Verbinal - a CANFAR Science Portal")
@@ -21,19 +29,8 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         .build();
 
     let header = adw::HeaderBar::new();
-    header.set_show_title(true);
 
-    let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    title_box.set_valign(gtk::Align::Center);
-
-    let app_icon = load_app_icon(24);
-    title_box.append(&app_icon);
-
-    let title_label = gtk::Label::new(Some("Verbinal - a CANFAR Science Portal"));
-    title_label.add_css_class("title");
-    title_box.append(&title_label);
-    header.set_title_widget(Some(&title_box));
-
+    // --- Left side: About button + status ---
     let about_btn = gtk::Button::from_icon_name("help-about-symbolic");
     about_btn.set_tooltip_text(Some("About"));
     header.pack_start(&about_btn);
@@ -43,16 +40,26 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     status_label.add_css_class("caption");
     header.pack_start(&status_label);
 
+    // --- Center: ViewSwitcher ---
+    let view_stack = adw::ViewStack::new();
+    let switcher = adw::ViewSwitcher::new();
+    switcher.set_stack(Some(&view_stack));
+    switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
+    header.set_title_widget(Some(&switcher));
+
+    // --- Right side: spinner, login, user menu, settings ---
     let spinner = gtk::Spinner::new();
     spinner.set_visible(false);
     header.pack_end(&spinner);
 
-    // Login button — visible when not authenticated
+    let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
+    settings_btn.set_tooltip_text(Some("Settings"));
+    header.pack_end(&settings_btn);
+
     let login_btn = gtk::Button::with_label("Login");
     login_btn.add_css_class("suggested-action");
     header.pack_end(&login_btn);
 
-    // User menu button with Profile / Logout items
     let user_menu_btn = gtk::MenuButton::new();
     user_menu_btn.set_visible(false);
     user_menu_btn.set_tooltip_text(Some("Account"));
@@ -62,15 +69,98 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     user_menu_btn.set_menu_model(Some(&user_menu));
     header.pack_end(&user_menu_btn);
 
-    let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    // --- Toast Overlay wrapping the ViewStack ---
+    let toast_overlay = adw::ToastOverlay::new();
+    toast_overlay.set_child(Some(&view_stack));
+
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header);
-    toolbar_view.set_content(Some(&content_box));
+    toolbar_view.set_content(Some(&toast_overlay));
 
     window.set_content(Some(&toolbar_view));
 
+    // --- Add pages to ViewStack ---
+    // Dashboard (added later when logged in)
+    // Settings (always available)
+    let settings_page = SettingsPage::new(services.clone());
+
+    // VOSpace browser
+    let vospace_browser = VoSpaceBrowser::new(services.clone());
+
+    // FITS viewer
+    let fits_viewer = FitsViewer::new(services.clone());
+
+    // Add pages — all 6 modules + settings
+    let dashboard_placeholder = build_welcome_page(&view_stack);
+
+    // Search module (real implementation)
+    let search_page = SearchPage::new(services.clone());
+
+    // Placeholder pages for modules not yet implemented
+    let research_placeholder = build_placeholder_page(
+        "document-open-recent-symbolic",
+        "Research",
+        "Research module is coming soon.\nManage your downloaded observations here.",
+    );
+    let notebook_placeholder = build_placeholder_page(
+        "accessories-text-editor-symbolic",
+        "Notebook",
+        "Notebook module is coming soon.\nOpen and run Jupyter .ipynb files locally.",
+    );
+
+    view_stack.add_titled_with_icon(
+        &dashboard_placeholder,
+        Some("home"),
+        "Home",
+        "go-home-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        vospace_browser.widget(),
+        Some("storage"),
+        "Storage",
+        "drive-multidisk-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        fits_viewer.widget(),
+        Some("fits"),
+        "FITS Viewer",
+        "image-x-generic-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        search_page.widget(),
+        Some("search"),
+        "Search",
+        "system-search-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &research_placeholder,
+        Some("research"),
+        "Research",
+        "document-open-recent-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &notebook_placeholder,
+        Some("notebook"),
+        "Notebook",
+        "accessories-text-editor-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &settings_page.widget,
+        Some("settings"),
+        "Settings",
+        "emblem-system-symbolic",
+    );
+
     let dashboard: Rc<RefCell<Option<DashboardView>>> = Rc::new(RefCell::new(None));
     let cached_user_info: Rc<RefCell<Option<UserInfo>>> = Rc::new(RefCell::new(None));
+
+    // Settings button navigates to settings page
+    {
+        let view_stack = view_stack.clone();
+        settings_btn.connect_clicked(move |_| {
+            view_stack.set_visible_child_name("settings");
+        });
+    }
 
     // About action
     {
@@ -80,7 +170,7 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         });
     }
 
-    // Profile action — show user info dialog
+    // Profile action
     {
         let window_clone = window.clone();
         let cached_user_info = cached_user_info.clone();
@@ -100,9 +190,10 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         let login_btn = login_btn.clone();
         let user_menu_btn = user_menu_btn.clone();
         let status_label = status_label.clone();
-        let content_box = content_box.clone();
+        let view_stack = view_stack.clone();
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
+        let toast_overlay = toast_overlay.clone();
 
         let logout_action = gtk::gio::SimpleAction::new("logout", None);
         logout_action.connect_activate(move |_, _| {
@@ -110,22 +201,27 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
             let login_btn = login_btn.clone();
             let user_menu_btn = user_menu_btn.clone();
             let status_label = status_label.clone();
-            let content_box = content_box.clone();
+            let view_stack = view_stack.clone();
             let dashboard = dashboard.clone();
             let cached_user_info = cached_user_info.clone();
+            let toast_overlay = toast_overlay.clone();
 
             glib::spawn_future_local(async move {
                 let svc = services.clone();
                 services.spawn(async move { svc.clear_auth().await }).await;
+                services.notifications.clear();
                 login_btn.set_visible(true);
                 user_menu_btn.set_visible(false);
                 user_menu_btn.set_label("");
                 status_label.set_text("");
                 *cached_user_info.borrow_mut() = None;
-                if let Some(child) = content_box.first_child() {
-                    content_box.remove(&child);
-                }
+
+                // Replace dashboard with placeholder
+                view_stack.set_visible_child_name("home");
                 *dashboard.borrow_mut() = None;
+
+                let toast = adw::Toast::new("Logged out successfully");
+                toast_overlay.add_toast(toast);
             });
         });
         app.add_action(&logout_action);
@@ -138,9 +234,11 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         let login_btn_clone = login_btn.clone();
         let user_menu_btn = user_menu_btn.clone();
         let status_label = status_label.clone();
-        let content_box = content_box.clone();
+        let view_stack = view_stack.clone();
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
+        let vospace = vospace_browser.clone();
+        let toast_overlay = toast_overlay.clone();
 
         login_btn.connect_clicked(move |_| {
             let window = window_clone.clone();
@@ -148,9 +246,11 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
             let login_btn = login_btn_clone.clone();
             let user_menu_btn = user_menu_btn.clone();
             let status_label = status_label.clone();
-            let content_box = content_box.clone();
+            let view_stack = view_stack.clone();
             let dashboard = dashboard.clone();
             let cached_user_info = cached_user_info.clone();
+            let vospace = vospace.clone();
+            let toast_overlay = toast_overlay.clone();
 
             glib::spawn_future_local(async move {
                 if let Some((_username, _token, user_info)) =
@@ -163,7 +263,11 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
                     status_label.set_text(&format!("Welcome, {}", &display));
                     *cached_user_info.borrow_mut() = Some(user_info);
 
-                    navigate_to_dashboard(&content_box, &services, &dashboard).await;
+                    navigate_to_dashboard(&view_stack, &services, &dashboard).await;
+                    vospace.refresh().await;
+
+                    let toast = adw::Toast::new(&format!("Welcome back, {}!", &display));
+                    toast_overlay.add_toast(toast);
                 }
             });
         });
@@ -176,9 +280,11 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         let user_menu_btn = user_menu_btn.clone();
         let status_label = status_label.clone();
         let spinner = spinner.clone();
-        let content_box = content_box.clone();
+        let view_stack = view_stack.clone();
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
+        let vospace = vospace_browser.clone();
+        let toast_overlay = toast_overlay.clone();
 
         glib::spawn_future_local(async move {
             if let Some(stored_token) = TokenStorage::get_token() {
@@ -203,7 +309,6 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
                             })
                             .await;
 
-                        // Fetch user profile
                         let svc = services.clone();
                         let tok = stored_token.clone();
                         let user_info =
@@ -228,7 +333,11 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
                         status_label.set_text(&format!("Welcome, {}", &display));
                         *cached_user_info.borrow_mut() = Some(user_info);
 
-                        navigate_to_dashboard(&content_box, &services, &dashboard).await;
+                        navigate_to_dashboard(&view_stack, &services, &dashboard).await;
+                        vospace.refresh().await;
+
+                        let toast = adw::Toast::new(&format!("Welcome back, {}!", &display));
+                        toast_overlay.add_toast(toast);
                     }
                     Err(_) => {
                         TokenStorage::clear();
@@ -242,11 +351,49 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         });
     }
 
+    // Keyboard shortcuts
+    setup_keyboard_shortcuts(&window, &view_stack);
+
     window.present();
 }
 
 // ---------------------------------------------------------------------------
-// Profile dialog (overlay)
+// Keyboard shortcuts
+// ---------------------------------------------------------------------------
+
+fn setup_keyboard_shortcuts(window: &adw::ApplicationWindow, view_stack: &adw::ViewStack) {
+    let controller = gtk::EventControllerKey::new();
+    let vs = view_stack.clone();
+    controller.connect_key_pressed(move |_, key, _code, modifier| {
+        let ctrl = modifier.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
+        if ctrl {
+            match key {
+                gtk4::gdk::Key::comma => {
+                    vs.set_visible_child_name("settings");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::_1 => {
+                    vs.set_visible_child_name("home");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::_2 => {
+                    vs.set_visible_child_name("storage");
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::_3 => {
+                    vs.set_visible_child_name("fits");
+                    return gtk::glib::Propagation::Stop;
+                }
+                _ => {}
+            }
+        }
+        gtk::glib::Propagation::Proceed
+    });
+    window.add_controller(controller);
+}
+
+// ---------------------------------------------------------------------------
+// Profile dialog
 // ---------------------------------------------------------------------------
 
 fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
@@ -269,19 +416,16 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     content.set_margin_bottom(24);
     content.set_halign(gtk::Align::Center);
 
-    // Avatar
     let avatar = adw::Avatar::new(64, Some(&info.display_name()), true);
     avatar.set_halign(gtk::Align::Center);
     avatar.set_margin_bottom(8);
     content.append(&avatar);
 
-    // Display name
     let name_label = gtk::Label::new(Some(&info.display_name()));
     name_label.add_css_class("title-3");
     name_label.set_halign(gtk::Align::Center);
     content.append(&name_label);
 
-    // Username
     if let Some(ref username) = info.username {
         let lbl = gtk::Label::new(Some(&format!("@{}", username)));
         lbl.add_css_class("dim-label");
@@ -294,7 +438,6 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     sep.set_margin_bottom(8);
     content.append(&sep);
 
-    // Details group
     let group = adw::PreferencesGroup::new();
 
     if let Some(ref email) = info.email {
@@ -338,20 +481,28 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
 }
 
 // ---------------------------------------------------------------------------
-// Navigation & About
+// Navigation
 // ---------------------------------------------------------------------------
 
 async fn navigate_to_dashboard(
-    content_box: &gtk::Box,
+    view_stack: &adw::ViewStack,
     services: &Arc<AppServices>,
     dashboard: &Rc<RefCell<Option<DashboardView>>>,
 ) {
-    while let Some(child) = content_box.first_child() {
-        content_box.remove(&child);
+    // Remove placeholder and replace with real dashboard
+    if let Some(placeholder) = view_stack.child_by_name("home") {
+        view_stack.remove(&placeholder);
     }
 
     let view = DashboardView::new(services.clone());
-    content_box.append(view.widget());
+    view_stack.add_titled_with_icon(
+        view.widget(),
+        Some("home"),
+        "Dashboard",
+        "view-grid-symbolic",
+    );
+    view_stack.set_visible_child_name("home");
+
     view.load_data().await;
     *dashboard.borrow_mut() = Some(view);
 }
@@ -360,7 +511,7 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
     let dialog = adw::AboutWindow::builder()
         .application_name("Verbinal")
         .application_icon("net.canfar.Verbinal")
-        .version("1.0.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .comments("A CANFAR Science Portal Companion\n\nLaunch, monitor, and manage your interactive computing sessions (Notebook, Desktop, CARTA, Firefly) directly from your desktop without needing a browser.\n\nCANFAR is operated by the Canadian Astronomy Data Centre (CADC) and the Digital Research Alliance of Canada.")
         .website("https://www.canfar.net")
         .license_type(gtk::License::Agpl30)
@@ -382,6 +533,231 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
     );
 
     dialog.present();
+}
+
+// ---------------------------------------------------------------------------
+// Welcome page with feature tiles
+// ---------------------------------------------------------------------------
+
+fn build_welcome_page(view_stack: &adw::ViewStack) -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    page.set_vexpand(true);
+
+    let scrolled = gtk::ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    content.set_margin_start(48);
+    content.set_margin_end(48);
+    content.set_margin_top(48);
+    content.set_margin_bottom(48);
+    content.set_valign(gtk::Align::Center);
+    content.set_vexpand(true);
+
+    // App icon + title
+    let header_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    header_box.set_halign(gtk::Align::Center);
+
+    let app_icon = load_app_icon(96);
+    app_icon.set_halign(gtk::Align::Center);
+    header_box.append(&app_icon);
+
+    let title = gtk::Label::new(Some("Verbinal"));
+    title.add_css_class("title-1");
+    title.set_halign(gtk::Align::Center);
+    header_box.append(&title);
+
+    let subtitle = gtk::Label::new(Some("A CANFAR Science Portal Companion"));
+    subtitle.add_css_class("dim-label");
+    subtitle.set_halign(gtk::Align::Center);
+    header_box.append(&subtitle);
+
+    let version_label = gtk::Label::new(Some(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+    version_label.add_css_class("dim-label");
+    version_label.add_css_class("caption");
+    version_label.set_halign(gtk::Align::Center);
+    header_box.append(&version_label);
+
+    content.append(&header_box);
+
+    // Feature tiles in a 3x2 grid (matching Windows 6-tile layout)
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(16);
+    grid.set_column_spacing(16);
+    grid.set_row_homogeneous(true);
+    grid.set_column_homogeneous(true);
+    grid.set_halign(gtk::Align::Center);
+
+    // Row 1: Portal, Search, Research
+    grid.attach(
+        &feature_tile(
+            view_stack,
+            "computer-symbolic",
+            "Portal",
+            "Manage sessions & data",
+            "home",
+        ),
+        0,
+        0,
+        1,
+        1,
+    );
+    grid.attach(
+        &feature_tile(
+            view_stack,
+            "system-search-symbolic",
+            "Search",
+            "Explore the CADC archive",
+            "search",
+        ),
+        1,
+        0,
+        1,
+        1,
+    );
+    grid.attach(
+        &feature_tile(
+            view_stack,
+            "document-open-recent-symbolic",
+            "Research",
+            "Downloaded observations",
+            "research",
+        ),
+        2,
+        0,
+        1,
+        1,
+    );
+
+    // Row 2: Storage, Notebook, FITS Viewer
+    grid.attach(
+        &feature_tile(
+            view_stack,
+            "drive-multidisk-symbolic",
+            "Storage",
+            "Browse VOSpace files",
+            "storage",
+        ),
+        0,
+        1,
+        1,
+        1,
+    );
+    grid.attach(
+        &feature_tile(
+            view_stack,
+            "accessories-text-editor-symbolic",
+            "Notebook",
+            "Open & run .ipynb files",
+            "notebook",
+        ),
+        1,
+        1,
+        1,
+        1,
+    );
+    grid.attach(
+        &feature_tile(
+            view_stack,
+            "image-x-generic-symbolic",
+            "FITS Viewer",
+            "View astronomical images",
+            "fits",
+        ),
+        2,
+        1,
+        1,
+        1,
+    );
+
+    content.append(&grid);
+
+    // Login prompt
+    let login_prompt = gtk::Label::new(Some("Log in with your CADC credentials to get started"));
+    login_prompt.add_css_class("dim-label");
+    login_prompt.set_halign(gtk::Align::Center);
+    login_prompt.set_margin_top(8);
+    content.append(&login_prompt);
+
+    scrolled.set_child(Some(&content));
+    page.append(&scrolled);
+    page
+}
+
+fn build_placeholder_page(icon_name: &str, title: &str, message: &str) -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    page.set_vexpand(true);
+    page.set_valign(gtk::Align::Center);
+    page.set_halign(gtk::Align::Center);
+
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(64);
+    icon.add_css_class("dim-label");
+    page.append(&icon);
+
+    let label = gtk::Label::new(Some(title));
+    label.add_css_class("title-2");
+    page.append(&label);
+
+    let desc = gtk::Label::new(Some(message));
+    desc.add_css_class("dim-label");
+    desc.set_justify(gtk::Justification::Center);
+    page.append(&desc);
+
+    page
+}
+
+fn feature_tile(
+    view_stack: &adw::ViewStack,
+    icon_name: &str,
+    title: &str,
+    description: &str,
+    target_page: &str,
+) -> gtk::Button {
+    let btn = gtk::Button::new();
+    btn.add_css_class("flat");
+    btn.add_css_class("card");
+    btn.set_size_request(200, 170);
+    btn.set_valign(gtk::Align::Fill);
+    btn.set_halign(gtk::Align::Fill);
+
+    let inner = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    inner.set_margin_start(16);
+    inner.set_margin_end(16);
+    inner.set_margin_top(24);
+    inner.set_margin_bottom(16);
+    inner.set_valign(gtk::Align::Center);
+    inner.set_halign(gtk::Align::Center);
+
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(48);
+    icon.set_halign(gtk::Align::Center);
+    inner.append(&icon);
+
+    let label = gtk::Label::new(Some(title));
+    label.add_css_class("title-3");
+    label.set_halign(gtk::Align::Center);
+    inner.append(&label);
+
+    let desc = gtk::Label::new(Some(description));
+    desc.add_css_class("dim-label");
+    desc.add_css_class("caption");
+    desc.set_halign(gtk::Align::Center);
+    desc.set_justify(gtk::Justification::Center);
+    desc.set_wrap(true);
+    desc.set_max_width_chars(22);
+    inner.append(&desc);
+
+    btn.set_child(Some(&inner));
+
+    // Navigate to module on click
+    let vs = view_stack.clone();
+    let target = target_page.to_string();
+    btn.connect_clicked(move |_| {
+        vs.set_visible_child_name(&target);
+    });
+
+    btn
 }
 
 fn load_app_icon(pixel_size: i32) -> gtk::Image {

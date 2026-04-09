@@ -1,5 +1,6 @@
 use crate::config::ApiEndpoints;
 use crate::models::{Session, SessionLaunchParams, SkahaSessionResponse};
+use crate::services::api_error::{check_response, ApiError};
 use reqwest::Client;
 use std::sync::Arc;
 
@@ -13,25 +14,16 @@ impl SessionService {
         SessionService { client, endpoints }
     }
 
-    pub async fn get_sessions(&self, token: &str) -> Result<Vec<Session>, String> {
+    pub async fn get_sessions(&self, token: &str) -> Result<Vec<Session>, ApiError> {
         let url = self.endpoints.sessions_url();
-        let resp = self
-            .client
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| format!("Network error: {}", e))?;
+        let resp = self.client.get(&url).bearer_auth(token).send().await?;
 
-        if resp.status().is_success() {
-            let raw: Vec<SkahaSessionResponse> = resp
-                .json()
-                .await
-                .map_err(|e| format!("Parse error: {}", e))?;
-            Ok(raw.into_iter().map(Session::from).collect())
-        } else {
-            Err(format!("Failed to fetch sessions ({})", resp.status()))
-        }
+        let resp = check_response(resp).await?;
+        let raw: Vec<SkahaSessionResponse> = resp
+            .json()
+            .await
+            .map_err(|e| ApiError::Parse(e.to_string()))?;
+        Ok(raw.into_iter().map(Session::from).collect())
     }
 
     pub async fn launch_session(

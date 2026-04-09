@@ -15,6 +15,12 @@ pub struct AppServices {
     pub storage: StorageService,
     pub settings: SettingsService,
     pub recent_launches: RecentLaunchService,
+    pub vospace: VoSpaceService,
+    pub tap: tap_service::TAPService,
+    pub datalink: DataLinkService,
+    pub search_store: SearchStoreService,
+    pub templates: TemplateService,
+    pub notifications: NotificationService,
     pub endpoints: Arc<ApiEndpoints>,
     pub token: RwLock<Option<String>>,
     pub username: RwLock<Option<String>>,
@@ -35,8 +41,14 @@ impl AppServices {
             images: ImageService::new(client.clone(), endpoints.clone()),
             platform: PlatformService::new(client.clone(), endpoints.clone()),
             storage: StorageService::new(client.clone(), endpoints.clone()),
+            vospace: VoSpaceService::new(client.clone(), endpoints.clone()),
+            tap: tap_service::TAPService::new(client.clone()),
+            datalink: DataLinkService::new(client.clone()),
+            search_store: SearchStoreService::new(),
             settings,
             recent_launches: RecentLaunchService::new(),
+            templates: TemplateService::new(),
+            notifications: NotificationService::new(),
             endpoints,
             token: RwLock::new(None),
             username: RwLock::new(None),
@@ -46,7 +58,7 @@ impl AppServices {
     }
 
     /// Spawn an async task on the tokio runtime and return a future that
-    /// can be awaited on the GLib main loop. This bridges tokio ↔ glib.
+    /// can be awaited on the GLib main loop. This bridges tokio <-> glib.
     pub fn spawn<F, T>(&self, future: F) -> impl Future<Output = T>
     where
         F: Future<Output = T> + Send + 'static,

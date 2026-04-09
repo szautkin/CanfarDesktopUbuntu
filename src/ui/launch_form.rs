@@ -79,6 +79,16 @@ impl LaunchFormView {
         let types_list =
             gtk::StringList::new(&["notebook", "desktop", "carta", "contributed", "firefly"]);
         let type_combo = gtk::DropDown::new(Some(types_list), gtk::Expression::NONE);
+        // Pre-select default session type from settings
+        {
+            let default_type = services.endpoints.config().default_session_type.clone();
+            let type_names = ["notebook", "desktop", "carta", "contributed", "firefly"];
+            let idx = type_names
+                .iter()
+                .position(|t| *t == default_type)
+                .unwrap_or(0);
+            type_combo.set_selected(idx as u32);
+        }
         let type_row = adw::ActionRow::builder().title("Session Type").build();
         type_row.add_suffix(&type_combo);
         form_group.add(&type_row);

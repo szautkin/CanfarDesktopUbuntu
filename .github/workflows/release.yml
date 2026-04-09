@@ -20,7 +20,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libcfitsio-dev pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -39,10 +39,10 @@ jobs:
         run: cargo install cargo-deb
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --features fits
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --features fits
 
       - name: Build .deb package
         run: cargo deb --no-build

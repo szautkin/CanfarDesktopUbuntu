@@ -1,6 +1,11 @@
 pub mod card_header;
 pub mod dashboard;
 pub mod delete_dialog;
+pub mod download_dialog;
+pub mod fits_canvas;
+pub mod fits_controls;
+pub mod fits_tab;
+pub mod fits_viewer;
 pub mod launch_dialog;
 pub mod launch_form;
 pub mod login_dialog;
@@ -9,10 +14,14 @@ pub mod metric_bar;
 pub mod platform_load;
 pub mod recent_launches;
 pub mod resource_selector;
+pub mod search_page;
 pub mod session_card;
 pub mod session_events_dialog;
 pub mod session_icon;
 pub mod session_list;
+pub mod settings_page;
 pub mod storage_quota;
+pub mod template_manager;
+pub mod vospace_browser;
 
 pub use main_window::build_main_window;

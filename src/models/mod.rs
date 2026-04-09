@@ -1,19 +1,26 @@
 pub mod auth_result;
 pub mod container_image;
+pub mod fits_image;
 pub mod platform_load;
 pub mod recent_launch;
+pub mod search_result;
 pub mod session;
 pub mod session_context;
 pub mod session_launch_params;
+pub mod session_template;
 pub mod storage_quota;
 pub mod user_info;
+pub mod vospace_node;
 
 pub use auth_result::AuthResult;
 pub use container_image::{ParsedImage, RawImage};
+pub use fits_image::FitsImageData;
 pub use platform_load::SkahaStatsResponse;
 pub use recent_launch::RecentLaunch;
 pub use session::{Session, SkahaSessionResponse};
 pub use session_context::SessionContext;
 pub use session_launch_params::SessionLaunchParams;
+pub use session_template::SessionTemplate;
 pub use storage_quota::StorageQuota;
 pub use user_info::UserInfo;
+pub use vospace_node::VoSpaceNode;

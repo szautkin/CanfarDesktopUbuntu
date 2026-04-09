@@ -44,6 +44,8 @@ fn main() {
         );
 
         let services = AppServices::new(handle.clone());
+
+        // Theme is applied inside build_main_window from saved settings
         ui::build_main_window(app, services);
     });
 

@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub login_api_path: String,
     pub ac_api_path: String,
     pub storage_api_path: String,
+    pub vospace_files_path: String,
     pub theme: String,
     pub default_session_type: String,
     pub default_cores: u32,
@@ -21,6 +22,7 @@ impl Default for AppConfig {
             login_api_path: "/cred/auth/priv".to_string(),
             ac_api_path: "/ac".to_string(),
             storage_api_path: "/arc/nodes/home".to_string(),
+            vospace_files_path: "/arc/files/home".to_string(),
             theme: "System".to_string(),
             default_session_type: "notebook".to_string(),
             default_cores: 2,
@@ -113,6 +115,27 @@ impl ApiEndpoints {
         format!(
             "{}{}/{}?limit=0",
             self.config.api_base_url, self.config.storage_api_path, username
+        )
+    }
+
+    pub fn vospace_nodes_url(&self, username: &str, path: &str) -> String {
+        if path.is_empty() {
+            format!(
+                "{}{}/{}",
+                self.config.api_base_url, self.config.storage_api_path, username
+            )
+        } else {
+            format!(
+                "{}{}/{}/{}",
+                self.config.api_base_url, self.config.storage_api_path, username, path
+            )
+        }
+    }
+
+    pub fn vospace_files_url(&self, username: &str, path: &str) -> String {
+        format!(
+            "{}{}/{}/{}",
+            self.config.api_base_url, self.config.vospace_files_path, username, path
         )
     }
 
