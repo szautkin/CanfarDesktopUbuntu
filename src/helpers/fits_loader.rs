@@ -4,6 +4,17 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Load a FITS image from disk. Returns the image data from the primary HDU.
+///
+/// Handles N-dimensional images by treating the **last two axes** (FITS
+/// `NAXIS1`, `NAXIS2`) as the display plane.  Higher axes (e.g. `NAXIS3`
+/// for wavelength / time cubes) are flattened into the pixel buffer but
+/// only the first 2D slice is rendered.
+///
+/// IMPORTANT: The `fitsio` crate reverses the shape Vec to **C order**
+/// before returning it — see `fitsio/src/fitsfile.rs:346`.  So for a file
+/// with `NAXIS=3, NAXIS1=500, NAXIS2=500, NAXIS3=1`, `shape` is
+/// `[1, 500, 500]`, meaning width = `shape[last] = NAXIS1` and
+/// height = `shape[last-1] = NAXIS2`.
 #[cfg(feature = "fits")]
 pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
     let mut fptr =
@@ -15,17 +26,43 @@ pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
 
     let (width, height) = match &hdu.info {
         fitsio::hdu::HduInfo::ImageInfo { shape, .. } => {
-            if shape.len() < 2 {
-                return Err("FITS image must be at least 2D".to_string());
+            let n = shape.len();
+            if n < 2 {
+                return Err(format!(
+                    "FITS image must be at least 2D (got {} axes)",
+                    n
+                ));
             }
-            (shape[1], shape[0])
+            // Shape is in C order: [..., NAXIS2, NAXIS1].
+            // Width = NAXIS1 (last), height = NAXIS2 (second-to-last).
+            (shape[n - 1], shape[n - 2])
         }
         _ => return Err("Primary HDU is not an image".to_string()),
     };
 
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "FITS image has zero-size display plane: width={}, height={}",
+            width, height
+        ));
+    }
+
     let pixels: Vec<f64> = hdu
         .read_image(&mut fptr)
         .map_err(|e| format!("Cannot read image data: {}", e))?;
+
+    // Sanity check: make sure we have enough pixels for at least one 2D slice.
+    // (Extra pixels from higher dimensions are ignored by the renderer.)
+    let plane = width * height;
+    if pixels.len() < plane {
+        return Err(format!(
+            "FITS pixel buffer too small: {} pixels, need at least {} for {}x{}",
+            pixels.len(),
+            plane,
+            width,
+            height
+        ));
+    }
 
     let (header, header_ordered) = read_header_keywords(&mut fptr, &hdu);
 

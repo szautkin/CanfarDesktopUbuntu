@@ -102,6 +102,18 @@ pub fn render_to_rgba(
 
     for i in 0..npixels {
         let val = data.pixels[i];
+        // NaN / Inf pixels: render as lowest colormap colour (same visual as
+        // Windows / DS9) and keep alpha opaque. Without this guard, NaN
+        // propagates through normalize() and `(NaN * 255).as usize` silently
+        // produces 0 — visually identical, but we want the intent explicit.
+        if !val.is_finite() {
+            let (r, g, b) = lut[0];
+            rgba[i * 4] = r;
+            rgba[i * 4 + 1] = g;
+            rgba[i * 4 + 2] = b;
+            rgba[i * 4 + 3] = 255;
+            continue;
+        }
         let t = normalize(val, vmin, vmax, stretch, cdf.as_deref());
         let idx = (t * 255.0).round().clamp(0.0, 255.0) as usize;
         let (r, g, b) = lut[idx];
@@ -378,6 +390,53 @@ mod tests {
         assert_eq!(rgba.len(), 16);
         assert_eq!(rgba[0], 0);
         assert_eq!(rgba[3], 255);
+    }
+
+    #[test]
+    fn render_iris_like_data_is_not_all_black() {
+        // Realistic IRIS-style image: 500x500 pixels of MJy/sr values.
+        // DATAMIN ~0.5, DATAMAX ~117, smooth gradient.
+        let width = 500;
+        let height = 500;
+        let mut pixels = Vec::with_capacity(width * height);
+        for y in 0..height {
+            for x in 0..width {
+                // Gradient from 0.5 at corner to 117 at opposite
+                let t = (x + y) as f64 / (width + height) as f64;
+                pixels.push(0.5 + 116.2 * t);
+            }
+        }
+        let data = FitsImageData::new(
+            width,
+            height,
+            pixels,
+            std::collections::HashMap::new(),
+        );
+        let (vmin, vmax) = auto_cut(&data.pixels, 0.5, 99.5);
+        assert!(vmax > vmin, "auto_cut produced empty range: {} -> {}", vmin, vmax);
+        let rgba = render_to_rgba(&data, Stretch::Linear, ColorMap::Grayscale, vmin, vmax);
+        // Every fourth byte is alpha (should be 255)
+        assert!(rgba.iter().step_by(4).any(|&a| a == 255));
+        // At least some pixels should be non-zero in the red channel
+        let non_black = rgba.chunks(4).filter(|c| c[0] > 0).count();
+        assert!(
+            non_black > width * height / 4,
+            "expected most pixels to be non-black, got only {} / {}",
+            non_black,
+            width * height
+        );
+    }
+
+    #[test]
+    fn render_ignores_nan_pixels() {
+        let pixels = vec![f64::NAN, 0.5, 1.0, f64::INFINITY];
+        let data = make_image(pixels);
+        let rgba = render_to_rgba(&data, Stretch::Linear, ColorMap::Grayscale, 0.0, 1.0);
+        // NaN and Inf both render as lut[0] = (0,0,0) with alpha 255
+        assert_eq!(rgba[0], 0); // NaN pixel R
+        assert_eq!(rgba[3], 255); // NaN pixel A
+        assert_eq!(rgba[12], 0); // Inf pixel R
+        assert_eq!(rgba[15], 255); // Inf pixel A
     }
 
     #[test]
