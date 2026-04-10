@@ -1778,6 +1778,7 @@ dependencies = [
  "chrono",
  "directories",
  "fitsio",
+ "fitsio-sys",
  "gtk4",
  "keyring",
  "libadwaita",

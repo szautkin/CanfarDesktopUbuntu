@@ -30,11 +30,12 @@ url = "2"
 urlencoding = "2"
 base64 = "0.22"
 fitsio = { version = "0.21", optional = true }
+fitsio-sys = { version = "0.5", optional = true }
 cairo-rs = { version = "0.20", features = ["v1_16"] }
 
 [features]
 default = []
-fits = ["fitsio"]
+fits = ["fitsio", "fitsio-sys"]
 
 [package.metadata.deb]
 maintainer = "Serhii Zautkin"
