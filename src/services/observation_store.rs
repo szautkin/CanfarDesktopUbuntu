@@ -2,7 +2,13 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// A single observation that the user has downloaded from the CADC archive.
+/// A single observation that the user has either bookmarked (metadata only)
+/// or downloaded (with a local FITS file) from the CADC archive.
+///
+/// When `local_path` is empty the entry is a bookmark; otherwise it has a
+/// downloaded file on disk.  `thumbnail_url` / `preview_url` carry optional
+/// DataLink preview URLs so the Research page can show a thumbnail without
+/// re-hitting the network.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadedObservation {
     /// Locally generated UUID identifying this record.
@@ -18,18 +24,33 @@ pub struct DownloadedObservation {
     pub dec: String,
     pub start_date: String,
     pub cal_level: String,
-    /// Absolute path to the file on disk.
+    /// Absolute path to the file on disk. Empty string means "bookmarked only".
     pub local_path: String,
-    /// File size in bytes.
+    /// File size in bytes.  Zero when bookmarked only.
     pub file_size: u64,
-    /// ISO-8601 timestamp of when the file was downloaded.
+    /// ISO-8601 timestamp of when the file was downloaded or bookmarked.
     pub downloaded_at: String,
+    /// DataLink `#thumbnail` URL, if available. Optional for backwards compat.
+    #[serde(default)]
+    pub thumbnail_url: String,
+    /// DataLink `#preview` URL, if available. Optional for backwards compat.
+    #[serde(default)]
+    pub preview_url: String,
 }
 
 impl DownloadedObservation {
-    /// Human-readable file size (e.g. "3.4 MB").
+    /// True when this record is metadata-only (no local file).
+    pub fn is_bookmarked(&self) -> bool {
+        self.local_path.is_empty()
+    }
+
+    /// Human-readable file size (e.g. "3.4 MB"). Returns empty string for bookmarks.
     pub fn formatted_size(&self) -> String {
-        format_bytes(self.file_size)
+        if self.is_bookmarked() {
+            String::new()
+        } else {
+            format_bytes(self.file_size)
+        }
     }
 }
 
@@ -48,18 +69,39 @@ impl ObservationStore {
         ObservationStore { data_path }
     }
 
-    /// Load all observations from disk.  Returns an empty list on any error.
+    /// Load all observations from disk.
+    ///
+    /// Performs a load-time cleanup: entries with a non-empty `local_path`
+    /// whose file no longer exists are purged from the returned list (and
+    /// the JSON file is rewritten to reflect the cleanup).  Bookmarked-only
+    /// entries (empty `local_path`) are always kept.
+    ///
+    /// Returns an empty list on any parse or I/O error.
     pub fn load(&self) -> Vec<DownloadedObservation> {
         if !self.data_path.exists() {
             return Vec::new();
         }
-        match std::fs::read_to_string(&self.data_path) {
-            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-            Err(_) => Vec::new(),
+        let raw = match std::fs::read_to_string(&self.data_path) {
+            Ok(json) => json,
+            Err(_) => return Vec::new(),
+        };
+        let mut list: Vec<DownloadedObservation> =
+            serde_json::from_str(&raw).unwrap_or_default();
+
+        // Purge phantom entries: records whose on-disk file is gone.
+        let before = list.len();
+        list.retain(|obs| obs.is_bookmarked() || std::path::Path::new(&obs.local_path).exists());
+        if list.len() != before {
+            // Best-effort rewrite; ignore errors so a read-only disk still
+            // returns a usable list.
+            let _ = self.write(&list);
         }
+        list
     }
 
     /// Append (or replace by `id`) an observation and flush to disk.
+    ///
+    /// This is a blocking call — prefer `save_async` from a tokio context.
     pub fn save(&self, obs: DownloadedObservation) -> Result<(), String> {
         let mut list = self.load();
         list.retain(|o| o.id != obs.id);
@@ -68,10 +110,48 @@ impl ObservationStore {
     }
 
     /// Remove an observation by its local `id`.
+    ///
+    /// This is a blocking call — prefer `remove_async` from a tokio context.
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let mut list = self.load();
         list.retain(|o| o.id != id);
         self.write(&list)
+    }
+
+    /// Async variant of `save` that offloads disk I/O to the tokio
+    /// blocking thread pool.  Call this from any async context.
+    pub async fn save_async(&self, obs: DownloadedObservation) -> Result<(), String> {
+        let path = self.data_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let tmp_store = ObservationStore { data_path: path };
+            tmp_store.save(obs)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("blocking pool error: {e}")))
+    }
+
+    /// Async variant of `remove` that offloads disk I/O to the tokio
+    /// blocking thread pool.
+    pub async fn remove_async(&self, id: &str) -> Result<(), String> {
+        let path = self.data_path.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let tmp_store = ObservationStore { data_path: path };
+            tmp_store.remove(&id)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("blocking pool error: {e}")))
+    }
+
+    /// Async variant of `load` that offloads disk I/O.
+    pub async fn load_async(&self) -> Vec<DownloadedObservation> {
+        let path = self.data_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let tmp_store = ObservationStore { data_path: path };
+            tmp_store.load()
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// Returns `true` if an observation with the given CADC publisher ID already exists.
@@ -156,9 +236,8 @@ mod tests {
         assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
     }
 
-    #[test]
-    fn filter_is_case_insensitive() {
-        let obs = DownloadedObservation {
+    fn sample_obs() -> DownloadedObservation {
+        DownloadedObservation {
             id: "1".into(),
             publisher_id: "pub1".into(),
             collection: "CFHT".into(),
@@ -173,9 +252,15 @@ mod tests {
             local_path: "/tmp/test.fits".into(),
             file_size: 1024,
             downloaded_at: "2024-01-01T00:00:00Z".into(),
-        };
-        // Store writes to disk so we test filtering logic directly
-        let list = vec![obs.clone()];
+            thumbnail_url: String::new(),
+            preview_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn filter_is_case_insensitive() {
+        let obs = sample_obs();
+        let list = vec![obs];
         let needle = "cfht";
         let filtered: Vec<_> = list
             .iter()
@@ -183,5 +268,49 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn is_bookmarked_by_empty_local_path() {
+        let mut obs = sample_obs();
+        assert!(!obs.is_bookmarked());
+        obs.local_path = String::new();
+        assert!(obs.is_bookmarked());
+    }
+
+    #[test]
+    fn formatted_size_empty_for_bookmark() {
+        let mut obs = sample_obs();
+        obs.local_path = String::new();
+        obs.file_size = 0;
+        assert_eq!(obs.formatted_size(), "");
+    }
+
+    #[test]
+    fn backwards_compat_json_without_preview_urls() {
+        // Older JSON format without thumbnail_url/preview_url fields should
+        // still deserialize thanks to #[serde(default)].
+        let legacy_json = r#"[
+            {
+                "id": "1",
+                "publisher_id": "pub1",
+                "collection": "CFHT",
+                "observation_id": "obs-001",
+                "target_name": "M31",
+                "instrument": "MegaCam",
+                "filter": "g",
+                "ra": "10.6",
+                "dec": "41.2",
+                "start_date": "2020-01-01",
+                "cal_level": "1",
+                "local_path": "/tmp/test.fits",
+                "file_size": 1024,
+                "downloaded_at": "2024-01-01T00:00:00Z"
+            }
+        ]"#;
+        let parsed: Vec<DownloadedObservation> = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].thumbnail_url, "");
+        assert_eq!(parsed[0].preview_url, "");
     }
 }

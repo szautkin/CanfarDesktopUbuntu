@@ -137,3 +137,22 @@ label.warning { color: @warning_color; }
 .batch-dot-running    { color: #4caf50; }
 .batch-dot-completed  { color: #2196f3; }
 .batch-dot-failed     { color: #f44336; }
+
+/* Research page observation kind badges */
+.badge-bookmarked {
+    background-color: alpha(@accent_bg_color, 0.15);
+    color: @accent_fg_color;
+    border-radius: 4px;
+    padding: 2px 8px;
+    border: 1px solid alpha(@accent_bg_color, 0.4);
+    font-size: 0.8em;
+}
+
+.badge-fits {
+    background-color: alpha(@success_color, 0.15);
+    color: @success_color;
+    border-radius: 4px;
+    padding: 2px 8px;
+    border: 1px solid alpha(@success_color, 0.4);
+    font-size: 0.8em;
+}

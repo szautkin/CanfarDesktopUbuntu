@@ -130,11 +130,30 @@ pub fn build_main_window(
     // Wire cross-thread toast dispatch: any thread can call services.toast.toast("...")
     {
         let overlay = toast_overlay.clone();
+        let app_for_toast = app.clone();
         let mut rx = toast_rx;
         glib::spawn_future_local(async move {
             while let Some(msg) = rx.recv().await {
                 let toast = adw::Toast::new(&msg.body);
                 toast.set_timeout(msg.timeout);
+
+                // Attach an action button if the message has one.  Clicking it
+                // activates the named app action (e.g. "navigate-research").
+                if let Some(action) = msg.action {
+                    toast.set_button_label(Some(&action.label));
+                    let app_ref = app_for_toast.clone();
+                    let action_name = action.action_name.clone();
+                    toast.connect_button_clicked(move |_| {
+                        use gtk4::prelude::ActionGroupExt;
+                        // Strip "app." prefix if present; gio::ActionGroup
+                        // activate_action expects the bare action name.
+                        let bare = action_name
+                            .strip_prefix("app.")
+                            .unwrap_or(&action_name);
+                        app_ref.activate_action(bare, None);
+                    });
+                }
+
                 overlay.add_toast(toast);
             }
         });
@@ -186,10 +205,10 @@ pub fn build_main_window(
     let dashboard_placeholder = build_welcome_page(&view_stack);
 
     // Search module (real implementation)
-    let search_page = SearchPage::new(services.clone());
+    let search_page = SearchPage::new(services.clone(), window.clone());
 
     // Research module (real implementation)
-    let research_page = ResearchPage::new();
+    let research_page = ResearchPage::new(services.clone());
     research_page.set_application(app);
 
     // Notebook module (real implementation)
@@ -303,6 +322,30 @@ pub fn build_main_window(
             }
         });
         app.add_action(&open_notebook_action);
+    }
+
+    // navigate-research action — invoked from toast action buttons,
+    // Ctrl+Shift+R, or the view switcher. Also refreshes the list.
+    {
+        let view_stack = view_stack.clone();
+        let research_page = research_page.clone();
+        let nav_action = gtk::gio::SimpleAction::new("navigate-research", None);
+        nav_action.connect_activate(move |_, _| {
+            view_stack.set_visible_child_name("research");
+            research_page.reload();
+        });
+        app.add_action(&nav_action);
+        app.set_accels_for_action("app.navigate-research", &["<Primary><Shift>R"]);
+    }
+
+    // navigate-search action — used by Research empty-state CTA
+    {
+        let view_stack = view_stack.clone();
+        let nav_action = gtk::gio::SimpleAction::new("navigate-search", None);
+        nav_action.connect_activate(move |_, _| {
+            view_stack.set_visible_child_name("search");
+        });
+        app.add_action(&nav_action);
     }
 
     // File panel — open-file callback
@@ -567,11 +610,17 @@ pub fn build_main_window(
         let nav = nav_history.clone();
         let back_btn_clone = back_btn.clone();
         let view_stack_clone = view_stack.clone();
+        let research_page_for_nav = research_page.clone();
         view_stack.connect_notify_local(Some("visible-child-name"), move |vs, _| {
             if nav.is_suppressed() {
                 return;
             }
             if let Some(name) = vs.visible_child_name() {
+                // Auto-refresh the Research page whenever the user navigates to it
+                // so downloads saved from the Search page show up immediately.
+                if name.as_str() == "research" {
+                    research_page_for_nav.reload();
+                }
                 nav.push(name.as_str());
                 back_btn_clone.set_sensitive(nav.can_go_back());
             }

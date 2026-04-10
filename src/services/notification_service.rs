@@ -14,6 +14,17 @@ pub struct ToastMessage {
     pub body: String,
     /// 0 = persistent until dismissed. Default = 5 seconds.
     pub timeout: u32,
+    /// Optional action button: (label, app-action-name).  When set, the
+    /// toast receiver in `main_window.rs` attaches the label and on click
+    /// calls `app.activate_action(&action_name, None)`.
+    pub action: Option<ToastAction>,
+}
+
+/// An action button attached to a toast.
+#[derive(Debug, Clone)]
+pub struct ToastAction {
+    pub label: String,
+    pub action_name: String,
 }
 
 impl ToastMessage {
@@ -21,6 +32,7 @@ impl ToastMessage {
         Self {
             body: body.into(),
             timeout: 5,
+            action: None,
         }
     }
 
@@ -28,6 +40,22 @@ impl ToastMessage {
         Self {
             body: body.into(),
             timeout: 0,
+            action: None,
+        }
+    }
+
+    pub fn with_action(
+        body: impl Into<String>,
+        label: impl Into<String>,
+        action_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            body: body.into(),
+            timeout: 0,
+            action: Some(ToastAction {
+                label: label.into(),
+                action_name: action_name.into(),
+            }),
         }
     }
 }
@@ -55,6 +83,20 @@ impl ToastNotifier {
     /// Show a persistent toast (user must dismiss).
     pub fn toast_persistent(&self, body: impl Into<String>) {
         let _ = self.sender.send(ToastMessage::persistent(body));
+    }
+
+    /// Show a persistent toast with an action button that activates the
+    /// named `gio::SimpleAction` registered on the application (e.g.
+    /// `"app.navigate-research"`).
+    pub fn toast_with_action(
+        &self,
+        body: impl Into<String>,
+        label: impl Into<String>,
+        action_name: impl Into<String>,
+    ) {
+        let _ = self
+            .sender
+            .send(ToastMessage::with_action(body, label, action_name));
     }
 }
 

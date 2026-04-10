@@ -2,6 +2,7 @@ pub mod batch_jobs_dialog;
 pub mod batch_jobs_view;
 pub mod card_header;
 pub mod dashboard;
+pub mod datalink_file_dialog;
 pub mod delete_dialog;
 pub mod download_dialog;
 pub mod file_panel;

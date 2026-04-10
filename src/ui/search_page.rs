@@ -19,6 +19,11 @@ use std::sync::Arc;
 pub struct SearchPage {
     widget: gtk::Box,
     services: Arc<AppServices>,
+    /// The top-level application window, used as `transient_for` parent for
+    /// modal dialogs and as the `save_future` parent for the file picker —
+    /// critical to avoid XDG portal deadlocks when a child widget is already
+    /// detached.
+    main_window: adw::ApplicationWindow,
     // Tabs
     notebook: gtk::Notebook,
     // --- Form fields (Observation) ---
@@ -85,7 +90,7 @@ pub struct SearchPage {
 const DEFAULT_PAGE_SIZE: usize = 100;
 
 impl SearchPage {
-    pub fn new(services: Arc<AppServices>) -> Rc<Self> {
+    pub fn new(services: Arc<AppServices>, main_window: adw::ApplicationWindow) -> Rc<Self> {
         let widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         widget.set_vexpand(true);
         widget.set_hexpand(true);
@@ -437,6 +442,7 @@ impl SearchPage {
         let page = Rc::new(SearchPage {
             widget,
             services,
+            main_window,
             notebook,
             observation_id,
             pi_name,
@@ -1126,7 +1132,8 @@ impl SearchPage {
                 row_box.append(&label);
             }
 
-            // Download button at end of row
+            // Download button at end of row — routes through the same picker
+            // flow as the detail dialog for consistency
             let publisher_id = row.get("publisherID").to_string();
             if !publisher_id.is_empty() {
                 let dl_btn = gtk::Button::from_icon_name("folder-download-symbolic");
@@ -1135,14 +1142,21 @@ impl SearchPage {
                 dl_btn.set_valign(gtk::Align::Center);
                 let services = self.services.clone();
                 let pub_id = publisher_id.clone();
-                let status = self.status_label.clone();
-                dl_btn.connect_clicked(move |btn| {
+                let raw = row.clone();
+                let main_window = self.main_window.clone();
+                dl_btn.connect_clicked(move |_| {
                     let services = services.clone();
                     let pub_id = pub_id.clone();
-                    let status = status.clone();
-                    let btn = btn.clone();
+                    let raw = raw.clone();
+                    let main_window = main_window.clone();
                     glib::spawn_future_local(async move {
-                        download_observation(&services, &pub_id, &status, &btn).await;
+                        download_observation_with_picker(
+                            &services,
+                            &pub_id,
+                            &raw,
+                            &main_window,
+                        )
+                        .await;
                     });
                 });
                 row_box.append(&dl_btn);
@@ -1174,14 +1188,26 @@ impl SearchPage {
                 }
             };
             let pub_id_for_detail = row.get("publisherID").to_string();
+            let raw_row_for_detail = row.clone();
             let services_for_detail = self.services.clone();
+            let main_window_for_detail = self.main_window.clone();
             row_btn.connect_clicked(move |_| {
                 let data = row_data.clone();
                 let name = target_name.clone();
                 let pub_id = pub_id_for_detail.clone();
                 let services = services_for_detail.clone();
+                let raw_row = raw_row_for_detail.clone();
+                let main_window = main_window_for_detail.clone();
                 glib::spawn_future_local(async move {
-                    show_row_detail(&name, &data, &pub_id, &services).await;
+                    show_row_detail(
+                        &name,
+                        &data,
+                        &pub_id,
+                        &raw_row,
+                        &services,
+                        &main_window,
+                    )
+                    .await;
                 });
             });
 
@@ -1892,143 +1918,192 @@ async fn show_row_detail(
     target_name: &str,
     fields: &[(String, String)],
     publisher_id: &str,
+    raw_row: &crate::models::search_result::SearchResultRow,
     services: &Arc<AppServices>,
+    main_window: &adw::ApplicationWindow,
 ) {
+    // ── Window ───────────────────────────────────────────────────────────
     let dialog = adw::Window::builder()
         .title(if target_name.is_empty() {
             "Observation Detail".to_string()
         } else {
             format!("Observation — {}", target_name)
         })
-        .default_width(650)
-        .default_height(500)
+        .default_width(680)
+        .default_height(580)
         .modal(true)
+        .resizable(true)
+        .transient_for(main_window)
         .build();
+    dialog.set_width_request(400);
+    dialog.set_height_request(360);
 
     let toolbar_view = adw::ToolbarView::new();
+
+    // ── HeaderBar with title label + overflow menu ───────────────────────
     let header = adw::HeaderBar::new();
+
+    let title_label = gtk::Label::new(Some(if target_name.is_empty() {
+        "Observation Detail"
+    } else {
+        target_name
+    }));
+    title_label.add_css_class("heading");
+    title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title_label.set_max_width_chars(40);
+    header.set_title_widget(Some(&title_label));
+
+    if !publisher_id.is_empty() {
+        // Overflow menu with "Copy Publisher ID"
+        let copy_btn = gtk::Button::from_icon_name("edit-copy-symbolic");
+        copy_btn.add_css_class("flat");
+        copy_btn.set_tooltip_text(Some("Copy Publisher ID"));
+        {
+            let pub_id = publisher_id.to_string();
+            let svc = services.clone();
+            copy_btn.connect_clicked(move |btn| {
+                let display = btn.display();
+                display.clipboard().set_text(&pub_id);
+                svc.toast.toast("Publisher ID copied");
+            });
+        }
+        header.pack_end(&copy_btn);
+    }
+
     toolbar_view.add_top_bar(&header);
 
+    // ── Scrollable content: preview + metadata ──────────────────────────
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_vexpand(true);
+    scroll.set_hexpand(true);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    content.set_margin_start(24);
-    content.set_margin_end(24);
-    content.set_margin_top(16);
-    content.set_margin_bottom(24);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
 
-    // Preview image section
-    if !publisher_id.is_empty() {
-        let image_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        image_box.set_halign(gtk::Align::Center);
-        image_box.set_margin_bottom(12);
+    // Preview Stack: loading / image / no-preview / error
+    let preview_frame = gtk::Frame::new(None);
+    preview_frame.add_css_class("card");
+    preview_frame.set_margin_bottom(12);
+    preview_frame.set_halign(gtk::Align::Center);
 
-        let spinner = gtk::Spinner::new();
-        spinner.start();
-        spinner.set_visible(true);
-        image_box.append(&spinner);
-        content.append(&image_box);
+    let preview_stack = gtk::Stack::new();
+    preview_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    preview_stack.set_transition_duration(200);
+    preview_stack.set_size_request(360, 220);
 
-        // Load preview image in background
+    // "loading" child
+    let loading_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    loading_box.set_halign(gtk::Align::Center);
+    loading_box.set_valign(gtk::Align::Center);
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(32, 32);
+    spinner.start();
+    loading_box.append(&spinner);
+    preview_stack.add_named(&loading_box, Some("loading"));
+
+    // "no-preview" child
+    let no_preview = adw::StatusPage::new();
+    no_preview.set_icon_name(Some("image-missing-symbolic"));
+    no_preview.set_title("No Preview");
+    no_preview.set_vexpand(false);
+    preview_stack.add_named(&no_preview, Some("no-preview"));
+
+    // "error" child
+    let error_page = adw::StatusPage::new();
+    error_page.set_icon_name(Some("network-error-symbolic"));
+    error_page.set_title("Preview Unavailable");
+    error_page.set_description(Some("Check network connection"));
+    error_page.set_vexpand(false);
+    preview_stack.add_named(&error_page, Some("error"));
+
+    preview_stack.set_visible_child_name("loading");
+    preview_frame.set_child(Some(&preview_stack));
+
+    if publisher_id.is_empty() {
+        preview_frame.set_visible(false);
+    } else {
+        content.append(&preview_frame);
+
+        // Async preview load — swap stack children on result
         let svc = services.clone();
         let pub_id = publisher_id.to_string();
-        let image_box_clone = image_box.clone();
-        let spinner_clone = spinner.clone();
+        let stack_ref = preview_stack.clone();
         glib::spawn_future_local(async move {
-            eprintln!("[preview] Resolving DataLink for: {}", pub_id);
-            let result = {
+            let dl_result = {
                 let svc2 = svc.clone();
                 let pid = pub_id.clone();
                 svc.spawn(async move {
                     let token = svc2.get_token().await;
                     svc2.datalink.resolve(&pid, token.as_deref()).await
                 })
-                    .await
+                .await
             };
 
-            spinner_clone.stop();
-            spinner_clone.set_visible(false);
-
-            match &result {
-                Ok(dl_result) => {
-                    eprintln!(
-                        "[preview] DataLink resolved: {} files",
-                        dl_result.files.len()
-                    );
-                    for f in &dl_result.files {
-                        eprintln!(
-                            "[preview]   {} | {} | {}",
-                            f.semantics, f.content_type, f.url
-                        );
-                    }
-
-                    // Prefer thumbnail (small, fast) then preview
-                    let preview_url = dl_result
-                        .files
-                        .iter()
-                        .find(|f| f.is_thumbnail())
-                        .or_else(|| dl_result.files.iter().find(|f| f.is_preview()))
-                        .map(|f| f.url.clone());
-
-                    if let Some(url) = preview_url {
-                        eprintln!("[preview] Downloading image: {}", url);
-                        let svc2 = svc.clone();
-                        let url_clone = url.clone();
-                        let bytes_result = svc
-                            .spawn(async move {
-                                let token = svc2.get_token().await;
-                                svc2.datalink
-                                    .download_image(&url_clone, token.as_deref())
-                                    .await
-                            })
-                            .await;
-
-                        match bytes_result {
-                            Ok(bytes) => {
-                                eprintln!("[preview] Got {} bytes", bytes.len());
-                                let gbytes = gtk::glib::Bytes::from(&bytes);
-                                let stream = gtk::gio::MemoryInputStream::from_bytes(&gbytes);
-                                match gtk::gdk_pixbuf::Pixbuf::from_stream(
-                                    &stream,
-                                    gtk::gio::Cancellable::NONE,
-                                ) {
-                                    Ok(pixbuf) => {
-                                        eprintln!(
-                                            "[preview] Pixbuf created: {}x{}",
-                                            pixbuf.width(),
-                                            pixbuf.height()
-                                        );
-                                        let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
-                                        let image = gtk::Picture::for_paintable(&texture);
-                                        image.set_content_fit(gtk::ContentFit::Contain);
-                                        image.set_size_request(300, 200);
-                                        image_box_clone.append(&image);
-                                        eprintln!("[preview] Image appended to dialog");
-                                    }
-                                    Err(e) => eprintln!("[preview] Pixbuf error: {}", e),
-                                }
-                            }
-                            Err(e) => eprintln!("[preview] Download error: {}", e),
-                        }
-                    } else {
-                        eprintln!("[preview] No preview/thumbnail URL found");
-                        let no_preview = gtk::Label::new(Some("No preview available"));
-                        no_preview.add_css_class("dim-label");
-                        image_box_clone.append(&no_preview);
-                    }
+            let dl = match dl_result {
+                Ok(d) => d,
+                Err(_) => {
+                    stack_ref.set_visible_child_name("error");
+                    return;
                 }
-                Err(e) => {
-                    eprintln!("[preview] DataLink error: {}", e);
-                    let err_label = gtk::Label::new(Some(&format!("Preview unavailable: {}", e)));
-                    err_label.add_css_class("dim-label");
-                    image_box_clone.append(&err_label);
+            };
+
+            let preview_url = dl
+                .files
+                .iter()
+                .find(|f| f.is_thumbnail())
+                .or_else(|| dl.files.iter().find(|f| f.is_preview()))
+                .map(|f| f.url.clone());
+
+            let url = match preview_url {
+                Some(u) => u,
+                None => {
+                    stack_ref.set_visible_child_name("no-preview");
+                    return;
                 }
-            }
+            };
+
+            let svc2 = svc.clone();
+            let url_clone = url.clone();
+            let bytes_result = svc
+                .spawn(async move {
+                    let token = svc2.get_token().await;
+                    svc2.datalink
+                        .download_image(&url_clone, token.as_deref())
+                        .await
+                })
+                .await;
+
+            let bytes = match bytes_result {
+                Ok(b) => b,
+                Err(_) => {
+                    stack_ref.set_visible_child_name("error");
+                    return;
+                }
+            };
+
+            let gbytes = gtk::glib::Bytes::from(&bytes);
+            let stream = gtk::gio::MemoryInputStream::from_bytes(&gbytes);
+            let pixbuf = match gtk::gdk_pixbuf::Pixbuf::from_stream_future(&stream).await {
+                Ok(p) => p,
+                Err(_) => {
+                    stack_ref.set_visible_child_name("error");
+                    return;
+                }
+            };
+
+            let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+            let image = gtk::Picture::for_paintable(&texture);
+            image.set_content_fit(gtk::ContentFit::Contain);
+            image.set_size_request(360, 220);
+            stack_ref.add_named(&image, Some("image"));
+            stack_ref.set_visible_child_name("image");
         });
     }
 
-    // Metadata fields
+    // Metadata group
     let metadata_group = adw::PreferencesGroup::new();
     metadata_group.set_title("Observation Metadata");
 
@@ -2037,123 +2112,155 @@ async fn show_row_detail(
             let row = adw::ActionRow::builder()
                 .title(label.as_str())
                 .subtitle(value.as_str())
+                .subtitle_selectable(true)
                 .build();
             metadata_group.add(&row);
         }
     }
     content.append(&metadata_group);
 
-    // Download button
-    if !publisher_id.is_empty() {
-        let dl_btn = gtk::Button::new();
-        let dl_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        dl_content.append(&gtk::Image::from_icon_name("folder-download-symbolic"));
-        dl_content.append(&gtk::Label::new(Some("Download FITS")));
-        dl_btn.set_child(Some(&dl_content));
-        dl_btn.add_css_class("suggested-action");
-        dl_btn.set_halign(gtk::Align::Start);
-        dl_btn.set_margin_top(12);
-
-        let svc = services.clone();
-        let pub_id = publisher_id.to_string();
-        let dialog_ref = dialog.clone();
-        dl_btn.connect_clicked(move |btn| {
-            let svc = svc.clone();
-            let pub_id = pub_id.clone();
-            let btn = btn.clone();
-            let dialog_ref = dialog_ref.clone();
-            glib::spawn_future_local(async move {
-                dialog_ref.close();
-                download_observation_with_picker(&svc, &pub_id, &btn).await;
-            });
-        });
-        content.append(&dl_btn);
-    }
-
     scroll.set_child(Some(&content));
     toolbar_view.set_content(Some(&scroll));
+
+    // ── Fixed footer: gtk::ActionBar with Save + Download ───────────────
+    let action_bar = gtk::ActionBar::new();
+
+    // Save to Research button
+    let save_btn = {
+        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        hbox.append(&gtk::Image::from_icon_name("bookmark-new-symbolic"));
+        hbox.append(&gtk::Label::new(Some("Save to Research")));
+        let btn = gtk::Button::new();
+        btn.set_child(Some(&hbox));
+        btn
+    };
+    if publisher_id.is_empty() {
+        save_btn.set_sensitive(false);
+        save_btn.set_tooltip_text(Some("No publisher ID — observation cannot be bookmarked"));
+    } else {
+        save_btn.set_tooltip_text(Some("Bookmark this observation without downloading the file"));
+    }
+    {
+        let svc = services.clone();
+        let pub_id = publisher_id.to_string();
+        let raw = raw_row.clone();
+        let dialog_ref = dialog.clone();
+        save_btn.connect_clicked(move |_| {
+            if pub_id.is_empty() {
+                return;
+            }
+            let svc = svc.clone();
+            let pub_id = pub_id.clone();
+            let raw = raw.clone();
+            let dialog_ref = dialog_ref.clone();
+            glib::spawn_future_local(async move {
+                save_to_research(&svc, &pub_id, &raw).await;
+                dialog_ref.close();
+            });
+        });
+    }
+    action_bar.pack_start(&save_btn);
+
+    // Download FITS button
+    let dl_btn = {
+        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        hbox.append(&gtk::Image::from_icon_name("folder-download-symbolic"));
+        hbox.append(&gtk::Label::new(Some("Download FITS")));
+        let btn = gtk::Button::new();
+        btn.set_child(Some(&hbox));
+        btn.add_css_class("suggested-action");
+        btn
+    };
+    if publisher_id.is_empty() {
+        dl_btn.set_sensitive(false);
+        dl_btn.set_tooltip_text(Some("No publisher ID — observation cannot be downloaded"));
+    } else {
+        dl_btn.set_tooltip_text(Some("Download the FITS file to disk"));
+    }
+    {
+        let svc = services.clone();
+        let pub_id = publisher_id.to_string();
+        let raw = raw_row.clone();
+        let dialog_ref = dialog.clone();
+        let main_window_ref = main_window.clone();
+        dl_btn.connect_clicked(move |_| {
+            if pub_id.is_empty() {
+                return;
+            }
+            let svc = svc.clone();
+            let pub_id = pub_id.clone();
+            let raw = raw.clone();
+            let dialog_ref = dialog_ref.clone();
+            let main_window_ref = main_window_ref.clone();
+            glib::spawn_future_local(async move {
+                // Always pass the main window as the save_future parent —
+                // passing a detached child widget causes the XDG portal to hang.
+                download_observation_with_picker(&svc, &pub_id, &raw, &main_window_ref).await;
+                dialog_ref.close();
+            });
+        });
+    }
+    action_bar.pack_end(&dl_btn);
+
+    toolbar_view.add_bottom_bar(&action_bar);
+
+    // ── Keyboard shortcuts: Ctrl+S → Save, Ctrl+D → Download ────────────
+    {
+        let shortcuts = gtk::ShortcutController::new();
+        shortcuts.set_scope(gtk::ShortcutScope::Local);
+
+        // Ctrl+S → Save
+        let save_trigger = gtk::ShortcutTrigger::parse_string("<Control>s").unwrap();
+        let save_action = {
+            let save_btn = save_btn.clone();
+            gtk::CallbackAction::new(move |_, _| {
+                if save_btn.is_sensitive() {
+                    save_btn.emit_clicked();
+                }
+                glib::Propagation::Stop
+            })
+        };
+        shortcuts.add_shortcut(gtk::Shortcut::new(Some(save_trigger), Some(save_action)));
+
+        // Ctrl+D → Download
+        let dl_trigger = gtk::ShortcutTrigger::parse_string("<Control>d").unwrap();
+        let dl_action = {
+            let dl_btn = dl_btn.clone();
+            gtk::CallbackAction::new(move |_, _| {
+                if dl_btn.is_sensitive() {
+                    dl_btn.emit_clicked();
+                }
+                glib::Propagation::Stop
+            })
+        };
+        shortcuts.add_shortcut(gtk::Shortcut::new(Some(dl_trigger), Some(dl_action)));
+
+        dialog.add_controller(shortcuts);
+    }
+
     dialog.set_content(Some(&toolbar_view));
     dialog.present();
+
+    // Focus the save button (primary non-destructive action)
+    if !publisher_id.is_empty() {
+        save_btn.grab_focus();
+    }
 }
 
 // =============================================================================
 // Download flow
 // =============================================================================
 
-async fn download_observation(
-    services: &Arc<AppServices>,
-    publisher_id: &str,
-    status: &gtk::Label,
-    _parent: &impl IsA<gtk::Widget>,
-) {
-    status.set_text(&format!("Downloading {}...", publisher_id));
-
-    // Resolve DataLink
-    let svc = services.clone();
-    let pid = publisher_id.to_string();
-    let dl_result = services
-        .spawn(async move {
-            let token = svc.get_token().await;
-            svc.datalink.resolve(&pid, token.as_deref()).await
-        })
-        .await;
-
-    let url = match dl_result {
-        Ok(ref dl) => dl
-            .files
-            .iter()
-            .find(|f| f.is_science_data())
-            .map(|f| f.url.clone())
-            .or(dl.download_url.clone())
-            .unwrap_or_else(|| crate::services::DataLinkService::download_url(publisher_id)),
-        Err(_) => crate::services::DataLinkService::download_url(publisher_id),
-    };
-
-    // Download file
-    let svc = services.clone();
-    let url_clone = url.clone();
-    let result = services
-        .spawn(async move {
-            let token = svc.get_token().await;
-            svc.datalink
-                .download_file(&url_clone, token.as_deref())
-                .await
-        })
-        .await;
-
-    match result {
-        Ok((bytes, size)) => {
-            let size_str = match size {
-                Some(s) => format!("{:.1} MB", s as f64 / (1024.0 * 1024.0)),
-                None => format!("{:.1} MB", bytes.len() as f64 / (1024.0 * 1024.0)),
-            };
-
-            // Extract filename from URL
-            let filename = url
-                .rsplit('/')
-                .next()
-                .unwrap_or("observation.fits")
-                .to_string();
-
-            // Save to ~/Downloads/verbinal/
-            let download_dir = dirs_next().join(&filename);
-            if let Err(e) = std::fs::write(&download_dir, &bytes) {
-                status.set_text(&format!("Save failed: {}", e));
-                return;
-            }
-            status.set_text(&format!("Downloaded {} ({})", filename, size_str));
-        }
-        Err(e) => {
-            status.set_text(&format!("Download failed: {}", e));
-        }
-    }
-}
-
 async fn download_observation_with_picker(
     services: &Arc<AppServices>,
     publisher_id: &str,
-    parent: &impl IsA<gtk::Widget>,
+    raw_row: &crate::models::search_result::SearchResultRow,
+    main_window: &adw::ApplicationWindow,
 ) {
+    services
+        .toast
+        .toast(&format!("Resolving {} …", short_pub_id(publisher_id)));
+
     // Resolve DataLink
     let svc = services.clone();
     let pid = publisher_id.to_string();
@@ -2164,33 +2271,65 @@ async fn download_observation_with_picker(
         })
         .await;
 
+    // Capture DataLink so we can use its preview URLs in the stored record
+    let dl_for_obs = dl_result.as_ref().ok().cloned();
+
+    // Pick the download URL.  When DataLink returns multiple science files,
+    // show the multi-file selection dialog so the user can choose which
+    // artifact to fetch (CFHT MegaCam publishes per-CCD files this way).
     let url = match dl_result {
-        Ok(ref dl) => dl
-            .files
-            .iter()
-            .find(|f| f.is_science_data())
-            .map(|f| f.url.clone())
-            .or(dl.download_url.clone())
-            .unwrap_or_else(|| crate::services::DataLinkService::download_url(publisher_id)),
+        Ok(ref dl) => {
+            let science_files: Vec<crate::models::search_result::DataLinkFile> = dl
+                .files
+                .iter()
+                .filter(|f| f.is_science_data())
+                .cloned()
+                .collect();
+            match science_files.len() {
+                0 => dl
+                    .download_url
+                    .clone()
+                    .unwrap_or_else(|| {
+                        crate::services::DataLinkService::download_url(publisher_id)
+                    }),
+                1 => science_files[0].url.clone(),
+                _ => {
+                    // Multi-file — show the selection dialog
+                    match crate::ui::datalink_file_dialog::show_datalink_file_dialog(
+                        main_window,
+                        science_files,
+                    )
+                    .await
+                    {
+                        Some(picked) => picked.url,
+                        None => return, // user cancelled
+                    }
+                }
+            }
+        }
         Err(_) => crate::services::DataLinkService::download_url(publisher_id),
     };
 
     // Extract suggested filename
     let suggested = extract_filename(publisher_id, &url);
 
-    // File save dialog
-    let root = parent.root().and_downcast::<gtk::Window>();
+    // File save dialog — use the MAIN WINDOW as parent (critical fix).
+    // Passing a detached child widget (or its missing root) causes the XDG
+    // desktop portal to hang on GNOME, producing the "Portal is not
+    // responding" force-quit dialog.
     let dialog = gtk::FileDialog::builder()
         .title("Save Observation")
         .initial_name(&suggested)
         .build();
 
-    let save_path = match dialog.save_future(root.as_ref()).await {
+    let save_path = match dialog.save_future(Some(main_window)).await {
         Ok(file) => file.path(),
         Err(_) => return, // User cancelled
     };
 
     let Some(save_path) = save_path else { return };
+
+    services.toast.toast("Downloading…");
 
     // Download
     let svc = services.clone();
@@ -2206,20 +2345,201 @@ async fn download_observation_with_picker(
 
     match result {
         Ok((bytes, _)) => {
+            let file_size = bytes.len() as u64;
+
             // Atomic write: tmp + rename
             let tmp_path = save_path.with_extension("tmp");
             if let Err(e) = std::fs::write(&tmp_path, &bytes) {
-                eprintln!("Write failed: {}", e);
+                services
+                    .toast
+                    .toast(&format!("Save failed: {}", e));
                 return;
             }
             if let Err(e) = std::fs::rename(&tmp_path, &save_path) {
-                eprintln!("Rename failed: {}", e);
+                services
+                    .toast
+                    .toast(&format!("Rename failed: {}", e));
+                return;
+            }
+
+            // Persist to ObservationStore so Research page can see it.
+            // Uses the async variant so disk I/O runs on the tokio blocking
+            // pool, keeping the GLib main loop responsive on slow filesystems.
+            let obs = build_downloaded_observation(
+                publisher_id,
+                raw_row,
+                Some(save_path.to_string_lossy().to_string()),
+                file_size,
+                dl_for_obs.as_ref(),
+            );
+            let svc = services.clone();
+            let save_result = services
+                .spawn(async move { svc.observation_store.save_async(obs).await })
+                .await;
+            match save_result {
+                Ok(()) => {
+                    let filename = save_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "observation.fits".to_string());
+                    services.toast.toast_with_action(
+                        format!("Downloaded {} — added to Research", filename),
+                        "Go to Research",
+                        "app.navigate-research",
+                    );
+                }
+                Err(e) => {
+                    services
+                        .toast
+                        .toast(&format!("Downloaded, but save to store failed: {}", e));
+                }
             }
         }
         Err(e) => {
-            eprintln!("Download failed: {}", e);
+            services
+                .toast
+                .toast(&format!("Download failed: {}", e));
         }
     }
+}
+
+/// Save an observation's metadata to the Research store without downloading
+/// the file.  Mirrors the Windows "Save to Research" action.
+async fn save_to_research(
+    services: &Arc<AppServices>,
+    publisher_id: &str,
+    raw_row: &crate::models::search_result::SearchResultRow,
+) {
+    // Duplicate check — avoid silent replacement so the user sees honest feedback
+    let svc = services.clone();
+    let pid = publisher_id.to_string();
+    let already_saved = services
+        .spawn(async move {
+            let existing = svc.observation_store.load_async().await;
+            existing.iter().any(|o| o.publisher_id == pid)
+        })
+        .await;
+    if already_saved {
+        services.toast.toast("Already in Research");
+        return;
+    }
+
+    // Fetch DataLink to capture preview URLs (best effort — tolerate failures)
+    let svc = services.clone();
+    let pid = publisher_id.to_string();
+    let dl_result = services
+        .spawn(async move {
+            let token = svc.get_token().await;
+            svc.datalink.resolve(&pid, token.as_deref()).await
+        })
+        .await;
+
+    let dl_for_obs = dl_result.ok();
+
+    let obs = build_downloaded_observation(publisher_id, raw_row, None, 0, dl_for_obs.as_ref());
+    let svc = services.clone();
+    let save_result = services
+        .spawn(async move { svc.observation_store.save_async(obs).await })
+        .await;
+    match save_result {
+        Ok(()) => {
+            services
+                .toast
+                .toast_with_action("Saved to Research", "View", "app.navigate-research");
+        }
+        Err(e) => {
+            services.toast.toast(&format!("Save failed: {}", e));
+        }
+    }
+}
+
+/// Construct a `DownloadedObservation` from a raw search result row, picking
+/// up the CAOM2 column names used by the project's ADQL query (see
+/// `helpers/adql_builder.rs`).  `local_path` is `Some` for a fully downloaded
+/// file, `None` for a metadata-only "Save to Research".
+///
+/// When a `DataLinkResult` is provided, preview/thumbnail URLs are persisted
+/// so the Research page can show previews later without re-hitting DataLink.
+fn build_downloaded_observation(
+    publisher_id: &str,
+    raw_row: &crate::models::search_result::SearchResultRow,
+    local_path: Option<String>,
+    file_size: u64,
+    datalink: Option<&crate::models::search_result::DataLinkResult>,
+) -> crate::services::DownloadedObservation {
+    // Row lookup — `SearchResultRow::get` already returns an empty string on miss.
+    let pick = |keys: &[&str]| -> String {
+        for k in keys {
+            let v = raw_row.get(k);
+            if !v.is_empty() {
+                return v.to_string();
+            }
+        }
+        String::new()
+    };
+
+    // Preview URLs from DataLink (first match wins). These are persisted so
+    // the Research page can render thumbnails without re-fetching.
+    let (thumbnail_url, preview_url) = match datalink {
+        Some(dl) => {
+            let thumb = dl
+                .files
+                .iter()
+                .find(|f| f.is_thumbnail())
+                .map(|f| f.url.clone())
+                .unwrap_or_default();
+            let prev = dl
+                .files
+                .iter()
+                .find(|f| f.is_preview())
+                .map(|f| f.url.clone())
+                .unwrap_or_default();
+            (thumb, prev)
+        }
+        None => (String::new(), String::new()),
+    };
+
+    crate::services::DownloadedObservation {
+        id: uuid_from_publisher_id(publisher_id),
+        publisher_id: publisher_id.to_string(),
+        // Headers below MUST match the ADQL column aliases in
+        // `helpers/adql_builder.rs::SELECT_COLUMNS`. If that file changes,
+        // this list must follow.
+        collection: pick(&["collection"]),
+        observation_id: pick(&["Obs. ID", "observationID"]),
+        target_name: pick(&["Target Name"]),
+        instrument: pick(&["Instrument"]),
+        filter: pick(&["Filter"]),
+        ra: pick(&["RA (J2000.0)"]),
+        dec: pick(&["Dec. (J2000.0)"]),
+        start_date: pick(&["Start Date"]),
+        cal_level: pick(&["Cal. Lev."]),
+        local_path: local_path.unwrap_or_default(),
+        file_size,
+        downloaded_at: chrono::Utc::now().to_rfc3339(),
+        thumbnail_url,
+        preview_url,
+    }
+}
+
+/// Stable, deterministic ID for a publisher DID — avoids duplicate entries
+/// when the same observation is saved multiple times.
+fn uuid_from_publisher_id(publisher_id: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    publisher_id.hash(&mut hasher);
+    format!("obs-{:016x}", hasher.finish())
+}
+
+fn short_pub_id(pub_id: &str) -> String {
+    pub_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(pub_id)
+        .chars()
+        .take(32)
+        .collect()
 }
 
 fn extract_filename(publisher_id: &str, url: &str) -> String {
@@ -2241,15 +2561,6 @@ fn extract_filename(publisher_id: &str, url: &str) -> String {
         }
     }
     "observation.fits".to_string()
-}
-
-fn dirs_next() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = std::path::PathBuf::from(&home)
-        .join("Downloads")
-        .join("verbinal");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
 }
 
 // =============================================================================

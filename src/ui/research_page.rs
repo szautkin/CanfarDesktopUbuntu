@@ -1,4 +1,5 @@
-use crate::services::observation_store::{DownloadedObservation, ObservationStore};
+use crate::services::observation_store::DownloadedObservation;
+use crate::state::AppServices;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -6,6 +7,7 @@ use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // ResearchPage
@@ -15,7 +17,7 @@ use std::rc::Rc;
 /// lets the user open them in the FITS viewer or delete them.
 pub struct ResearchPage {
     widget: gtk::Box,
-    store: Rc<ObservationStore>,
+    services: Arc<AppServices>,
     /// The currently displayed list (may be filtered).
     current_list: Rc<RefCell<Vec<DownloadedObservation>>>,
     list_box: gtk::ListBox,
@@ -28,7 +30,7 @@ pub struct ResearchPage {
 }
 
 impl ResearchPage {
-    pub fn new() -> Rc<Self> {
+    pub fn new(services: Arc<AppServices>) -> Rc<Self> {
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_vexpand(true);
         widget.set_hexpand(true);
@@ -96,13 +98,30 @@ impl ResearchPage {
         content_stack.set_hexpand(true);
         content_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
 
-        // Empty state
+        // Empty state — copy includes bookmarked-only entries
         let empty_status = adw::StatusPage::new();
         empty_status.set_icon_name(Some("document-open-recent-symbolic"));
-        empty_status.set_title("No Downloaded Observations");
+        empty_status.set_title("No Saved Observations");
         empty_status.set_description(Some(
-            "Search the CADC archive and download files to see them here.",
+            "Search the CADC archive, then save or download observations \
+             to see them here.",
         ));
+
+        // CTA button → jumps to the Search page
+        let go_to_search_btn = gtk::Button::with_label("Go to Search");
+        go_to_search_btn.add_css_class("suggested-action");
+        go_to_search_btn.add_css_class("pill");
+        go_to_search_btn.set_halign(gtk::Align::Center);
+        go_to_search_btn.connect_clicked(|btn| {
+            if let Some(root) = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+                if let Some(app) = root.application() {
+                    let ag: &gtk::gio::ActionGroup = app.upcast_ref();
+                    ag.activate_action("navigate-search", None);
+                }
+            }
+        });
+        empty_status.set_child(Some(&go_to_search_btn));
+
         content_stack.add_named(&empty_status, Some("empty"));
 
         // Scrollable list
@@ -138,7 +157,7 @@ impl ResearchPage {
         // ----------------------------------------------------------------
         let page = Rc::new(ResearchPage {
             widget,
-            store: Rc::new(ObservationStore::new()),
+            services,
             current_list: Rc::new(RefCell::new(Vec::new())),
             list_box,
             filter_entry,
@@ -151,7 +170,11 @@ impl ResearchPage {
         {
             let p = Rc::clone(&page);
             page.filter_entry.connect_search_changed(move |entry| {
-                p.apply_filter(entry.text().as_ref());
+                let p = Rc::clone(&p);
+                let text = entry.text().to_string();
+                glib::spawn_future_local(async move {
+                    p.apply_filter_async(&text).await;
+                });
             });
         }
 
@@ -182,16 +205,43 @@ impl ResearchPage {
     // Data management
     // -----------------------------------------------------------------------
 
-    /// Reload from disk and refresh the displayed list.
-    pub fn reload(&self) {
-        let text = self.filter_entry.text();
-        self.apply_filter(text.as_ref());
+    /// Reload from disk and refresh the displayed list.  Disk I/O is
+    /// offloaded to the tokio blocking pool so this is non-blocking on the
+    /// GLib main thread.
+    pub fn reload(self: &Rc<Self>) {
+        let page = Rc::clone(self);
+        glib::spawn_future_local(async move {
+            let text = page.filter_entry.text().to_string();
+            page.apply_filter_async(&text).await;
+        });
     }
 
-    fn apply_filter(&self, text: &str) {
-        let list = self.store.filter(text);
-        *self.current_list.borrow_mut() = list.clone();
-        self.rebuild_rows(&list);
+    async fn apply_filter_async(self: &Rc<Self>, text: &str) {
+        // Offloaded disk read — avoids blocking the main loop on slow disks
+        let svc = self.services.clone();
+        let full = self
+            .services
+            .spawn(async move { svc.observation_store.load_async().await })
+            .await;
+
+        // Case-insensitive filter in memory
+        let filtered: Vec<DownloadedObservation> = if text.is_empty() {
+            full
+        } else {
+            let needle = text.to_lowercase();
+            full.into_iter()
+                .filter(|o| {
+                    o.collection.to_lowercase().contains(&needle)
+                        || o.observation_id.to_lowercase().contains(&needle)
+                        || o.target_name.to_lowercase().contains(&needle)
+                        || o.instrument.to_lowercase().contains(&needle)
+                        || o.filter.to_lowercase().contains(&needle)
+                })
+                .collect()
+        };
+
+        *self.current_list.borrow_mut() = filtered.clone();
+        self.rebuild_rows(&filtered);
     }
 
     fn rebuild_rows(&self, observations: &[DownloadedObservation]) {
@@ -221,15 +271,17 @@ impl ResearchPage {
     }
 
     fn build_row(&self, obs: &DownloadedObservation) -> adw::ActionRow {
-        // Title: ObservationID   Subtitle: Collection | Target | Filter | Date
-        let title = if obs.observation_id.is_empty() {
+        // Title: prefer target name, fall back to observation ID, then publisher DID
+        let title = if !obs.target_name.is_empty() {
+            obs.target_name.clone()
+        } else if !obs.observation_id.is_empty() {
+            obs.observation_id.clone()
+        } else {
             obs.publisher_id
                 .split('?')
                 .nth(1)
                 .unwrap_or(&obs.publisher_id)
                 .to_string()
-        } else {
-            obs.observation_id.clone()
         };
 
         let subtitle = build_subtitle(obs);
@@ -239,8 +291,10 @@ impl ResearchPage {
             .subtitle(&subtitle)
             .build();
 
-        // Leading icon — FITS vs generic
-        let icon_name = if is_fits_path(&obs.local_path) {
+        // Leading icon — bookmark / FITS / generic
+        let icon_name = if obs.is_bookmarked() {
+            "bookmark-symbolic"
+        } else if is_fits_path(&obs.local_path) {
             "image-x-generic-symbolic"
         } else {
             "document-open-recent-symbolic"
@@ -249,41 +303,41 @@ impl ResearchPage {
         lead_icon.set_pixel_size(24);
         row.add_prefix(&lead_icon);
 
-        // Instrument + size in a compact suffix box
-        let meta_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        meta_box.set_valign(gtk::Align::Center);
-        meta_box.set_margin_end(4);
-
-        let size_lbl = gtk::Label::new(Some(&obs.formatted_size()));
-        size_lbl.add_css_class("dim-label");
-        size_lbl.add_css_class("caption");
-        size_lbl.set_halign(gtk::Align::End);
-        meta_box.append(&size_lbl);
-
-        if !obs.instrument.is_empty() {
-            let inst_lbl = gtk::Label::new(Some(&obs.instrument));
-            inst_lbl.add_css_class("dim-label");
-            inst_lbl.add_css_class("caption");
-            inst_lbl.set_halign(gtk::Align::End);
-            meta_box.append(&inst_lbl);
+        // Kind badge: "Bookmarked" (bookmarked) or "FITS {size}" (downloaded)
+        let kind_badge = gtk::Label::new(None);
+        kind_badge.set_valign(gtk::Align::Center);
+        kind_badge.set_margin_end(6);
+        if obs.is_bookmarked() {
+            kind_badge.set_text("Bookmarked");
+            kind_badge.add_css_class("badge-bookmarked");
+        } else {
+            let size_text = obs.formatted_size();
+            if size_text.is_empty() {
+                kind_badge.set_text("FITS");
+            } else {
+                kind_badge.set_text(&format!("FITS · {}", size_text));
+            }
+            kind_badge.add_css_class("badge-fits");
         }
-        row.add_suffix(&meta_box);
+        row.add_suffix(&kind_badge);
 
-        // "Open in FITS Viewer" button
+        // "Open in FITS Viewer" button — only sensitive when file exists on disk
         let view_btn = gtk::Button::from_icon_name("image-x-generic-symbolic");
         view_btn.set_tooltip_text(Some("Open in FITS Viewer"));
         view_btn.add_css_class("flat");
         view_btn.set_valign(gtk::Align::Center);
+        view_btn.set_sensitive(
+            !obs.is_bookmarked() && std::path::Path::new(&obs.local_path).exists(),
+        );
 
         let local_path = obs.local_path.clone();
         let app_ref = Rc::clone(&self.application);
-        view_btn.connect_clicked(move |btn| {
+        let services_for_view = self.services.clone();
+        view_btn.connect_clicked(move |_btn| {
             if !std::path::Path::new(&local_path).exists() {
-                show_error_dialog(
-                    btn,
-                    "File Not Found",
-                    &format!("The file no longer exists at:\n{}", local_path),
-                );
+                services_for_view
+                    .toast
+                    .toast("File not found — it may have been moved or deleted");
                 return;
             }
             if let Some(app) = app_ref.borrow().as_ref() {
@@ -296,57 +350,208 @@ impl ResearchPage {
         });
         row.add_suffix(&view_btn);
 
-        // "Delete" button
-        let del_btn = gtk::Button::from_icon_name("user-trash-symbolic");
-        del_btn.set_tooltip_text(Some("Remove from list"));
-        del_btn.add_css_class("flat");
-        del_btn.add_css_class("destructive-action");
-        del_btn.set_valign(gtk::Align::Center);
+        // Context menu button — replaces the single Delete button with a
+        // richer set of actions.
+        let more_btn = gtk::MenuButton::new();
+        more_btn.set_icon_name("view-more-symbolic");
+        more_btn.add_css_class("flat");
+        more_btn.set_valign(gtk::Align::Center);
+        more_btn.set_tooltip_text(Some("More actions"));
 
-        let obs_id = obs.id.clone();
-        let store = Rc::clone(&self.store);
-        let current_list = Rc::clone(&self.current_list);
-        let list_box = self.list_box.clone();
-        let content_stack = self.content_stack.clone();
-        let count_label = self.count_label.clone();
-        let row_weak = row.downgrade();
+        let menu = gtk::gio::Menu::new();
+        menu.append(Some("Delete from list"), Some("row.delete-list"));
+        if !obs.is_bookmarked() {
+            menu.append(Some("Delete from disk"), Some("row.delete-disk"));
+        }
+        menu.append(Some("Copy Publisher ID"), Some("row.copy-id"));
+        if !obs.is_bookmarked() {
+            menu.append(Some("Show in File Manager"), Some("row.show-in-fm"));
+        }
 
-        del_btn.connect_clicked(move |_btn| {
-            let obs_id = obs_id.clone();
-            let store = Rc::clone(&store);
-            let current_list = Rc::clone(&current_list);
-            let list_box = list_box.clone();
-            let content_stack = content_stack.clone();
-            let count_label = count_label.clone();
-            let row_weak = row_weak.clone();
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        more_btn.set_popover(Some(&popover));
 
-            // Remove from store synchronously — it's disk I/O but the file is tiny
-            let _ = store.remove(&obs_id);
+        // Per-row action group wiring
+        let action_group = gtk::gio::SimpleActionGroup::new();
 
-            // Update in-memory list
-            let mut list = current_list.borrow_mut();
-            list.retain(|o| o.id != obs_id);
-            let n = list.len();
-            drop(list);
+        // row.delete-list — remove from store only
+        {
+            let obs_id = obs.id.clone();
+            let services = self.services.clone();
+            let current_list = Rc::clone(&self.current_list);
+            let list_box = self.list_box.clone();
+            let content_stack = self.content_stack.clone();
+            let count_label = self.count_label.clone();
+            let row_weak = row.downgrade();
+            let action = gtk::gio::SimpleAction::new("delete-list", None);
+            action.connect_activate(move |_, _| {
+                let obs_id = obs_id.clone();
+                let services = services.clone();
+                let current_list = Rc::clone(&current_list);
+                let list_box = list_box.clone();
+                let content_stack = content_stack.clone();
+                let count_label = count_label.clone();
+                let row_weak = row_weak.clone();
+                glib::spawn_future_local(async move {
+                    let svc = services.clone();
+                    let id = obs_id.clone();
+                    let _ = services
+                        .spawn(async move {
+                            svc.observation_store.remove_async(&id).await
+                        })
+                        .await;
 
-            // Remove the GTK row
-            if let Some(row) = row_weak.upgrade() {
-                list_box.remove(&row);
-            }
+                    let mut list = current_list.borrow_mut();
+                    list.retain(|o| o.id != obs_id);
+                    let n = list.len();
+                    drop(list);
 
-            // Update status
-            if n == 0 {
-                content_stack.set_visible_child_name("empty");
-                count_label.set_text("No observations");
-            } else {
-                count_label.set_text(&format!(
-                    "{} observation{}",
-                    n,
-                    if n == 1 { "" } else { "s" }
-                ));
-            }
-        });
-        row.add_suffix(&del_btn);
+                    if let Some(row) = row_weak.upgrade() {
+                        list_box.remove(&row);
+                    }
+                    if n == 0 {
+                        content_stack.set_visible_child_name("empty");
+                        count_label.set_text("No observations");
+                    } else {
+                        count_label.set_text(&format!(
+                            "{} observation{}",
+                            n,
+                            if n == 1 { "" } else { "s" }
+                        ));
+                    }
+                });
+            });
+            action_group.add_action(&action);
+        }
+
+        // row.delete-disk — remove from store AND delete file on disk (with confirmation)
+        {
+            let obs_id = obs.id.clone();
+            let local_path = obs.local_path.clone();
+            let target_name = obs.target_name.clone();
+            let services = self.services.clone();
+            let current_list = Rc::clone(&self.current_list);
+            let list_box = self.list_box.clone();
+            let content_stack = self.content_stack.clone();
+            let count_label = self.count_label.clone();
+            let row_weak = row.downgrade();
+            let popover_ref = popover.clone();
+            let action = gtk::gio::SimpleAction::new("delete-disk", None);
+            action.connect_activate(move |_, _| {
+                let obs_id = obs_id.clone();
+                let local_path = local_path.clone();
+                let target_name = target_name.clone();
+                let services = services.clone();
+                let current_list = Rc::clone(&current_list);
+                let list_box = list_box.clone();
+                let content_stack = content_stack.clone();
+                let count_label = count_label.clone();
+                let row_weak = row_weak.clone();
+                let popover_ref = popover_ref.clone();
+                glib::spawn_future_local(async move {
+                    let parent_widget = match row_weak.upgrade() {
+                        Some(r) => r,
+                        None => return,
+                    };
+                    if !confirm_delete_from_disk(&parent_widget, &target_name, &local_path)
+                        .await
+                    {
+                        return;
+                    }
+                    popover_ref.popdown();
+
+                    // Delete the file on disk (blocking, but offloaded)
+                    let lp = local_path.clone();
+                    let _ = services
+                        .spawn(async move {
+                            tokio::task::spawn_blocking(move || {
+                                std::fs::remove_file(&lp)
+                            })
+                            .await
+                        })
+                        .await;
+
+                    // Remove the store record
+                    let svc = services.clone();
+                    let id = obs_id.clone();
+                    let _ = services
+                        .spawn(async move {
+                            svc.observation_store.remove_async(&id).await
+                        })
+                        .await;
+
+                    // Update UI
+                    let mut list = current_list.borrow_mut();
+                    list.retain(|o| o.id != obs_id);
+                    let n = list.len();
+                    drop(list);
+                    if let Some(row) = row_weak.upgrade() {
+                        list_box.remove(&row);
+                    }
+                    if n == 0 {
+                        content_stack.set_visible_child_name("empty");
+                        count_label.set_text("No observations");
+                    } else {
+                        count_label.set_text(&format!(
+                            "{} observation{}",
+                            n,
+                            if n == 1 { "" } else { "s" }
+                        ));
+                    }
+                    services.toast.toast("File deleted");
+                });
+            });
+            action_group.add_action(&action);
+        }
+
+        // row.copy-id — copy publisher ID to clipboard
+        {
+            let pub_id = obs.publisher_id.clone();
+            let services = self.services.clone();
+            let popover_ref = popover.clone();
+            let action = gtk::gio::SimpleAction::new("copy-id", None);
+            action.connect_activate(move |_, _| {
+                let display = gtk::gdk::Display::default();
+                if let Some(d) = display {
+                    d.clipboard().set_text(&pub_id);
+                    services.toast.toast("Publisher ID copied");
+                }
+                popover_ref.popdown();
+            });
+            action_group.add_action(&action);
+        }
+
+        // row.show-in-fm — launch default file manager on the containing directory
+        {
+            let local_path = obs.local_path.clone();
+            let services = self.services.clone();
+            let popover_ref = popover.clone();
+            let action = gtk::gio::SimpleAction::new("show-in-fm", None);
+            action.connect_activate(move |_, _| {
+                let path = std::path::Path::new(&local_path);
+                let dir = match path.parent() {
+                    Some(d) => d,
+                    None => {
+                        services.toast.toast("Unable to locate parent directory");
+                        return;
+                    }
+                };
+                let uri = format!("file://{}", dir.to_string_lossy());
+                if let Err(e) = gtk::gio::AppInfo::launch_default_for_uri(
+                    &uri,
+                    gtk::gio::AppLaunchContext::NONE,
+                ) {
+                    services
+                        .toast
+                        .toast(&format!("Could not open file manager: {}", e));
+                }
+                popover_ref.popdown();
+            });
+            action_group.add_action(&action);
+        }
+
+        row.insert_action_group("row", Some(&action_group));
+        row.add_suffix(&more_btn);
 
         row
     }
@@ -381,46 +586,56 @@ fn build_subtitle(obs: &DownloadedObservation) -> String {
     parts.join("  ·  ")
 }
 
-/// Show a simple non-blocking error window anchored to `widget`.
-fn show_error_dialog(widget: &impl IsA<gtk::Widget>, heading: &str, body: &str) {
-    let Some(root) = widget.root() else { return };
-    let Some(window) = root.downcast_ref::<gtk::Window>() else {
-        return;
+/// Show an `AdwMessageDialog` confirming permanent file deletion from disk.
+/// Returns `true` iff the user clicked "Delete".
+async fn confirm_delete_from_disk(
+    widget: &impl IsA<gtk::Widget>,
+    target_name: &str,
+    local_path: &str,
+) -> bool {
+    let root = match widget.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+        Some(w) => w,
+        None => return false,
     };
 
-    let dialog = adw::Window::builder()
-        .title(heading)
-        .default_width(360)
-        .modal(true)
-        .transient_for(window)
-        .build();
+    let filename = std::path::Path::new(local_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| local_path.to_string());
 
-    let toolbar_view = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    toolbar_view.add_top_bar(&header);
+    let body = format!(
+        "This will permanently remove {} from your computer.\n\nThis cannot be undone.",
+        if !target_name.is_empty() { target_name } else { &filename }
+    );
 
-    let content_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    content_box.set_margin_start(24);
-    content_box.set_margin_end(24);
-    content_box.set_margin_top(12);
-    content_box.set_margin_bottom(24);
+    let dialog = adw::MessageDialog::new(
+        Some(&root),
+        Some("Delete file from disk?"),
+        Some(&body),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("delete", "Delete");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
 
-    let body_label = gtk::Label::new(Some(body));
-    body_label.set_wrap(true);
-    body_label.set_halign(gtk::Align::Start);
-    content_box.append(&body_label);
+    let result = Rc::new(std::cell::RefCell::new(false));
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let tx = Rc::new(std::cell::RefCell::new(Some(tx)));
 
-    let ok_btn = gtk::Button::with_label("OK");
-    ok_btn.add_css_class("suggested-action");
-    let dialog_weak = dialog.downgrade();
-    ok_btn.connect_clicked(move |_| {
-        if let Some(d) = dialog_weak.upgrade() {
-            d.close();
-        }
-    });
-    content_box.append(&ok_btn);
+    {
+        let result = result.clone();
+        let tx = tx.clone();
+        dialog.connect_response(None, move |_, response| {
+            *result.borrow_mut() = response == "delete";
+            if let Some(tx) = tx.borrow_mut().take() {
+                let _ = tx.send(());
+            }
+        });
+    }
 
-    toolbar_view.set_content(Some(&content_box));
-    dialog.set_content(Some(&toolbar_view));
     dialog.present();
+    let _ = rx.await;
+    let val = *result.borrow();
+    val
 }
