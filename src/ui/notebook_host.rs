@@ -6,6 +6,7 @@
 
 use crate::helpers::notebook_parser;
 use crate::helpers::python_discovery;
+use crate::models::notebook_document::NotebookDocument;
 use crate::services::notebook_store::NotebookStore;
 use crate::state::AppServices;
 use crate::ui::notebook_page::NotebookPage;
@@ -40,10 +41,8 @@ pub struct NotebookTabHost {
     /// Stack that switches between the empty-state and the tab notebook.
     content_stack: gtk::Stack,
     /// Status dot for kernel (coloured circle).
-    #[allow(dead_code)]
     kernel_dot: gtk::Label,
     /// Python path label in toolbar.
-    #[allow(dead_code)]
     python_label: gtk::Label,
     /// Toast overlay for surfacing errors to the user.
     toast_overlay: adw::ToastOverlay,
@@ -71,19 +70,64 @@ impl NotebookTabHost {
         toolbar.set_margin_top(6);
         toolbar.set_margin_bottom(6);
 
-        let open_btn = gtk::Button::with_label("Open");
-        open_btn.set_icon_name("document-open-symbolic");
+        // File group: New, Open, Save, Save As
+        let new_btn = gtk::Button::from_icon_name("document-new-symbolic");
+        new_btn.add_css_class("flat");
+        new_btn.set_tooltip_text(Some("New Notebook (Ctrl+N)"));
+        toolbar.append(&new_btn);
+
+        let open_btn = gtk::Button::from_icon_name("document-open-symbolic");
         open_btn.add_css_class("flat");
-        open_btn.set_tooltip_text(Some("Open notebook"));
+        open_btn.set_tooltip_text(Some("Open Notebook (Ctrl+O)"));
         toolbar.append(&open_btn);
 
-        let save_btn = gtk::Button::with_label("Save");
-        save_btn.set_icon_name("document-save-symbolic");
+        let save_btn = gtk::Button::from_icon_name("document-save-symbolic");
         save_btn.add_css_class("flat");
-        save_btn.set_tooltip_text(Some("Save notebook (Ctrl+S)"));
+        save_btn.set_tooltip_text(Some("Save Notebook (Ctrl+S)"));
         toolbar.append(&save_btn);
 
+        let save_as_btn = gtk::Button::from_icon_name("document-save-as-symbolic");
+        save_as_btn.add_css_class("flat");
+        save_as_btn.set_tooltip_text(Some("Save As… (Ctrl+Shift+S)"));
+        toolbar.append(&save_as_btn);
+
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        // Cell group: Add Code, Add Markdown, Move Up, Move Down, Delete
+        let add_code_btn = gtk::Button::with_label("Code");
+        add_code_btn.set_icon_name("list-add-symbolic");
+        add_code_btn.add_css_class("flat");
+        add_code_btn.set_tooltip_text(Some("Add Code Cell"));
+        toolbar.append(&add_code_btn);
+
+        let add_md_btn = gtk::Button::with_label("Md");
+        add_md_btn.set_icon_name("format-text-rich-symbolic");
+        add_md_btn.add_css_class("flat");
+        add_md_btn.set_tooltip_text(Some("Add Markdown Cell"));
+        toolbar.append(&add_md_btn);
+
+        let move_up_btn = gtk::Button::from_icon_name("go-up-symbolic");
+        move_up_btn.add_css_class("flat");
+        move_up_btn.set_tooltip_text(Some("Move Cell Up"));
+        toolbar.append(&move_up_btn);
+
+        let move_down_btn = gtk::Button::from_icon_name("go-down-symbolic");
+        move_down_btn.add_css_class("flat");
+        move_down_btn.set_tooltip_text(Some("Move Cell Down"));
+        toolbar.append(&move_down_btn);
+
+        let delete_cell_btn = gtk::Button::from_icon_name("edit-delete-symbolic");
+        delete_cell_btn.add_css_class("flat");
+        delete_cell_btn.set_tooltip_text(Some("Delete Cell"));
+        toolbar.append(&delete_cell_btn);
+
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        // Exec group: Run Cell, Run All, Interrupt, Restart, Clear Outputs
+        let run_cell_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        run_cell_btn.add_css_class("flat");
+        run_cell_btn.set_tooltip_text(Some("Run Cell (Ctrl+Enter)"));
+        toolbar.append(&run_cell_btn);
 
         let run_all_btn = gtk::Button::with_label("Run All");
         run_all_btn.set_icon_name("media-seek-forward-symbolic");
@@ -91,17 +135,20 @@ impl NotebookTabHost {
         run_all_btn.set_tooltip_text(Some("Run all cells"));
         toolbar.append(&run_all_btn);
 
-        let restart_btn = gtk::Button::with_label("Restart");
-        restart_btn.set_icon_name("view-refresh-symbolic");
+        let interrupt_btn = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        interrupt_btn.add_css_class("flat");
+        interrupt_btn.set_tooltip_text(Some("Interrupt kernel"));
+        toolbar.append(&interrupt_btn);
+
+        let restart_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
         restart_btn.add_css_class("flat");
         restart_btn.set_tooltip_text(Some("Restart kernel"));
         toolbar.append(&restart_btn);
 
-        let interrupt_btn = gtk::Button::with_label("Interrupt");
-        interrupt_btn.set_icon_name("media-playback-stop-symbolic");
-        interrupt_btn.add_css_class("flat");
-        interrupt_btn.set_tooltip_text(Some("Interrupt kernel"));
-        toolbar.append(&interrupt_btn);
+        let clear_outputs_btn = gtk::Button::from_icon_name("edit-clear-all-symbolic");
+        clear_outputs_btn.add_css_class("flat");
+        clear_outputs_btn.set_tooltip_text(Some("Clear All Outputs"));
+        toolbar.append(&clear_outputs_btn);
 
         // Spacer
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -110,8 +157,9 @@ impl NotebookTabHost {
 
         // Kernel dot
         let kernel_dot = gtk::Label::new(Some("●"));
+        kernel_dot.add_css_class("kernel-dot");
         kernel_dot.add_css_class("dim-label");
-        kernel_dot.set_tooltip_text(Some("Kernel status"));
+        kernel_dot.set_tooltip_text(Some("Kernel status: not started"));
         toolbar.append(&kernel_dot);
 
         // Python path label
@@ -168,6 +216,12 @@ impl NotebookTabHost {
         // Wire toolbar buttons
         {
             let h = host.clone();
+            new_btn.connect_clicked(move |_| {
+                h.trigger_new();
+            });
+        }
+        {
+            let h = host.clone();
             open_btn.connect_clicked(move |btn| {
                 let h = h.clone();
                 let parent = btn.clone().upcast::<gtk::Widget>();
@@ -179,7 +233,73 @@ impl NotebookTabHost {
         {
             let h = host.clone();
             save_btn.connect_clicked(move |_| {
-                h.save_current();
+                h.trigger_save();
+            });
+        }
+        {
+            let h = host.clone();
+            save_as_btn.connect_clicked(move |btn| {
+                let h = h.clone();
+                let parent = btn.clone().upcast::<gtk::Widget>();
+                glib::spawn_future_local(async move {
+                    h.trigger_save_as_widget(&parent).await;
+                });
+            });
+        }
+        {
+            let h = host.clone();
+            add_code_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    let idx = page.active_cell_index() + 1;
+                    page.insert_cell(idx, "code");
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            add_md_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    let idx = page.active_cell_index() + 1;
+                    page.insert_cell(idx, "markdown");
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            move_up_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    let i = page.active_cell_index();
+                    if i > 0 {
+                        page.move_cell(i, i - 1);
+                    }
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            move_down_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    let i = page.active_cell_index();
+                    if i + 1 < page.cell_count() {
+                        page.move_cell(i, i + 1);
+                    }
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            delete_cell_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    page.delete_cell(page.active_cell_index());
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            run_cell_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    page.run_cell(page.active_cell_index());
+                }
             });
         }
         {
@@ -187,6 +307,14 @@ impl NotebookTabHost {
             run_all_btn.connect_clicked(move |_| {
                 if let Some(page) = h.current_page() {
                     page.run_all();
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            clear_outputs_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    page.clear_all_outputs();
                 }
             });
         }
@@ -207,6 +335,19 @@ impl NotebookTabHost {
             });
         }
 
+        // Wire tab-switch to update the kernel dot from the newly-active tab
+        {
+            let h = host.clone();
+            host.tab_view.connect_switch_page(move |_, _, _| {
+                if let Some(page) = h.current_page() {
+                    let label = page.current_kernel_status_label();
+                    h.update_kernel_dot_from_label(&label);
+                } else {
+                    h.update_kernel_dot("dead");
+                }
+            });
+        }
+
         // Populate recent notebooks in empty state
         host.populate_recent_list(&empty_page);
 
@@ -221,7 +362,7 @@ impl NotebookTabHost {
     }
 
     /// Open a file chooser dialog and load the selected notebook.
-    async fn open_file_dialog(&self, parent: &gtk::Widget) {
+    async fn open_file_dialog(self: Rc<Self>, parent: &gtk::Widget) {
         let root = parent.root().and_downcast::<gtk::Window>();
 
         let filter = gtk::FileFilter::new();
@@ -248,7 +389,7 @@ impl NotebookTabHost {
     /// Load a notebook from the given path and open it in a new tab.
     ///
     /// Supports `.ipynb` and `.py` files.
-    pub fn load_from_path(&self, path: &Path) {
+    pub fn load_from_path(self: &Rc<Self>, path: &Path) {
         let load_result = if path.extension().and_then(|e| e.to_str()) == Some("py") {
             notebook_parser::load_python_as_notebook(path)
         } else {
@@ -290,7 +431,7 @@ impl NotebookTabHost {
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// Add a [`NotebookPage`] as a new tab.
-    fn add_tab(&self, page: Rc<NotebookPage>, title: &str) {
+    fn add_tab(self: &Rc<Self>, page: Rc<NotebookPage>, title: &str) {
         // Build tab header: label + close button
         let tab_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let tab_label = gtk::Label::new(Some(title));
@@ -309,6 +450,14 @@ impl NotebookTabHost {
         let tab_index = self.tab_view.append_page(&page_widget, Some(&tab_box));
 
         self.pages.borrow_mut().push(page.clone());
+
+        // Wire kernel state callback to update the host's dot
+        {
+            let h = self.clone();
+            page.set_on_kernel_state_changed(Rc::new(move |state| {
+                h.update_kernel_dot(state);
+            }));
+        }
 
         // Close button handler — use a stable index captured at creation time.
         // This is a simplified approach: the index may shift if earlier tabs
@@ -364,15 +513,156 @@ impl NotebookTabHost {
     /// Save the currently-active notebook.
     fn save_current(&self) {
         if let Some(page) = self.current_page() {
+            if page.file_path.borrow().is_none() {
+                // No path set — show toast and do nothing; user should use Save As
+                self.toast_overlay
+                    .add_toast(adw::Toast::new("Use Save As to choose a file path"));
+                return;
+            }
             if let Err(e) = page.save() {
                 self.toast_overlay
                     .add_toast(adw::Toast::new(&format!("Save failed: {}", e)));
+            } else {
+                self.toast_overlay.add_toast(adw::Toast::new("Saved"));
             }
         }
     }
 
+    // ── Public entry points (for toolbar and keyboard shortcuts) ─────────────
+
+    /// Create a new untitled notebook in a new tab.
+    pub fn trigger_new(self: &Rc<Self>) {
+        let doc = NotebookDocument::create_empty();
+        let python_path = self
+            .python_path
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/usr/bin/python3"));
+
+        let page = NotebookPage::load_from_document(
+            self.services.clone(),
+            python_path,
+            doc,
+            None,
+        );
+        self.add_tab(page, "Untitled");
+    }
+
+    /// Trigger "Open" via keyboard shortcut. Uses the host's widget as parent.
+    pub fn trigger_open(self: &Rc<Self>) {
+        let h = self.clone();
+        let parent = h.widget.clone().upcast::<gtk::Widget>();
+        glib::spawn_future_local(async move {
+            h.open_file_dialog(&parent).await;
+        });
+    }
+
+    /// Trigger "Save" for the currently-active notebook.
+    pub fn trigger_save(&self) {
+        self.save_current();
+    }
+
+    /// Trigger "Save As" for the currently-active notebook.
+    pub fn trigger_save_as(self: &Rc<Self>) {
+        let h = self.clone();
+        let parent = h.widget.clone().upcast::<gtk::Widget>();
+        glib::spawn_future_local(async move {
+            h.trigger_save_as_widget(&parent).await;
+        });
+    }
+
+    /// "Save As" async implementation, parameterised by a parent widget.
+    async fn trigger_save_as_widget(self: Rc<Self>, parent: &gtk::Widget) {
+        let page = match self.current_page() {
+            Some(p) => p,
+            None => return,
+        };
+        let root = parent.root().and_downcast::<gtk::Window>();
+
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("Jupyter Notebook"));
+        filter.add_pattern("*.ipynb");
+        let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+
+        let dialog = gtk::FileDialog::builder()
+            .title("Save Notebook As")
+            .modal(true)
+            .filters(&filters)
+            .build();
+
+        if let Ok(file) = dialog.save_future(root.as_ref()).await {
+            if let Some(path) = file.path() {
+                match page.save_as(path) {
+                    Ok(()) => {
+                        self.toast_overlay.add_toast(adw::Toast::new("Saved"));
+                    }
+                    Err(e) => {
+                        self.toast_overlay
+                            .add_toast(adw::Toast::new(&format!("Save failed: {}", e)));
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Kernel status dot ────────────────────────────────────────────────────
+
+    /// Update the kernel dot based on a short state keyword.
+    fn update_kernel_dot(&self, state_kw: &str) {
+        // Remove all known state classes
+        for cls in &["idle", "busy", "starting", "dead", "error"] {
+            self.kernel_dot.remove_css_class(cls);
+        }
+        self.kernel_dot.remove_css_class("dim-label");
+
+        match state_kw {
+            "idle" => {
+                self.kernel_dot.add_css_class("idle");
+                self.kernel_dot
+                    .set_tooltip_text(Some("Kernel status: idle"));
+            }
+            "busy" => {
+                self.kernel_dot.add_css_class("busy");
+                self.kernel_dot
+                    .set_tooltip_text(Some("Kernel status: busy"));
+            }
+            "starting" => {
+                self.kernel_dot.add_css_class("starting");
+                self.kernel_dot
+                    .set_tooltip_text(Some("Kernel status: starting"));
+            }
+            "error" => {
+                self.kernel_dot.add_css_class("error");
+                self.kernel_dot
+                    .set_tooltip_text(Some("Kernel status: error"));
+            }
+            _ => {
+                self.kernel_dot.add_css_class("dim-label");
+                self.kernel_dot
+                    .set_tooltip_text(Some("Kernel status: not started"));
+            }
+        }
+    }
+
+    /// Update the kernel dot from a full status label (e.g. "Kernel: idle").
+    fn update_kernel_dot_from_label(&self, label: &str) {
+        let kw = if label.contains("idle") {
+            "idle"
+        } else if label.contains("busy") {
+            "busy"
+        } else if label.contains("starting") || label.contains("restarting") {
+            "starting"
+        } else if label.contains("failed") || label.contains("error") {
+            "error"
+        } else {
+            "dead"
+        };
+        self.update_kernel_dot(kw);
+    }
+
     /// Populate the recent-notebooks list inside the empty state widget.
-    fn populate_recent_list(&self, empty_page: &gtk::Box) {
+    fn populate_recent_list(self: &Rc<Self>, empty_page: &gtk::Box) {
         let recent = self.store.load();
         if recent.is_empty() {
             return;
@@ -415,105 +705,15 @@ impl NotebookTabHost {
             list_box.append(&row);
         }
 
-        // Connect row activation to open the notebook
-        {
-            let store_entries: Vec<String> = recent.iter().map(|e| e.path.clone()).collect();
-            let host_pages = self.pages.clone();
-            let host_services = self.services.clone();
-            let host_python = self.python_path.clone();
-            let tab_view = self.tab_view.clone();
-            let content_stack = self.content_stack.clone();
-            let store = self.store.clone();
-
-            list_box.connect_row_activated(move |_, row| {
-                let idx = row.index() as usize;
-                if let Some(path_str) = store_entries.get(idx) {
-                    let path = PathBuf::from(path_str);
-                    let load_result = if path.extension().and_then(|e| e.to_str()) == Some("py") {
-                        notebook_parser::load_python_as_notebook(&path)
-                    } else {
-                        notebook_parser::load_notebook(&path)
-                    };
-
-                    if let Ok(doc) = load_result {
-                        let name = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| path_str.clone());
-
-                        let _ = store.add(path_str, &name);
-
-                        let python_path = host_python
-                            .borrow()
-                            .clone()
-                            .unwrap_or_else(|| PathBuf::from("/usr/bin/python3"));
-
-                        let page = NotebookPage::load_from_document(
-                            host_services.clone(),
-                            python_path,
-                            doc,
-                            Some(path.clone()),
-                        );
-
-                        // Build tab header
-                        let tab_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-                        let tab_label_w = gtk::Label::new(Some(&name));
-                        tab_label_w.set_max_width_chars(20);
-                        tab_label_w
-                            .set_ellipsize(gtk::pango::EllipsizeMode::End);
-                        let close_btn =
-                            gtk::Button::from_icon_name("window-close-symbolic");
-                        close_btn.add_css_class("flat");
-                        close_btn.add_css_class("circular");
-                        tab_box.append(&tab_label_w);
-                        tab_box.append(&close_btn);
-
-                        let page_widget = page.widget().clone().upcast::<gtk::Widget>();
-                        let page_ptr = page.widget().clone();
-                        let tab_index =
-                            tab_view.append_page(&page_widget, Some(&tab_box));
-                        host_pages.borrow_mut().push(page.clone());
-
-                        let tv2 = tab_view.clone();
-                        let pages2 = host_pages.clone();
-                        let cs2 = content_stack.clone();
-                        close_btn.connect_clicked(move |_| {
-                            let n = tv2.n_pages();
-                            for i in 0..n {
-                                if let Some(child) = tv2.nth_page(Some(i)) {
-                                    if child
-                                        == page_ptr.clone().upcast::<gtk::Widget>()
-                                    {
-                                        tv2.remove_page(Some(i));
-                                        let iu = i as usize;
-                                        if iu < pages2.borrow().len() {
-                                            pages2.borrow_mut().remove(iu);
-                                        }
-                                        if pages2.borrow().is_empty() {
-                                            cs2.set_visible_child_name("empty");
-                                        }
-                                        return;
-                                    }
-                                }
-                            }
-                            if tab_index < tv2.n_pages() {
-                                tv2.remove_page(Some(tab_index));
-                                let iu = tab_index as usize;
-                                if iu < pages2.borrow().len() {
-                                    pages2.borrow_mut().remove(iu);
-                                }
-                                if pages2.borrow().is_empty() {
-                                    cs2.set_visible_child_name("empty");
-                                }
-                            }
-                        });
-
-                        content_stack.set_visible_child_name("tabs");
-                        tab_view.set_current_page(Some(tab_index));
-                    }
-                }
-            });
-        }
+        // Connect row activation to open the notebook via the unified load_from_path
+        let store_entries: Vec<String> = recent.iter().map(|e| e.path.clone()).collect();
+        let h = self.clone();
+        list_box.connect_row_activated(move |_, row| {
+            let idx = row.index() as usize;
+            if let Some(path_str) = store_entries.get(idx) {
+                h.load_from_path(&PathBuf::from(path_str));
+            }
+        });
     }
 }
 

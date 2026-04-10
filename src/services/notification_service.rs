@@ -2,6 +2,65 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use std::collections::HashSet;
 use std::sync::Mutex;
+use tokio::sync::mpsc;
+
+// ---------------------------------------------------------------------------
+// In-app toast dispatch (cross-thread safe)
+// ---------------------------------------------------------------------------
+
+/// A toast message that can be sent from any thread (tokio or glib).
+#[derive(Debug, Clone)]
+pub struct ToastMessage {
+    pub body: String,
+    /// 0 = persistent until dismissed. Default = 5 seconds.
+    pub timeout: u32,
+}
+
+impl ToastMessage {
+    pub fn new(body: impl Into<String>) -> Self {
+        Self {
+            body: body.into(),
+            timeout: 5,
+        }
+    }
+
+    pub fn persistent(body: impl Into<String>) -> Self {
+        Self {
+            body: body.into(),
+            timeout: 0,
+        }
+    }
+}
+
+/// Send-safe handle for dispatching in-app toasts from any thread.
+/// Uses `tokio::sync::mpsc::UnboundedSender` which is `Clone + Send`.
+#[derive(Clone)]
+pub struct ToastNotifier {
+    sender: mpsc::UnboundedSender<ToastMessage>,
+}
+
+impl ToastNotifier {
+    /// Create a notifier + receiver pair.
+    /// The receiver must be consumed in a `glib::spawn_future_local` loop in main_window.
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<ToastMessage>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (Self { sender }, receiver)
+    }
+
+    /// Show a toast with default timeout (5s).
+    pub fn toast(&self, body: impl Into<String>) {
+        let _ = self.sender.send(ToastMessage::new(body));
+    }
+
+    /// Show a persistent toast (user must dismiss).
+    pub fn toast_persistent(&self, body: impl Into<String>) {
+        let _ = self.sender.send(ToastMessage::persistent(body));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Desktop notifications (existing)
+// ---------------------------------------------------------------------------
 
 pub struct NotificationService {
     notified_sessions: Mutex<HashSet<String>>,

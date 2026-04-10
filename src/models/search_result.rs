@@ -141,7 +141,7 @@ impl SearchFormState {
 // Resolver
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolverResult {
     pub target: String,
     pub ra: f64,

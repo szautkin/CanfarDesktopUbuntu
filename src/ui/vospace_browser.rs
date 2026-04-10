@@ -327,6 +327,33 @@ impl VoSpaceBrowser {
             });
         }
 
+        // Drag-and-drop upload: accept gdk::FileList on the file list box
+        {
+            let b = browser.clone();
+            let drop_target = gtk::DropTarget::new(
+                gtk::gdk::FileList::static_type(),
+                gtk::gdk::DragAction::COPY,
+            );
+            drop_target.connect_drop(move |_, value, _, _| {
+                if let Ok(file_list) = value.get::<gtk::gdk::FileList>() {
+                    let paths: Vec<std::path::PathBuf> = file_list
+                        .files()
+                        .iter()
+                        .filter_map(|f| f.path())
+                        .collect();
+                    if !paths.is_empty() {
+                        let b = b.clone();
+                        glib::spawn_future_local(async move {
+                            b.upload_local_paths(paths).await;
+                        });
+                        return true;
+                    }
+                }
+                false
+            });
+            browser.file_list_box.add_controller(drop_target);
+        }
+
         browser
     }
 
@@ -344,8 +371,28 @@ impl VoSpaceBrowser {
     // -----------------------------------------------------------------------
 
     pub async fn refresh(self: &Rc<Self>) {
+        use crate::services::cache_service::{CacheKey, Freshness};
+        use crate::services::health_tracker::{ServiceName, ServiceStatus};
+
         let svc = self.services.clone();
         let path = self.current_path.borrow().clone();
+        let cache_key = CacheKey::VoSpaceNodes { path: path.clone() };
+
+        // Serve fresh cache without hitting the network
+        if let Some(entry) = self
+            .services
+            .cache
+            .read::<Vec<crate::models::VoSpaceNode>>(&cache_key)
+        {
+            if self.services.cache.entry_freshness(&cache_key, &entry) == Freshness::Fresh {
+                *self.nodes.borrow_mut() = entry.data;
+                self.redisplay_sorted();
+                self.services
+                    .health
+                    .set(ServiceName::VoSpace, ServiceStatus::Reachable);
+                return;
+            }
+        }
 
         let result = self
             .services
@@ -363,11 +410,43 @@ impl VoSpaceBrowser {
 
         match result {
             Ok(nodes) => {
+                self.services.cache.write(&cache_key, &nodes);
                 *self.nodes.borrow_mut() = nodes;
                 self.redisplay_sorted();
+                self.services
+                    .health
+                    .set(ServiceName::VoSpace, ServiceStatus::Reachable);
             }
             Err(e) => {
-                self.status_label.set_text(&format!("Error: {}", e));
+                // Network failed — serve stale cache if available
+                if let Some(entry) = self
+                    .services
+                    .cache
+                    .read::<Vec<crate::models::VoSpaceNode>>(&cache_key)
+                {
+                    let time_label = self
+                        .services
+                        .cache
+                        .cached_time_label(&cache_key)
+                        .unwrap_or_else(|| "unknown".into());
+                    *self.nodes.borrow_mut() = entry.data;
+                    self.redisplay_sorted();
+                    self.status_label
+                        .set_text(&format!("Cached listing from {}", time_label));
+                    self.services.toast.toast(&format!(
+                        "VOSpace unreachable — showing cached listing from {}",
+                        time_label
+                    ));
+                } else {
+                    self.status_label.set_text(&format!("Error: {}", e));
+                }
+                self.services.health.set(
+                    ServiceName::VoSpace,
+                    ServiceStatus::Unreachable {
+                        since: chrono::Utc::now(),
+                        reason: e.to_string(),
+                    },
+                );
             }
         }
     }
@@ -828,6 +907,59 @@ impl VoSpaceBrowser {
         }
     }
 
+    async fn action_rename(self: &Rc<Self>, idx: usize) {
+        let node = match self.nodes.borrow().get(idx).cloned() {
+            Some(n) => n,
+            None => return,
+        };
+        if node.is_container() {
+            self.show_toast("Rename not supported for folders yet");
+            return;
+        }
+
+        let new_name = match crate::ui::rename_dialog::show_rename_dialog(
+            &self.widget,
+            "Rename File",
+            &node.name,
+        )
+        .await
+        {
+            Some(name) => name,
+            None => return,
+        };
+
+        let old_path = self.build_remote_path(&node.name);
+        let svc = self.services.clone();
+        let old_name = node.name.clone();
+        let new_name_clone = new_name.clone();
+
+        let result = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                let username = svc.get_username().await;
+                match (token, username) {
+                    (Some(tok), Some(user)) => {
+                        svc.vospace
+                            .rename_file(&tok, &user, &old_path, &new_name_clone)
+                            .await
+                    }
+                    _ => Err(crate::services::ApiError::Unauthorized),
+                }
+            })
+            .await;
+
+        match result {
+            Ok(()) => {
+                self.show_toast(&format!("Renamed {} → {}", old_name, new_name));
+                self.refresh().await;
+            }
+            Err(e) => {
+                self.show_toast(&format!("Rename failed: {}", e));
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Create folder dialog
     // -----------------------------------------------------------------------
@@ -962,22 +1094,38 @@ impl VoSpaceBrowser {
             return;
         }
 
+        let mut paths = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            if let Some(file) = files.item(i).and_downcast::<gtk::gio::File>() {
+                if let Some(path) = file.path() {
+                    paths.push(path);
+                }
+            }
+        }
+
+        self.upload_local_paths(paths).await;
+    }
+
+    /// Upload a list of local file paths to the current remote directory.
+    /// Shared entry point used by both the Upload button and drag-drop.
+    async fn upload_local_paths(self: &Rc<Self>, paths: Vec<std::path::PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+
         let current = self.current_path.borrow().clone();
+        let total = paths.len();
         let mut any_error = false;
 
-        for i in 0..n {
-            let file = match files.item(i).and_downcast::<gtk::gio::File>() {
-                Some(f) => f,
-                None => continue,
-            };
-            let local_path = match file.path() {
-                Some(p) => p,
-                None => continue,
-            };
+        for local_path in paths {
             let filename = local_path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
+
+            if filename.is_empty() {
+                continue;
+            }
 
             let remote_path = if current.is_empty() {
                 filename.clone()
@@ -1016,8 +1164,8 @@ impl VoSpaceBrowser {
             }
         }
 
-        if !any_error && n > 1 {
-            self.show_toast(&format!("Uploaded {} files", n));
+        if !any_error && total > 1 {
+            self.show_toast(&format!("Uploaded {} files", total));
         }
 
         self.refresh().await;
@@ -1113,6 +1261,9 @@ fn build_context_menu(
         menu.append(Some("Download"), Some("row.download"));
     }
     menu.append(Some("Copy Path"), Some("row.copy-path"));
+    if !node_is_container {
+        menu.append(Some("Rename"), Some("row.rename"));
+    }
     menu.append(Some("Delete"), Some("row.delete"));
 
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
@@ -1164,6 +1315,22 @@ fn build_context_menu(
         let action = gtk::gio::SimpleAction::new("copy-path", None);
         action.connect_activate(move |_, _| {
             b.action_copy_node_path(idx);
+        });
+        ag.add_action(&action);
+    }
+
+    // rename (files only)
+    {
+        let b = browser.clone();
+        let popover_weak = popover.downgrade();
+        let action = gtk::gio::SimpleAction::new("rename", None);
+        action.set_enabled(!node_is_container);
+        action.connect_activate(move |_, _| {
+            if let Some(p) = popover_weak.upgrade() {
+                p.popdown();
+            }
+            let b = b.clone();
+            glib::spawn_future_local(async move { b.action_rename(idx).await });
         });
         ag.add_action(&action);
     }

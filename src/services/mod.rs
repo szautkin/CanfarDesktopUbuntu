@@ -1,6 +1,8 @@
 pub mod api_error;
 pub mod auth_service;
+pub mod cache_service;
 pub mod datalink_service;
+pub mod health_tracker;
 pub mod image_service;
 pub mod kernel_service;
 pub mod notebook_store;
@@ -18,6 +20,9 @@ pub mod token_storage;
 pub mod vospace_service;
 
 pub use api_error::ApiError;
+pub use cache_service::CacheService;
+pub use health_tracker::{ServiceHealthTracker, ServiceName, ServiceStatus};
+pub use notification_service::ToastNotifier;
 pub use auth_service::AuthService;
 pub use datalink_service::DataLinkService;
 pub use image_service::ImageService;

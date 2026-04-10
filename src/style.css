@@ -117,3 +117,23 @@ label.error {
     padding: 1px 6px;
     font-size: 10px;
 }
+
+/* Service health indicator */
+image.success { color: @success_color; }
+image.warning { color: @warning_color; }
+image.error   { color: @error_color; }
+label.success { color: @success_color; }
+label.warning { color: @warning_color; }
+
+/* Kernel status dot */
+.kernel-dot.idle     { color: #2ec27e; }
+.kernel-dot.busy     { color: #f5c211; }
+.kernel-dot.starting { color: #62a0ea; }
+.kernel-dot.dead     { color: #c64600; }
+.kernel-dot.error    { color: #e01b24; }
+
+/* Batch jobs dots */
+.batch-dot-pending    { color: #ff9800; }
+.batch-dot-running    { color: #4caf50; }
+.batch-dot-completed  { color: #2196f3; }
+.batch-dot-failed     { color: #f44336; }

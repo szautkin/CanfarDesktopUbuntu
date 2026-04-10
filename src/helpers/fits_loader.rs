@@ -13,11 +13,7 @@ pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
         .primary_hdu()
         .map_err(|e| format!("Cannot read primary HDU: {}", e))?;
 
-    let info = hdu
-        .info(&mut fptr)
-        .map_err(|e| format!("Cannot read HDU info: {}", e))?;
-
-    let (width, height) = match info {
+    let (width, height) = match &hdu.info {
         fitsio::hdu::HduInfo::ImageInfo { shape, .. } => {
             if shape.len() < 2 {
                 return Err("FITS image must be at least 2D".to_string());
@@ -31,31 +27,50 @@ pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
         .read_image(&mut fptr)
         .map_err(|e| format!("Cannot read image data: {}", e))?;
 
-    let header = read_header_keywords(&mut fptr, &hdu);
+    let (header, header_ordered) = read_header_keywords(&mut fptr, &hdu);
 
-    Ok(FitsImageData::new(width, height, pixels, header))
+    Ok(FitsImageData::new_with_ordered(
+        width,
+        height,
+        pixels,
+        header,
+        header_ordered,
+    ))
 }
 
 #[cfg(feature = "fits")]
 fn read_header_keywords(
     fptr: &mut fitsio::FitsFile,
     hdu: &fitsio::hdu::FitsHdu,
-) -> HashMap<String, String> {
+) -> (HashMap<String, String>, Vec<(String, String, String)>) {
     let mut header = HashMap::new();
+    let mut ordered = Vec::new();
 
+    // Extended whitelist covering the most common FITS vocabulary.
+    // Full header iteration is deferred (requires fits_sys FFI).
     let keys = [
-        "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2", "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1",
-        "CDELT2", "CTYPE1", "CTYPE2", "BITPIX", "OBJECT", "TELESCOP", "INSTRUME", "DATE-OBS",
-        "EXPTIME", "FILTER", "BUNIT",
+        // Core
+        "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "BSCALE", "BZERO", "BUNIT",
+        "BLANK", "OBJECT", "DATE", "DATE-OBS", "MJD-OBS", "EQUINOX", "RADESYS", "EPOCH",
+        // WCS (CD matrix)
+        "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2", "CD1_1", "CD1_2", "CD2_1", "CD2_2",
+        // WCS (PC matrix + CDELT)
+        "PC1_1", "PC1_2", "PC2_1", "PC2_2", "CDELT1", "CDELT2", "CROTA1", "CROTA2",
+        "CTYPE1", "CTYPE2", "CUNIT1", "CUNIT2",
+        // Instrument/observation metadata
+        "TELESCOP", "INSTRUME", "OBSERVER", "OBSERVAT", "DETECTOR", "FILTER", "EXPTIME",
+        "EXPOSURE", "AIRMASS", "GAIN", "RDNOISE", "SATURATE", "RA", "DEC", "PROPID",
+        "RUN", "ORIGIN", "COMMENT",
     ];
 
     for key in &keys {
         if let Ok(val) = hdu.read_key::<String>(fptr, key) {
-            header.insert(key.to_string(), val);
+            header.insert(key.to_string(), val.clone());
+            ordered.push((key.to_string(), val, String::new()));
         }
     }
 
-    header
+    (header, ordered)
 }
 
 /// Fallback when cfitsio is not available: returns an error.

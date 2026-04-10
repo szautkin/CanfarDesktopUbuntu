@@ -1,5 +1,7 @@
 use crate::models::SessionLaunchParams;
 use crate::state::AppServices;
+use crate::ui::batch_jobs_dialog::show_batch_jobs_dialog;
+use crate::ui::batch_jobs_view::BatchJobsView;
 use crate::ui::delete_dialog::show_delete_dialog;
 use crate::ui::launch_dialog::show_launch_dialog;
 use crate::ui::launch_form::LaunchFormView;
@@ -26,6 +28,7 @@ pub struct DashboardView {
     storage_quota: Rc<StorageQuotaView>,
     recent_launches: Rc<RecentLaunchesView>,
     template_manager: Rc<TemplateManager>,
+    batch_jobs: Rc<BatchJobsView>,
     services: Arc<AppServices>,
 }
 
@@ -49,12 +52,14 @@ impl DashboardView {
         // Bottom-left: Launch form
         let launch_form = LaunchFormView::new(services.clone(), session_list.sessions_ref());
 
-        // Bottom-right: Recent Launches + Platform Load + Template Manager
+        // Bottom-right: Batch Jobs + Recent Launches + Platform Load + Template Manager
         let right_bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let batch_jobs = BatchJobsView::new(services.clone());
         let recent_launches = RecentLaunchesView::new(services.clone());
         let platform_load = PlatformLoadView::new(services.clone());
         let template_manager = TemplateManager::new(services.clone());
 
+        right_bottom.append(batch_jobs.widget());
         right_bottom.append(recent_launches.widget());
         right_bottom.append(platform_load.widget());
         right_bottom.append(template_manager.widget());
@@ -74,6 +79,7 @@ impl DashboardView {
             storage_quota,
             recent_launches,
             template_manager,
+            batch_jobs,
             services,
         };
 
@@ -326,6 +332,20 @@ impl DashboardView {
                 });
             });
         }
+
+        // Batch Jobs — state-click opens the drill-down dialog
+        {
+            let services = self.services.clone();
+            let batch_jobs = self.batch_jobs.clone();
+            self.batch_jobs
+                .set_on_state_click(move |state, jobs| {
+                    let services = services.clone();
+                    let parent = batch_jobs.widget().clone();
+                    glib::spawn_future_local(async move {
+                        show_batch_jobs_dialog(&parent, services, jobs, state).await;
+                    });
+                });
+        }
     }
 
     pub async fn load_data(&self) {
@@ -333,6 +353,7 @@ impl DashboardView {
         self.storage_quota.refresh().await;
         self.platform_load.refresh().await;
         self.launch_form.load_images().await;
+        self.batch_jobs.refresh().await;
 
         self.recent_launches.refresh();
 

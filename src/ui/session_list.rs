@@ -130,6 +130,9 @@ impl SessionListView {
     }
 
     pub async fn refresh(&self) {
+        use crate::services::cache_service::CacheKey;
+        use crate::services::health_tracker::{ServiceName, ServiceStatus};
+
         self.loading_spinner.set_visible(true);
         self.loading_spinner.start();
 
@@ -142,15 +145,48 @@ impl SessionListView {
             .spawn(async move {
                 let token = svc.get_token().await;
                 if let Some(token) = token {
-                    svc.sessions.get_sessions(&token).await.ok()
+                    svc.sessions.get_sessions(&token).await
                 } else {
-                    None
+                    Err(crate::services::ApiError::Unauthorized)
                 }
             })
             .await;
 
-        if let Some(sessions) = result {
-            self.update_sessions(sessions);
+        match result {
+            Ok(sessions) => {
+                // Cache successful refresh only (never cache during/after mutations)
+                self.services.cache.write(&CacheKey::Sessions, &sessions);
+                self.services
+                    .health
+                    .set(ServiceName::Sessions, ServiceStatus::Reachable);
+                self.update_sessions(sessions);
+            }
+            Err(e) => {
+                // Network failure — serve stale cache if available
+                if let Some(entry) = self
+                    .services
+                    .cache
+                    .read::<Vec<Session>>(&CacheKey::Sessions)
+                {
+                    let time_label = self
+                        .services
+                        .cache
+                        .cached_time_label(&CacheKey::Sessions)
+                        .unwrap_or_else(|| "unknown".into());
+                    self.update_sessions(entry.data);
+                    self.services.toast.toast(&format!(
+                        "Sessions unreachable — cached list from {}",
+                        time_label
+                    ));
+                }
+                self.services.health.set(
+                    ServiceName::Sessions,
+                    ServiceStatus::Unreachable {
+                        since: chrono::Utc::now(),
+                        reason: e.to_string(),
+                    },
+                );
+            }
         }
 
         self.loading_spinner.stop();

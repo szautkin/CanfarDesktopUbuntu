@@ -21,6 +21,9 @@ pub struct AppServices {
     pub search_store: SearchStoreService,
     pub templates: TemplateService,
     pub notifications: NotificationService,
+    pub toast: ToastNotifier,
+    pub health: ServiceHealthTracker,
+    pub cache: CacheService,
     pub endpoints: Arc<ApiEndpoints>,
     pub token: RwLock<Option<String>>,
     pub username: RwLock<Option<String>>,
@@ -29,13 +32,16 @@ pub struct AppServices {
 }
 
 impl AppServices {
-    pub fn new(rt: tokio::runtime::Handle) -> Arc<Self> {
+    pub fn new(
+        rt: tokio::runtime::Handle,
+    ) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<notification_service::ToastMessage>) {
         let settings = SettingsService::new();
         let config = settings.load();
         let endpoints = Arc::new(ApiEndpoints::new(config));
         let client = Client::new();
+        let (toast, toast_rx) = ToastNotifier::new();
 
-        Arc::new(AppServices {
+        let services = Arc::new(AppServices {
             auth: AuthService::new(client.clone(), endpoints.clone()),
             sessions: SessionService::new(client.clone(), endpoints.clone()),
             images: ImageService::new(client.clone(), endpoints.clone()),
@@ -49,12 +55,16 @@ impl AppServices {
             recent_launches: RecentLaunchService::new(),
             templates: TemplateService::new(),
             notifications: NotificationService::new(),
+            toast,
+            health: ServiceHealthTracker::new(),
+            cache: CacheService::new(),
             endpoints,
             token: RwLock::new(None),
             username: RwLock::new(None),
             user_info: RwLock::new(None),
             rt,
-        })
+        });
+        (services, toast_rx)
     }
 
     /// Spawn an async task on the tokio runtime and return a future that

@@ -67,6 +67,9 @@ pub struct NotebookPage {
     pub modified: Rc<RefCell<bool>>,
     /// Kernel status label shown in the toolbar area.
     pub kernel_status: gtk::Label,
+    /// Optional callback invoked whenever the kernel state changes.
+    /// The callback receives a short state keyword: "idle", "busy", "starting", "dead", "error".
+    on_state_changed: RefCell<Option<Rc<dyn Fn(&str)>>>,
     /// App services (needed to bridge tokio → glib).
     services: Arc<AppServices>,
 }
@@ -149,6 +152,7 @@ impl NotebookPage {
             file_path: Rc::new(RefCell::new(path)),
             modified: Rc::new(RefCell::new(false)),
             kernel_status,
+            on_state_changed: RefCell::new(None),
             services,
         });
 
@@ -510,9 +514,73 @@ impl NotebookPage {
         }
     }
 
-    /// Update the kernel status label text.
+    /// Update the kernel status label text and notify observers.
     fn update_kernel_status_label(&self, text: &str) {
         self.kernel_status.set_label(text);
+
+        // Derive a short state keyword for observers
+        let state_kw = if text.contains("idle") {
+            "idle"
+        } else if text.contains("busy") {
+            "busy"
+        } else if text.contains("starting") || text.contains("restarting") {
+            "starting"
+        } else if text.contains("failed") || text.contains("error") {
+            "error"
+        } else if text.contains("not started") || text.contains("dead") {
+            "dead"
+        } else {
+            "unknown"
+        };
+
+        if let Some(cb) = self.on_state_changed.borrow().as_ref() {
+            cb(state_kw);
+        }
+    }
+
+    /// Register a callback to be invoked whenever the kernel state changes.
+    pub fn set_on_kernel_state_changed(&self, cb: Rc<dyn Fn(&str) + 'static>) {
+        *self.on_state_changed.borrow_mut() = Some(cb);
+    }
+
+    /// Return the current kernel status label text.
+    pub fn current_kernel_status_label(&self) -> String {
+        self.kernel_status.label().to_string()
+    }
+
+    /// Return the index of the currently-active cell.
+    pub fn active_cell_index(&self) -> usize {
+        *self.active_cell.borrow()
+    }
+
+    /// Return the number of cells in the document.
+    pub fn cell_count(&self) -> usize {
+        self.document.borrow().cells.len()
+    }
+
+    /// Clear all cell outputs (both in the document and the widgets).
+    pub fn clear_all_outputs(self: &Rc<Self>) {
+        {
+            let mut doc = self.document.borrow_mut();
+            for cell in &mut doc.cells {
+                cell.outputs.clear();
+                cell.execution_count = None;
+            }
+        }
+        // Clear widget outputs in place (avoids full rebuild)
+        for widget in self.cell_widgets.borrow().iter() {
+            if let CellWidget::Code(code) = widget {
+                code.set_outputs(&[]);
+                code.clear_execution_count();
+            }
+        }
+        *self.modified.borrow_mut() = true;
+    }
+
+    /// Save the notebook to a new path ("Save As").
+    pub fn save_as(&self, path: PathBuf) -> Result<(), String> {
+        *self.file_path.borrow_mut() = Some(path);
+        self.save()
     }
 
     /// Start the Python kernel subprocess.

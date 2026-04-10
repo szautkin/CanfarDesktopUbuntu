@@ -13,13 +13,28 @@ pub struct WcsInfo {
 }
 
 impl WcsInfo {
-    /// Convert pixel coordinates to sky coordinates (RA, Dec) in degrees
+    /// Convert pixel coordinates to sky coordinates (RA, Dec) in degrees.
+    /// Linear approximation only (sufficient for small fields; TAN/SIN projections deferred).
     pub fn pixel_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
         let dx = x - self.crpix1;
         let dy = y - self.crpix2;
         let ra = self.crval1 + self.cd1_1 * dx + self.cd1_2 * dy;
         let dec = self.crval2 + self.cd2_1 * dx + self.cd2_2 * dy;
         (ra, dec)
+    }
+
+    /// Convert sky coordinates (RA, Dec in degrees) to pixel coordinates.
+    /// Inverse of `pixel_to_sky` using the CD-matrix inverse.
+    pub fn sky_to_pixel(&self, ra: f64, dec: f64) -> (f64, f64) {
+        let dra = ra - self.crval1;
+        let ddec = dec - self.crval2;
+        let det = self.cd1_1 * self.cd2_2 - self.cd1_2 * self.cd2_1;
+        if det.abs() < 1e-20 {
+            return (self.crpix1, self.crpix2);
+        }
+        let dx = (self.cd2_2 * dra - self.cd1_2 * ddec) / det;
+        let dy = (-self.cd2_1 * dra + self.cd1_1 * ddec) / det;
+        (self.crpix1 + dx, self.crpix2 + dy)
     }
 
     /// Format RA/Dec as sexagesimal strings
@@ -49,6 +64,8 @@ pub struct FitsImageData {
     pub height: usize,
     pub pixels: Vec<f64>,
     pub header: HashMap<String, String>,
+    /// Ordered list of (keyword, value, comment) tuples for the Header Panel.
+    pub header_ordered: Vec<(String, String, String)>,
     pub wcs: Option<WcsInfo>,
     pub min_val: f64,
     pub max_val: f64,
@@ -61,8 +78,40 @@ impl FitsImageData {
         pixels: Vec<f64>,
         header: HashMap<String, String>,
     ) -> Self {
-        let min_val = pixels.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_val = pixels.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        // Build ordered list from the HashMap (alphabetical for now; loader can populate directly)
+        let mut header_ordered: Vec<(String, String, String)> = header
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone(), String::new()))
+            .collect();
+        header_ordered.sort_by(|a, b| a.0.cmp(&b.0));
+
+        Self::new_with_ordered(width, height, pixels, header, header_ordered)
+    }
+
+    pub fn new_with_ordered(
+        width: usize,
+        height: usize,
+        pixels: Vec<f64>,
+        header: HashMap<String, String>,
+        header_ordered: Vec<(String, String, String)>,
+    ) -> Self {
+        let min_val = pixels
+            .iter()
+            .cloned()
+            .filter(|v| v.is_finite())
+            .fold(f64::INFINITY, f64::min);
+        let max_val = pixels
+            .iter()
+            .cloned()
+            .filter(|v| v.is_finite())
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // Guard against all-NaN or empty pixel arrays
+        let (min_val, max_val) = if min_val.is_finite() && max_val.is_finite() {
+            (min_val, max_val)
+        } else {
+            (0.0, 1.0)
+        };
 
         let wcs = Self::parse_wcs(&header);
 
@@ -71,6 +120,7 @@ impl FitsImageData {
             height,
             pixels,
             header,
+            header_ordered,
             wcs,
             min_val,
             max_val,

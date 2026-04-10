@@ -1,5 +1,8 @@
 pub mod adql_builder;
+pub mod adql_summary;
+pub mod batch_jobs_helper;
 pub mod data_train_manager;
+pub mod fits_bookmarks;
 pub mod fits_loader;
 pub mod fits_renderer;
 pub mod image_parser;

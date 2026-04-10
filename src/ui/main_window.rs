@@ -19,7 +19,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
+pub fn build_main_window(
+    app: &adw::Application,
+    services: Arc<AppServices>,
+    toast_rx: tokio::sync::mpsc::UnboundedReceiver<crate::services::notification_service::ToastMessage>,
+) {
     // Apply saved theme on startup
     let config = services.settings.load();
     settings_page::apply_theme(&config.theme);
@@ -33,7 +37,13 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
 
     let header = adw::HeaderBar::new();
 
-    // --- Left side: Files toggle, About button + status ---
+    // --- Left side: Back, Files toggle, About button + status ---
+    let back_btn = gtk::Button::from_icon_name("go-previous-symbolic");
+    back_btn.set_tooltip_text(Some("Back (Alt+Left)"));
+    back_btn.add_css_class("flat");
+    back_btn.set_sensitive(false);
+    header.pack_start(&back_btn);
+
     let files_btn = gtk::ToggleButton::new();
     files_btn.set_icon_name("folder-symbolic");
     files_btn.set_tooltip_text(Some("Toggle File Panel (Ctrl+B)"));
@@ -48,6 +58,37 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     status_label.add_css_class("dim-label");
     status_label.add_css_class("caption");
     header.pack_start(&status_label);
+
+    // --- Service health indicator ---
+    let health_icon = gtk::Image::from_icon_name("network-idle-symbolic");
+    health_icon.set_pixel_size(16);
+    let health_label = gtk::Label::new(Some("Connected"));
+    health_label.add_css_class("caption");
+    let health_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    health_box.append(&health_icon);
+    health_box.append(&health_label);
+
+    // Popover with per-service status rows
+    let health_list = gtk::ListBox::new();
+    health_list.set_selection_mode(gtk::SelectionMode::None);
+    health_list.add_css_class("boxed-list");
+
+    let health_popover_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    health_popover_box.set_margin_start(8);
+    health_popover_box.set_margin_end(8);
+    health_popover_box.set_margin_top(8);
+    health_popover_box.set_margin_bottom(8);
+    health_popover_box.append(&health_list);
+
+    let health_popover = gtk::Popover::new();
+    health_popover.set_child(Some(&health_popover_box));
+
+    let health_btn = gtk::MenuButton::new();
+    health_btn.set_child(Some(&health_box));
+    health_btn.set_popover(Some(&health_popover));
+    health_btn.add_css_class("flat");
+    health_btn.set_tooltip_text(Some("Service status"));
+    header.pack_start(&health_btn);
 
     // --- Center: ViewSwitcher ---
     let view_stack = adw::ViewStack::new();
@@ -86,6 +127,19 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&view_stack));
 
+    // Wire cross-thread toast dispatch: any thread can call services.toast.toast("...")
+    {
+        let overlay = toast_overlay.clone();
+        let mut rx = toast_rx;
+        glib::spawn_future_local(async move {
+            while let Some(msg) = rx.recv().await {
+                let toast = adw::Toast::new(&msg.body);
+                toast.set_timeout(msg.timeout);
+                overlay.add_toast(toast);
+            }
+        });
+    }
+
     // --- Paned: file panel (left) + toast overlay (right) ---
     let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
     paned.set_start_child(Some(file_panel.widget()));
@@ -97,9 +151,23 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
     paned.set_resize_start_child(false);
     paned.set_resize_end_child(true);
 
+    // --- Degraded mode banner (hidden by default) ---
+    let banner = adw::Banner::new("Some services unreachable — working with cached data");
+    banner.set_button_label(Some("Details"));
+    banner.set_revealed(false);
+
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header);
+    toolbar_view.add_top_bar(&banner);
     toolbar_view.set_content(Some(&paned));
+
+    // Banner "Details" opens the health popover
+    {
+        let health_btn = health_btn.clone();
+        banner.connect_button_clicked(move |_| {
+            health_btn.popup();
+        });
+    }
 
     window.set_content(Some(&toolbar_view));
 
@@ -272,7 +340,6 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         let view_stack = view_stack.clone();
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
-        let toast_overlay = toast_overlay.clone();
 
         let logout_action = gtk::gio::SimpleAction::new("logout", None);
         logout_action.connect_activate(move |_, _| {
@@ -283,7 +350,6 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
             let view_stack = view_stack.clone();
             let dashboard = dashboard.clone();
             let cached_user_info = cached_user_info.clone();
-            let toast_overlay = toast_overlay.clone();
 
             glib::spawn_future_local(async move {
                 let svc = services.clone();
@@ -299,8 +365,7 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
                 view_stack.set_visible_child_name("home");
                 *dashboard.borrow_mut() = None;
 
-                let toast = adw::Toast::new("Logged out successfully");
-                toast_overlay.add_toast(toast);
+                services.toast.toast("Logged out successfully");
             });
         });
         app.add_action(&logout_action);
@@ -317,7 +382,6 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
         let vospace = vospace_browser.clone();
-        let toast_overlay = toast_overlay.clone();
 
         login_btn.connect_clicked(move |_| {
             let window = window_clone.clone();
@@ -329,7 +393,6 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
             let dashboard = dashboard.clone();
             let cached_user_info = cached_user_info.clone();
             let vospace = vospace.clone();
-            let toast_overlay = toast_overlay.clone();
 
             glib::spawn_future_local(async move {
                 if let Some((_username, _token, user_info)) =
@@ -345,8 +408,7 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
                     navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                     vospace.refresh().await;
 
-                    let toast = adw::Toast::new(&format!("Welcome back, {}!", &display));
-                    toast_overlay.add_toast(toast);
+                    services.toast.toast(&format!("Welcome back, {}!", &display));
                 }
             });
         });
@@ -363,7 +425,6 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
         let vospace = vospace_browser.clone();
-        let toast_overlay = toast_overlay.clone();
 
         glib::spawn_future_local(async move {
             if let Some(stored_token) = TokenStorage::get_token() {
@@ -415,8 +476,7 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
                         navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                         vospace.refresh().await;
 
-                        let toast = adw::Toast::new(&format!("Welcome back, {}!", &display));
-                        toast_overlay.add_toast(toast);
+                        services.toast.toast(&format!("Welcome back, {}!", &display));
                     }
                     Err(_) => {
                         TokenStorage::clear();
@@ -430,10 +490,179 @@ pub fn build_main_window(app: &adw::Application, services: Arc<AppServices>) {
         });
     }
 
+    // Periodic health status UI refresh (every 10 seconds)
+    {
+        use crate::services::health_tracker::{ServiceName, ServiceStatus};
+
+        let services = services.clone();
+        let health_icon = health_icon.clone();
+        let health_label = health_label.clone();
+        let health_list = health_list.clone();
+        let banner = banner.clone();
+
+        glib::timeout_add_seconds_local(10, move || {
+            let count = services.health.unreachable_count();
+
+            // Update header indicator
+            if count == 0 {
+                health_icon.set_icon_name(Some("network-idle-symbolic"));
+                health_label.set_text("Connected");
+                health_icon.remove_css_class("warning");
+                health_icon.remove_css_class("error");
+                health_icon.add_css_class("success");
+            } else {
+                health_icon.set_icon_name(Some("dialog-warning-symbolic"));
+                health_label.set_text(&format!("{} offline", count));
+                health_icon.remove_css_class("success");
+                health_icon.add_css_class("warning");
+            }
+
+            // Update banner visibility
+            banner.set_revealed(count > 0);
+
+            // Rebuild popover list
+            while let Some(child) = health_list.first_child() {
+                health_list.remove(&child);
+            }
+            for svc_name in ServiceName::all() {
+                let status = services.health.get(svc_name);
+                let row = adw::ActionRow::builder()
+                    .title(&svc_name.to_string())
+                    .build();
+                row.add_prefix(&gtk::Image::from_icon_name(svc_name.icon_name()));
+
+                let status_lbl = gtk::Label::new(None);
+                status_lbl.add_css_class("caption");
+                match &status {
+                    ServiceStatus::Unknown => {
+                        status_lbl.set_text("Unknown");
+                        status_lbl.add_css_class("dim-label");
+                    }
+                    ServiceStatus::Reachable => {
+                        status_lbl.set_text("Online");
+                        status_lbl.add_css_class("success");
+                    }
+                    ServiceStatus::Unreachable { since, .. } => {
+                        let local: chrono::DateTime<chrono::Local> = (*since).into();
+                        row.set_subtitle(&format!("Last seen {}", local.format("%H:%M")));
+                        status_lbl.set_text("Offline");
+                        status_lbl.add_css_class("error");
+                    }
+                }
+                row.add_suffix(&status_lbl);
+                health_list.append(&row);
+            }
+
+            glib::ControlFlow::Continue
+        });
+    }
+
+    // Navigation history (back button)
+    let nav_history: Rc<NavHistory> = Rc::new(NavHistory::new(32));
+    // Seed with the current page so the first navigation pushes correctly
+    if let Some(current) = view_stack.visible_child_name() {
+        nav_history.set_current(current.as_str());
+    }
+    {
+        let nav = nav_history.clone();
+        let back_btn_clone = back_btn.clone();
+        let view_stack_clone = view_stack.clone();
+        view_stack.connect_notify_local(Some("visible-child-name"), move |vs, _| {
+            if nav.is_suppressed() {
+                return;
+            }
+            if let Some(name) = vs.visible_child_name() {
+                nav.push(name.as_str());
+                back_btn_clone.set_sensitive(nav.can_go_back());
+            }
+            let _ = &view_stack_clone; // keep clone alive inside closure
+        });
+    }
+    {
+        let nav = nav_history.clone();
+        let back_btn_clone = back_btn.clone();
+        let view_stack_clone = view_stack.clone();
+        back_btn.connect_clicked(move |_| {
+            if let Some(prev) = nav.go_back() {
+                nav.suppress(true);
+                view_stack_clone.set_visible_child_name(&prev);
+                nav.suppress(false);
+                back_btn_clone.set_sensitive(nav.can_go_back());
+            }
+        });
+    }
+
     // Keyboard shortcuts
-    setup_keyboard_shortcuts(&window, &view_stack, &file_panel, &files_btn);
+    setup_keyboard_shortcuts(
+        &window,
+        &view_stack,
+        &file_panel,
+        &files_btn,
+        &notebook_host,
+        &back_btn,
+    );
 
     window.present();
+}
+
+// ---------------------------------------------------------------------------
+// Navigation history
+// ---------------------------------------------------------------------------
+
+struct NavHistory {
+    stack: RefCell<Vec<String>>,
+    current: RefCell<Option<String>>,
+    suppressed: RefCell<bool>,
+    max_len: usize,
+}
+
+impl NavHistory {
+    fn new(max_len: usize) -> Self {
+        Self {
+            stack: RefCell::new(Vec::new()),
+            current: RefCell::new(None),
+            suppressed: RefCell::new(false),
+            max_len,
+        }
+    }
+
+    fn set_current(&self, page: &str) {
+        *self.current.borrow_mut() = Some(page.to_string());
+    }
+
+    fn push(&self, new_page: &str) {
+        let mut current_slot = self.current.borrow_mut();
+        if let Some(prev) = current_slot.take() {
+            if prev != new_page {
+                let mut stack = self.stack.borrow_mut();
+                stack.push(prev);
+                // Cap history size
+                if stack.len() > self.max_len {
+                    stack.remove(0);
+                }
+            }
+        }
+        *current_slot = Some(new_page.to_string());
+    }
+
+    fn go_back(&self) -> Option<String> {
+        let mut stack = self.stack.borrow_mut();
+        let prev = stack.pop()?;
+        *self.current.borrow_mut() = Some(prev.clone());
+        Some(prev)
+    }
+
+    fn can_go_back(&self) -> bool {
+        !self.stack.borrow().is_empty()
+    }
+
+    fn suppress(&self, value: bool) {
+        *self.suppressed.borrow_mut() = value;
+    }
+
+    fn is_suppressed(&self) -> bool {
+        *self.suppressed.borrow()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -445,13 +674,29 @@ fn setup_keyboard_shortcuts(
     view_stack: &adw::ViewStack,
     file_panel: &Rc<FilePanel>,
     files_btn: &gtk::ToggleButton,
+    notebook_host: &Rc<NotebookTabHost>,
+    back_btn: &gtk::Button,
 ) {
     let controller = gtk::EventControllerKey::new();
     let vs = view_stack.clone();
     let fp = Rc::clone(file_panel);
     let fb = files_btn.clone();
+    let nh = notebook_host.clone();
+    let bb = back_btn.clone();
     controller.connect_key_pressed(move |_, key, _code, modifier| {
         let ctrl = modifier.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
+        let shift = modifier.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+        let alt = modifier.contains(gtk4::gdk::ModifierType::ALT_MASK);
+        let on_notebook = vs.visible_child_name().as_deref() == Some("notebook");
+
+        // Alt+Left → back
+        if alt && key == gtk4::gdk::Key::Left {
+            if bb.is_sensitive() {
+                bb.emit_clicked();
+            }
+            return gtk::glib::Propagation::Stop;
+        }
+
         if ctrl {
             match key {
                 gtk4::gdk::Key::comma => {
@@ -491,6 +736,23 @@ fn setup_keyboard_shortcuts(
                     let new_visible = !fp.widget().is_visible();
                     fp.widget().set_visible(new_visible);
                     fb.set_active(new_visible);
+                    return gtk::glib::Propagation::Stop;
+                }
+                // Notebook shortcuts: only active when the notebook page is visible
+                gtk4::gdk::Key::n if on_notebook && !shift => {
+                    nh.trigger_new();
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::o if on_notebook && !shift => {
+                    nh.trigger_open();
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::s if on_notebook && !shift => {
+                    nh.trigger_save();
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk4::gdk::Key::s if on_notebook && shift => {
+                    nh.trigger_save_as();
                     return gtk::glib::Propagation::Stop;
                 }
                 _ => {}

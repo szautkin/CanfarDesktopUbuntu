@@ -35,6 +35,7 @@ pub struct SearchPage {
     resolver: gtk::DropDown,
     radius: gtk::SpinButton,
     pixel_scale: gtk::Entry,
+    pixel_scale_unit: gtk::DropDown,
     spatial_cutout: gtk::CheckButton,
     resolver_status: gtk::Label,
     // --- Form fields (Temporal) ---
@@ -142,8 +143,16 @@ impl SearchPage {
         columns.attach(&obs_col, 0, 0, 1, 1);
 
         // Col 2: Spatial
-        let (spatial_col, target, resolver, radius, pixel_scale, spatial_cutout, resolver_status) =
-            build_spatial_column();
+        let (
+            spatial_col,
+            target,
+            resolver,
+            radius,
+            pixel_scale,
+            pixel_scale_unit,
+            spatial_cutout,
+            resolver_status,
+        ) = build_spatial_column();
         columns.attach(&spatial_col, 1, 0, 1, 1);
 
         // Col 3: Temporal
@@ -441,6 +450,7 @@ impl SearchPage {
             resolver,
             radius,
             pixel_scale,
+            pixel_scale_unit,
             spatial_cutout,
             resolver_status,
             obs_date,
@@ -735,7 +745,7 @@ impl SearchPage {
             search_radius: self.radius.value(),
             pixel_scale_max: ps_max,
             pixel_scale_unit: pixel_scale_units
-                .first() // TODO: add pixel scale unit dropdown to UI
+                .get(self.pixel_scale_unit.selected() as usize)
                 .unwrap_or(&"arcsec")
                 .to_string(),
             spatial_cutout: self.spatial_cutout.is_active(),
@@ -1435,146 +1445,298 @@ impl SearchPage {
         dialog.present();
     }
 
-    fn refresh_recent(&self) {
+    fn refresh_recent(self: &Rc<Self>) {
+        use crate::helpers::adql_summary;
+
         while let Some(child) = self.recent_list.first_child() {
             self.recent_list.remove(&child);
         }
+
+        self.recent_list.add_css_class("boxed-list");
+
         for recent in self.services.search_store.load_recent() {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            row.set_margin_start(8);
-            row.set_margin_end(8);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
+            // Use the user-provided summary as the title; fall back to the parsed
+            // ADQL short summary if the stored one is empty.
+            let title = if recent.summary.trim().is_empty() {
+                adql_summary::short_summary(&recent.adql)
+            } else {
+                recent.summary.clone()
+            };
+            let when = adql_summary::format_saved_at(&recent.searched_at);
+            let result_count_text = format!(
+                "{} result{}",
+                recent.result_count,
+                if recent.result_count == 1 { "" } else { "s" }
+            );
+            let subtitle = if when.is_empty() {
+                result_count_text
+            } else {
+                format!("{} · {}", result_count_text, when)
+            };
 
-            let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            text_box.set_hexpand(true);
-            let summary = gtk::Label::new(Some(&recent.summary));
-            summary.add_css_class("caption");
-            summary.set_halign(gtk::Align::Start);
-            summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            text_box.append(&summary);
-            let count_label = gtk::Label::new(Some(&format!("{} results", recent.result_count)));
-            count_label.add_css_class("caption");
-            count_label.add_css_class("dim-label");
-            count_label.set_halign(gtk::Align::Start);
-            text_box.append(&count_label);
-            row.append(&text_box);
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(&title))
+                .subtitle(glib::markup_escape_text(&subtitle))
+                .activatable(true)
+                .build();
 
-            let load_btn = gtk::Button::from_icon_name("document-open-symbolic");
+            let icon = gtk::Image::from_icon_name("document-open-recent-symbolic");
+            icon.add_css_class("dim-label");
+            row.add_prefix(&icon);
+
+            // Run button
+            let run_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
+            run_btn.add_css_class("flat");
+            run_btn.set_valign(gtk::Align::Center);
+            run_btn.set_tooltip_text(Some("Re-run query"));
+            {
+                let page_rc = Rc::clone(self);
+                let adql = recent.adql.clone();
+                run_btn.connect_clicked(move |_| {
+                    let adql = adql.clone();
+                    let p = page_rc.clone();
+                    glib::spawn_future_local(async move {
+                        p.adql_editor.buffer().set_text(&adql);
+                        p.run_query(&adql, p.max_records.value() as u32, None)
+                            .await;
+                        p.notebook.set_current_page(Some(1));
+                        p.render_results_page();
+                    });
+                });
+            }
+            row.add_suffix(&run_btn);
+
+            // Load into editor
+            let load_btn = gtk::Button::from_icon_name("document-edit-symbolic");
             load_btn.add_css_class("flat");
+            load_btn.set_valign(gtk::Align::Center);
             load_btn.set_tooltip_text(Some("Load into ADQL editor"));
-            let adql = recent.adql.clone();
-            let editor = self.adql_editor.clone();
-            let notebook = self.notebook.clone();
-            load_btn.connect_clicked(move |_| {
-                editor.buffer().set_text(&adql);
-                notebook.set_current_page(Some(2)); // Switch to ADQL Editor tab
-            });
-            row.append(&load_btn);
+            {
+                let adql = recent.adql.clone();
+                let editor = self.adql_editor.clone();
+                let notebook = self.notebook.clone();
+                load_btn.connect_clicked(move |_| {
+                    editor.buffer().set_text(&adql);
+                    notebook.set_current_page(Some(2));
+                });
+            }
+            row.add_suffix(&load_btn);
 
+            // Remove button
             let remove_btn = gtk::Button::from_icon_name("user-trash-symbolic");
             remove_btn.add_css_class("flat");
+            remove_btn.set_valign(gtk::Align::Center);
             remove_btn.set_tooltip_text(Some("Remove"));
-            // Remove by saving all except this one
-            let services_ref = self.services.clone();
-            let recent_adql = recent.adql.clone();
-            let recent_list = self.recent_list.clone();
-            let services = self.services.clone();
-            remove_btn.connect_clicked(move |_| {
-                let mut all = services.search_store.load_recent();
-                all.retain(|r| r.adql != recent_adql);
-                // Rewrite the file with the filtered list
-                let _ = services_ref.search_store.clear_recent();
-                for r in all.into_iter().rev() {
-                    let _ = services_ref.search_store.save_recent(r);
-                }
-                // Clear and re-render (simplified — just clear for now)
-                while let Some(child) = recent_list.first_child() {
-                    recent_list.remove(&child);
-                }
-            });
-            row.append(&remove_btn);
+            {
+                let page_rc = Rc::clone(self);
+                let recent_adql = recent.adql.clone();
+                remove_btn.connect_clicked(move |_| {
+                    let mut all = page_rc.services.search_store.load_recent();
+                    all.retain(|r| r.adql != recent_adql);
+                    let _ = page_rc.services.search_store.clear_recent();
+                    for r in all.into_iter().rev() {
+                        let _ = page_rc.services.search_store.save_recent(r);
+                    }
+                    page_rc.refresh_recent();
+                });
+            }
+            row.add_suffix(&remove_btn);
+
+            // Row activation → load into editor (lighter-weight than full dialog)
+            {
+                let adql = recent.adql.clone();
+                let editor = self.adql_editor.clone();
+                let notebook = self.notebook.clone();
+                row.connect_activated(move |_| {
+                    editor.buffer().set_text(&adql);
+                    notebook.set_current_page(Some(2));
+                });
+            }
 
             self.recent_list.append(&row);
         }
     }
 
     fn refresh_saved(self: &Rc<Self>) {
+        use crate::helpers::adql_summary;
+
+        // Clear existing rows
         while let Some(child) = self.saved_list.first_child() {
             self.saved_list.remove(&child);
         }
-        for saved in self.services.search_store.load_saved() {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            row.set_margin_start(8);
-            row.set_margin_end(8);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
 
-            let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            text_box.set_hexpand(true);
-            let name_label = gtk::Label::new(Some(&saved.name));
-            name_label.add_css_class("caption");
-            name_label.set_halign(gtk::Align::Start);
-            text_box.append(&name_label);
-            let adql_preview = gtk::Label::new(Some(&saved.adql));
-            adql_preview.add_css_class("caption");
-            adql_preview.add_css_class("dim-label");
-            adql_preview.set_halign(gtk::Align::Start);
-            adql_preview.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            adql_preview.set_max_width_chars(25);
-            text_box.append(&adql_preview);
-            row.append(&text_box);
+        // Apply boxed-list styling so AdwActionRows look like a proper card list
+        self.saved_list.add_css_class("boxed-list");
 
+        let saved_queries = self.services.search_store.load_saved();
+
+        for saved in saved_queries {
+            let summary = adql_summary::short_summary(&saved.adql);
+            let when = adql_summary::format_saved_at(&saved.created_at);
+            let subtitle = if when.is_empty() {
+                summary
+            } else {
+                format!("{} · {}", summary, when)
+            };
+
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(&saved.name))
+                .subtitle(glib::markup_escape_text(&subtitle))
+                .activatable(true)
+                .build();
+
+            // Prefix: query icon
+            let icon = gtk::Image::from_icon_name("view-list-bullet-symbolic");
+            icon.add_css_class("dim-label");
+            row.add_prefix(&icon);
+
+            // Suffix: Run + Details + Delete
             let run_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
             run_btn.add_css_class("flat");
+            run_btn.set_valign(gtk::Align::Center);
             run_btn.set_tooltip_text(Some("Run query"));
-            let adql_for_run = saved.adql.clone();
-            let page_rc = Rc::clone(self);
-            run_btn.connect_clicked(move |_| {
-                let adql = adql_for_run.clone();
-                let p = page_rc.clone();
-                glib::spawn_future_local(async move {
-                    p.adql_editor.buffer().set_text(&adql);
-                    p.run_query(&adql, p.max_records.value() as u32, None)
-                        .await;
-                    p.notebook.set_current_page(Some(1));
-                    p.render_results_page();
+            {
+                let page_rc = Rc::clone(self);
+                let adql = saved.adql.clone();
+                run_btn.connect_clicked(move |_| {
+                    let adql = adql.clone();
+                    let p = page_rc.clone();
+                    glib::spawn_future_local(async move {
+                        p.adql_editor.buffer().set_text(&adql);
+                        p.run_query(&adql, p.max_records.value() as u32, None)
+                            .await;
+                        p.notebook.set_current_page(Some(1));
+                        p.render_results_page();
+                    });
                 });
-            });
-            row.append(&run_btn);
+            }
+            row.add_suffix(&run_btn);
 
-            let load_btn = gtk::Button::from_icon_name("document-open-symbolic");
-            load_btn.add_css_class("flat");
-            load_btn.set_tooltip_text(Some("Load into editor"));
-            let adql = saved.adql.clone();
-            let editor = self.adql_editor.clone();
-            let notebook = self.notebook.clone();
-            load_btn.connect_clicked(move |_| {
-                editor.buffer().set_text(&adql);
-                notebook.set_current_page(Some(2)); // ADQL Editor tab
-            });
-            row.append(&load_btn);
+            let view_btn = gtk::Button::from_icon_name("view-reveal-symbolic");
+            view_btn.add_css_class("flat");
+            view_btn.set_valign(gtk::Align::Center);
+            view_btn.set_tooltip_text(Some("View details"));
+            {
+                let page_rc = Rc::clone(self);
+                let saved_c = saved.clone();
+                view_btn.connect_clicked(move |_| {
+                    let p = page_rc.clone();
+                    let s = saved_c.clone();
+                    glib::spawn_future_local(async move {
+                        p.open_saved_query_details(s).await;
+                    });
+                });
+            }
+            row.add_suffix(&view_btn);
 
             let del_btn = gtk::Button::from_icon_name("user-trash-symbolic");
             del_btn.add_css_class("flat");
+            del_btn.set_valign(gtk::Align::Center);
             del_btn.set_tooltip_text(Some("Delete"));
-            let services_ref = self.services.clone();
-            let name_for_del = saved.name.clone();
-            let saved_list = self.saved_list.clone();
-            del_btn.connect_clicked(move |_| {
-                let _ = services_ref.search_store.delete_saved(&name_for_del);
-                // Clear and refresh would need self — just clear for now
-                while let Some(child) = saved_list.first_child() {
-                    saved_list.remove(&child);
-                }
-            });
-            row.append(&del_btn);
+            {
+                let page_rc = Rc::clone(self);
+                let name_for_del = saved.name.clone();
+                del_btn.connect_clicked(move |_| {
+                    let _ = page_rc.services.search_store.delete_saved(&name_for_del);
+                    page_rc.refresh_saved();
+                    page_rc.status_label.set_text("Query deleted");
+                });
+            }
+            row.add_suffix(&del_btn);
+
+            // Row activation (click / Enter) → open details dialog
+            {
+                let page_rc = Rc::clone(self);
+                let saved_c = saved.clone();
+                row.connect_activated(move |_| {
+                    let p = page_rc.clone();
+                    let s = saved_c.clone();
+                    glib::spawn_future_local(async move {
+                        p.open_saved_query_details(s).await;
+                    });
+                });
+            }
 
             self.saved_list.append(&row);
         }
     }
 
+    /// Open the saved-query detail dialog and handle the chosen action.
+    async fn open_saved_query_details(
+        self: &Rc<Self>,
+        saved: crate::models::search_result::SavedQuery,
+    ) {
+        use crate::models::search_result::SavedQuery;
+        use crate::ui::saved_query_dialog::{show_saved_query_dialog, SavedQueryAction};
+
+        let action = show_saved_query_dialog(
+            &self.widget,
+            &saved.name,
+            &saved.adql,
+            &saved.created_at,
+        )
+        .await;
+
+        match action {
+            SavedQueryAction::None => {}
+            SavedQueryAction::Load => {
+                self.adql_editor.buffer().set_text(&saved.adql);
+                self.notebook.set_current_page(Some(2));
+            }
+            SavedQueryAction::Run => {
+                self.adql_editor.buffer().set_text(&saved.adql);
+                self.run_query(&saved.adql, self.max_records.value() as u32, None)
+                    .await;
+                self.notebook.set_current_page(Some(1));
+                self.render_results_page();
+            }
+            SavedQueryAction::Rename(new_name) => {
+                // Delete old entry then save with new name to preserve created_at
+                let _ = self.services.search_store.delete_saved(&saved.name);
+                let renamed = SavedQuery {
+                    name: new_name,
+                    adql: saved.adql,
+                    created_at: saved.created_at,
+                };
+                let _ = self.services.search_store.save_query(renamed);
+                self.refresh_saved();
+                self.status_label.set_text("Query renamed");
+            }
+            SavedQueryAction::Delete => {
+                let _ = self.services.search_store.delete_saved(&saved.name);
+                self.refresh_saved();
+                self.status_label.set_text("Query deleted");
+            }
+        }
+    }
+
     async fn load_data_train(&self) {
+        use crate::services::cache_service::{CacheKey, Freshness};
+        use crate::services::health_tracker::{ServiceName, ServiceStatus};
+
+        let cache_key = CacheKey::DataTrainRows;
+
+        // Check cache first — serve fresh data without hitting the network
+        if let Some(entry) = self
+            .services
+            .cache
+            .read::<Vec<crate::helpers::data_train_manager::DataTrainRow>>(&cache_key)
+        {
+            let freshness = self.services.cache.entry_freshness(&cache_key, &entry);
+            if freshness == Freshness::Fresh {
+                let count = entry.data.len();
+                self.train_manager.borrow_mut().load(entry.data);
+                self.refresh_train_ui();
+                self.status_label
+                    .set_text(&format!("Data train loaded ({} entries)", count));
+                self.services
+                    .health
+                    .set(ServiceName::Tap, ServiceStatus::Reachable);
+                return;
+            }
+        }
+
+        // Cache is stale or missing — try network
         self.status_label.set_text("Loading data train...");
 
         let svc = self.services.clone();
@@ -1589,14 +1751,52 @@ impl SearchPage {
         match result {
             Ok(rows) => {
                 let count = rows.len();
+                self.services.cache.write(&cache_key, &rows);
                 self.train_manager.borrow_mut().load(rows);
                 self.refresh_train_ui();
                 self.status_label
                     .set_text(&format!("Data train loaded ({} entries)", count));
+                self.services
+                    .health
+                    .set(ServiceName::Tap, ServiceStatus::Reachable);
             }
             Err(e) => {
-                self.status_label
-                    .set_text(&format!("Data train failed: {}", e));
+                // Network failed — try to serve any cached data regardless of TTL
+                if let Some(entry) = self
+                    .services
+                    .cache
+                    .read::<Vec<crate::helpers::data_train_manager::DataTrainRow>>(&cache_key)
+                {
+                    let count = entry.data.len();
+                    let time_label = self
+                        .services
+                        .cache
+                        .cached_time_label(&cache_key)
+                        .unwrap_or_else(|| "unknown".into());
+                    self.train_manager.borrow_mut().load(entry.data);
+                    self.refresh_train_ui();
+                    self.status_label.set_text(&format!(
+                        "Data train loaded from cache ({} entries, last updated {})",
+                        count, time_label
+                    ));
+                    self.services.toast.toast(&format!(
+                        "Archive unreachable — showing cached filters from {}",
+                        time_label
+                    ));
+                } else {
+                    self.status_label
+                        .set_text(&format!("Data train failed: {}", e));
+                    self.services
+                        .toast
+                        .toast_persistent("Search filters unavailable — archive unreachable");
+                }
+                self.services.health.set(
+                    ServiceName::Tap,
+                    ServiceStatus::Unreachable {
+                        since: chrono::Utc::now(),
+                        reason: e.to_string(),
+                    },
+                );
             }
         }
     }
@@ -2154,6 +2354,7 @@ fn build_spatial_column() -> (
     gtk::DropDown,
     gtk::SpinButton,
     gtk::Entry,
+    gtk::DropDown,
     gtk::CheckButton,
     gtk::Label,
 ) {
@@ -2195,7 +2396,8 @@ fn build_spatial_column() -> (
     radius_box.append(&radius);
     col.append(&radius_box);
 
-    let (w, pixel_scale) = labeled_entry("Pixel Scale", "e.g. 0.1..1.0 arcsec");
+    let (w, pixel_scale, pixel_scale_unit) =
+        labeled_entry_with_combo("Pixel Scale", "e.g. 0.1..1.0", &["arcsec", "arcmin", "deg"]);
     col.append(&w);
 
     let spatial_cutout = gtk::CheckButton::with_label("Spatial cutout");
@@ -2207,6 +2409,7 @@ fn build_spatial_column() -> (
         resolver,
         radius,
         pixel_scale,
+        pixel_scale_unit,
         spatial_cutout,
         resolver_status,
     )

@@ -126,4 +126,54 @@ impl VoSpaceService {
             .map_err(|e| ApiError::Network(format!("Write error: {}", e)))?;
         Ok(len)
     }
+
+    /// Rename a file node via copy+delete.
+    ///
+    /// This is an MVP implementation that works only for regular files.
+    /// The proper VOSpace `transferNodes` move API is deferred.
+    ///
+    /// - `old_path`: current path of the file (relative to the user's home)
+    /// - `new_name`: new basename (not a full path)
+    pub async fn rename_file(
+        &self,
+        token: &str,
+        username: &str,
+        old_path: &str,
+        new_name: &str,
+    ) -> Result<(), ApiError> {
+        // Build the new path by replacing the final segment of old_path
+        let trimmed = old_path.trim_end_matches('/');
+        let parent = trimmed.rfind('/').map(|i| &trimmed[..i]).unwrap_or("");
+        let new_path = if parent.is_empty() {
+            new_name.to_string()
+        } else {
+            format!("{}/{}", parent, new_name)
+        };
+
+        // 1. Download the source bytes
+        let src_url = self.endpoints.vospace_files_url(username, old_path);
+        let resp = self.client.get(&src_url).bearer_auth(token).send().await?;
+        let resp = check_response(resp).await?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+
+        // 2. Upload to the new path
+        let dst_url = self.endpoints.vospace_files_url(username, &new_path);
+        let resp = self
+            .client
+            .put(&dst_url)
+            .bearer_auth(token)
+            .header("Content-Type", "application/octet-stream")
+            .body(bytes.to_vec())
+            .send()
+            .await?;
+        check_response(resp).await?;
+
+        // 3. Delete the old path
+        self.delete_node(token, username, old_path).await?;
+
+        Ok(())
+    }
 }

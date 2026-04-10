@@ -139,6 +139,11 @@ impl CodeCellWidget {
         self.exec_label.set_label(&format!("[{}]", n));
     }
 
+    /// Reset the execution counter label to `[ ]` (no count).
+    pub fn clear_execution_count(&self) {
+        self.exec_label.set_label("[ ]");
+    }
+
     /// Show `[*]` while the cell is executing, or restore to `[ ]` / `[N]`.
     pub fn set_executing(&self, executing: bool) {
         if executing {

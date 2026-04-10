@@ -43,10 +43,10 @@ fn main() {
                 .join("icons"),
         );
 
-        let services = AppServices::new(handle.clone());
+        let (services, toast_rx) = AppServices::new(handle.clone());
 
         // Theme is applied inside build_main_window from saved settings
-        ui::build_main_window(app, services);
+        ui::build_main_window(app, services, toast_rx);
     });
 
     app.run();

@@ -3,7 +3,7 @@
 /// When collections are selected, only instruments for those bands+collections are shown, etc.
 use std::collections::{BTreeSet, HashSet};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DataTrainRow {
     pub band: String,
     pub collection: String,
