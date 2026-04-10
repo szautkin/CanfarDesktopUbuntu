@@ -228,6 +228,18 @@ impl ResearchPage {
                 }
             });
         }
+        // Redundant row-activated handler for activatable rows (clicks)
+        {
+            let p = Rc::clone(&page);
+            page.list_box.connect_row_activated(move |_, row| {
+                let idx = row.index() as usize;
+                let list = p.current_list.borrow();
+                if let Some(obs) = list.get(idx).cloned() {
+                    drop(list);
+                    p.show_detail(&obs);
+                }
+            });
+        }
 
         // Initial load
         page.reload();
@@ -394,9 +406,6 @@ impl ResearchPage {
     // -----------------------------------------------------------------------
 
     /// Populate the right-side detail pane for the selected observation.
-    /// Clears any previous content, then builds a fresh view containing:
-    /// preview image (async-loaded), title + subtitle, contextual action
-    /// buttons, observation metadata group, and file info group.
     fn show_detail(self: &Rc<Self>, obs: &DownloadedObservation) {
         // Clear previous detail
         while let Some(child) = self.detail_container.first_child() {
@@ -404,77 +413,33 @@ impl ResearchPage {
         }
         self.detail_stack.set_visible_child_name("detail");
 
-        // ── Preview image (conditional on having thumbnail/preview URL) ──
-        let preview_url = if !obs.thumbnail_url.is_empty() {
-            Some(obs.thumbnail_url.clone())
-        } else if !obs.preview_url.is_empty() {
-            Some(obs.preview_url.clone())
-        } else {
-            None
-        };
-
-        if let Some(url) = preview_url {
+        // ── Preview image (fully offline — read from local disk) ────────
+        // The Research page does NOT touch the network for previews.  The
+        // image is loaded synchronously from `local_preview_path`.  If no
+        // local preview exists we skip the preview frame entirely.
+        if obs.has_local_preview() {
             let frame = gtk::Frame::new(None);
             frame.add_css_class("card");
             frame.set_halign(gtk::Align::Start);
 
-            let stack = gtk::Stack::new();
-            stack.set_transition_type(gtk::StackTransitionType::Crossfade);
-            stack.set_size_request(420, 260);
-
-            let loading = gtk::Spinner::new();
-            loading.set_size_request(32, 32);
-            loading.set_halign(gtk::Align::Center);
-            loading.set_valign(gtk::Align::Center);
-            loading.start();
-            stack.add_named(&loading, Some("loading"));
-
-            let err_page = adw::StatusPage::new();
-            err_page.set_icon_name(Some("image-missing-symbolic"));
-            err_page.set_title("Preview unavailable");
-            stack.add_named(&err_page, Some("error"));
-
-            stack.set_visible_child_name("loading");
-            frame.set_child(Some(&stack));
+            // gtk::Picture::for_filename decodes on the main thread but
+            // thumbnails are small (< 100KB) so this is imperceptible.
+            let picture = gtk::Picture::for_filename(&obs.local_preview_path);
+            picture.set_content_fit(gtk::ContentFit::Contain);
+            picture.set_size_request(420, 260);
+            frame.set_child(Some(&picture));
             self.detail_container.append(&frame);
-
-            // Async load
-            let svc = self.services.clone();
-            let stack_ref = stack.clone();
-            glib::spawn_future_local(async move {
-                let svc2 = svc.clone();
-                let url_clone = url.clone();
-                let bytes_result = svc
-                    .spawn(async move {
-                        let token = svc2.get_token().await;
-                        svc2.datalink
-                            .download_image(&url_clone, token.as_deref())
-                            .await
-                    })
-                    .await;
-                let bytes = match bytes_result {
-                    Ok(b) => b,
-                    Err(_) => {
-                        stack_ref.set_visible_child_name("error");
-                        return;
-                    }
-                };
-                let gbytes = gtk::glib::Bytes::from(&bytes);
-                let stream = gtk::gio::MemoryInputStream::from_bytes(&gbytes);
-                let pixbuf = match gtk::gdk_pixbuf::Pixbuf::from_stream_future(&stream).await {
-                    Ok(p) => p,
-                    Err(_) => {
-                        stack_ref.set_visible_child_name("error");
-                        return;
-                    }
-                };
-                let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
-                let picture = gtk::Picture::for_paintable(&texture);
-                picture.set_content_fit(gtk::ContentFit::Contain);
-                picture.set_size_request(420, 260);
-                stack_ref.add_named(&picture, Some("image"));
-                stack_ref.set_visible_child_name("image");
-            });
+        } else if !obs.thumbnail_url.is_empty() || !obs.preview_url.is_empty() {
+            // Legacy record saved before managed storage was introduced.
+            // Show a subtle banner telling the user to re-save for offline access.
+            let banner = gtk::Label::new(Some(
+                "Legacy record — re-save from the Search page to cache the preview locally.",
+            ));
+            banner.add_css_class("dim-label");
+            banner.add_css_class("caption");
+            banner.set_wrap(true);
+            banner.set_halign(gtk::Align::Start);
+            self.detail_container.append(&banner);
         }
 
         // ── Title + subtitle ───────────────────────────────────────────
@@ -602,74 +567,56 @@ impl ResearchPage {
 
         // Delete button (menu when both list/disk options exist)
         if obs.is_bookmarked() {
-            // Bookmarked-only: single "Remove" button (no file to delete)
+            // Legacy metadata-only record: simple "Remove" button
             let del_btn = make_icon_button(
                 "user-trash-symbolic",
                 "Remove",
-                "Remove this bookmark from the library",
+                "Remove this observation from the library",
                 Some("destructive-action"),
             );
             let this = Rc::clone(self);
             let obs_id = obs.id.clone();
+            let target_name = obs.target_name.clone();
+            let parent = self.widget.clone();
             del_btn.connect_clicked(move |_| {
                 let this = Rc::clone(&this);
                 let obs_id = obs_id.clone();
+                let target_name = target_name.clone();
+                let parent = parent.clone();
                 glib::spawn_future_local(async move {
-                    this.delete_from_list(&obs_id).await;
+                    if !confirm_delete(&parent, &target_name).await {
+                        return;
+                    }
+                    this.delete_observation(&obs_id).await;
                 });
             });
             action_row.append(&del_btn);
         } else {
-            // Downloaded: menu with "Remove from list" / "Delete from disk"
-            let del_menu_btn = gtk::MenuButton::new();
-            let del_hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            del_hbox.append(&gtk::Image::from_icon_name("user-trash-symbolic"));
-            del_hbox.append(&gtk::Label::new(Some("Delete")));
-            del_menu_btn.set_child(Some(&del_hbox));
-            del_menu_btn.add_css_class("destructive-action");
-            del_menu_btn.set_tooltip_text(Some("Delete options"));
-
-            let menu = gtk::gio::Menu::new();
-            menu.append(Some("Remove from list"), Some("detail.delete-list"));
-            menu.append(Some("Delete from disk"), Some("detail.delete-disk"));
-            let popover = gtk::PopoverMenu::from_model(Some(&menu));
-            del_menu_btn.set_popover(Some(&popover));
-
-            // Action group for this row
-            let ag = gtk::gio::SimpleActionGroup::new();
-            {
-                let this = Rc::clone(self);
-                let obs_id = obs.id.clone();
-                let action = gtk::gio::SimpleAction::new("delete-list", None);
-                action.connect_activate(move |_, _| {
-                    let this = Rc::clone(&this);
-                    let obs_id = obs_id.clone();
-                    glib::spawn_future_local(async move {
-                        this.delete_from_list(&obs_id).await;
-                    });
+            // Full record: single "Delete" button that removes both the
+            // store entry AND the managed directory (preview + FITS file).
+            let del_btn = make_icon_button(
+                "user-trash-symbolic",
+                "Delete",
+                "Remove from Research and delete the local files",
+                Some("destructive-action"),
+            );
+            let this = Rc::clone(self);
+            let obs_id = obs.id.clone();
+            let target_name = obs.target_name.clone();
+            let parent = self.widget.clone();
+            del_btn.connect_clicked(move |_| {
+                let this = Rc::clone(&this);
+                let obs_id = obs_id.clone();
+                let target_name = target_name.clone();
+                let parent = parent.clone();
+                glib::spawn_future_local(async move {
+                    if !confirm_delete(&parent, &target_name).await {
+                        return;
+                    }
+                    this.delete_observation(&obs_id).await;
                 });
-                ag.add_action(&action);
-            }
-            {
-                let this = Rc::clone(self);
-                let obs_id = obs.id.clone();
-                let local_path = obs.local_path.clone();
-                let target_name = obs.target_name.clone();
-                let action = gtk::gio::SimpleAction::new("delete-disk", None);
-                action.connect_activate(move |_, _| {
-                    let this = Rc::clone(&this);
-                    let obs_id = obs_id.clone();
-                    let local_path = local_path.clone();
-                    let target_name = target_name.clone();
-                    glib::spawn_future_local(async move {
-                        this.delete_from_disk(&obs_id, &target_name, &local_path)
-                            .await;
-                    });
-                });
-                ag.add_action(&action);
-            }
-            del_menu_btn.insert_action_group("detail", Some(&ag));
-            action_row.append(&del_menu_btn);
+            });
+            action_row.append(&del_btn);
         }
 
         self.detail_container.append(&action_row);
@@ -731,45 +678,24 @@ impl ResearchPage {
         self.detail_container.append(&file_group);
     }
 
-    async fn delete_from_list(self: &Rc<Self>, obs_id: &str) {
+    /// Remove an observation from the Research library.  Deletes the
+    /// record from `observations.json` AND removes the managed subdirectory
+    /// containing the preview image and FITS file.  Offloaded via
+    /// `spawn_blocking`.
+    async fn delete_observation(self: &Rc<Self>, obs_id: &str) {
         let svc = self.services.clone();
         let id = obs_id.to_string();
-        let _ = self
-            .services
-            .spawn(async move { svc.observation_store.remove_async(&id).await })
-            .await;
-
-        let mut list = self.current_list.borrow_mut();
-        list.retain(|o| o.id != obs_id);
-        let remaining = list.clone();
-        drop(list);
-
-        self.rebuild_rows(&remaining);
-        self.services.toast.toast("Removed from list");
-    }
-
-    async fn delete_from_disk(
-        self: &Rc<Self>,
-        obs_id: &str,
-        target_name: &str,
-        local_path: &str,
-    ) {
-        if !confirm_delete_from_disk(&self.widget, target_name, local_path).await {
-            return;
-        }
-        let lp = local_path.to_string();
         let _ = self
             .services
             .spawn(async move {
-                tokio::task::spawn_blocking(move || std::fs::remove_file(&lp)).await
+                // Remove the managed directory first, then the store record.
+                let id2 = id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::services::delete_managed_dir(&id2);
+                })
+                .await;
+                svc.observation_store.remove_async(&id).await
             })
-            .await;
-
-        let svc = self.services.clone();
-        let id = obs_id.to_string();
-        let _ = self
-            .services
-            .spawn(async move { svc.observation_store.remove_async(&id).await })
             .await;
 
         let mut list = self.current_list.borrow_mut();
@@ -778,7 +704,7 @@ impl ResearchPage {
         drop(list);
 
         self.rebuild_rows(&remaining);
-        self.services.toast.toast("File deleted");
+        self.services.toast.toast("Removed from Research");
     }
 }
 
@@ -816,31 +742,28 @@ fn is_fits_path(path: &str) -> bool {
     lower.ends_with(".fits") || lower.ends_with(".fit") || lower.ends_with(".fts")
 }
 
-/// Show an `AdwMessageDialog` confirming permanent file deletion from disk.
-/// Returns `true` iff the user clicked "Delete".
-async fn confirm_delete_from_disk(
-    widget: &impl IsA<gtk::Widget>,
-    target_name: &str,
-    local_path: &str,
-) -> bool {
+/// Show an `AdwMessageDialog` confirming that the user wants to remove
+/// an observation from the Research library. This deletes both the store
+/// record and the managed directory (preview + FITS). Returns `true` iff
+/// the user clicked "Delete".
+async fn confirm_delete(widget: &impl IsA<gtk::Widget>, target_name: &str) -> bool {
     let root = match widget.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
         Some(w) => w,
         None => return false,
     };
 
-    let filename = std::path::Path::new(local_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| local_path.to_string());
-
-    let body = format!(
-        "This will permanently remove {} from your computer.\n\nThis cannot be undone.",
-        if !target_name.is_empty() { target_name } else { &filename }
-    );
+    let body = if target_name.is_empty() {
+        "This will permanently remove the observation and its local files.\n\nThis cannot be undone.".to_string()
+    } else {
+        format!(
+            "This will permanently remove {} and its local files.\n\nThis cannot be undone.",
+            target_name
+        )
+    };
 
     let dialog = adw::MessageDialog::new(
         Some(&root),
-        Some("Delete file from disk?"),
+        Some("Remove from Research?"),
         Some(&body),
     );
     dialog.add_response("cancel", "Cancel");

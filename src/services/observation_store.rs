@@ -36,15 +36,34 @@ pub struct DownloadedObservation {
     /// DataLink `#preview` URL, if available. Optional for backwards compat.
     #[serde(default)]
     pub preview_url: String,
+    /// Absolute path to the locally downloaded preview image, if any.
+    /// The Research page reads previews from this path and never touches
+    /// the network once an observation is saved.
+    #[serde(default)]
+    pub local_preview_path: String,
 }
 
 impl DownloadedObservation {
-    /// True when this record is metadata-only (no local file).
+    /// True when the FITS file path is empty (metadata-only record).
+    /// These are legacy records saved before the full-save redesign —
+    /// the new "Save to Research" flow always downloads both files.
     pub fn is_bookmarked(&self) -> bool {
         self.local_path.is_empty()
     }
 
-    /// Human-readable file size (e.g. "3.4 MB"). Returns empty string for bookmarks.
+    /// True when `local_path` points to a file that currently exists on disk.
+    pub fn has_fits(&self) -> bool {
+        !self.local_path.is_empty() && std::path::Path::new(&self.local_path).exists()
+    }
+
+    /// True when `local_preview_path` points to a file that currently exists on disk.
+    pub fn has_local_preview(&self) -> bool {
+        !self.local_preview_path.is_empty()
+            && std::path::Path::new(&self.local_preview_path).exists()
+    }
+
+    /// Human-readable file size (e.g. "3.4 MB"). Returns empty string for
+    /// records with no downloaded FITS file.
     pub fn formatted_size(&self) -> String {
         if self.is_bookmarked() {
             String::new()
@@ -52,6 +71,37 @@ impl DownloadedObservation {
             format_bytes(self.file_size)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Managed storage — one subdirectory per observation under
+// `~/.local/share/verbinal/observations/{obs_id}/`.
+// ---------------------------------------------------------------------------
+
+/// Return the base directory that holds all managed observation files.
+pub fn observations_base_dir() -> PathBuf {
+    ProjectDirs::from("net", "canfar", "Verbinal")
+        .map(|dirs| dirs.data_dir().join("observations"))
+        .unwrap_or_else(|| PathBuf::from("observations"))
+}
+
+/// Return the managed subdirectory path for a given observation id.
+/// Does NOT create the directory — callers should `mkdir_p` as needed.
+pub fn managed_dir_for(obs_id: &str) -> PathBuf {
+    observations_base_dir().join(sanitize_obs_id(obs_id))
+}
+
+/// Delete an observation's managed subdirectory (ignoring errors).
+pub fn delete_managed_dir(obs_id: &str) {
+    let dir = managed_dir_for(obs_id);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Best-effort sanitization of an observation id into a filesystem-safe name.
+fn sanitize_obs_id(id: &str) -> String {
+    id.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
 }
 
 /// Persistent JSON-backed store for downloaded observations.
@@ -254,6 +304,7 @@ mod tests {
             downloaded_at: "2024-01-01T00:00:00Z".into(),
             thumbnail_url: String::new(),
             preview_url: String::new(),
+            local_preview_path: String::new(),
         }
     }
 
@@ -284,6 +335,18 @@ mod tests {
         obs.local_path = String::new();
         obs.file_size = 0;
         assert_eq!(obs.formatted_size(), "");
+    }
+
+    #[test]
+    fn managed_dir_sanitises_id() {
+        let dir = managed_dir_for("obs-abc123");
+        assert!(dir.ends_with("observations/obs-abc123"));
+        // Weird characters should be replaced with underscores
+        let dir2 = managed_dir_for("ivo://cadc/CFHT?123");
+        let name = dir2.file_name().unwrap().to_string_lossy().to_string();
+        assert!(!name.contains('/'));
+        assert!(!name.contains(':'));
+        assert!(!name.contains('?'));
     }
 
     #[test]

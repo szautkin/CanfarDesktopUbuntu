@@ -1132,34 +1132,30 @@ impl SearchPage {
                 row_box.append(&label);
             }
 
-            // Download button at end of row — routes through the same picker
-            // flow as the detail dialog for consistency
+            // "Save to Research" button at the end of the row — routes
+            // through the same flow as the detail dialog button.
             let publisher_id = row.get("publisherID").to_string();
             if !publisher_id.is_empty() {
-                let dl_btn = gtk::Button::from_icon_name("folder-download-symbolic");
-                dl_btn.add_css_class("flat");
-                dl_btn.set_tooltip_text(Some("Download"));
-                dl_btn.set_valign(gtk::Align::Center);
+                let save_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
+                save_btn.add_css_class("flat");
+                save_btn.set_tooltip_text(Some(
+                    "Save to Research (downloads preview + FITS file)",
+                ));
+                save_btn.set_valign(gtk::Align::Center);
                 let services = self.services.clone();
                 let pub_id = publisher_id.clone();
                 let raw = row.clone();
                 let main_window = self.main_window.clone();
-                dl_btn.connect_clicked(move |_| {
+                save_btn.connect_clicked(move |_| {
                     let services = services.clone();
                     let pub_id = pub_id.clone();
                     let raw = raw.clone();
                     let main_window = main_window.clone();
                     glib::spawn_future_local(async move {
-                        download_observation_with_picker(
-                            &services,
-                            &pub_id,
-                            &raw,
-                            &main_window,
-                        )
-                        .await;
+                        save_to_research(&services, &pub_id, &raw, &main_window).await;
                     });
                 });
-                row_box.append(&dl_btn);
+                row_box.append(&save_btn);
             }
 
             // Wrap row in a clickable button for detail modal
@@ -2134,48 +2130,18 @@ async fn show_row_detail(
         btn.set_child(Some(&hbox));
         btn
     };
+    // Save to Research is now the single primary action. It downloads both
+    // the preview image and the FITS/FZ file to a managed directory; the
+    // Research page then reads everything from disk with no further network
+    // calls.  Mark it as the suggested action.
+    save_btn.add_css_class("suggested-action");
     if publisher_id.is_empty() {
         save_btn.set_sensitive(false);
-        save_btn.set_tooltip_text(Some("No publisher ID — observation cannot be bookmarked"));
+        save_btn.set_tooltip_text(Some("No publisher ID — observation cannot be saved"));
     } else {
-        save_btn.set_tooltip_text(Some("Bookmark this observation without downloading the file"));
-    }
-    {
-        let svc = services.clone();
-        let pub_id = publisher_id.to_string();
-        let raw = raw_row.clone();
-        let dialog_ref = dialog.clone();
-        save_btn.connect_clicked(move |_| {
-            if pub_id.is_empty() {
-                return;
-            }
-            let svc = svc.clone();
-            let pub_id = pub_id.clone();
-            let raw = raw.clone();
-            let dialog_ref = dialog_ref.clone();
-            glib::spawn_future_local(async move {
-                save_to_research(&svc, &pub_id, &raw).await;
-                dialog_ref.close();
-            });
-        });
-    }
-    action_bar.pack_start(&save_btn);
-
-    // Download FITS button
-    let dl_btn = {
-        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        hbox.append(&gtk::Image::from_icon_name("folder-download-symbolic"));
-        hbox.append(&gtk::Label::new(Some("Download FITS")));
-        let btn = gtk::Button::new();
-        btn.set_child(Some(&hbox));
-        btn.add_css_class("suggested-action");
-        btn
-    };
-    if publisher_id.is_empty() {
-        dl_btn.set_sensitive(false);
-        dl_btn.set_tooltip_text(Some("No publisher ID — observation cannot be downloaded"));
-    } else {
-        dl_btn.set_tooltip_text(Some("Download the FITS file to disk"));
+        save_btn.set_tooltip_text(Some(
+            "Download the preview and FITS file to the Research library",
+        ));
     }
     {
         let svc = services.clone();
@@ -2183,7 +2149,7 @@ async fn show_row_detail(
         let raw = raw_row.clone();
         let dialog_ref = dialog.clone();
         let main_window_ref = main_window.clone();
-        dl_btn.connect_clicked(move |_| {
+        save_btn.connect_clicked(move |_| {
             if pub_id.is_empty() {
                 return;
             }
@@ -2193,23 +2159,23 @@ async fn show_row_detail(
             let dialog_ref = dialog_ref.clone();
             let main_window_ref = main_window_ref.clone();
             glib::spawn_future_local(async move {
-                // Always pass the main window as the save_future parent —
-                // passing a detached child widget causes the XDG portal to hang.
-                download_observation_with_picker(&svc, &pub_id, &raw, &main_window_ref).await;
+                // Close the dialog immediately — the download runs in the
+                // background with toast feedback. The main window is passed
+                // so any modal dialogs (multi-file picker) attach correctly.
                 dialog_ref.close();
+                save_to_research(&svc, &pub_id, &raw, &main_window_ref).await;
             });
         });
     }
-    action_bar.pack_end(&dl_btn);
+    action_bar.pack_end(&save_btn);
 
     toolbar_view.add_bottom_bar(&action_bar);
 
-    // ── Keyboard shortcuts: Ctrl+S → Save, Ctrl+D → Download ────────────
+    // ── Keyboard shortcut: Ctrl+S → Save to Research ────────────────────
     {
         let shortcuts = gtk::ShortcutController::new();
         shortcuts.set_scope(gtk::ShortcutScope::Local);
 
-        // Ctrl+S → Save
         let save_trigger = gtk::ShortcutTrigger::parse_string("<Control>s").unwrap();
         let save_action = {
             let save_btn = save_btn.clone();
@@ -2221,19 +2187,6 @@ async fn show_row_detail(
             })
         };
         shortcuts.add_shortcut(gtk::Shortcut::new(Some(save_trigger), Some(save_action)));
-
-        // Ctrl+D → Download
-        let dl_trigger = gtk::ShortcutTrigger::parse_string("<Control>d").unwrap();
-        let dl_action = {
-            let dl_btn = dl_btn.clone();
-            gtk::CallbackAction::new(move |_, _| {
-                if dl_btn.is_sensitive() {
-                    dl_btn.emit_clicked();
-                }
-                glib::Propagation::Stop
-            })
-        };
-        shortcuts.add_shortcut(gtk::Shortcut::new(Some(dl_trigger), Some(dl_action)));
 
         dialog.add_controller(shortcuts);
     }
@@ -2251,166 +2204,21 @@ async fn show_row_detail(
 // Download flow
 // =============================================================================
 
-async fn download_observation_with_picker(
+/// Save an observation to the Research library.  This is a single-action,
+/// committing flow: it resolves DataLink, downloads the preview image AND
+/// the FITS/FZ data file to a managed directory under
+/// `~/.local/share/verbinal/observations/{obs_id}/`, and writes a store
+/// record pointing at those local paths.  The Research page then reads
+/// everything from disk with no further network calls.
+async fn save_to_research(
     services: &Arc<AppServices>,
     publisher_id: &str,
     raw_row: &crate::models::search_result::SearchResultRow,
     main_window: &adw::ApplicationWindow,
 ) {
-    services
-        .toast
-        .toast(&format!("Resolving {} …", short_pub_id(publisher_id)));
+    use crate::services::managed_dir_for;
 
-    // Resolve DataLink
-    let svc = services.clone();
-    let pid = publisher_id.to_string();
-    let dl_result = services
-        .spawn(async move {
-            let token = svc.get_token().await;
-            svc.datalink.resolve(&pid, token.as_deref()).await
-        })
-        .await;
-
-    // Capture DataLink so we can use its preview URLs in the stored record
-    let dl_for_obs = dl_result.as_ref().ok().cloned();
-
-    // Pick the download URL.  When DataLink returns multiple science files,
-    // show the multi-file selection dialog so the user can choose which
-    // artifact to fetch (CFHT MegaCam publishes per-CCD files this way).
-    let url = match dl_result {
-        Ok(ref dl) => {
-            let science_files: Vec<crate::models::search_result::DataLinkFile> = dl
-                .files
-                .iter()
-                .filter(|f| f.is_science_data())
-                .cloned()
-                .collect();
-            match science_files.len() {
-                0 => dl
-                    .download_url
-                    .clone()
-                    .unwrap_or_else(|| {
-                        crate::services::DataLinkService::download_url(publisher_id)
-                    }),
-                1 => science_files[0].url.clone(),
-                _ => {
-                    // Multi-file — show the selection dialog
-                    match crate::ui::datalink_file_dialog::show_datalink_file_dialog(
-                        main_window,
-                        science_files,
-                    )
-                    .await
-                    {
-                        Some(picked) => picked.url,
-                        None => return, // user cancelled
-                    }
-                }
-            }
-        }
-        Err(_) => crate::services::DataLinkService::download_url(publisher_id),
-    };
-
-    // Extract suggested filename
-    let suggested = extract_filename(publisher_id, &url);
-
-    // File save dialog — use the MAIN WINDOW as parent (critical fix).
-    // Passing a detached child widget (or its missing root) causes the XDG
-    // desktop portal to hang on GNOME, producing the "Portal is not
-    // responding" force-quit dialog.
-    let dialog = gtk::FileDialog::builder()
-        .title("Save Observation")
-        .initial_name(&suggested)
-        .build();
-
-    let save_path = match dialog.save_future(Some(main_window)).await {
-        Ok(file) => file.path(),
-        Err(_) => return, // User cancelled
-    };
-
-    let Some(save_path) = save_path else { return };
-
-    services.toast.toast("Downloading…");
-
-    // Download
-    let svc = services.clone();
-    let url_clone = url.clone();
-    let result = services
-        .spawn(async move {
-            let token = svc.get_token().await;
-            svc.datalink
-                .download_file(&url_clone, token.as_deref())
-                .await
-        })
-        .await;
-
-    match result {
-        Ok((bytes, _)) => {
-            let file_size = bytes.len() as u64;
-
-            // Atomic write: tmp + rename
-            let tmp_path = save_path.with_extension("tmp");
-            if let Err(e) = std::fs::write(&tmp_path, &bytes) {
-                services
-                    .toast
-                    .toast(&format!("Save failed: {}", e));
-                return;
-            }
-            if let Err(e) = std::fs::rename(&tmp_path, &save_path) {
-                services
-                    .toast
-                    .toast(&format!("Rename failed: {}", e));
-                return;
-            }
-
-            // Persist to ObservationStore so Research page can see it.
-            // Uses the async variant so disk I/O runs on the tokio blocking
-            // pool, keeping the GLib main loop responsive on slow filesystems.
-            let obs = build_downloaded_observation(
-                publisher_id,
-                raw_row,
-                Some(save_path.to_string_lossy().to_string()),
-                file_size,
-                dl_for_obs.as_ref(),
-            );
-            let svc = services.clone();
-            let save_result = services
-                .spawn(async move { svc.observation_store.save_async(obs).await })
-                .await;
-            match save_result {
-                Ok(()) => {
-                    let filename = save_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "observation.fits".to_string());
-                    services.toast.toast_with_action(
-                        format!("Downloaded {} — added to Research", filename),
-                        "Go to Research",
-                        "app.navigate-research",
-                    );
-                }
-                Err(e) => {
-                    services
-                        .toast
-                        .toast(&format!("Downloaded, but save to store failed: {}", e));
-                }
-            }
-        }
-        Err(e) => {
-            services
-                .toast
-                .toast(&format!("Download failed: {}", e));
-        }
-    }
-}
-
-/// Save an observation's metadata to the Research store without downloading
-/// the file.  Mirrors the Windows "Save to Research" action.
-async fn save_to_research(
-    services: &Arc<AppServices>,
-    publisher_id: &str,
-    raw_row: &crate::models::search_result::SearchResultRow,
-) {
-    // Duplicate check — avoid silent replacement so the user sees honest feedback
+    // ── Duplicate check ───────────────────────────────────────────────
     let svc = services.clone();
     let pid = publisher_id.to_string();
     let already_saved = services
@@ -2424,7 +2232,12 @@ async fn save_to_research(
         return;
     }
 
-    // Fetch DataLink to capture preview URLs (best effort — tolerate failures)
+    // ── Resolve DataLink ──────────────────────────────────────────────
+    services.toast.toast(&format!(
+        "Resolving DataLink for {}…",
+        short_pub_id(publisher_id)
+    ));
+
     let svc = services.clone();
     let pid = publisher_id.to_string();
     let dl_result = services
@@ -2434,36 +2247,232 @@ async fn save_to_research(
         })
         .await;
 
-    let dl_for_obs = dl_result.ok();
+    // Collect preview URL + science file selection BEFORE any disk writes
+    let (science_url, science_filename, preview_url, dl_for_obs) = match dl_result {
+        Ok(dl) => {
+            let science_files: Vec<crate::models::search_result::DataLinkFile> = dl
+                .files
+                .iter()
+                .filter(|f| f.is_science_data())
+                .cloned()
+                .collect();
 
-    let obs = build_downloaded_observation(publisher_id, raw_row, None, 0, dl_for_obs.as_ref());
+            let picked_science = match science_files.len() {
+                0 => None,
+                1 => Some(science_files[0].clone()),
+                _ => {
+                    // Multi-file observation — let the user pick which artifact
+                    crate::ui::datalink_file_dialog::show_datalink_file_dialog(
+                        main_window,
+                        science_files,
+                    )
+                    .await
+                }
+            };
+
+            // If the user cancelled the multi-file picker, abort the whole save
+            let (url, name) = match picked_science {
+                Some(f) => (Some(f.url.clone()), Some(f.filename())),
+                None if dl
+                    .files
+                    .iter()
+                    .any(|f| f.is_science_data()) =>
+                {
+                    // User cancelled the picker
+                    return;
+                }
+                None => {
+                    // No science file in DataLink — fall back to the synthesised
+                    // download URL
+                    (
+                        dl.download_url
+                            .clone()
+                            .or_else(|| {
+                                Some(crate::services::DataLinkService::download_url(
+                                    publisher_id,
+                                ))
+                            }),
+                        None,
+                    )
+                }
+            };
+
+            let preview = dl
+                .files
+                .iter()
+                .find(|f| f.is_thumbnail())
+                .or_else(|| dl.files.iter().find(|f| f.is_preview()))
+                .map(|f| (f.url.clone(), f.content_type.clone()));
+
+            (url, name, preview, Some(dl))
+        }
+        Err(_) => {
+            // DataLink failed — use the synthesised URL, no preview
+            (
+                Some(crate::services::DataLinkService::download_url(publisher_id)),
+                None,
+                None,
+                None,
+            )
+        }
+    };
+
+    let science_url = match science_url {
+        Some(u) => u,
+        None => {
+            services.toast.toast("No science file found for this observation");
+            return;
+        }
+    };
+
+    // ── Prepare the managed directory ─────────────────────────────────
+    let obs_id = uuid_from_publisher_id(publisher_id);
+    let managed_dir = managed_dir_for(&obs_id);
+    if let Err(e) = std::fs::create_dir_all(&managed_dir) {
+        services
+            .toast
+            .toast(&format!("Cannot create storage directory: {}", e));
+        return;
+    }
+
+    // ── Download the preview image (best effort, non-fatal) ──────────
+    let mut local_preview_path = String::new();
+    if let Some((url, content_type)) = &preview_url {
+        services.toast.toast("Downloading preview image…");
+        let svc = services.clone();
+        let url_clone = url.clone();
+        let preview_bytes = services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                svc.datalink
+                    .download_image(&url_clone, token.as_deref())
+                    .await
+            })
+            .await;
+        if let Ok(bytes) = preview_bytes {
+            let ext = preview_extension_from_content_type(content_type);
+            let preview_path = managed_dir.join(format!("preview.{}", ext));
+            if std::fs::write(&preview_path, &bytes).is_ok() {
+                local_preview_path = preview_path.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    // ── Download the FITS/FZ file ─────────────────────────────────────
+    let target_for_msg = raw_row.get("Target Name").to_string();
+    let display_name = if !target_for_msg.is_empty() {
+        target_for_msg
+    } else {
+        short_pub_id(publisher_id)
+    };
+    services
+        .toast
+        .toast(&format!("Downloading {}…", display_name));
+
+    let svc = services.clone();
+    let url_clone = science_url.clone();
+    let fits_result = services
+        .spawn(async move {
+            let token = svc.get_token().await;
+            svc.datalink
+                .download_file(&url_clone, token.as_deref())
+                .await
+        })
+        .await;
+
+    let (bytes, _total_size) = match fits_result {
+        Ok(pair) => pair,
+        Err(e) => {
+            // Clean up partial managed dir
+            crate::services::delete_managed_dir(&obs_id);
+            services.toast.toast(&format!("Download failed: {}", e));
+            return;
+        }
+    };
+    let file_size = bytes.len() as u64;
+
+    // Choose a filename: prefer DataLink's name, fall back to URL extraction,
+    // finally to "{obs_id}.fits"
+    let filename = science_filename
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| extract_filename(publisher_id, &science_url));
+    let fits_path = managed_dir.join(&filename);
+
+    // Atomic write: .tmp + rename
+    let tmp_path = fits_path.with_extension("tmp");
+    if let Err(e) = std::fs::write(&tmp_path, &bytes) {
+        crate::services::delete_managed_dir(&obs_id);
+        services.toast.toast(&format!("Save failed: {}", e));
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &fits_path) {
+        crate::services::delete_managed_dir(&obs_id);
+        services.toast.toast(&format!("Rename failed: {}", e));
+        return;
+    }
+
+    let local_path = fits_path.to_string_lossy().to_string();
+
+    // ── Write the store record ────────────────────────────────────────
+    let obs = build_downloaded_observation(
+        publisher_id,
+        raw_row,
+        local_path,
+        local_preview_path,
+        file_size,
+        dl_for_obs.as_ref(),
+    );
     let svc = services.clone();
     let save_result = services
         .spawn(async move { svc.observation_store.save_async(obs).await })
         .await;
+
     match save_result {
         Ok(()) => {
-            services
-                .toast
-                .toast_with_action("Saved to Research", "View", "app.navigate-research");
+            services.toast.toast_with_action(
+                format!("Saved {}", display_name),
+                "Go to Research",
+                "app.navigate-research",
+            );
         }
         Err(e) => {
-            services.toast.toast(&format!("Save failed: {}", e));
+            // Leave the downloaded files on disk — the user can try again
+            services
+                .toast
+                .toast(&format!("Saved files, but store write failed: {}", e));
         }
+    }
+}
+
+/// Guess a file extension from an HTTP Content-Type header.
+fn preview_extension_from_content_type(content_type: &str) -> &'static str {
+    let lower = content_type.to_lowercase();
+    if lower.contains("jpeg") || lower.contains("jpg") {
+        "jpg"
+    } else if lower.contains("png") {
+        "png"
+    } else if lower.contains("gif") {
+        "gif"
+    } else if lower.contains("webp") {
+        "webp"
+    } else {
+        "bin"
     }
 }
 
 /// Construct a `DownloadedObservation` from a raw search result row, picking
 /// up the CAOM2 column names used by the project's ADQL query (see
-/// `helpers/adql_builder.rs`).  `local_path` is `Some` for a fully downloaded
-/// file, `None` for a metadata-only "Save to Research".
+/// `helpers/adql_builder.rs`).
 ///
-/// When a `DataLinkResult` is provided, preview/thumbnail URLs are persisted
-/// so the Research page can show previews later without re-hitting DataLink.
+/// `local_path` and `local_preview_path` hold the final on-disk locations
+/// of the FITS file and preview image respectively (or empty when absent).
+/// `thumbnail_url` / `preview_url` are also persisted as provenance but the
+/// Research page always prefers the local paths for display.
 fn build_downloaded_observation(
     publisher_id: &str,
     raw_row: &crate::models::search_result::SearchResultRow,
-    local_path: Option<String>,
+    local_path: String,
+    local_preview_path: String,
     file_size: u64,
     datalink: Option<&crate::models::search_result::DataLinkResult>,
 ) -> crate::services::DownloadedObservation {
@@ -2478,8 +2487,8 @@ fn build_downloaded_observation(
         String::new()
     };
 
-    // Preview URLs from DataLink (first match wins). These are persisted so
-    // the Research page can render thumbnails without re-fetching.
+    // Preview URLs from DataLink (first match wins). Persisted for provenance
+    // and as a fallback for records saved before the managed-storage redesign.
     let (thumbnail_url, preview_url) = match datalink {
         Some(dl) => {
             let thumb = dl
@@ -2514,11 +2523,12 @@ fn build_downloaded_observation(
         dec: pick(&["Dec. (J2000.0)"]),
         start_date: pick(&["Start Date"]),
         cal_level: pick(&["Cal. Lev."]),
-        local_path: local_path.unwrap_or_default(),
+        local_path,
         file_size,
         downloaded_at: chrono::Utc::now().to_rfc3339(),
         thumbnail_url,
         preview_url,
+        local_preview_path,
     }
 }
 

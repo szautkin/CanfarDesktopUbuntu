@@ -27,7 +27,9 @@ pub use auth_service::AuthService;
 pub use datalink_service::DataLinkService;
 pub use image_service::ImageService;
 pub use notification_service::NotificationService;
-pub use observation_store::{DownloadedObservation, ObservationStore};
+pub use observation_store::{
+    delete_managed_dir, managed_dir_for, DownloadedObservation, ObservationStore,
+};
 pub use platform_service::PlatformService;
 pub use recent_launch_service::RecentLaunchService;
 pub use search_store_service::SearchStoreService;
