@@ -35,31 +35,50 @@ pub fn build_main_window(
         .title(crate::tr_en!("Verbinal - a CANFAR Science Portal"))
         .default_width(1200)
         .default_height(800)
+        // Explicit minimum size — required when the window carries breakpoints
+        // (the split view collapses to a single pane below the 720sp breakpoint).
+        .width_request(480)
+        .height_request(360)
         .build();
 
-    let header = adw::HeaderBar::new();
+    // ── Shell headers ────────────────────────────────────────────────────────
+    // GNOME HIG shell: a sidebar header carrying the primary (hamburger) menu
+    // and a content header carrying only contextual controls. Navigation lives
+    // in a sidebar list (NavigationSplitView); app-level entries (Preferences,
+    // Help, About) live in the primary menu.
+    let sidebar_header = adw::HeaderBar::new();
 
-    // --- Left side: Back, Files toggle, About button + status ---
-    let back_btn = gtk::Button::from_icon_name("go-previous-symbolic");
-    back_btn.set_tooltip_text(Some(crate::tr_en!("Back (Alt+Left)")));
-    back_btn.add_css_class("flat");
-    back_btn.set_sensitive(false);
-    header.pack_start(&back_btn);
+    let primary_menu = gtk::gio::Menu::new();
+    let prefs_section = gtk::gio::Menu::new();
+    prefs_section.append(Some(crate::tr_en!("Preferences")), Some("app.preferences"));
+    primary_menu.append_section(None, &prefs_section);
+    let help_section = gtk::gio::Menu::new();
+    help_section.append(Some(crate::tr_en!("Help")), Some("app.help"));
+    help_section.append(Some(crate::tr_en!("About Verbinal")), Some("app.about"));
+    primary_menu.append_section(None, &help_section);
 
+    let menu_btn = gtk::MenuButton::new();
+    menu_btn.set_icon_name("open-menu-symbolic");
+    menu_btn.set_primary(true);
+    menu_btn.set_tooltip_text(Some(crate::tr_en!("Main Menu")));
+    menu_btn.set_menu_model(Some(&primary_menu));
+    sidebar_header.pack_end(&menu_btn);
+
+    let content_header = adw::HeaderBar::new();
+
+    // Files panel toggle — contextual, stays in the content header.
     let files_btn = gtk::ToggleButton::new();
     files_btn.set_icon_name("folder-symbolic");
     files_btn.set_tooltip_text(Some(crate::tr_en!("Toggle File Panel (Ctrl+B)")));
     files_btn.add_css_class("flat");
-    header.pack_start(&files_btn);
+    content_header.pack_start(&files_btn);
 
-    let about_btn = gtk::Button::from_icon_name("help-about-symbolic");
-    about_btn.set_tooltip_text(Some(crate::tr_en!("About")));
-    header.pack_start(&about_btn);
-
+    // Auth status caption — lives in the sidebar footer (assembled below).
     let status_label = gtk::Label::new(None);
     status_label.add_css_class("dim-label");
     status_label.add_css_class("caption");
-    header.pack_start(&status_label);
+    status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    status_label.set_xalign(0.0);
 
     // --- Transient agent-activity indicator ---
     // Flashes "⚡ agent working…" with a spinner while an MCP agent has invoked
@@ -75,7 +94,6 @@ pub fn build_main_window(
     agent_box.append(&agent_label);
     agent_box.set_visible(false);
     agent_box.set_tooltip_text(Some(crate::tr_en!("An AI agent is working")));
-    header.pack_start(&agent_box);
     {
         let agent_box = agent_box.clone();
         let agent_spinner = agent_spinner.clone();
@@ -117,28 +135,20 @@ pub fn build_main_window(
     let health_popover = gtk::Popover::new();
     health_popover.set_child(Some(&health_popover_box));
 
+    // Service status button — lives in the sidebar footer (assembled below).
     let health_btn = gtk::MenuButton::new();
     health_btn.set_child(Some(&health_box));
     health_btn.set_popover(Some(&health_popover));
     health_btn.add_css_class("flat");
     health_btn.set_tooltip_text(Some(crate::tr_en!("Service status")));
-    header.pack_start(&health_btn);
 
-    // --- Center: ViewSwitcher ---
+    // --- Content pages ---
     let view_stack = adw::ViewStack::new();
-    let switcher = adw::ViewSwitcher::new();
-    switcher.set_stack(Some(&view_stack));
-    switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
-    header.set_title_widget(Some(&switcher));
 
-    // --- Right side: spinner, login, user menu, settings ---
+    // --- Content header trailing controls: spinner + proposals badge ---
     let spinner = gtk::Spinner::new();
     spinner.set_visible(false);
-    header.pack_end(&spinner);
-
-    let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
-    settings_btn.set_tooltip_text(Some(crate::tr_en!("Settings")));
-    header.pack_end(&settings_btn);
+    content_header.pack_end(&spinner);
 
     // Agent-proposals button — shows a pending-count badge when an AI agent has
     // queued destructive writes awaiting review; hidden when there are none.
@@ -146,7 +156,7 @@ pub fn build_main_window(
     proposals_btn.set_tooltip_text(Some(crate::tr_en!("Agent proposals awaiting review")));
     proposals_btn.add_css_class("suggested-action");
     proposals_btn.set_visible(false);
-    header.pack_end(&proposals_btn);
+    content_header.pack_end(&proposals_btn);
     {
         let services = services.clone();
         let window = window.clone();
@@ -170,9 +180,10 @@ pub fn build_main_window(
         });
     }
 
+    // Account controls — live in the sidebar footer (assembled below).
     let login_btn = gtk::Button::with_label(crate::tr_en!("Login"));
     login_btn.add_css_class("suggested-action");
-    header.pack_end(&login_btn);
+    login_btn.add_css_class("pill");
 
     let user_menu_btn = gtk::MenuButton::new();
     user_menu_btn.set_visible(false);
@@ -181,7 +192,6 @@ pub fn build_main_window(
     user_menu.append(Some(crate::tr_en!("Profile")), Some("app.profile"));
     user_menu.append(Some(crate::tr_en!("Logout")), Some("app.logout"));
     user_menu_btn.set_menu_model(Some(&user_menu));
-    header.pack_end(&user_menu_btn);
 
     // --- File panel (hidden by default) ---
     let file_panel = FilePanel::new();
@@ -253,12 +263,108 @@ pub fn build_main_window(
     ));
     offline_banner.set_revealed(false);
 
+    // ── Content pane: header + banners above the paned content, hosted in a
+    // NavigationView so contextual pages (observation detail) push/pop with an
+    // automatic back button.
+    let content_root_tv = adw::ToolbarView::new();
+    content_root_tv.add_top_bar(&content_header);
+    content_root_tv.add_top_bar(&banner);
+    content_root_tv.add_top_bar(&session_banner);
+    content_root_tv.add_top_bar(&offline_banner);
+    content_root_tv.set_content(Some(&paned));
+
+    let content_root_page = adw::NavigationPage::new(&content_root_tv, crate::tr_en!("Home"));
+    let content_nav = adw::NavigationView::new();
+    content_nav.add(&content_root_page);
+    let content_page = adw::NavigationPage::new(&content_nav, "Verbinal");
+
+    // ── Sidebar: navigation list + status/account footer ────────────────────
+    let sidebar_list = gtk::ListBox::new();
+    sidebar_list.add_css_class("navigation-sidebar");
+    sidebar_list.set_selection_mode(gtk::SelectionMode::Single);
+
+    let nav_items: Vec<(&str, &str, &str)> = vec![
+        ("home", crate::tr_en!("Home"), "go-home-symbolic"),
+        ("storage", crate::tr_en!("Storage"), "drive-multidisk-symbolic"),
+        ("search", crate::tr_en!("Search"), "system-search-symbolic"),
+        ("research", crate::tr_en!("Research"), "document-open-recent-symbolic"),
+        ("fits", crate::tr_en!("FITS Viewer"), "image-x-generic-symbolic"),
+        ("cube", crate::tr_en!("Cube Viewer"), "view-paged-symbolic"),
+        ("notebook", crate::tr_en!("Notebook"), "accessories-text-editor-symbolic"),
+        ("workflows", crate::tr_en!("Workflows"), "view-list-symbolic"),
+        ("aiguide", crate::tr_en!("AI Guide"), "applications-science-symbolic"),
+    ];
+    let nav_keys: Rc<Vec<&'static str>> =
+        Rc::new(nav_items.iter().map(|(k, _, _)| *k).collect());
+    for (key, title, icon) in &nav_items {
+        let row = adw::ActionRow::new();
+        row.set_title(title);
+        row.set_activatable(true);
+        row.add_prefix(&gtk::Image::from_icon_name(icon));
+        if *key == "aiguide" {
+            row.set_visible(read_show_ai_guide_tile());
+        }
+        sidebar_list.append(&row);
+    }
+
+    let sidebar_scroll = gtk::ScrolledWindow::new();
+    sidebar_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    sidebar_scroll.set_vexpand(true);
+    sidebar_scroll.set_child(Some(&sidebar_list));
+
+    // Footer: agent activity, service status, account.
+    let sidebar_footer = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    sidebar_footer.set_margin_start(12);
+    sidebar_footer.set_margin_end(12);
+    sidebar_footer.set_margin_top(6);
+    sidebar_footer.set_margin_bottom(12);
+    agent_box.set_halign(gtk::Align::Start);
+    sidebar_footer.append(&agent_box);
+    sidebar_footer.append(&health_btn);
+    sidebar_footer.append(&login_btn);
+    sidebar_footer.append(&user_menu_btn);
+    sidebar_footer.append(&status_label);
+
+    let sidebar_tv = adw::ToolbarView::new();
+    sidebar_tv.add_top_bar(&sidebar_header);
+    sidebar_tv.set_content(Some(&sidebar_scroll));
+    sidebar_tv.add_bottom_bar(&sidebar_footer);
+    let sidebar_page = adw::NavigationPage::new(&sidebar_tv, "Verbinal");
+
+    let split_view = adw::NavigationSplitView::new();
+    split_view.set_sidebar(Some(&sidebar_page));
+    split_view.set_content(Some(&content_page));
+    split_view.set_min_sidebar_width(220.0);
+    split_view.set_max_sidebar_width(280.0);
+
+    // Collapse to a single pane on narrow windows.
+    let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+        adw::BreakpointConditionLengthType::MaxWidth,
+        720.0,
+        adw::LengthUnit::Sp,
+    ));
+    breakpoint.add_setter(&split_view, "collapsed", Some(&true.to_value()));
+    window.add_breakpoint(breakpoint);
+
+    // Sidebar row activation drives the content ViewStack.
+    {
+        let view_stack = view_stack.clone();
+        let split_view = split_view.clone();
+        let content_nav = content_nav.clone();
+        let content_root_page = content_root_page.clone();
+        let nav_keys = nav_keys.clone();
+        sidebar_list.connect_row_activated(move |_, row| {
+            if let Some(key) = nav_keys.get(row.index() as usize) {
+                // Leave any pushed contextual page (observation detail) first.
+                content_nav.pop_to_page(&content_root_page);
+                view_stack.set_visible_child_name(key);
+                split_view.set_show_content(true);
+            }
+        });
+    }
+
     let toolbar_view = adw::ToolbarView::new();
-    toolbar_view.add_top_bar(&header);
-    toolbar_view.add_top_bar(&banner);
-    toolbar_view.add_top_bar(&session_banner);
-    toolbar_view.add_top_bar(&offline_banner);
-    toolbar_view.set_content(Some(&paned));
+    toolbar_view.set_content(Some(&split_view));
 
     // Banner "Details" opens the health popover
     {
@@ -465,9 +571,14 @@ pub fn build_main_window(
         crate::tr_en!("Research"),
         "document-open-recent-symbolic",
     );
-    // Observation detail is reachable by action, not a switcher tab.
-    let obs_detail_page = view_stack.add_named(obs_detail.widget(), Some("obsdetail"));
-    obs_detail_page.set_visible(false);
+    // Observation detail is a contextual page pushed onto the content
+    // NavigationView (automatic back button), not a hidden stack child.
+    let obs_detail_nav_page = {
+        let tv = adw::ToolbarView::new();
+        tv.add_top_bar(&adw::HeaderBar::new());
+        tv.set_content(Some(obs_detail.widget()));
+        adw::NavigationPage::new(&tv, crate::tr_en!("Observation Detail"))
+    };
     view_stack.add_titled_with_icon(
         notebook_host.widget(),
         Some("notebook"),
@@ -492,30 +603,41 @@ pub fn build_main_window(
         crate::tr_en!("AI Guide"),
         "applications-science-symbolic",
     );
-    view_stack.add_titled_with_icon(
-        &settings_page.widget,
-        Some("settings"),
-        crate::tr_en!("Settings"),
-        "emblem-system-symbolic",
-    );
 
     let dashboard: Rc<RefCell<Option<DashboardView>>> = Rc::new(RefCell::new(None));
     let cached_user_info: Rc<RefCell<Option<UserInfo>>> = Rc::new(RefCell::new(None));
 
-    // Settings button navigates to settings page
+    // Preferences — the settings page presented as a preferences window
+    // (HIG: app-level settings open from the primary menu, not a nav page).
     {
-        let view_stack = view_stack.clone();
-        settings_btn.connect_clicked(move |_| {
-            view_stack.set_visible_child_name("settings");
-        });
+        let prefs = adw::PreferencesWindow::new();
+        prefs.set_transient_for(Some(&window));
+        prefs.set_hide_on_close(true);
+        prefs.set_default_size(720, 640);
+        prefs.add(&settings_page.widget);
+        let prefs_action = gtk::gio::SimpleAction::new("preferences", None);
+        prefs_action.connect_activate(move |_, _| prefs.present());
+        app.add_action(&prefs_action);
+        app.set_accels_for_action("app.preferences", &["<Primary>comma"]);
     }
 
-    // About action
+    // About + Help (primary-menu entries)
     {
         let window_clone = window.clone();
-        about_btn.connect_clicked(move |_| {
-            show_about_dialog(&window_clone);
+        let about_action = gtk::gio::SimpleAction::new("about", None);
+        about_action.connect_activate(move |_, _| show_about_dialog(&window_clone));
+        app.add_action(&about_action);
+
+        let window_clone = window.clone();
+        let help_action = gtk::gio::SimpleAction::new("help", None);
+        help_action.connect_activate(move |_, _| {
+            gtk::UriLauncher::new("https://www.canfar.net").launch(
+                Some(&window_clone),
+                None::<&gtk::gio::Cancellable>,
+                |_| {},
+            );
         });
+        app.add_action(&help_action);
     }
 
     // Profile action
@@ -568,14 +690,18 @@ pub fn build_main_window(
     }
 
     // Open CAOM2 observation detail — triggered from Search results / Research.
+    // Pushes the contextual detail page (automatic back button pops it).
     {
         let obs_detail = obs_detail.clone();
-        let view_stack = view_stack.clone();
+        let content_nav = content_nav.clone();
+        let obs_detail_nav_page = obs_detail_nav_page.clone();
         let open_detail_action =
             gtk::gio::SimpleAction::new("open-observation-detail", Some(glib::VariantTy::STRING));
         open_detail_action.connect_activate(move |_, param| {
             if let Some(publisher_id) = param.and_then(|v| v.str()) {
-                view_stack.set_visible_child_name("obsdetail");
+                if content_nav.visible_page().as_ref() != Some(&obs_detail_nav_page) {
+                    content_nav.push(&obs_detail_nav_page);
+                }
                 obs_detail.show(publisher_id);
             }
         });
@@ -609,12 +735,17 @@ pub fn build_main_window(
                 while let Some(action) = vs_rx.recv().await {
                     match action {
                         ViewAction::Navigate { key, reply } => {
-                            let target = map_view_key(&key);
-                            let ok = if let Some(t) = target {
-                                view_stack.set_visible_child_name(t);
-                                true
-                            } else {
-                                false
+                            let ok = match map_view_key(&key) {
+                                // Settings now lives in the preferences window.
+                                Some("settings") => {
+                                    app.activate_action("preferences", None);
+                                    true
+                                }
+                                Some(t) => {
+                                    view_stack.set_visible_child_name(t);
+                                    true
+                                }
+                                None => false,
                             };
                             let _ = reply.send(ok);
                         }
@@ -964,45 +1095,35 @@ pub fn build_main_window(
         });
     }
 
-    // Navigation history (back button)
-    let nav_history: Rc<NavHistory> = Rc::new(NavHistory::new(32));
-    // Seed with the current page so the first navigation pushes correctly
-    if let Some(current) = view_stack.visible_child_name() {
-        nav_history.set_current(current.as_str());
-    }
+    // Sidebar selection ↔ view sync, content title, and research auto-refresh.
     {
-        let nav = nav_history.clone();
-        let back_btn_clone = back_btn.clone();
-        let view_stack_clone = view_stack.clone();
         let research_page_for_nav = research_page.clone();
+        let sidebar_list_for_sync = sidebar_list.clone();
+        let nav_keys = nav_keys.clone();
+        let content_root_page = content_root_page.clone();
         view_stack.connect_notify_local(Some("visible-child-name"), move |vs, _| {
-            if nav.is_suppressed() {
-                return;
-            }
             if let Some(name) = vs.visible_child_name() {
                 // Auto-refresh the Research page whenever the user navigates to it
                 // so downloads saved from the Search page show up immediately.
                 if name.as_str() == "research" {
                     research_page_for_nav.reload();
                 }
-                nav.push(name.as_str());
-                back_btn_clone.set_sensitive(nav.can_go_back());
-            }
-            let _ = &view_stack_clone; // keep clone alive inside closure
-        });
-    }
-    {
-        let nav = nav_history.clone();
-        let back_btn_clone = back_btn.clone();
-        let view_stack_clone = view_stack.clone();
-        back_btn.connect_clicked(move |_| {
-            if let Some(prev) = nav.go_back() {
-                nav.suppress(true);
-                view_stack_clone.set_visible_child_name(&prev);
-                nav.suppress(false);
-                back_btn_clone.set_sensitive(nav.can_go_back());
+                // Reflect the active view in the sidebar + the content title.
+                if let Some(idx) = nav_keys.iter().position(|k| *k == name.as_str()) {
+                    if let Some(row) = sidebar_list_for_sync.row_at_index(idx as i32) {
+                        sidebar_list_for_sync.select_row(Some(&row));
+                    }
+                }
+                if let Some(child) = vs.visible_child() {
+                    let title = vs.page(&child).title().unwrap_or_default();
+                    content_root_page.set_title(&title);
+                }
             }
         });
+        // Select the initial row (Home).
+        if let Some(row) = sidebar_list.row_at_index(0) {
+            sidebar_list.select_row(Some(&row));
+        }
     }
 
     // Keyboard shortcuts
@@ -1012,70 +1133,10 @@ pub fn build_main_window(
         &file_panel,
         &files_btn,
         &notebook_host,
-        &back_btn,
+        &content_nav,
     );
 
     window.present();
-}
-
-// ---------------------------------------------------------------------------
-// Navigation history
-// ---------------------------------------------------------------------------
-
-struct NavHistory {
-    stack: RefCell<Vec<String>>,
-    current: RefCell<Option<String>>,
-    suppressed: RefCell<bool>,
-    max_len: usize,
-}
-
-impl NavHistory {
-    fn new(max_len: usize) -> Self {
-        Self {
-            stack: RefCell::new(Vec::new()),
-            current: RefCell::new(None),
-            suppressed: RefCell::new(false),
-            max_len,
-        }
-    }
-
-    fn set_current(&self, page: &str) {
-        *self.current.borrow_mut() = Some(page.to_string());
-    }
-
-    fn push(&self, new_page: &str) {
-        let mut current_slot = self.current.borrow_mut();
-        if let Some(prev) = current_slot.take() {
-            if prev != new_page {
-                let mut stack = self.stack.borrow_mut();
-                stack.push(prev);
-                // Cap history size
-                if stack.len() > self.max_len {
-                    stack.remove(0);
-                }
-            }
-        }
-        *current_slot = Some(new_page.to_string());
-    }
-
-    fn go_back(&self) -> Option<String> {
-        let mut stack = self.stack.borrow_mut();
-        let prev = stack.pop()?;
-        *self.current.borrow_mut() = Some(prev.clone());
-        Some(prev)
-    }
-
-    fn can_go_back(&self) -> bool {
-        !self.stack.borrow().is_empty()
-    }
-
-    fn suppress(&self, value: bool) {
-        *self.suppressed.borrow_mut() = value;
-    }
-
-    fn is_suppressed(&self) -> bool {
-        *self.suppressed.borrow()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,32 +1149,33 @@ fn setup_keyboard_shortcuts(
     file_panel: &Rc<FilePanel>,
     files_btn: &gtk::ToggleButton,
     notebook_host: &Rc<NotebookTabHost>,
-    back_btn: &gtk::Button,
+    content_nav: &adw::NavigationView,
 ) {
     let controller = gtk::EventControllerKey::new();
     let vs = view_stack.clone();
     let fp = Rc::clone(file_panel);
     let fb = files_btn.clone();
     let nh = notebook_host.clone();
-    let bb = back_btn.clone();
+    let nav = content_nav.clone();
+    let win = window.clone();
     controller.connect_key_pressed(move |_, key, _code, modifier| {
         let ctrl = modifier.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
         let shift = modifier.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
         let alt = modifier.contains(gtk4::gdk::ModifierType::ALT_MASK);
         let on_notebook = vs.visible_child_name().as_deref() == Some("notebook");
 
-        // Alt+Left → back
+        // Alt+Left → pop a pushed contextual page (observation detail)
         if alt && key == gtk4::gdk::Key::Left {
-            if bb.is_sensitive() {
-                bb.emit_clicked();
-            }
+            nav.pop();
             return gtk::glib::Propagation::Stop;
         }
 
         if ctrl {
             match key {
                 gtk4::gdk::Key::comma => {
-                    vs.set_visible_child_name("settings");
+                    if let Some(app) = win.application() {
+                        app.activate_action("preferences", None);
+                    }
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_1 => {
@@ -1141,7 +1203,9 @@ fn setup_keyboard_shortcuts(
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_7 => {
-                    vs.set_visible_child_name("settings");
+                    if let Some(app) = win.application() {
+                        app.activate_action("preferences", None);
+                    }
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::b => {

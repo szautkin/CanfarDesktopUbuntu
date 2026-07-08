@@ -15,6 +15,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
+use libadwaita::prelude::*;
 use serde_json::json;
 
 use std::cell::{Cell, RefCell};
@@ -104,22 +105,21 @@ impl FitsViewer {
         widget.set_hexpand(true);
 
         // ── Toolbar ──────────────────────────────────────────────────────────
+        // GNOME HIG: frequent controls inline — Open, stretch, colormap, zoom,
+        // blink — with everything else grouped in one "Display options" popover
+        // of boxed-list rows.
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        toolbar.set_margin_start(8);
-        toolbar.set_margin_end(8);
-        toolbar.set_margin_top(6);
-        toolbar.set_margin_bottom(6);
+        toolbar.add_css_class("toolbar");
 
-        // Open
         let open_btn = gtk::Button::with_label(crate::tr_en!("Open FITS"));
         open_btn.set_icon_name("document-open-symbolic");
         open_btn.add_css_class("suggested-action");
+        open_btn.set_tooltip_text(Some(crate::tr_en!("Open FITS file")));
         toolbar.append(&open_btn);
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-        // Stretch dropdown
-        toolbar.append(&gtk::Label::new(Some(crate::tr_en!("Stretch:"))));
+        // Stretch + colormap stay inline — the viewer's signature display controls.
         let stretch_items = gtk::StringList::new(&[
             crate::tr_en!("Linear"),
             crate::tr_en!("Log"),
@@ -130,10 +130,9 @@ impl FitsViewer {
         ]);
         let stretch_combo = gtk::DropDown::new(Some(stretch_items), gtk::Expression::NONE);
         stretch_combo.set_selected(0);
+        stretch_combo.set_tooltip_text(Some(crate::tr_en!("Stretch")));
         toolbar.append(&stretch_combo);
 
-        // Colormap dropdown
-        toolbar.append(&gtk::Label::new(Some(crate::tr_en!("Color:"))));
         let cmap_items = gtk::StringList::new(&[
             crate::tr_en!("Grayscale"),
             crate::tr_en!("Inverted"),
@@ -146,101 +145,12 @@ impl FitsViewer {
         ]);
         let colormap_combo = gtk::DropDown::new(Some(cmap_items), gtk::Expression::NONE);
         colormap_combo.set_selected(0);
+        colormap_combo.set_tooltip_text(Some(crate::tr_en!("Colormap")));
         toolbar.append(&colormap_combo);
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-        // Min/Max sliders
-        toolbar.append(&gtk::Label::new(Some(crate::tr_en!("Min:"))));
-        let min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
-        min_scale.set_width_request(100);
-        min_scale.set_draw_value(false);
-        toolbar.append(&min_scale);
-
-        toolbar.append(&gtk::Label::new(Some(crate::tr_en!("Max:"))));
-        let max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
-        max_scale.set_width_request(100);
-        max_scale.set_draw_value(false);
-        toolbar.append(&max_scale);
-
-        // Reset stretch
-        let reset_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        reset_btn.add_css_class("flat");
-        reset_btn.set_tooltip_text(Some(crate::tr_en!("Reset stretch")));
-        toolbar.append(&reset_btn);
-
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
-        // Header panel toggle
-        let header_btn = gtk::ToggleButton::new();
-        header_btn.set_icon_name("view-list-symbolic");
-        header_btn.add_css_class("flat");
-        header_btn.set_tooltip_text(Some(crate::tr_en!("Toggle FITS header panel")));
-        toolbar.append(&header_btn);
-
-        // North Up toggle
-        let north_up_btn = gtk::ToggleButton::new();
-        north_up_btn.set_icon_name("go-up-symbolic");
-        north_up_btn.add_css_class("flat");
-        north_up_btn.set_tooltip_text(Some(crate::tr_en!("Rotate so north is up")));
-        toolbar.append(&north_up_btn);
-
-        // Linked crosshair by sky (default ON; also auto-enables North Up)
-        let link_btn = gtk::ToggleButton::new();
-        link_btn.set_icon_name("insert-link-symbolic");
-        link_btn.add_css_class("flat");
-        link_btn.set_active(true);
-        link_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Link crosshair across tabs by sky position (auto-enables North Up)"
-        )));
-        toolbar.append(&link_btn);
-
-        // Blink toggle (cross-fade)
-        let blink_btn = gtk::ToggleButton::new();
-        blink_btn.set_icon_name("media-playlist-repeat-symbolic");
-        blink_btn.add_css_class("flat");
-        blink_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Cross-fade blink against another tab (Space pause · Left/Right show A/B · Esc stop)"
-        )));
-        toolbar.append(&blink_btn);
-
-        // Blink target-tab picker (populated on open with the other tabs)
-        let blink_target_btn = gtk::MenuButton::new();
-        blink_target_btn.set_label(crate::tr_en!("vs…"));
-        blink_target_btn.add_css_class("flat");
-        blink_target_btn.set_tooltip_text(Some(crate::tr_en!("Choose the tab to blink against")));
-        toolbar.append(&blink_target_btn);
-
-        // Blink fade interval (ms)
-        toolbar.append(&gtk::Label::new(Some(crate::tr_en!("Fade:"))));
-        let blink_interval_scale =
-            gtk::Scale::with_range(gtk::Orientation::Horizontal, 500.0, 5000.0, 100.0);
-        blink_interval_scale.set_width_request(110);
-        blink_interval_scale.set_value(1500.0);
-        blink_interval_scale.set_draw_value(true);
-        blink_interval_scale.set_value_pos(gtk::PositionType::Right);
-        blink_interval_scale.set_tooltip_text(Some(crate::tr_en!("Blink fade interval (ms)")));
-        toolbar.append(&blink_interval_scale);
-
-        // Sync field-of-view: match every tab to the current tab's sky field + scale
-        let sync_fov_btn = gtk::Button::from_icon_name("zoom-fit-best-symbolic");
-        sync_fov_btn.add_css_class("flat");
-        sync_fov_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Sync field of view across tabs (match the current image's sky field)"
-        )));
-        toolbar.append(&sync_fov_btn);
-
-        // Saved coordinates panel toggle
-        let coords_btn = gtk::ToggleButton::new();
-        coords_btn.set_icon_name("starred-symbolic");
-        coords_btn.add_css_class("flat");
-        coords_btn.set_tooltip_text(Some(crate::tr_en!("Toggle saved coordinates panel")));
-        toolbar.append(&coords_btn);
-
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
-        // Zoom preset combo
-        toolbar.append(&gtk::Label::new(Some(crate::tr_en!("Zoom:"))));
+        // Zoom cluster: preset dropdown + free-form % entry, visually linked.
         let zoom_items = gtk::StringList::new(
             &ZOOM_PRESETS
                 .iter()
@@ -249,31 +159,192 @@ impl FitsViewer {
         );
         let zoom_combo = gtk::DropDown::new(Some(zoom_items), gtk::Expression::NONE);
         zoom_combo.set_selected(3); // 100%
-        toolbar.append(&zoom_combo);
-
-        // Free-form zoom entry (type "NNN" or "NNN%" and press Enter)
+        zoom_combo.set_tooltip_text(Some(crate::tr_en!("Zoom preset")));
         let zoom_entry = gtk::Entry::new();
         zoom_entry.set_width_chars(5);
         zoom_entry.set_max_width_chars(6);
         zoom_entry.set_text("100");
         zoom_entry.set_tooltip_text(Some(crate::tr_en!("Type a zoom % and press Enter")));
-        toolbar.append(&zoom_entry);
+        let zoom_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        zoom_box.add_css_class("linked");
+        zoom_box.append(&zoom_combo);
+        zoom_box.append(&zoom_entry);
+        toolbar.append(&zoom_box);
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-        // Copy the crosshair RA/Dec to the clipboard
+        // Blink toggle — the viewer's signature compare mode, kept inline.
+        let blink_btn = gtk::ToggleButton::new();
+        blink_btn.set_icon_name("media-playlist-repeat-symbolic");
+        blink_btn.add_css_class("flat");
+        blink_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Cross-fade blink against another tab (Space pause · Left/Right show A/B · Esc stop)"
+        )));
+        toolbar.append(&blink_btn);
+
+        // ── "Display options" popover ────────────────────────────────────────
+        let min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
+        min_scale.set_width_request(160);
+        min_scale.set_draw_value(false);
+        min_scale.set_valign(gtk::Align::Center);
+
+        let max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
+        max_scale.set_width_request(160);
+        max_scale.set_draw_value(false);
+        max_scale.set_valign(gtk::Align::Center);
+
+        let reset_btn = gtk::Button::with_label(crate::tr_en!("Reset stretch"));
+        reset_btn.add_css_class("flat");
+        reset_btn.set_halign(gtk::Align::End);
+
+        let header_btn = gtk::ToggleButton::new();
+        header_btn.set_icon_name("view-list-symbolic");
+        header_btn.add_css_class("flat");
+        header_btn.set_valign(gtk::Align::Center);
+        header_btn.set_tooltip_text(Some(crate::tr_en!("Toggle FITS header panel")));
+
+        let north_up_btn = gtk::ToggleButton::new();
+        north_up_btn.set_icon_name("go-up-symbolic");
+        north_up_btn.add_css_class("flat");
+        north_up_btn.set_valign(gtk::Align::Center);
+        north_up_btn.set_tooltip_text(Some(crate::tr_en!("Rotate so north is up")));
+
+        let link_btn = gtk::ToggleButton::new();
+        link_btn.set_icon_name("insert-link-symbolic");
+        link_btn.add_css_class("flat");
+        link_btn.set_valign(gtk::Align::Center);
+        link_btn.set_active(true);
+        link_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Link crosshair across tabs by sky position (auto-enables North Up)"
+        )));
+
+        let coords_btn = gtk::ToggleButton::new();
+        coords_btn.set_icon_name("starred-symbolic");
+        coords_btn.add_css_class("flat");
+        coords_btn.set_valign(gtk::Align::Center);
+        coords_btn.set_tooltip_text(Some(crate::tr_en!("Toggle saved coordinates panel")));
+
+        let blink_target_btn = gtk::MenuButton::new();
+        blink_target_btn.set_label(crate::tr_en!("vs…"));
+        blink_target_btn.set_valign(gtk::Align::Center);
+        blink_target_btn.set_tooltip_text(Some(crate::tr_en!("Choose the tab to blink against")));
+
+        let blink_interval_scale =
+            gtk::Scale::with_range(gtk::Orientation::Horizontal, 500.0, 5000.0, 100.0);
+        blink_interval_scale.set_width_request(140);
+        blink_interval_scale.set_value(1500.0);
+        blink_interval_scale.set_draw_value(true);
+        blink_interval_scale.set_value_pos(gtk::PositionType::Right);
+        blink_interval_scale.set_valign(gtk::Align::Center);
+        blink_interval_scale.set_tooltip_text(Some(crate::tr_en!("Blink fade interval (ms)")));
+
+        let sync_fov_btn = gtk::Button::from_icon_name("zoom-fit-best-symbolic");
+        sync_fov_btn.add_css_class("flat");
+        sync_fov_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Sync field of view across tabs (match the current image's sky field)"
+        )));
+
         let copy_radec_btn = gtk::Button::from_icon_name("edit-copy-symbolic");
         copy_radec_btn.add_css_class("flat");
         copy_radec_btn.set_tooltip_text(Some(crate::tr_en!("Copy crosshair RA/Dec to clipboard")));
-        toolbar.append(&copy_radec_btn);
 
-        // Clear the placed crosshair + hover marker
         let clear_crosshair_btn = gtk::Button::from_icon_name("edit-clear-symbolic");
         clear_crosshair_btn.add_css_class("flat");
         clear_crosshair_btn.set_tooltip_text(Some(crate::tr_en!("Clear crosshair")));
-        toolbar.append(&clear_crosshair_btn);
 
-        // Spacer + status
+        let group_label = |text: &str| {
+            let l = gtk::Label::new(Some(text));
+            l.add_css_class("caption-heading");
+            l.set_xalign(0.0);
+            l
+        };
+        let action_row = |title: &str, subtitle: Option<&str>, suffix: &gtk::Widget| {
+            let row = adw::ActionRow::new();
+            row.set_title(title);
+            if let Some(s) = subtitle {
+                row.set_subtitle(s);
+            }
+            row.add_suffix(suffix);
+            row
+        };
+        let boxed_list = || {
+            let list = gtk::ListBox::new();
+            list.set_selection_mode(gtk::SelectionMode::None);
+            list.add_css_class("boxed-list");
+            list
+        };
+
+        let levels_list = boxed_list();
+        levels_list.append(&action_row(crate::tr_en!("Min cut"), None, min_scale.upcast_ref()));
+        levels_list.append(&action_row(crate::tr_en!("Max cut"), None, max_scale.upcast_ref()));
+
+        let view_list = boxed_list();
+        view_list.append(&action_row(
+            crate::tr_en!("Header panel"),
+            None,
+            header_btn.upcast_ref(),
+        ));
+        view_list.append(&action_row(
+            crate::tr_en!("North up"),
+            None,
+            north_up_btn.upcast_ref(),
+        ));
+        view_list.append(&action_row(
+            crate::tr_en!("Link crosshair across tabs"),
+            Some(crate::tr_en!("Also enables North Up")),
+            link_btn.upcast_ref(),
+        ));
+        view_list.append(&action_row(
+            crate::tr_en!("Coordinates panel"),
+            None,
+            coords_btn.upcast_ref(),
+        ));
+
+        let blink_list = boxed_list();
+        blink_list.append(&action_row(
+            crate::tr_en!("Compare against"),
+            None,
+            blink_target_btn.upcast_ref(),
+        ));
+        blink_list.append(&action_row(
+            crate::tr_en!("Fade speed"),
+            None,
+            blink_interval_scale.upcast_ref(),
+        ));
+
+        let tools_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        tools_box.add_css_class("linked");
+        tools_box.set_halign(gtk::Align::Start);
+        tools_box.append(&sync_fov_btn);
+        tools_box.append(&copy_radec_btn);
+        tools_box.append(&clear_crosshair_btn);
+
+        let display_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        display_box.set_margin_start(12);
+        display_box.set_margin_end(12);
+        display_box.set_margin_top(12);
+        display_box.set_margin_bottom(12);
+        display_box.set_size_request(300, -1);
+        display_box.append(&group_label(crate::tr_en!("Levels")));
+        display_box.append(&levels_list);
+        display_box.append(&reset_btn);
+        display_box.append(&group_label(crate::tr_en!("View")));
+        display_box.append(&view_list);
+        display_box.append(&group_label(crate::tr_en!("Blink")));
+        display_box.append(&blink_list);
+        display_box.append(&group_label(crate::tr_en!("Crosshair tools")));
+        display_box.append(&tools_box);
+
+        let display_pop = gtk::Popover::new();
+        display_pop.set_child(Some(&display_box));
+        let display_btn = gtk::MenuButton::new();
+        display_btn.set_icon_name("preferences-desktop-display-symbolic");
+        display_btn.add_css_class("flat");
+        display_btn.set_tooltip_text(Some(crate::tr_en!("Display options")));
+        display_btn.set_popover(Some(&display_pop));
+        toolbar.append(&display_btn);
+
+        // Spacer pushes the status caption to the trailing edge.
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         toolbar.append(&spacer);
@@ -298,10 +369,10 @@ impl FitsViewer {
         let hdu_current_pos = Rc::new(RefCell::new(0u32));
 
         let hdu_bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        hdu_bar.set_margin_start(8);
-        hdu_bar.set_margin_end(8);
-        hdu_bar.set_margin_top(4);
-        hdu_bar.set_margin_bottom(4);
+        hdu_bar.set_margin_start(12);
+        hdu_bar.set_margin_end(12);
+        hdu_bar.set_margin_top(6);
+        hdu_bar.set_margin_bottom(6);
         let hdu_bar_label = gtk::Label::new(Some(crate::tr_en!("Extension:")));
         hdu_bar.append(&hdu_bar_label);
 
@@ -354,18 +425,17 @@ impl FitsViewer {
         notebook.set_scrollable(true);
         notebook.set_show_border(false);
 
-        // Empty state
-        let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        empty_box.set_valign(gtk::Align::Center);
-        empty_box.set_halign(gtk::Align::Center);
-        let empty_icon = gtk::Image::from_icon_name("image-x-generic-symbolic");
-        empty_icon.set_pixel_size(64);
-        empty_icon.add_css_class("dim-label");
-        empty_box.append(&empty_icon);
-        let empty_label = gtk::Label::new(Some(crate::tr_en!("Open a FITS file to get started")));
-        empty_label.add_css_class("dim-label");
-        empty_box.append(&empty_label);
-        notebook.append_page(&empty_box, Some(&gtk::Label::new(Some(crate::tr_en!("Welcome")))));
+        // Empty state (HIG: StatusPage with a primary call to action)
+        let empty_open_btn = gtk::Button::with_label(crate::tr_en!("Open FITS…"));
+        empty_open_btn.add_css_class("suggested-action");
+        empty_open_btn.add_css_class("pill");
+        empty_open_btn.set_halign(gtk::Align::Center);
+        let empty_status = adw::StatusPage::new();
+        empty_status.set_icon_name(Some("image-x-generic-symbolic"));
+        empty_status.set_title(crate::tr_en!("No FITS File Open"));
+        empty_status.set_description(Some(crate::tr_en!("Open a FITS file to get started")));
+        empty_status.set_child(Some(&empty_open_btn));
+        notebook.append_page(&empty_status, Some(&gtk::Label::new(Some(crate::tr_en!("Welcome")))));
 
         body.append(&notebook);
         body.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -418,6 +488,16 @@ impl FitsViewer {
         {
             let v = viewer.clone();
             open_btn.connect_clicked(move |btn| {
+                let v = v.clone();
+                let btn = btn.clone();
+                glib::spawn_future_local(async move {
+                    v.open_file_dialog(&btn).await;
+                });
+            });
+        }
+        {
+            let v = viewer.clone();
+            empty_open_btn.connect_clicked(move |btn| {
                 let v = v.clone();
                 let btn = btn.clone();
                 glib::spawn_future_local(async move {

@@ -59,10 +59,7 @@ impl CubeTabHost {
 
         // ── Toolbar ──────────────────────────────────────────────────────────
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        toolbar.set_margin_start(8);
-        toolbar.set_margin_end(8);
-        toolbar.set_margin_top(6);
-        toolbar.set_margin_bottom(6);
+        toolbar.add_css_class("toolbar");
 
         let open_btn = gtk::Button::with_label(crate::tr_en!("Open Cube…"));
         open_btn.set_icon_name("document-open-symbolic");

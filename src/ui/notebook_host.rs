@@ -88,11 +88,21 @@ impl NotebookTabHost {
         widget.set_hexpand(true);
 
         // ── Toolbar ──────────────────────────────────────────────────────────
+        // GNOME HIG: frequent actions inline (file ops, add cell, run/stop);
+        // structural and kernel housekeeping grouped behind labelled menu buttons.
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        toolbar.set_margin_start(8);
-        toolbar.set_margin_end(8);
-        toolbar.set_margin_top(6);
-        toolbar.set_margin_bottom(6);
+        toolbar.add_css_class("toolbar");
+
+        // A left-aligned, menu-like popover item.
+        let menu_item = |label: &str, tooltip: &str| {
+            let btn = gtk::Button::new();
+            let l = gtk::Label::new(Some(label));
+            l.set_xalign(0.0);
+            btn.set_child(Some(&l));
+            btn.add_css_class("flat");
+            btn.set_tooltip_text(Some(tooltip));
+            btn
+        };
 
         // File group: New, Open, Save, Save As
         let new_btn = gtk::Button::from_icon_name("document-new-symbolic");
@@ -117,7 +127,7 @@ impl NotebookTabHost {
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-        // Cell group: Add Code, Add Markdown, Move Up, Move Down, Delete
+        // Add-cell group (frequent): Code, Markdown
         let add_code_btn = gtk::Button::with_label(crate::tr_en!("Code"));
         add_code_btn.set_icon_name("list-add-symbolic");
         add_code_btn.add_css_class("flat");
@@ -130,24 +140,7 @@ impl NotebookTabHost {
         add_md_btn.set_tooltip_text(Some(crate::tr_en!("Add Markdown Cell")));
         toolbar.append(&add_md_btn);
 
-        let move_up_btn = gtk::Button::from_icon_name("go-up-symbolic");
-        move_up_btn.add_css_class("flat");
-        move_up_btn.set_tooltip_text(Some(crate::tr_en!("Move Cell Up")));
-        toolbar.append(&move_up_btn);
-
-        let move_down_btn = gtk::Button::from_icon_name("go-down-symbolic");
-        move_down_btn.add_css_class("flat");
-        move_down_btn.set_tooltip_text(Some(crate::tr_en!("Move Cell Down")));
-        toolbar.append(&move_down_btn);
-
-        let delete_cell_btn = gtk::Button::from_icon_name("edit-delete-symbolic");
-        delete_cell_btn.add_css_class("flat");
-        delete_cell_btn.set_tooltip_text(Some(crate::tr_en!("Delete Cell")));
-        toolbar.append(&delete_cell_btn);
-
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
-        // Exec group: Run Cell, Run All, Interrupt, Restart, Clear Outputs
+        // Run group (frequent): Run Cell, Run All, Interrupt
         let run_cell_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
         run_cell_btn.add_css_class("flat");
         run_cell_btn.set_tooltip_text(Some(crate::tr_en!("Run Cell (Ctrl+Enter)")));
@@ -164,54 +157,117 @@ impl NotebookTabHost {
         interrupt_btn.set_tooltip_text(Some(crate::tr_en!("Interrupt kernel")));
         toolbar.append(&interrupt_btn);
 
-        let restart_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        restart_btn.add_css_class("flat");
-        restart_btn.set_tooltip_text(Some(crate::tr_en!("Restart kernel")));
-        toolbar.append(&restart_btn);
+        // ── "Cell" menu: structural operations ───────────────────────────────
+        let move_up_btn = menu_item(
+            crate::tr_en!("Move up"),
+            crate::tr_en!("Move Cell Up"),
+        );
+        let move_down_btn = menu_item(
+            crate::tr_en!("Move down"),
+            crate::tr_en!("Move Cell Down"),
+        );
+        let delete_cell_btn = menu_item(
+            crate::tr_en!("Delete cell"),
+            crate::tr_en!("Delete Cell"),
+        );
+        let split_btn = menu_item(
+            crate::tr_en!("Split at cursor"),
+            crate::tr_en!("Split Cell at Cursor (Ctrl+Shift+Minus)"),
+        );
+        let merge_btn = menu_item(
+            crate::tr_en!("Merge with below"),
+            crate::tr_en!("Merge Cell Below (Shift+M)"),
+        );
 
-        let clear_outputs_btn = gtk::Button::from_icon_name("edit-clear-all-symbolic");
-        clear_outputs_btn.add_css_class("flat");
-        clear_outputs_btn.set_tooltip_text(Some(crate::tr_en!("Clear All Outputs")));
-        toolbar.append(&clear_outputs_btn);
+        let cell_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        cell_box.set_margin_start(6);
+        cell_box.set_margin_end(6);
+        cell_box.set_margin_top(6);
+        cell_box.set_margin_bottom(6);
+        cell_box.set_size_request(180, -1);
+        cell_box.append(&move_up_btn);
+        cell_box.append(&move_down_btn);
+        cell_box.append(&split_btn);
+        cell_box.append(&merge_btn);
+        cell_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        cell_box.append(&delete_cell_btn);
 
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
-        // Cell-structure group: Split, Merge
-        let split_btn = gtk::Button::from_icon_name("edit-cut-symbolic");
-        split_btn.add_css_class("flat");
-        split_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Split Cell at Cursor (Ctrl+Shift+Minus)"
+        let cell_pop = gtk::Popover::new();
+        cell_pop.set_child(Some(&cell_box));
+        let cell_menu_btn = gtk::MenuButton::new();
+        cell_menu_btn.set_label(crate::tr_en!("Cell"));
+        cell_menu_btn.add_css_class("flat");
+        cell_menu_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Cell operations — move, split, merge, delete"
         )));
-        toolbar.append(&split_btn);
+        cell_menu_btn.set_popover(Some(&cell_pop));
+        toolbar.append(&cell_menu_btn);
 
-        let merge_btn = gtk::Button::from_icon_name("mail-attachment-symbolic");
-        merge_btn.add_css_class("flat");
-        merge_btn.set_tooltip_text(Some(crate::tr_en!("Merge Cell Below (Shift+M)")));
-        toolbar.append(&merge_btn);
+        // ── "Kernel" menu: restart + clear outputs ───────────────────────────
+        let restart_btn = menu_item(
+            crate::tr_en!("Restart kernel"),
+            crate::tr_en!("Restart kernel"),
+        );
+        let clear_outputs_btn = menu_item(
+            crate::tr_en!("Clear all outputs"),
+            crate::tr_en!("Clear All Outputs"),
+        );
+
+        let kernel_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        kernel_box.set_margin_start(6);
+        kernel_box.set_margin_end(6);
+        kernel_box.set_margin_top(6);
+        kernel_box.set_margin_bottom(6);
+        kernel_box.set_size_request(180, -1);
+        kernel_box.append(&restart_btn);
+        kernel_box.append(&clear_outputs_btn);
+
+        let kernel_pop = gtk::Popover::new();
+        kernel_pop.set_child(Some(&kernel_box));
+        let kernel_menu_btn = gtk::MenuButton::new();
+        kernel_menu_btn.set_label(crate::tr_en!("Kernel"));
+        kernel_menu_btn.add_css_class("flat");
+        kernel_menu_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Kernel — restart, clear outputs"
+        )));
+        kernel_menu_btn.set_popover(Some(&kernel_pop));
+        toolbar.append(&kernel_menu_btn);
+
+        // Menus close on activation (standard menu behaviour).
+        for (btn, pop) in [
+            (&move_up_btn, &cell_pop),
+            (&move_down_btn, &cell_pop),
+            (&split_btn, &cell_pop),
+            (&merge_btn, &cell_pop),
+            (&delete_cell_btn, &cell_pop),
+            (&restart_btn, &kernel_pop),
+            (&clear_outputs_btn, &kernel_pop),
+        ] {
+            let pop = pop.clone();
+            btn.connect_clicked(move |_| pop.popdown());
+        }
 
         // Spacer
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         toolbar.append(&spacer);
 
-        // Settings button (kept on the right, before the status indicators).
-        let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
-        settings_btn.add_css_class("flat");
-        settings_btn.set_tooltip_text(Some(crate::tr_en!("Notebook Settings")));
-        toolbar.append(&settings_btn);
+        // Status indicators at the trailing edge: python path, kernel dot, settings.
+        let python_label = gtk::Label::new(Some(&python_label_text));
+        python_label.add_css_class("dim-label");
+        python_label.add_css_class("caption");
+        toolbar.append(&python_label);
 
-        // Kernel dot
         let kernel_dot = gtk::Label::new(Some("●"));
         kernel_dot.add_css_class("kernel-dot");
         kernel_dot.add_css_class("dim-label");
         kernel_dot.set_tooltip_text(Some(crate::tr_en!("Kernel status: not started")));
         toolbar.append(&kernel_dot);
 
-        // Python path label
-        let python_label = gtk::Label::new(Some(&python_label_text));
-        python_label.add_css_class("dim-label");
-        python_label.add_css_class("caption");
-        toolbar.append(&python_label);
+        let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
+        settings_btn.add_css_class("flat");
+        settings_btn.set_tooltip_text(Some(crate::tr_en!("Notebook Settings")));
+        toolbar.append(&settings_btn);
 
         widget.append(&toolbar);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
