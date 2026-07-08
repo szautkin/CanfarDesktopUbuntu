@@ -309,14 +309,16 @@ fn make_stat_tile(name: &str, dot_class: &str) -> (gtk::Button, gtk::Label) {
     hbox.set_margin_top(6);
     hbox.set_margin_bottom(6);
 
+    // A compact centered chip — ● 3 Pending — with no hexpand, so the dot,
+    // count and label stay together instead of stretching across the grid cell.
+    hbox.set_halign(gtk::Align::Center);
+
     let dot = gtk::Label::new(Some("●"));
     dot.add_css_class(dot_class);
     hbox.append(&dot);
 
     let count_label = gtk::Label::new(Some("0"));
-    count_label.add_css_class("title-2");
-    count_label.set_hexpand(true);
-    count_label.set_halign(gtk::Align::End);
+    count_label.add_css_class("title-3");
     hbox.append(&count_label);
 
     let name_label = gtk::Label::new(Some(name));

@@ -1,5 +1,4 @@
 use crate::models::Session;
-use crate::ui::session_icon::session_type_icon;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use std::cell::RefCell;
@@ -32,34 +31,37 @@ impl SessionCard {
         container.set_margin_top(6);
         container.set_margin_bottom(6);
 
-        // Session type icon centered at top
-        let icon = session_type_icon(&session.session_type, 48);
-        icon.set_margin_top(12);
-        icon.set_halign(gtk::Align::Center);
-        container.append(&icon);
-
         let inner = gtk::Box::new(gtk::Orientation::Vertical, 6);
         inner.set_margin_start(12);
         inner.set_margin_end(12);
-        inner.set_margin_top(6);
+        inner.set_margin_top(12);
         inner.set_margin_bottom(12);
 
-        // Name + status row
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        // Header: session-type avatar (clips the opaque logo assets) beside the
+        // name + status, with the image caption underneath.
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
 
+        let avatar = crate::ui::session_icon::session_type_avatar(&session.session_type, 40);
+        avatar.set_valign(gtk::Align::Start);
+        header.append(&avatar);
+
+        let title_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        title_box.set_hexpand(true);
+
+        let name_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let name_label = gtk::Label::new(Some(&session.name));
         name_label.add_css_class("heading");
         name_label.set_hexpand(true);
         name_label.set_halign(gtk::Align::Start);
         name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        header.append(&name_label);
+        name_row.append(&name_label);
 
         let status_badge = gtk::Label::new(Some(&session.status));
         status_badge.add_css_class("caption");
         status_badge.add_css_class(&format!("status-{}", session.status.to_lowercase()));
-        header.append(&status_badge);
-
-        inner.append(&header);
+        status_badge.set_valign(gtk::Align::Center);
+        name_row.append(&status_badge);
+        title_box.append(&name_row);
 
         // Image name
         let image_display = match session.image.rsplit_once('/') {
@@ -71,7 +73,10 @@ impl SessionCard {
         image_label.add_css_class("dim-label");
         image_label.set_halign(gtk::Align::Start);
         image_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        inner.append(&image_label);
+        title_box.append(&image_label);
+
+        header.append(&title_box);
+        inner.append(&header);
 
         // Times
         if !session.start_time.is_empty() {
@@ -111,29 +116,44 @@ impl SessionCard {
             inner.append(&times_box);
         }
 
-        // Resources
+        // Resources: fixed sessions show the requested CPU/RAM/GPU; flexible
+        // ones have no requested values, so show only the FLEX badge with a
+        // caption (never "CPU:  RAM:" with empty values).
         let res_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-
-        let cpu_label =
-            gtk::Label::new(Some(&crate::tr_fmt!("CPU: {}", session.requested_cpu_cores)));
-        cpu_label.add_css_class("caption");
-        res_box.append(&cpu_label);
-
-        let ram_label = gtk::Label::new(Some(&crate::tr_fmt!("RAM: {}", session.requested_ram)));
-        ram_label.add_css_class("caption");
-        res_box.append(&ram_label);
-
-        if session.requested_gpu_cores != "0" {
-            let gpu_label =
-                gtk::Label::new(Some(&crate::tr_fmt!("GPU: {}", session.requested_gpu_cores)));
-            gpu_label.add_css_class("caption");
-            res_box.append(&gpu_label);
-        }
-
-        if !session.is_fixed_resources {
+        if session.is_fixed_resources {
+            if !session.requested_cpu_cores.is_empty() {
+                let cpu_label = gtk::Label::new(Some(&crate::tr_fmt!(
+                    "CPU: {}",
+                    session.requested_cpu_cores
+                )));
+                cpu_label.add_css_class("caption");
+                res_box.append(&cpu_label);
+            }
+            if !session.requested_ram.is_empty() {
+                let ram_label =
+                    gtk::Label::new(Some(&crate::tr_fmt!("RAM: {}", session.requested_ram)));
+                ram_label.add_css_class("caption");
+                res_box.append(&ram_label);
+            }
+            if session.requested_gpu_cores != "0" && !session.requested_gpu_cores.is_empty() {
+                let gpu_label = gtk::Label::new(Some(&crate::tr_fmt!(
+                    "GPU: {}",
+                    session.requested_gpu_cores
+                )));
+                gpu_label.add_css_class("caption");
+                res_box.append(&gpu_label);
+            }
+        } else {
+            let res_caption = gtk::Label::new(Some(crate::tr_en!("Resources")));
+            res_caption.add_css_class("caption");
+            res_caption.add_css_class("dim-label");
+            res_box.append(&res_caption);
             let flex_badge = gtk::Label::new(Some(crate::tr_en!("FLEX")));
             flex_badge.add_css_class("caption");
             flex_badge.add_css_class("flex-badge");
+            flex_badge.set_tooltip_text(Some(crate::tr_en!(
+                "Flexible resources — allocated by the platform"
+            )));
             res_box.append(&flex_badge);
         }
 
@@ -173,6 +193,8 @@ impl SessionCard {
         actions.set_margin_top(6);
 
         let open_btn = gtk::Button::from_icon_name("web-browser-symbolic");
+        open_btn.add_css_class("flat");
+        open_btn.add_css_class("circular");
         open_btn.set_tooltip_text(Some(crate::tr_en!("Open in browser")));
         open_btn.set_sensitive(session.is_running());
         {
@@ -185,6 +207,8 @@ impl SessionCard {
         actions.append(&open_btn);
 
         let renew_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
+        renew_btn.add_css_class("flat");
+        renew_btn.add_css_class("circular");
         renew_btn.set_tooltip_text(Some(crate::tr_en!("Renew session")));
         {
             let id = session.id.clone();
@@ -197,6 +221,8 @@ impl SessionCard {
         actions.append(&renew_btn);
 
         let events_btn = gtk::Button::from_icon_name("dialog-information-symbolic");
+        events_btn.add_css_class("flat");
+        events_btn.add_css_class("circular");
         events_btn.set_tooltip_text(Some(crate::tr_en!("View events/logs")));
         {
             let id = session.id.clone();
@@ -209,8 +235,9 @@ impl SessionCard {
         actions.append(&events_btn);
 
         let delete_btn = gtk::Button::from_icon_name("user-trash-symbolic");
-        delete_btn.set_tooltip_text(Some(crate::tr_en!("Delete session")));
+        delete_btn.add_css_class("circular");
         delete_btn.add_css_class("destructive-action");
+        delete_btn.set_tooltip_text(Some(crate::tr_en!("Delete session")));
         {
             let id = session.id.clone();
             let name = session.name.clone();

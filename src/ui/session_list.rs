@@ -69,9 +69,10 @@ impl SessionListView {
 
         let scrolled = gtk::ScrolledWindow::new();
         scrolled.set_hscrollbar_policy(gtk::PolicyType::Automatic);
-        scrolled.set_vscrollbar_policy(gtk::PolicyType::Automatic);
-        scrolled.set_vexpand(true);
-        scrolled.set_min_content_height(200);
+        // Never scroll vertically: size the strip to the cards' natural height so
+        // a card's action row is never clipped mid-button.
+        scrolled.set_vscrollbar_policy(gtk::PolicyType::Never);
+        scrolled.set_propagate_natural_height(true);
 
         let cards_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         cards_box.set_margin_start(12);
