@@ -9,7 +9,7 @@
 //! headless/llvmpipe, missing GL 3.2). On any failure the widget sets a `failed`
 //! flag and simply clears — the parent page then falls back to slice-only mode.
 
-use crate::helpers::cube_gl_shaders::{FRAGMENT_SRC, VERTEX_SRC};
+use crate::helpers::cube_gl_shaders::{fragment_src, vertex_src};
 use crate::helpers::cube_math::{self, Mat4};
 use crate::helpers::cube_slice::StretchMode;
 use crate::models::volume_data::VolumeData;
@@ -47,6 +47,8 @@ fn ensure_gl_loaded() {
 struct GlState {
     realized: bool,
     failed: bool,
+    /// The context is OpenGL ES (GLES shader dialect + ES-safe texture params).
+    is_es: bool,
     program: u32,
     vao: u32,
     data_tex: u32,
@@ -108,8 +110,12 @@ impl CubeVolumeGl {
         area.set_auto_render(true);
         area.set_hexpand(true);
         area.set_vexpand(true);
-        // Request a 3.3 core context; GTK negotiates the best available.
-        area.set_required_version(3, 3);
+        // Do NOT pin a desktop-GL version here: on some drivers (NVIDIA over
+        // EGL) GDK's display context is OpenGL **ES**, and a required 3.3
+        // desktop context can never be created ("Unable to create a GL
+        // context"). Accept whatever GDK negotiates — desktop GL 3.3+ core on
+        // most systems, GLES 3.x otherwise — and pick the shader dialect at
+        // realize time.
 
         let mut init = GlState {
             window: (0.0, 1.0),
@@ -152,12 +158,24 @@ impl CubeVolumeGl {
             let state = state.clone();
             area.connect_realize(move |area| {
                 area.make_current();
-                if area.error().is_some() {
+                if let Some(err) = area.error() {
+                    eprintln!("[cube-gl] GLArea realize error (falling back to slice mode): {err}");
                     state.borrow_mut().failed = true;
                     return;
                 }
                 ensure_gl_loaded();
-                unsafe { realize_gl(&mut state.borrow_mut()) };
+                unsafe {
+                    let mut is_es = false;
+                    let ver = gl::GetString(gl::VERSION);
+                    if !ver.is_null() {
+                        let ver = std::ffi::CStr::from_ptr(ver as *const _).to_string_lossy();
+                        is_es = ver.starts_with("OpenGL ES");
+                        eprintln!("[cube-gl] OpenGL context: {ver}");
+                    }
+                    let mut s = state.borrow_mut();
+                    s.is_es = is_es;
+                    realize_gl(&mut s);
+                }
             });
         }
         // Unrealize: free GL objects.
@@ -507,16 +525,18 @@ unsafe fn compile_shader(kind: u32, src: &str) -> Result<u32, String> {
 }
 
 unsafe fn realize_gl(s: &mut GlState) {
-    let vs = match compile_shader(gl::VERTEX_SHADER, VERTEX_SRC) {
+    let vs = match compile_shader(gl::VERTEX_SHADER, &vertex_src(s.is_es)) {
         Ok(v) => v,
-        Err(_) => {
+        Err(log) => {
+            eprintln!("[cube-gl] vertex shader failed (slice fallback): {log}");
             s.failed = true;
             return;
         }
     };
-    let fs = match compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SRC) {
+    let fs = match compile_shader(gl::FRAGMENT_SHADER, &fragment_src(s.is_es)) {
         Ok(v) => v,
-        Err(_) => {
+        Err(log) => {
+            eprintln!("[cube-gl] fragment shader failed (slice fallback): {log}");
             gl::DeleteShader(vs);
             s.failed = true;
             return;
@@ -531,6 +551,14 @@ unsafe fn realize_gl(s: &mut GlState) {
     let mut ok = 0i32;
     gl::GetProgramiv(program, gl::LINK_STATUS, &mut ok);
     if ok == 0 {
+        let mut len = 0i32;
+        gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut len);
+        let mut buf = vec![0u8; len.max(1) as usize];
+        gl::GetProgramInfoLog(program, len, std::ptr::null_mut(), buf.as_mut_ptr() as *mut _);
+        eprintln!(
+            "[cube-gl] program link failed (slice fallback): {}",
+            String::from_utf8_lossy(&buf)
+        );
         gl::DeleteProgram(program);
         s.failed = true;
         return;
@@ -630,11 +658,22 @@ unsafe fn ensure_uploads(s: &mut GlState) {
             gl::BindTexture(gl::TEXTURE_3D, s.data_tex);
             gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
             gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-            gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_BORDER as i32);
-            gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_BORDER as i32);
-            gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_WRAP_R, gl::CLAMP_TO_BORDER as i32);
-            let border = [0.0f32, 0.0, 0.0, 0.0];
-            gl::TexParameterfv(gl::TEXTURE_3D, gl::TEXTURE_BORDER_COLOR, border.as_ptr());
+            // CLAMP_TO_BORDER (+ border colour) is desktop-GL / GLES 3.2-only;
+            // use edge clamping on ES so ES 3.0/3.1 contexts stay valid — the
+            // ray-march samples inside the unit cube, so the difference is
+            // invisible in practice.
+            let wrap = if s.is_es {
+                gl::CLAMP_TO_EDGE
+            } else {
+                gl::CLAMP_TO_BORDER
+            };
+            gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_WRAP_S, wrap as i32);
+            gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_WRAP_T, wrap as i32);
+            gl::TexParameteri(gl::TEXTURE_3D, gl::TEXTURE_WRAP_R, wrap as i32);
+            if !s.is_es {
+                let border = [0.0f32, 0.0, 0.0, 0.0];
+                gl::TexParameterfv(gl::TEXTURE_3D, gl::TEXTURE_BORDER_COLOR, border.as_ptr());
+            }
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
             gl::TexImage3D(
                 gl::TEXTURE_3D,

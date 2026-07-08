@@ -119,3 +119,59 @@ void main() {
     fragColor = vec4(acc, alpha); // premultiplied
 }
 "#;
+
+// ---------------------------------------------------------------------------
+// Context-dialect selection
+// ---------------------------------------------------------------------------
+
+/// Rewrite a desktop-GL shader for the dialect of the current context.
+///
+/// GDK hands some drivers (e.g. NVIDIA over EGL) an **OpenGL ES** context, where
+/// `#version 330 core` sources are rejected outright. The same shader bodies are
+/// valid GLSL ES 3.00 once the version line is swapped and default precisions
+/// are declared, so the port is a pure header substitution.
+fn with_dialect(src: &str, es: bool) -> String {
+    if !es {
+        return src.to_string();
+    }
+    let body = src.strip_prefix("#version 330 core").unwrap_or(src);
+    format!(
+        "#version 300 es\n\
+         precision highp float;\n\
+         precision highp int;\n\
+         precision highp sampler3D;\n\
+         precision highp sampler2D;{body}"
+    )
+}
+
+/// Vertex shader in the dialect of the current context.
+pub fn vertex_src(es: bool) -> String {
+    with_dialect(VERTEX_SRC, es)
+}
+
+/// Fragment shader (volume ray-march) in the dialect of the current context.
+pub fn fragment_src(es: bool) -> String {
+    with_dialect(FRAGMENT_SRC, es)
+}
+
+#[cfg(test)]
+mod dialect_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_dialect_is_unchanged() {
+        assert!(vertex_src(false).starts_with("#version 330 core"));
+        assert_eq!(fragment_src(false), FRAGMENT_SRC);
+    }
+
+    #[test]
+    fn es_dialect_swaps_header_and_declares_precision() {
+        for src in [vertex_src(true), fragment_src(true)] {
+            assert!(src.starts_with("#version 300 es"));
+            assert!(src.contains("precision highp float;"));
+            assert!(!src.contains("330 core"));
+        }
+        // The ray-march body must survive the header swap intact.
+        assert!(fragment_src(true).contains("sampler3D dataTex"));
+    }
+}
