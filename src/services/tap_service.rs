@@ -1,20 +1,20 @@
+use crate::config::ApiEndpoints;
 use crate::models::search_result::{
     parse_csv, parse_resolver_response, ResolverResult, SearchResults,
 };
 use crate::services::api_error::ApiError;
 use reqwest::Client;
 use std::collections::BTreeSet;
-
-const TAP_SYNC_URL: &str = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus/sync";
-const RESOLVER_URL: &str = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/cadc-target-resolver/find";
+use std::sync::Arc;
 
 pub struct TAPService {
     client: Client,
+    endpoints: Arc<ApiEndpoints>,
 }
 
 impl TAPService {
-    pub fn new(client: Client) -> Self {
-        TAPService { client }
+    pub fn new(client: Client, endpoints: Arc<ApiEndpoints>) -> Self {
+        TAPService { client, endpoints }
     }
 
     /// Execute an ADQL query against the CADC TAP service.
@@ -34,7 +34,7 @@ impl TAPService {
 
         let mut req = self
             .client
-            .post(TAP_SYNC_URL)
+            .post(self.endpoints.tap_sync_url())
             .form(&params)
             .timeout(std::time::Duration::from_secs(300));
         if let Some(t) = token {
@@ -65,7 +65,7 @@ impl TAPService {
     ) -> Result<ResolverResult, ApiError> {
         let url = format!(
             "{}?target={}&service={}&format=ascii&detail=max&cached=true",
-            RESOLVER_URL,
+            self.endpoints.resolver_find_url(),
             urlencoding::encode(target),
             service
         );

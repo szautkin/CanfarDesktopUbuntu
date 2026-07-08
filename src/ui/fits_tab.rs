@@ -5,12 +5,13 @@
 //! that switching tabs can sync the shared toolbar to the newly-active tab.
 
 use crate::helpers::fits_renderer::{self, ColorMap, Stretch};
+use crate::models::fits_image::HduInfo;
 use crate::models::FitsImageData;
-use crate::ui::fits_canvas::FitsCanvas;
+use crate::ui::fits_canvas::{FitsCanvas, SharedSkyRef};
 use crate::ui::fits_header_panel::FitsHeaderPanel;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub struct FitsTab {
@@ -26,17 +27,24 @@ pub struct FitsTab {
     /// Percentile-cut defaults (for Reset Stretch).
     auto_vmin: f64,
     auto_vmax: f64,
-    /// Source filename (for bookmark metadata).
+    /// Source filename/path (for bookmark metadata and HDU reloads).
     source_file: String,
     /// Precomputed North Up rotation angle from WCS.
     north_up_angle: f64,
     north_up_enabled: RefCell<bool>,
+    /// Cross-tab shared crosshair/hover state, linked by sky (kept so the tab
+    /// can clear the markers and apply the linked crosshair on tab switch).
+    shared: SharedSkyRef,
+    /// All HDUs in the source file, for the extension selector (cached).
+    hdus: RefCell<Vec<HduInfo>>,
+    /// The 1-based HDU index this tab is currently displaying.
+    hdu_index: Cell<usize>,
 }
 
 impl FitsTab {
     pub fn new(
         data: FitsImageData,
-        shared_cursor: Rc<RefCell<Option<(f64, f64)>>>,
+        shared: SharedSkyRef,
         source_file: String,
     ) -> Rc<Self> {
         let widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -61,22 +69,24 @@ impl FitsTab {
             data.width,
             data.height,
             rgba,
-            shared_cursor.clone(),
+            shared.clone(),
             data.wcs.clone(),
         );
 
-        let header_panel = FitsHeaderPanel::new(data.header_ordered.clone());
+        let header_panel =
+            FitsHeaderPanel::new_with_info(data.header_ordered.clone(), data.image_info_rows());
 
         // Layout: header panel (left) | canvas (right)
         widget.append(header_panel.widget());
         widget.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         widget.append(canvas.widget());
 
-        // Precompute North Up rotation angle from WCS
+        // Precompute the North-Up rotation (radians). Windows' NorthAngle uses the
+        // atan2(-Cd1_2, Cd2_2) convention; to show North up, rotate by -NorthAngle.
         let north_up_angle = data
             .wcs
             .as_ref()
-            .map(|w| -(w.cd2_1.atan2(w.cd2_2)))
+            .map(|w| -w.north_angle().to_radians())
             .unwrap_or(0.0);
 
         Rc::new(FitsTab {
@@ -93,6 +103,9 @@ impl FitsTab {
             source_file,
             north_up_angle,
             north_up_enabled: RefCell::new(false),
+            shared,
+            hdus: RefCell::new(Vec::new()),
+            hdu_index: Cell::new(1),
         })
     }
 
@@ -202,6 +215,21 @@ impl FitsTab {
         self.canvas.reset_view();
     }
 
+    /// Image-space coordinate at the centre of the viewport.
+    pub fn viewport_center(&self) -> (f64, f64) {
+        self.canvas.viewport_center()
+    }
+
+    /// Pan so image-space `(cx, cy)` is centred in the viewport.
+    pub fn set_viewport_center(&self, cx: f64, cy: f64) {
+        self.canvas.set_viewport_center(cx, cy);
+    }
+
+    /// The currently-placed crosshair in image-pixel coordinates, if any.
+    pub fn crosshair_pixel_pos(&self) -> Option<(f64, f64)> {
+        self.canvas.crosshair_pos()
+    }
+
     pub fn go_to_coord(&self, ra: f64, dec: f64) {
         self.canvas.go_to_world_coord(ra, dec);
     }
@@ -209,6 +237,102 @@ impl FitsTab {
     /// Return the currently-placed crosshair as (ra, dec) if available.
     pub fn crosshair_world_pos(&self) -> Option<(f64, f64)> {
         self.canvas.crosshair_world_pos()
+    }
+
+    /// Angular scale in arcsec per screen pixel (`pixel_scale / zoom`), used to
+    /// match the field-of-view of tabs with different plate scales. `None` when
+    /// this tab has no WCS.
+    pub fn angular_scale_arcsec(&self) -> Option<f64> {
+        let z = self.zoom_scale();
+        if z <= 0.0 {
+            return None;
+        }
+        self.data
+            .wcs
+            .as_ref()
+            .map(|w| w.pixel_scale_arcsec() / z)
+    }
+
+    /// Set zoom so this tab shows `target_arcsec` per screen pixel (same angular
+    /// field as another tab). Returns `false` if this tab has no usable WCS scale.
+    pub fn set_angular_scale_arcsec(&self, target_arcsec: f64) -> bool {
+        let Some(scale) = self.data.wcs.as_ref().map(|w| w.pixel_scale_arcsec()) else {
+            return false;
+        };
+        if target_arcsec <= 0.0 || scale <= 0.0 {
+            return false;
+        }
+        self.set_zoom(scale / target_arcsec);
+        true
+    }
+
+    /// Pan so sky coordinate `(ra, dec)` sits at the viewport centre (maps through
+    /// this tab's own WCS). Returns `false` if it has no WCS / maps out of frame.
+    pub fn center_on_world(&self, ra: f64, dec: f64) -> bool {
+        match self.data.wcs.as_ref().and_then(|w| w.world_to_pixel(ra, dec)) {
+            Some((px, py)) => {
+                self.set_viewport_center(px, py);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The sky coordinate at the image centre (for framing a blink when no
+    /// crosshair is set). `None` without a WCS.
+    pub fn image_center_world(&self) -> Option<(f64, f64)> {
+        let (cx, cy) = (self.data.width as f64 / 2.0, self.data.height as f64 / 2.0);
+        self.data.wcs.as_ref().map(|w| w.pixel_to_sky(cx, cy))
+    }
+
+    /// Clear both the placed (red) crosshair and the hover (green) marker, and
+    /// clear the shared cross-tab sky state so linked tabs drop their markers too.
+    pub fn clear_crosshair(&self) {
+        {
+            let mut s = self.shared.borrow_mut();
+            s.hover = None;
+            s.placed = None;
+        }
+        // Clears the placed crosshair, queues a redraw (dropping the now-`None`
+        // hover marker too) and notifies the crosshair-placed callback.
+        self.canvas.set_crosshair(None);
+    }
+
+    /// Seed the shared placed-crosshair sky point from this tab's own crosshair
+    /// (used when the link toggle is turned on so the current mark propagates).
+    pub fn publish_current_crosshair(&self) {
+        if let Some((ra, dec)) = self.canvas.crosshair_world_pos() {
+            self.shared.borrow_mut().placed = Some((ra, dec));
+        }
+    }
+
+    /// Reposition this tab's placed crosshair from the shared linked sky point
+    /// (called on tab switch when linked-crosshair is on).
+    pub fn apply_linked_crosshair(&self) {
+        self.canvas.apply_linked_crosshair();
+    }
+
+    /// North-Up rotation this tab would apply (radians), if it has a WCS.
+    pub fn north_up_angle(&self) -> Option<f64> {
+        self.data.wcs.as_ref().map(|_| self.north_up_angle)
+    }
+
+    // ── HDU / extension context ──────────────────────────────────────────────
+
+    /// Record the file's HDU list and which 1-based HDU this tab displays.
+    pub fn set_hdu_context(&self, hdus: Vec<HduInfo>, index: usize) {
+        *self.hdus.borrow_mut() = hdus;
+        self.hdu_index.set(index);
+    }
+
+    /// The cached HDU list for the source file (empty if unknown).
+    pub fn hdus(&self) -> Vec<HduInfo> {
+        self.hdus.borrow().clone()
+    }
+
+    /// The 1-based HDU index currently displayed.
+    pub fn hdu_index(&self) -> usize {
+        self.hdu_index.get()
     }
 
     fn re_render(&self) {

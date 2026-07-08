@@ -36,7 +36,7 @@ impl SessionListView {
         container.set_margin_top(8);
         container.set_vexpand(true);
 
-        let (header, loading_spinner, refresh_btn) = card_header("Active Sessions");
+        let (header, loading_spinner, refresh_btn) = card_header(crate::tr_en!("Active Sessions"));
 
         let countdown_label = gtk::Label::new(None);
         countdown_label.add_css_class("dim-label");
@@ -45,7 +45,7 @@ impl SessionListView {
         // Insert after title
         header.insert_child_after(&countdown_label, Some(&header.first_child().unwrap()));
 
-        let count_label = gtk::Label::new(Some("0 sessions"));
+        let count_label = gtk::Label::new(Some(crate::tr_en!("0 sessions")));
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
         // Insert after countdown
@@ -59,7 +59,7 @@ impl SessionListView {
 
         container.append(&header);
 
-        let empty_label = gtk::Label::new(Some("No active sessions"));
+        let empty_label = gtk::Label::new(Some(crate::tr_en!("No active sessions")));
         empty_label.add_css_class("dim-label");
         empty_label.set_margin_top(32);
         empty_label.set_margin_bottom(32);
@@ -208,15 +208,18 @@ impl SessionListView {
         }
 
         let filter = self.active_filter();
+        // Headless (batch) jobs are shown in the Batch Jobs panel, never here, and
+        // never count toward the interactive-session cap (matches the reference).
         let visible: Vec<&Session> = sessions
             .iter()
+            .filter(|s| !s.is_headless())
             .filter(|s| match &filter {
                 None => true,
                 Some(f) => s.session_type.eq_ignore_ascii_case(f),
             })
             .collect();
 
-        let count = sessions.len();
+        let count = sessions.iter().filter(|s| !s.is_headless()).count();
         self.count_label.set_text(&format!(
             "{} session{}",
             count,
@@ -269,7 +272,7 @@ impl SessionListView {
                         countdown_label.set_text(&format!("refresh in {}s", remaining));
                         glib::timeout_future_seconds(1).await;
                     }
-                    countdown_label.set_text("refreshing...");
+                    countdown_label.set_text(crate::tr_en!("refreshing..."));
 
                     let svc = services.clone();
                     let result = services

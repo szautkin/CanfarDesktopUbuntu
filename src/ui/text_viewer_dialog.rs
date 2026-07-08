@@ -25,7 +25,7 @@ fn make_text_panel(content: &str) -> gtk::ScrolledWindow {
     view.set_wrap_mode(gtk::WrapMode::WordChar);
 
     let display = if content.is_empty() {
-        "(empty)"
+        crate::tr_en!("(empty)")
     } else {
         content
     };

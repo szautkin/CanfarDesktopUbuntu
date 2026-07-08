@@ -129,7 +129,7 @@ impl SessionCard {
         }
 
         if !session.is_fixed_resources {
-            let flex_badge = gtk::Label::new(Some("FLEX"));
+            let flex_badge = gtk::Label::new(Some(crate::tr_en!("FLEX")));
             flex_badge.add_css_class("caption");
             flex_badge.add_css_class("flex-badge");
             res_box.append(&flex_badge);
@@ -145,7 +145,7 @@ impl SessionCard {
             let has_ram = !session.ram_in_use.is_empty() && session.ram_in_use != "0";
             if has_cpu || has_ram {
                 let usage_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-                let prefix = gtk::Label::new(Some("In use:"));
+                let prefix = gtk::Label::new(Some(crate::tr_en!("In use:")));
                 prefix.add_css_class("caption");
                 prefix.add_css_class("dim-label");
                 usage_box.append(&prefix);
@@ -169,7 +169,7 @@ impl SessionCard {
         actions.set_margin_top(4);
 
         let open_btn = gtk::Button::from_icon_name("web-browser-symbolic");
-        open_btn.set_tooltip_text(Some("Open in browser"));
+        open_btn.set_tooltip_text(Some(crate::tr_en!("Open in browser")));
         open_btn.set_sensitive(session.is_running());
         {
             let url = session.connect_url.clone();
@@ -181,7 +181,7 @@ impl SessionCard {
         actions.append(&open_btn);
 
         let renew_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        renew_btn.set_tooltip_text(Some("Renew session"));
+        renew_btn.set_tooltip_text(Some(crate::tr_en!("Renew session")));
         {
             let id = session.id.clone();
             let name = session.name.clone();
@@ -193,7 +193,7 @@ impl SessionCard {
         actions.append(&renew_btn);
 
         let events_btn = gtk::Button::from_icon_name("dialog-information-symbolic");
-        events_btn.set_tooltip_text(Some("View events/logs"));
+        events_btn.set_tooltip_text(Some(crate::tr_en!("View events/logs")));
         {
             let id = session.id.clone();
             let name = session.name.clone();
@@ -205,7 +205,7 @@ impl SessionCard {
         actions.append(&events_btn);
 
         let delete_btn = gtk::Button::from_icon_name("user-trash-symbolic");
-        delete_btn.set_tooltip_text(Some("Delete session"));
+        delete_btn.set_tooltip_text(Some(crate::tr_en!("Delete session")));
         delete_btn.add_css_class("destructive-action");
         {
             let id = session.id.clone();

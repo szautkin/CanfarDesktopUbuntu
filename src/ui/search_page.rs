@@ -1,11 +1,20 @@
 use crate::helpers::adql_builder;
+use crate::helpers::column_units;
 use crate::helpers::data_train_manager::DataTrainManager;
 use crate::helpers::range_parser;
 use crate::helpers::unit_converter;
 use crate::models::search_result::{
-    build_columns_from_headers, default_columns, format_cell, RecentSearch, SavedQuery,
-    SearchFormState, SearchResultRow, SearchResults,
+    build_columns_from_headers, default_columns, format_cell, format_cell_with_unit, RecentSearch,
+    SavedQuery, SearchFormState, SearchResultRow, SearchResults,
 };
+
+// The filter→ADQL converter lives at `src/helpers/filter_to_adql.rs`. It is
+// included here via `#[path]` so this feature compiles without editing
+// `src/helpers/mod.rs`. To integrate it into the helpers module tree, add
+// `pub mod filter_to_adql;` to `src/helpers/mod.rs`, delete this include, and
+// switch the call site to `crate::helpers::filter_to_adql::filters_to_where`.
+#[path = "../helpers/filter_to_adql.rs"]
+mod filter_to_adql;
 use crate::state::AppServices;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -65,6 +74,9 @@ pub struct SearchPage {
     results_panel: gtk::Box,
     results_count_label: gtk::Label,
     page_label: gtk::Label,
+    /// "Apply filters to ADQL" button — shown only while client-side column
+    /// filters are active (ref `ApplyFiltersBtn` / `UpdateApplyFiltersButton`).
+    apply_filters_btn: gtk::Button,
     // --- Sidebar ---
     recent_list: gtk::ListBox,
     saved_list: gtk::ListBox,
@@ -85,6 +97,15 @@ pub struct SearchPage {
     sort_ascending: Rc<RefCell<bool>>,
     column_filters: Rc<RefCell<std::collections::HashMap<String, String>>>,
     hidden_columns: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// Per-column chosen display unit (cleaned column key → unit id). Only holds
+    /// explicit non-default choices; an absent key means "column default" (RA/Dec
+    /// → sexagesimal, others → their legacy readable format). Not persisted
+    /// across sessions. Ref `ColumnUnitCatalog` / `BuildUnitHeader`.
+    column_units: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    /// Monotonic token used to debounce + cancel live target resolution: each
+    /// keystroke bumps it, and a pending timeout / in-flight resolve is discarded
+    /// unless its captured token still matches (ref `ResolveTargetDebouncedAsync`).
+    resolve_generation: Rc<RefCell<u64>>,
 }
 
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -105,7 +126,7 @@ impl SearchPage {
         main_box.set_margin_bottom(16);
         main_box.set_margin_end(16);
 
-        let title = gtk::Label::new(Some("CADC Archive Search"));
+        let title = gtk::Label::new(Some(crate::tr_en!("CADC Archive Search")));
         title.add_css_class("title-2");
         title.set_halign(gtk::Align::Start);
         title.set_margin_bottom(12);
@@ -181,7 +202,7 @@ impl SearchPage {
         form_content.append(&columns);
 
         // --- Additional Constraints (Data Train) - Expander ---
-        let train_expander = gtk::Expander::new(Some("Additional Constraints"));
+        let train_expander = gtk::Expander::new(Some(crate::tr_en!("Additional Constraints")));
         let (train_grid, train_lists) = build_data_train();
         train_expander.set_child(Some(&train_grid));
         train_expander.set_margin_top(8);
@@ -200,15 +221,15 @@ impl SearchPage {
         let search_btn = gtk::Button::new();
         let search_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         search_content.append(&gtk::Image::from_icon_name("system-search-symbolic"));
-        search_content.append(&gtk::Label::new(Some("Search")));
+        search_content.append(&gtk::Label::new(Some(crate::tr_en!("Search"))));
         search_btn.set_child(Some(&search_content));
         search_btn.add_css_class("suggested-action");
         action_bar.append(&search_btn);
 
-        let reset_btn = gtk::Button::with_label("Reset");
+        let reset_btn = gtk::Button::with_label(crate::tr_en!("Reset"));
         action_bar.append(&reset_btn);
 
-        let max_label = gtk::Label::new(Some("Max Records"));
+        let max_label = gtk::Label::new(Some(crate::tr_en!("Max Records")));
         max_label.add_css_class("caption");
         action_bar.append(&max_label);
         let max_records = gtk::SpinButton::with_range(10.0, 30000.0, 100.0);
@@ -230,7 +251,7 @@ impl SearchPage {
         form_tab.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         form_tab.append(&action_bar);
 
-        notebook.append_page(&form_tab, Some(&gtk::Label::new(Some("Search Form"))));
+        notebook.append_page(&form_tab, Some(&gtk::Label::new(Some(crate::tr_en!("Search Form")))));
 
         // ====== TAB 2: RESULTS ======
         let results_tab = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -243,32 +264,41 @@ impl SearchPage {
         results_toolbar.set_margin_top(8);
         results_toolbar.set_margin_bottom(4);
 
-        let results_count_label = gtk::Label::new(Some("No results"));
+        let results_count_label = gtk::Label::new(Some(crate::tr_en!("No results")));
         results_count_label.add_css_class("caption");
         results_count_label.set_hexpand(true);
         results_count_label.set_halign(gtk::Align::Start);
         results_toolbar.append(&results_count_label);
 
-        let columns_btn = gtk::Button::with_label("Columns");
+        let columns_btn = gtk::Button::with_label(crate::tr_en!("Columns"));
         columns_btn.add_css_class("flat");
-        columns_btn.set_tooltip_text(Some("Select visible columns"));
+        columns_btn.set_tooltip_text(Some(crate::tr_en!("Select visible columns")));
         results_toolbar.append(&columns_btn);
 
-        let csv_btn = gtk::Button::with_label("CSV");
+        let csv_btn = gtk::Button::with_label(crate::tr_en!("CSV"));
         csv_btn.add_css_class("flat");
-        csv_btn.set_tooltip_text(Some("Export results as CSV file"));
+        csv_btn.set_tooltip_text(Some(crate::tr_en!("Export results as CSV file")));
         results_toolbar.append(&csv_btn);
 
-        let tsv_btn = gtk::Button::with_label("TSV");
+        let tsv_btn = gtk::Button::with_label(crate::tr_en!("TSV"));
         tsv_btn.add_css_class("flat");
-        tsv_btn.set_tooltip_text(Some("Export results as TSV file"));
+        tsv_btn.set_tooltip_text(Some(crate::tr_en!("Export results as TSV file")));
         results_toolbar.append(&tsv_btn);
 
         let refresh_results_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_results_btn.set_tooltip_text(Some("Apply filters and re-render"));
+        refresh_results_btn.set_tooltip_text(Some(crate::tr_en!("Apply filters and re-render")));
         results_toolbar.append(&refresh_results_btn);
 
-        let rows_label = gtk::Label::new(Some("Rows/page:"));
+        // "Apply filters to ADQL" — only visible while column filters are active.
+        let apply_filters_btn = gtk::Button::with_label(crate::tr_en!("Apply filters to ADQL"));
+        apply_filters_btn.add_css_class("flat");
+        apply_filters_btn.set_tooltip_text(Some(
+            crate::tr_en!("Append the active column filters as an ADQL WHERE clause"),
+        ));
+        apply_filters_btn.set_visible(false);
+        results_toolbar.append(&apply_filters_btn);
+
+        let rows_label = gtk::Label::new(Some(crate::tr_en!("Rows/page:")));
         rows_label.add_css_class("caption");
         results_toolbar.append(&rows_label);
         let rows_combo = gtk::DropDown::new(
@@ -295,24 +325,24 @@ impl SearchPage {
         page_bar.set_margin_bottom(8);
 
         let first_btn = gtk::Button::from_icon_name("go-first-symbolic");
-        first_btn.set_tooltip_text(Some("First page"));
+        first_btn.set_tooltip_text(Some(crate::tr_en!("First page")));
         page_bar.append(&first_btn);
         let prev_btn = gtk::Button::from_icon_name("go-previous-symbolic");
-        prev_btn.set_tooltip_text(Some("Previous page"));
+        prev_btn.set_tooltip_text(Some(crate::tr_en!("Previous page")));
         page_bar.append(&prev_btn);
-        let page_label = gtk::Label::new(Some("Page 1"));
+        let page_label = gtk::Label::new(Some(crate::tr_en!("Page 1")));
         page_label.add_css_class("caption");
         page_bar.append(&page_label);
         let next_btn = gtk::Button::from_icon_name("go-next-symbolic");
-        next_btn.set_tooltip_text(Some("Next page"));
+        next_btn.set_tooltip_text(Some(crate::tr_en!("Next page")));
         page_bar.append(&next_btn);
         let last_btn = gtk::Button::from_icon_name("go-last-symbolic");
-        last_btn.set_tooltip_text(Some("Last page"));
+        last_btn.set_tooltip_text(Some(crate::tr_en!("Last page")));
         page_bar.append(&last_btn);
 
         results_tab.append(&page_bar);
 
-        notebook.append_page(&results_tab, Some(&gtk::Label::new(Some("Results"))));
+        notebook.append_page(&results_tab, Some(&gtk::Label::new(Some(crate::tr_en!("Results")))));
 
         // ====== TAB 3: ADQL EDITOR ======
         let adql_tab = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -337,13 +367,13 @@ impl SearchPage {
         let exec_btn = gtk::Button::new();
         let exec_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         exec_content.append(&gtk::Image::from_icon_name("media-playback-start-symbolic"));
-        exec_content.append(&gtk::Label::new(Some("Execute")));
+        exec_content.append(&gtk::Label::new(Some(crate::tr_en!("Execute"))));
         exec_btn.set_child(Some(&exec_content));
         exec_btn.add_css_class("suggested-action");
         adql_action.append(&exec_btn);
         adql_tab.append(&adql_action);
 
-        notebook.append_page(&adql_tab, Some(&gtk::Label::new(Some("ADQL Editor"))));
+        notebook.append_page(&adql_tab, Some(&gtk::Label::new(Some(crate::tr_en!("ADQL Editor")))));
 
         main_box.append(&notebook);
         widget.append(&main_box);
@@ -373,12 +403,12 @@ impl SearchPage {
         recent_header.set_margin_start(12);
         recent_header.set_margin_end(12);
         recent_header.set_margin_top(12);
-        let recent_title = gtk::Label::new(Some("Recent Searches"));
+        let recent_title = gtk::Label::new(Some(crate::tr_en!("Recent Searches")));
         recent_title.add_css_class("heading");
         recent_title.set_hexpand(true);
         recent_title.set_halign(gtk::Align::Start);
         recent_header.append(&recent_title);
-        let clear_recent_btn = gtk::Button::with_label("Clear All");
+        let clear_recent_btn = gtk::Button::with_label(crate::tr_en!("Clear All"));
         clear_recent_btn.add_css_class("flat");
         clear_recent_btn.add_css_class("caption");
         recent_header.append(&clear_recent_btn);
@@ -391,7 +421,7 @@ impl SearchPage {
         recent_list.set_margin_bottom(8);
         recent_list.set_placeholder(Some(
             &gtk::Label::builder()
-                .label("No recent searches")
+                .label(crate::tr_en!("No recent searches"))
                 .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
                 .margin_top(8)
                 .margin_bottom(8)
@@ -406,7 +436,7 @@ impl SearchPage {
         saved_card.set_margin_start(4);
         saved_card.set_margin_end(4);
 
-        let saved_title = gtk::Label::new(Some("Saved Queries"));
+        let saved_title = gtk::Label::new(Some(crate::tr_en!("Saved Queries")));
         saved_title.add_css_class("heading");
         saved_title.set_halign(gtk::Align::Start);
         saved_title.set_margin_start(12);
@@ -417,11 +447,11 @@ impl SearchPage {
         save_row.set_margin_start(12);
         save_row.set_margin_end(12);
         let save_name_entry = gtk::Entry::new();
-        save_name_entry.set_placeholder_text(Some("Name (optional)"));
+        save_name_entry.set_placeholder_text(Some(crate::tr_en!("Name (optional)")));
         save_name_entry.set_hexpand(true);
         save_row.append(&save_name_entry);
         let save_btn = gtk::Button::from_icon_name("document-save-symbolic");
-        save_btn.set_tooltip_text(Some("Save current ADQL"));
+        save_btn.set_tooltip_text(Some(crate::tr_en!("Save current ADQL")));
         save_row.append(&save_btn);
         saved_card.append(&save_row);
 
@@ -476,6 +506,7 @@ impl SearchPage {
             results_panel,
             results_count_label,
             page_label,
+            apply_filters_btn,
             recent_list,
             saved_list,
             save_name_entry,
@@ -492,6 +523,8 @@ impl SearchPage {
             sort_ascending: Rc::new(RefCell::new(true)),
             column_filters: Rc::new(RefCell::new(std::collections::HashMap::new())),
             hidden_columns: Rc::new(RefCell::new(std::collections::HashSet::new())),
+            column_units: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            resolve_generation: Rc::new(RefCell::new(0)),
         });
 
         // =====================================================================
@@ -575,7 +608,7 @@ impl SearchPage {
             let p = p.clone();
             let btn = btn.clone();
             glib::spawn_future_local(async move {
-                p.export_to_file(&btn, ",", "csv", "CSV Files").await;
+                p.export_to_file(&btn, ",", "csv", crate::tr_en!("CSV Files")).await;
             });
         });
 
@@ -585,7 +618,7 @@ impl SearchPage {
             let p = p.clone();
             let btn = btn.clone();
             glib::spawn_future_local(async move {
-                p.export_to_file(&btn, "\t", "tsv", "TSV Files").await;
+                p.export_to_file(&btn, "\t", "tsv", crate::tr_en!("TSV Files")).await;
             });
         });
 
@@ -607,17 +640,18 @@ impl SearchPage {
             p.render_results_page();
         });
 
-        // Clear resolved coordinates when target name changes
-        {
-            let ra = page.resolved_ra.clone();
-            let dec = page.resolved_dec.clone();
-            let status = page.resolver_status.clone();
-            page.target.connect_changed(move |_| {
-                *ra.borrow_mut() = None;
-                *dec.borrow_mut() = None;
-                status.set_text("");
-            });
-        }
+        // Apply active client-side filters onto the current ADQL (→ editor tab).
+        let p = page.clone();
+        page.apply_filters_btn
+            .connect_clicked(move |_| p.apply_filters_to_adql());
+
+        // Live, debounced target resolution: a changed target name (or a changed
+        // resolver service) invalidates any resolved coords and schedules a fresh
+        // resolve 500 ms later (ref `OnTargetChanged` / `ResolveTargetDebouncedAsync`).
+        let p = page.clone();
+        page.target.connect_changed(move |_| p.schedule_target_resolve());
+        let p = page.clone();
+        page.resolver.connect_selected_notify(move |_| p.schedule_target_resolve());
 
         // Keyboard shortcut: Ctrl+Enter to search
         let p = page.clone();
@@ -648,13 +682,34 @@ impl SearchPage {
         &self.widget
     }
 
+    /// Prefill the search form with a sky position (e.g. from a FITS crosshair)
+    /// and land on the Search Form tab — not a stale results/ADQL tab. The
+    /// coordinates are stored as already-resolved so no name resolution runs.
+    pub fn show_search_form(&self, ra: f64, dec: f64) {
+        self.notebook.set_current_page(Some(0));
+        // Set the text FIRST: this synchronously fires the debounced resolver,
+        // which clears the coords and schedules a resolve. We then bump the
+        // generation token to invalidate that pending resolve, and finally stamp
+        // the crosshair coords so they survive (no network round-trip needed).
+        self.target.set_text(&crate::models::fits_image::WcsInfo::format_for_resolver(
+            ra, dec,
+        ));
+        {
+            let mut g = self.resolve_generation.borrow_mut();
+            *g = g.wrapping_add(1);
+        }
+        *self.resolved_ra.borrow_mut() = Some(ra);
+        *self.resolved_dec.borrow_mut() = Some(dec);
+        self.resolver_status.set_text(crate::tr_en!("From FITS crosshair"));
+    }
+
     fn build_form_state(&self) -> SearchFormState {
         let spectral_units = ["nm", "Angstrom", "um", "mm"];
         let time_units = ["s", "m", "h", "d"];
         let pixel_scale_units = ["arcsec", "arcmin", "deg"];
         let date_presets = ["", "Last 24 hours", "Last week", "Last month"];
         let intents = ["", "science", "calibration"];
-        let resolver_services = ["ALL", "SIMBAD", "NED", "VIZIER"];
+        let resolver_services = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
 
         let spectral_unit = spectral_units
             .get(self.spectral_unit.selected() as usize)
@@ -803,6 +858,10 @@ impl SearchPage {
             data_product_type: mgr.data_types_string(),
             obs_type: mgr.obs_types_string(),
             max_records: self.max_records.value() as u32,
+            // Optional provenance / operator-aware fields default to None; the
+            // form UI does not populate them (see search_result.rs). Kept via FRU
+            // so future field additions don't break this literal.
+            ..Default::default()
         }
     }
 
@@ -834,15 +893,19 @@ impl SearchPage {
         self.max_records.set_value(10000.0);
         *self.resolved_ra.borrow_mut() = None;
         *self.resolved_dec.borrow_mut() = None;
-        self.status_label.set_text("Form cleared");
+        self.status_label.set_text(crate::tr_en!("Form cleared"));
     }
 
     async fn execute_search(self: &Rc<Self>) {
         let mut state = self.build_form_state();
 
-        // Auto-resolve target if needed
-        if !state.target.is_empty() && state.resolved_ra.is_none() {
-            self.status_label.set_text("Resolving target...");
+        // Auto-resolve target if needed (skipped when the resolver is "NONE",
+        // i.e. name-only search with no coordinate constraint).
+        if !state.target.is_empty()
+            && state.resolved_ra.is_none()
+            && state.resolver_service != "NONE"
+        {
+            self.status_label.set_text(crate::tr_en!("Resolving target..."));
             self.search_spinner.set_visible(true);
             self.search_spinner.start();
 
@@ -890,7 +953,7 @@ impl SearchPage {
             .text(&buffer.start_iter(), &buffer.end_iter(), false)
             .to_string();
         if adql.trim().is_empty() {
-            self.status_label.set_text("Enter an ADQL query");
+            self.status_label.set_text(crate::tr_en!("Enter an ADQL query"));
             return;
         }
         self.run_query(&adql, self.max_records.value() as u32, None)
@@ -898,7 +961,7 @@ impl SearchPage {
     }
 
     async fn run_query(self: &Rc<Self>, adql: &str, max_records: u32, form_state: Option<&SearchFormState>) {
-        self.status_label.set_text("Searching...");
+        self.status_label.set_text(crate::tr_en!("Searching..."));
         self.search_spinner.set_visible(true);
         self.search_spinner.start();
 
@@ -929,13 +992,14 @@ impl SearchPage {
                 // Save recent
                 let summary = form_state
                     .map(|s| s.summary())
-                    .unwrap_or_else(|| "ADQL query".to_string());
+                    .unwrap_or_else(|| crate::tr_en!("ADQL query").to_string());
                 let recent = RecentSearch {
                     summary,
                     adql: adql.to_string(),
                     form_state: form_state.cloned().unwrap_or_default(),
                     result_count: count,
                     searched_at: chrono::Utc::now().to_rfc3339(),
+                    ..Default::default()
                 };
                 let _ = self.services.search_store.save_recent(recent);
                 self.refresh_recent();
@@ -986,6 +1050,9 @@ impl SearchPage {
     }
 
     fn render_results_page(self: &Rc<Self>) {
+        // Keep the "Apply filters to ADQL" button in sync with filter state.
+        self.update_apply_filters_button();
+
         // Clear
         while let Some(child) = self.results_panel.first_child() {
             self.results_panel.remove(&child);
@@ -1082,11 +1149,23 @@ impl SearchPage {
                 }
                 page_rc.render_results_page();
             });
-            col_box.append(&header_btn);
+
+            // For unit-bearing columns, pair the sort label with a small
+            // unit-menu chevron (ref `BuildUnitHeader`); otherwise use the label
+            // alone. Either way the whole header cell stays 100px wide.
+            if column_units::has_menu(&col.key) {
+                let header_line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                header_btn.set_hexpand(true);
+                header_line.append(&header_btn);
+                header_line.append(&self.build_unit_menu_button(&col.key));
+                col_box.append(&header_line);
+            } else {
+                col_box.append(&header_btn);
+            }
 
             // Per-column filter entry — restore existing filter text
             let filter_entry = gtk::Entry::new();
-            filter_entry.set_placeholder_text(Some("Filter..."));
+            filter_entry.set_placeholder_text(Some(crate::tr_en!("Filter...")));
             filter_entry.set_width_chars(10);
             filter_entry.add_css_class("caption");
             if let Some(existing) = self.column_filters.borrow().get(&col.key) {
@@ -1094,14 +1173,19 @@ impl SearchPage {
             }
             let filters_rc = self.column_filters.clone();
             let key2 = col.key.clone();
+            let apply_btn = self.apply_filters_btn.clone();
             filter_entry.connect_changed(move |entry| {
                 let text = entry.text().to_string();
-                let mut f = filters_rc.borrow_mut();
-                if text.is_empty() {
-                    f.remove(&key2);
-                } else {
-                    f.insert(key2.clone(), text);
-                }
+                let active = {
+                    let mut f = filters_rc.borrow_mut();
+                    if text.is_empty() {
+                        f.remove(&key2);
+                    } else {
+                        f.insert(key2.clone(), text);
+                    }
+                    !f.is_empty()
+                };
+                apply_btn.set_visible(active);
             });
             col_box.append(&filter_entry);
 
@@ -1121,15 +1205,55 @@ impl SearchPage {
 
             for col in vis_columns.iter() {
                 let raw = row.get(&col.header);
-                let formatted = format_cell(raw, col.format);
-                let label = gtk::Label::new(Some(&formatted));
-                label.add_css_class("caption");
-                label.set_size_request(100, -1);
-                label.set_halign(gtk::Align::Start);
-                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                label.set_margin_end(4);
-                label.set_selectable(true);
-                row_box.append(&label);
+                // Unit-bearing columns render through the chosen-unit formatter
+                // (RA/Dec sexagesimal by default); all others keep the fixed
+                // per-column formatter to preserve existing behaviour.
+                let formatted = if column_units::has_menu(&col.key) {
+                    let chosen = self.column_units.borrow().get(&col.key).cloned();
+                    format_cell_with_unit(&col.header, raw, chosen.as_deref())
+                } else {
+                    format_cell(raw, col.format)
+                };
+
+                // Identity columns become "narrow to this value" links: a click
+                // sets a client-side column filter and re-renders (ref
+                // `NarrowableKeys` / `IsNarrowable`).
+                if is_narrowable(&col.key) && !raw.is_empty() {
+                    let inner = gtk::Label::new(Some(&formatted));
+                    inner.add_css_class("caption");
+                    inner.set_halign(gtk::Align::Start);
+                    inner.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+                    let cell_btn = gtk::Button::new();
+                    cell_btn.set_child(Some(&inner));
+                    cell_btn.add_css_class("flat");
+                    cell_btn.set_size_request(100, -1);
+                    cell_btn.set_halign(gtk::Align::Start);
+                    cell_btn.set_margin_end(4);
+                    cell_btn.set_tooltip_text(Some(&format!("Narrow to: {}", raw)));
+
+                    let filters_rc = self.column_filters.clone();
+                    let apply_btn = self.apply_filters_btn.clone();
+                    let page_rc = Rc::clone(self);
+                    let ckey = col.key.clone();
+                    let cval = raw.to_string();
+                    cell_btn.connect_clicked(move |_| {
+                        filters_rc.borrow_mut().insert(ckey.clone(), cval.clone());
+                        apply_btn.set_visible(true);
+                        *page_rc.current_page.borrow_mut() = 0;
+                        page_rc.render_results_page();
+                    });
+                    row_box.append(&cell_btn);
+                } else {
+                    let label = gtk::Label::new(Some(&formatted));
+                    label.add_css_class("caption");
+                    label.set_size_request(100, -1);
+                    label.set_halign(gtk::Align::Start);
+                    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    label.set_margin_end(4);
+                    label.set_selectable(true);
+                    row_box.append(&label);
+                }
             }
 
             // "Save to Research" button at the end of the row — routes
@@ -1139,7 +1263,7 @@ impl SearchPage {
                 let save_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
                 save_btn.add_css_class("flat");
                 save_btn.set_tooltip_text(Some(
-                    "Save to Research (downloads preview + FITS file)",
+                    crate::tr_en!("Save to Research (downloads preview + FITS file)"),
                 ));
                 save_btn.set_valign(gtk::Align::Center);
                 let services = self.services.clone();
@@ -1156,6 +1280,27 @@ impl SearchPage {
                     });
                 });
                 row_box.append(&save_btn);
+
+                // "Details" → full CAOM2 observation detail page.
+                let details_btn = gtk::Button::from_icon_name("view-more-symbolic");
+                details_btn.add_css_class("flat");
+                details_btn.set_tooltip_text(Some(
+                    crate::tr_en!("View the full CAOM2 observation metadata"),
+                ));
+                details_btn.set_valign(gtk::Align::Center);
+                let pub_id_detail = publisher_id.clone();
+                details_btn.connect_clicked(move |btn| {
+                    if let Some(root) = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+                        if let Some(app) = root.application() {
+                            let ag: &gtk::gio::ActionGroup = app.upcast_ref();
+                            ag.activate_action(
+                                "open-observation-detail",
+                                Some(&glib::Variant::from(pub_id_detail.as_str())),
+                            );
+                        }
+                    }
+                });
+                row_box.append(&details_btn);
             }
 
             // Wrap row in a clickable button for detail modal
@@ -1211,13 +1356,241 @@ impl SearchPage {
         }
     }
 
+    /// Show the "Apply filters to ADQL" button only while filters are active.
+    fn update_apply_filters_button(&self) {
+        let active = !self.column_filters.borrow().is_empty();
+        self.apply_filters_btn.set_visible(active);
+    }
+
+    /// Append the active client-side column filters to the current ADQL as a
+    /// WHERE fragment and switch to the ADQL editor tab (ref
+    /// `OnApplyFiltersToAdql` / `BuildFilteredAdql`).
+    fn apply_filters_to_adql(self: &Rc<Self>) {
+        let where_frag = {
+            let filters = self.column_filters.borrow();
+            if filters.is_empty() {
+                return;
+            }
+            let columns = self
+                .results_store
+                .borrow()
+                .as_ref()
+                .map(|r| r.columns.clone())
+                .unwrap_or_default();
+            filter_to_adql::filters_to_where(&filters, &columns)
+        };
+        if where_frag.trim().is_empty() {
+            return;
+        }
+
+        let buffer = self.adql_editor.buffer();
+        let base = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .to_string();
+        let base = base.trim_end();
+        if base.is_empty() {
+            // Nothing to attach the WHERE to — leave the editor untouched.
+            self.status_label
+                .set_text(crate::tr_en!("Run a search first, then apply filters"));
+            return;
+        }
+
+        // Reference always AND-appends (its generated ADQL always has a WHERE);
+        // fall back to a fresh WHERE when the editor holds a WHERE-less query.
+        let combined = if base.to_uppercase().contains("WHERE") {
+            format!("{}\nAND {}", base, where_frag)
+        } else {
+            format!("{}\nWHERE {}", base, where_frag)
+        };
+        self.adql_editor.buffer().set_text(&combined);
+        self.notebook.set_current_page(Some(2));
+    }
+
+    /// The resolver service currently selected in the dropdown.
+    fn selected_resolver_service(&self) -> String {
+        const SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
+        SERVICES
+            .get(self.resolver.selected() as usize)
+            .copied()
+            .unwrap_or("ALL")
+            .to_string()
+    }
+
+    /// Debounced live target-name resolution (ref `ResolveTargetDebouncedAsync`).
+    /// Each call bumps the generation token, so a pending 500 ms timeout or an
+    /// in-flight network resolve is discarded once superseded by a newer edit.
+    fn schedule_target_resolve(self: &Rc<Self>) {
+        // A changed target invalidates any previously resolved coordinates.
+        *self.resolved_ra.borrow_mut() = None;
+        *self.resolved_dec.borrow_mut() = None;
+
+        let my_gen = {
+            let mut g = self.resolve_generation.borrow_mut();
+            *g = g.wrapping_add(1);
+            *g
+        };
+
+        let text = self.target.text().to_string();
+        let service = self.selected_resolver_service();
+
+        // Name-only ("NONE") or empty target → no resolution, just clear status.
+        if text.trim().is_empty() || service == "NONE" {
+            self.resolver_status.set_text("");
+            return;
+        }
+
+        let page = Rc::clone(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            // Superseded by a newer keystroke while the debounce was pending.
+            if *page.resolve_generation.borrow() != my_gen {
+                return;
+            }
+            page.resolver_status.set_text(crate::tr_en!("Resolving..."));
+
+            let page = Rc::clone(&page);
+            glib::spawn_future_local(async move {
+                let svc = page.services.clone();
+                let t = text.clone();
+                let rs = service.clone();
+                let result = page
+                    .services
+                    .spawn(async move {
+                        let token = svc.get_token().await;
+                        svc.tap.resolve_target(&t, &rs, token.as_deref()).await
+                    })
+                    .await;
+
+                // Discard a stale in-flight resolve whose token no longer matches.
+                if *page.resolve_generation.borrow() != my_gen {
+                    return;
+                }
+
+                match result {
+                    Ok(r) => {
+                        *page.resolved_ra.borrow_mut() = Some(r.ra);
+                        *page.resolved_dec.borrow_mut() = Some(r.dec);
+                        let type_suffix = r
+                            .object_type
+                            .as_deref()
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| format!(" ({})", s))
+                            .unwrap_or_default();
+                        page.resolver_status.set_text(&format!(
+                            "RA: {:.4}  Dec: {:.4}{}",
+                            r.ra, r.dec, type_suffix
+                        ));
+                    }
+                    Err(_) => {
+                        *page.resolved_ra.borrow_mut() = None;
+                        *page.resolved_dec.borrow_mut() = None;
+                        page.resolver_status.set_text(crate::tr_en!("Not found"));
+                    }
+                }
+            });
+        });
+    }
+
+    /// Build the small unit-menu chevron for a unit-bearing column header (ref
+    /// `BuildUnitHeader`). Selecting a unit stores the choice (or clears it for
+    /// "Default" / the coordinate sexagesimal default) and re-renders the grid.
+    fn build_unit_menu_button(self: &Rc<Self>, key: &str) -> gtk::MenuButton {
+        let menu_btn = gtk::MenuButton::new();
+        menu_btn.set_icon_name("pan-down-symbolic");
+        menu_btn.add_css_class("flat");
+        menu_btn.set_valign(gtk::Align::Center);
+        menu_btn.set_tooltip_text(Some(crate::tr_en!("Display unit")));
+
+        let popover = gtk::Popover::new();
+        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        vbox.set_margin_start(6);
+        vbox.set_margin_end(6);
+        vbox.set_margin_top(6);
+        vbox.set_margin_bottom(6);
+
+        let is_coord = key == "ra(j20000)" || key == "dec(j20000)";
+        let default_id = column_units::default_unit_id(key);
+        let active = self.column_units.borrow().get(key).cloned();
+
+        // Radio-group leader: the CheckButtons act as a single-select toggle set.
+        let mut group_leader: Option<gtk::CheckButton> = None;
+
+        // Non-coordinate columns keep a readable legacy default → offer an
+        // explicit "Default" choice that clears the stored unit.
+        if !is_coord {
+            let def = gtk::CheckButton::with_label(crate::tr_en!("Default"));
+            def.set_active(active.is_none());
+            group_leader = Some(def.clone());
+            {
+                let page = Rc::clone(self);
+                let key_c = key.to_string();
+                let pop = popover.clone();
+                def.connect_toggled(move |b| {
+                    if b.is_active() {
+                        page.column_units.borrow_mut().remove(&key_c);
+                        pop.popdown();
+                        // Defer the rebuild: this handler's own popover/menu is a
+                        // child of the grid we are about to tear down.
+                        let page = page.clone();
+                        glib::idle_add_local_once(move || page.render_results_page());
+                    }
+                });
+            }
+            vbox.append(&def);
+            vbox.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        }
+
+        for choice in column_units::available_units(key) {
+            let item = gtk::CheckButton::with_label(choice.label);
+            match &group_leader {
+                Some(leader) => item.set_group(Some(leader)),
+                None => group_leader = Some(item.clone()),
+            }
+            // Checked when explicitly chosen, or — for coords with no explicit
+            // choice — the sexagesimal default id.
+            let checked = active.as_deref() == Some(choice.id)
+                || (active.is_none() && is_coord && Some(choice.id) == default_id);
+            item.set_active(checked);
+            {
+                let page = Rc::clone(self);
+                let key_c = key.to_string();
+                let id = choice.id.to_string();
+                let default_owned = default_id.map(|s| s.to_string());
+                let pop = popover.clone();
+                item.connect_toggled(move |b| {
+                    if !b.is_active() {
+                        return;
+                    }
+                    // The coord default choice (hms/dms) maps back to "no stored
+                    // unit" → the sexagesimal default render.
+                    if is_coord && Some(id.as_str()) == default_owned.as_deref() {
+                        page.column_units.borrow_mut().remove(&key_c);
+                    } else {
+                        page.column_units
+                            .borrow_mut()
+                            .insert(key_c.clone(), id.clone());
+                    }
+                    pop.popdown();
+                    // Defer the rebuild: this handler's own popover/menu is a
+                    // child of the grid we are about to tear down.
+                    let page = page.clone();
+                    glib::idle_add_local_once(move || page.render_results_page());
+                });
+            }
+            vbox.append(&item);
+        }
+
+        popover.set_child(Some(&vbox));
+        menu_btn.set_popover(Some(&popover));
+        menu_btn
+    }
+
     fn save_current_query(self: &Rc<Self>) {
         let buffer = self.adql_editor.buffer();
         let adql = buffer
             .text(&buffer.start_iter(), &buffer.end_iter(), false)
             .to_string();
         if adql.trim().is_empty() {
-            self.status_label.set_text("No ADQL to save");
+            self.status_label.set_text(crate::tr_en!("No ADQL to save"));
             return;
         }
         let name = self.save_name_entry.text().to_string();
@@ -1230,11 +1603,13 @@ impl SearchPage {
             name,
             adql,
             created_at: chrono::Utc::now().to_rfc3339(),
+            // User-authored save from the UI — no agent badge.
+            agent_attribution: None,
         };
         let _ = self.services.search_store.save_query(query);
         self.save_name_entry.set_text("");
         self.refresh_saved();
-        self.status_label.set_text("Query saved");
+        self.status_label.set_text(crate::tr_en!("Query saved"));
     }
 
     fn export_csv(&self) -> String {
@@ -1327,7 +1702,7 @@ impl SearchPage {
     ) {
         let content = self.export_delimited(delimiter);
         if content.is_empty() {
-            self.status_label.set_text("No results to export");
+            self.status_label.set_text(crate::tr_en!("No results to export"));
             return;
         }
 
@@ -1365,7 +1740,7 @@ impl SearchPage {
         let root = parent.root().and_downcast::<gtk::Window>();
 
         let dialog = adw::Window::builder()
-            .title("Select Columns")
+            .title(crate::tr_en!("Select Columns"))
             .default_width(500)
             .default_height(400)
             .modal(true)
@@ -1425,7 +1800,7 @@ impl SearchPage {
         btn_box.set_margin_bottom(12);
         btn_box.set_halign(gtk::Align::End);
 
-        let apply_btn = gtk::Button::with_label("Apply");
+        let apply_btn = gtk::Button::with_label(crate::tr_en!("Apply"));
         apply_btn.add_css_class("suggested-action");
         let hidden_rc = self.hidden_columns.clone();
         let checks_clone = checks.clone();
@@ -1444,7 +1819,7 @@ impl SearchPage {
         });
         btn_box.append(&apply_btn);
 
-        let cancel_btn = gtk::Button::with_label("Cancel");
+        let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
         let dialog_clone2 = dialog.clone();
         cancel_btn.connect_clicked(move |_| {
             dialog_clone2.close();
@@ -1510,7 +1885,7 @@ impl SearchPage {
             let run_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
             run_btn.add_css_class("flat");
             run_btn.set_valign(gtk::Align::Center);
-            run_btn.set_tooltip_text(Some("Re-run query"));
+            run_btn.set_tooltip_text(Some(crate::tr_en!("Re-run query")));
             {
                 let page_rc = Rc::clone(self);
                 let adql = recent.adql.clone();
@@ -1532,7 +1907,7 @@ impl SearchPage {
             let load_btn = gtk::Button::from_icon_name("document-edit-symbolic");
             load_btn.add_css_class("flat");
             load_btn.set_valign(gtk::Align::Center);
-            load_btn.set_tooltip_text(Some("Load into ADQL editor"));
+            load_btn.set_tooltip_text(Some(crate::tr_en!("Load into ADQL editor")));
             {
                 let adql = recent.adql.clone();
                 let editor = self.adql_editor.clone();
@@ -1548,7 +1923,7 @@ impl SearchPage {
             let remove_btn = gtk::Button::from_icon_name("user-trash-symbolic");
             remove_btn.add_css_class("flat");
             remove_btn.set_valign(gtk::Align::Center);
-            remove_btn.set_tooltip_text(Some("Remove"));
+            remove_btn.set_tooltip_text(Some(crate::tr_en!("Remove")));
             {
                 let page_rc = Rc::clone(self);
                 let recent_adql = recent.adql.clone();
@@ -1616,7 +1991,7 @@ impl SearchPage {
             let run_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
             run_btn.add_css_class("flat");
             run_btn.set_valign(gtk::Align::Center);
-            run_btn.set_tooltip_text(Some("Run query"));
+            run_btn.set_tooltip_text(Some(crate::tr_en!("Run query")));
             {
                 let page_rc = Rc::clone(self);
                 let adql = saved.adql.clone();
@@ -1637,7 +2012,7 @@ impl SearchPage {
             let view_btn = gtk::Button::from_icon_name("view-reveal-symbolic");
             view_btn.add_css_class("flat");
             view_btn.set_valign(gtk::Align::Center);
-            view_btn.set_tooltip_text(Some("View details"));
+            view_btn.set_tooltip_text(Some(crate::tr_en!("View details")));
             {
                 let page_rc = Rc::clone(self);
                 let saved_c = saved.clone();
@@ -1654,14 +2029,14 @@ impl SearchPage {
             let del_btn = gtk::Button::from_icon_name("user-trash-symbolic");
             del_btn.add_css_class("flat");
             del_btn.set_valign(gtk::Align::Center);
-            del_btn.set_tooltip_text(Some("Delete"));
+            del_btn.set_tooltip_text(Some(crate::tr_en!("Delete")));
             {
                 let page_rc = Rc::clone(self);
                 let name_for_del = saved.name.clone();
                 del_btn.connect_clicked(move |_| {
                     let _ = page_rc.services.search_store.delete_saved(&name_for_del);
                     page_rc.refresh_saved();
-                    page_rc.status_label.set_text("Query deleted");
+                    page_rc.status_label.set_text(crate::tr_en!("Query deleted"));
                 });
             }
             row.add_suffix(&del_btn);
@@ -1719,15 +2094,17 @@ impl SearchPage {
                     name: new_name,
                     adql: saved.adql,
                     created_at: saved.created_at,
+                    // Renaming preserves the original provenance stamp.
+                    agent_attribution: saved.agent_attribution,
                 };
                 let _ = self.services.search_store.save_query(renamed);
                 self.refresh_saved();
-                self.status_label.set_text("Query renamed");
+                self.status_label.set_text(crate::tr_en!("Query renamed"));
             }
             SavedQueryAction::Delete => {
                 let _ = self.services.search_store.delete_saved(&saved.name);
                 self.refresh_saved();
-                self.status_label.set_text("Query deleted");
+                self.status_label.set_text(crate::tr_en!("Query deleted"));
             }
         }
     }
@@ -1759,7 +2136,7 @@ impl SearchPage {
         }
 
         // Cache is stale or missing — try network
-        self.status_label.set_text("Loading data train...");
+        self.status_label.set_text(crate::tr_en!("Loading data train..."));
 
         let svc = self.services.clone();
         let result = self
@@ -1794,7 +2171,7 @@ impl SearchPage {
                         .services
                         .cache
                         .cached_time_label(&cache_key)
-                        .unwrap_or_else(|| "unknown".into());
+                        .unwrap_or_else(|| crate::tr_en!("unknown").into());
                     self.train_manager.borrow_mut().load(entry.data);
                     self.refresh_train_ui();
                     self.status_label.set_text(&format!(
@@ -1810,7 +2187,7 @@ impl SearchPage {
                         .set_text(&format!("Data train failed: {}", e));
                     self.services
                         .toast
-                        .toast_persistent("Search filters unavailable — archive unreachable");
+                        .toast_persistent(crate::tr_en!("Search filters unavailable — archive unreachable"));
                 }
                 self.services.health.set(
                     ServiceName::Tap,
@@ -1897,13 +2274,27 @@ impl SearchPage {
                     mgr_ref.borrow_mut().toggle(col_idx, &value_owned);
                     // Refresh all lists downstream — for simplicity, defer to next idle
                     // We can't call self here, so just update status
-                    this_status.set_text("Filter updated");
+                    this_status.set_text(crate::tr_en!("Filter updated"));
                 });
 
                 list_box.append(&check);
             }
         }
     }
+}
+
+// =============================================================================
+// Narrow-to-value
+// =============================================================================
+
+/// Identity columns whose cell values can be clicked to "narrow to this value"
+/// (a client-side column filter). Keys are cleaned column ids. Ref
+/// `SearchPage.NarrowableKeys` / `IsNarrowable`.
+fn is_narrowable(key: &str) -> bool {
+    matches!(
+        key,
+        "collection" | "instrument" | "targetname" | "proposalid" | "piname"
+    )
 }
 
 // =============================================================================
@@ -1921,7 +2312,7 @@ async fn show_row_detail(
     // ── Window ───────────────────────────────────────────────────────────
     let dialog = adw::Window::builder()
         .title(if target_name.is_empty() {
-            "Observation Detail".to_string()
+            crate::tr_en!("Observation Detail").to_string()
         } else {
             format!("Observation — {}", target_name)
         })
@@ -1940,7 +2331,7 @@ async fn show_row_detail(
     let header = adw::HeaderBar::new();
 
     let title_label = gtk::Label::new(Some(if target_name.is_empty() {
-        "Observation Detail"
+        crate::tr_en!("Observation Detail")
     } else {
         target_name
     }));
@@ -1953,14 +2344,14 @@ async fn show_row_detail(
         // Overflow menu with "Copy Publisher ID"
         let copy_btn = gtk::Button::from_icon_name("edit-copy-symbolic");
         copy_btn.add_css_class("flat");
-        copy_btn.set_tooltip_text(Some("Copy Publisher ID"));
+        copy_btn.set_tooltip_text(Some(crate::tr_en!("Copy Publisher ID")));
         {
             let pub_id = publisher_id.to_string();
             let svc = services.clone();
             copy_btn.connect_clicked(move |btn| {
                 let display = btn.display();
                 display.clipboard().set_text(&pub_id);
-                svc.toast.toast("Publisher ID copied");
+                svc.toast.toast(crate::tr_en!("Publisher ID copied"));
             });
         }
         header.pack_end(&copy_btn);
@@ -2003,15 +2394,15 @@ async fn show_row_detail(
     // "no-preview" child
     let no_preview = adw::StatusPage::new();
     no_preview.set_icon_name(Some("image-missing-symbolic"));
-    no_preview.set_title("No Preview");
+    no_preview.set_title(crate::tr_en!("No Preview"));
     no_preview.set_vexpand(false);
     preview_stack.add_named(&no_preview, Some("no-preview"));
 
     // "error" child
     let error_page = adw::StatusPage::new();
     error_page.set_icon_name(Some("network-error-symbolic"));
-    error_page.set_title("Preview Unavailable");
-    error_page.set_description(Some("Check network connection"));
+    error_page.set_title(crate::tr_en!("Preview Unavailable"));
+    error_page.set_description(Some(crate::tr_en!("Check network connection")));
     error_page.set_vexpand(false);
     preview_stack.add_named(&error_page, Some("error"));
 
@@ -2101,7 +2492,7 @@ async fn show_row_detail(
 
     // Metadata group
     let metadata_group = adw::PreferencesGroup::new();
-    metadata_group.set_title("Observation Metadata");
+    metadata_group.set_title(crate::tr_en!("Observation Metadata"));
 
     for (label, value) in fields {
         if !value.is_empty() {
@@ -2125,7 +2516,7 @@ async fn show_row_detail(
     let save_btn = {
         let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         hbox.append(&gtk::Image::from_icon_name("bookmark-new-symbolic"));
-        hbox.append(&gtk::Label::new(Some("Save to Research")));
+        hbox.append(&gtk::Label::new(Some(crate::tr_en!("Save to Research"))));
         let btn = gtk::Button::new();
         btn.set_child(Some(&hbox));
         btn
@@ -2137,10 +2528,10 @@ async fn show_row_detail(
     save_btn.add_css_class("suggested-action");
     if publisher_id.is_empty() {
         save_btn.set_sensitive(false);
-        save_btn.set_tooltip_text(Some("No publisher ID — observation cannot be saved"));
+        save_btn.set_tooltip_text(Some(crate::tr_en!("No publisher ID — observation cannot be saved")));
     } else {
         save_btn.set_tooltip_text(Some(
-            "Download the preview and FITS file to the Research library",
+            crate::tr_en!("Download the preview and FITS file to the Research library"),
         ));
     }
     {
@@ -2228,7 +2619,7 @@ async fn save_to_research(
         })
         .await;
     if already_saved {
-        services.toast.toast("Already in Research");
+        services.toast.toast(crate::tr_en!("Already in Research"));
         return;
     }
 
@@ -2287,11 +2678,7 @@ async fn save_to_research(
                     (
                         dl.download_url
                             .clone()
-                            .or_else(|| {
-                                Some(crate::services::DataLinkService::download_url(
-                                    publisher_id,
-                                ))
-                            }),
+                            .or_else(|| Some(services.datalink.download_url(publisher_id))),
                         None,
                     )
                 }
@@ -2309,7 +2696,7 @@ async fn save_to_research(
         Err(_) => {
             // DataLink failed — use the synthesised URL, no preview
             (
-                Some(crate::services::DataLinkService::download_url(publisher_id)),
+                Some(services.datalink.download_url(publisher_id)),
                 None,
                 None,
                 None,
@@ -2320,7 +2707,7 @@ async fn save_to_research(
     let science_url = match science_url {
         Some(u) => u,
         None => {
-            services.toast.toast("No science file found for this observation");
+            services.toast.toast(crate::tr_en!("No science file found for this observation"));
             return;
         }
     };
@@ -2338,7 +2725,7 @@ async fn save_to_research(
     // ── Download the preview image (best effort, non-fatal) ──────────
     let mut local_preview_path = String::new();
     if let Some((url, content_type)) = &preview_url {
-        services.toast.toast("Downloading preview image…");
+        services.toast.toast(crate::tr_en!("Downloading preview image…"));
         let svc = services.clone();
         let url_clone = url.clone();
         let preview_bytes = services
@@ -2358,7 +2745,7 @@ async fn save_to_research(
         }
     }
 
-    // ── Download the FITS/FZ file ─────────────────────────────────────
+    // ── Download the FITS/FZ file (streamed to disk) ──────────────────
     let target_for_msg = raw_row.get("Target Name").to_string();
     let display_name = if !target_for_msg.is_empty() {
         target_for_msg
@@ -2369,47 +2756,46 @@ async fn save_to_research(
         .toast
         .toast(&format!("Downloading {}…", display_name));
 
-    let svc = services.clone();
-    let url_clone = science_url.clone();
-    let fits_result = services
-        .spawn(async move {
-            let token = svc.get_token().await;
-            svc.datalink
-                .download_file(&url_clone, token.as_deref())
-                .await
-        })
-        .await;
-
-    let (bytes, _total_size) = match fits_result {
-        Ok(pair) => pair,
-        Err(e) => {
-            // Clean up partial managed dir
-            crate::services::delete_managed_dir(&obs_id);
-            services.toast.toast(&format!("Download failed: {}", e));
-            return;
-        }
-    };
-    let file_size = bytes.len() as u64;
-
     // Choose a filename: prefer DataLink's name, fall back to URL extraction,
-    // finally to "{obs_id}.fits"
+    // finally to "{obs_id}.fits". Computed up front because the stream writes
+    // directly to the destination path (via a sibling ".tmp").
     let filename = science_filename
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| extract_filename(publisher_id, &science_url));
     let fits_path = managed_dir.join(&filename);
 
-    // Atomic write: .tmp + rename
-    let tmp_path = fits_path.with_extension("tmp");
-    if let Err(e) = std::fs::write(&tmp_path, &bytes) {
-        crate::services::delete_managed_dir(&obs_id);
-        services.toast.toast(&format!("Save failed: {}", e));
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, &fits_path) {
-        crate::services::delete_managed_dir(&obs_id);
-        services.toast.toast(&format!("Rename failed: {}", e));
-        return;
-    }
+    // Stream the response body chunk-by-chunk on the tokio runtime, writing to a
+    // sibling ".tmp" and renaming into place on success. Peak memory stays
+    // bounded to a single chunk even for multi-GB cubes — the previous
+    // implementation buffered the whole artifact into a Vec<u8> (an OOM risk).
+    let svc = services.clone();
+    let url_clone = science_url.clone();
+    let dest = fits_path.clone();
+    let toast_handle = services.toast.clone();
+    let progress_label = display_name.clone();
+    let dl_result = services
+        .spawn(async move {
+            let token = svc.get_token().await;
+            stream_download_to_file(
+                &url_clone,
+                token.as_deref(),
+                &dest,
+                &toast_handle,
+                &progress_label,
+            )
+            .await
+        })
+        .await;
+
+    let file_size = match dl_result {
+        Ok(n) => n,
+        Err(e) => {
+            // Clean up partial managed dir (the helper already removed its .tmp).
+            crate::services::delete_managed_dir(&obs_id);
+            services.toast.toast(&format!("Download failed: {}", e));
+            return;
+        }
+    };
 
     let local_path = fits_path.to_string_lossy().to_string();
 
@@ -2431,7 +2817,7 @@ async fn save_to_research(
         Ok(()) => {
             services.toast.toast_with_action(
                 format!("Saved {}", display_name),
-                "Go to Research",
+                crate::tr_en!("Go to Research"),
                 "app.navigate-research",
             );
         }
@@ -2441,6 +2827,156 @@ async fn save_to_research(
                 .toast
                 .toast(&format!("Saved files, but store write failed: {}", e));
         }
+    }
+}
+
+/// Stream an HTTP GET response body chunk-by-chunk into `dest`.
+///
+/// Writes to a sibling `<dest>.tmp` file first and renames it into place once
+/// the transfer completes, so a partially-downloaded artifact never appears
+/// under its final name. Peak memory stays bounded to a single chunk regardless
+/// of file size — the whole point of streaming rather than buffering the body
+/// into a `Vec<u8>`. Emits throttled progress toasts (percent + byte counts)
+/// via `toast`. On any error the partial `.tmp` is removed and an `Err` is
+/// returned. Returns the number of bytes written on success.
+///
+/// Runs on the tokio runtime (reqwest futures require it) — call it inside
+/// `AppServices::spawn`.
+///
+/// `pub(crate)` so the Research page can reuse the exact same streaming idiom
+/// when re-downloading a record whose local file went missing.
+pub(crate) async fn stream_download_to_file(
+    url: &str,
+    token: Option<&str>,
+    dest: &std::path::Path,
+    toast: &crate::services::notification_service::ToastNotifier,
+    label: &str,
+) -> Result<u64, String> {
+    use std::io::Write;
+
+    // Sibling temp path: keep the real filename intact and just append ".tmp"
+    // (so e.g. "foo.fits" -> "foo.fits.tmp"), avoiding any extension clash.
+    let mut tmp_os = dest.as_os_str().to_owned();
+    tmp_os.push(".tmp");
+    let tmp_path = std::path::PathBuf::from(tmp_os);
+
+    // A fresh client with a connect timeout but no overall request timeout —
+    // multi-GB transfers legitimately run for minutes, so a whole-request
+    // deadline would be wrong here.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client.get(url);
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let mut resp = req.send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+    let total = resp.content_length();
+
+    let file = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+    let mut writer = std::io::BufWriter::new(file);
+
+    let mut downloaded: u64 = 0;
+    let mut last_report = std::time::Instant::now();
+    let mut last_pct: i64 = -1;
+    let mut last_report_bytes: u64 = 0;
+
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if let Err(e) = writer.write_all(&chunk) {
+                    let _ = writer.flush();
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(e.to_string());
+                }
+                downloaded += chunk.len() as u64;
+
+                // Throttle progress toasts so the overlay queue never floods:
+                // report at most ~once/700ms, and only on a real advance
+                // (>=1% when the total is known, else every >=64 MiB).
+                let advanced = match total {
+                    Some(t) if t > 0 => {
+                        let pct = (downloaded.min(t) as i64 * 100) / t as i64;
+                        if pct > last_pct {
+                            last_pct = pct;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => downloaded.saturating_sub(last_report_bytes) >= 64 * 1024 * 1024,
+                };
+                if advanced && last_report.elapsed() >= std::time::Duration::from_millis(700) {
+                    toast.toast(format_download_progress(label, downloaded, total));
+                    last_report = std::time::Instant::now();
+                    last_report_bytes = downloaded;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let _ = writer.flush();
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e.to_string());
+            }
+        }
+    }
+
+    if let Err(e) = writer.flush() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.to_string());
+    }
+    drop(writer);
+
+    // Replace any stale destination, then rename the completed temp into place.
+    if dest.exists() {
+        let _ = std::fs::remove_file(dest);
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, dest) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.to_string());
+    }
+
+    Ok(downloaded)
+}
+
+/// Human-readable byte size (IEC units) for progress display.
+fn format_byte_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GIB {
+        format!("{:.2} GiB", b / GIB)
+    } else if b >= MIB {
+        format!("{:.1} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Build a progress-toast string, e.g.
+/// `"Downloading M81… 128.0 MiB / 1.20 GiB (10%)"`, or — when the server sends
+/// no Content-Length — `"Downloading M81… 128.0 MiB"`.
+fn format_download_progress(label: &str, downloaded: u64, total: Option<u64>) -> String {
+    match total {
+        Some(t) if t > 0 => {
+            let pct = (downloaded.min(t) as u128 * 100 / t as u128) as u64;
+            format!(
+                "Downloading {}… {} / {} ({}%)",
+                label,
+                format_byte_size(downloaded),
+                format_byte_size(t),
+                pct
+            )
+        }
+        _ => format!("Downloading {}… {}", label, format_byte_size(downloaded)),
     }
 }
 
@@ -2529,6 +3065,8 @@ fn build_downloaded_observation(
         thumbnail_url,
         preview_url,
         local_preview_path,
+        // UI-initiated saves from the Search page have no agent provenance.
+        agent_attribution: None,
     }
 }
 
@@ -2625,29 +3163,29 @@ fn build_observation_column() -> (
 ) {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let heading = gtk::Label::new(Some("Observation"));
+    let heading = gtk::Label::new(Some(crate::tr_en!("Observation")));
     heading.add_css_class("heading");
     heading.set_halign(gtk::Align::Start);
     col.append(&heading);
 
-    let (w, observation_id) = labeled_entry("Observation ID", "e.g. jw01345*");
+    let (w, observation_id) = labeled_entry(crate::tr_en!("Observation ID"), crate::tr_en!("e.g. jw01345*"));
     col.append(&w);
-    let (w, pi_name) = labeled_entry("PI Name", "e.g. Smith");
+    let (w, pi_name) = labeled_entry(crate::tr_en!("PI Name"), crate::tr_en!("e.g. Smith"));
     col.append(&w);
-    let (w, proposal_id) = labeled_entry("Proposal ID", "");
+    let (w, proposal_id) = labeled_entry(crate::tr_en!("Proposal ID"), "");
     col.append(&w);
-    let (w, proposal_title) = labeled_entry("Proposal Title", "");
+    let (w, proposal_title) = labeled_entry(crate::tr_en!("Proposal Title"), "");
     col.append(&w);
-    let (w, keywords) = labeled_entry("Keywords", "");
+    let (w, keywords) = labeled_entry(crate::tr_en!("Keywords"), "");
     col.append(&w);
-    let (w, data_release) = labeled_entry("Data Release", "e.g. > 2023-01-01");
+    let (w, data_release) = labeled_entry(crate::tr_en!("Data Release"), crate::tr_en!("e.g. > 2023-01-01"));
     col.append(&w);
 
-    let public_only = gtk::CheckButton::with_label("Public only");
+    let public_only = gtk::CheckButton::with_label(crate::tr_en!("Public only"));
     col.append(&public_only);
 
     let intent_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let intent_label = gtk::Label::new(Some("Intent"));
+    let intent_label = gtk::Label::new(Some(crate::tr_en!("Intent")));
     intent_label.add_css_class("caption");
     intent_label.set_halign(gtk::Align::Start);
     intent_box.append(&intent_label);
@@ -2681,20 +3219,20 @@ fn build_spatial_column() -> (
 ) {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let heading = gtk::Label::new(Some("Spatial"));
+    let heading = gtk::Label::new(Some(crate::tr_en!("Spatial")));
     heading.add_css_class("heading");
     heading.set_halign(gtk::Align::Start);
     col.append(&heading);
 
-    let (w, target) = labeled_entry("Target or Coordinates", "e.g. M31, NGC 1234");
+    let (w, target) = labeled_entry(crate::tr_en!("Target or Coordinates"), crate::tr_en!("e.g. M31, NGC 1234"));
     col.append(&w);
 
     let resolver_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let resolver_label = gtk::Label::new(Some("Resolver"));
+    let resolver_label = gtk::Label::new(Some(crate::tr_en!("Resolver")));
     resolver_label.add_css_class("caption");
     resolver_label.set_halign(gtk::Align::Start);
     resolver_box.append(&resolver_label);
-    let resolver_list = gtk::StringList::new(&["ALL", "SIMBAD", "NED", "VIZIER"]);
+    let resolver_list = gtk::StringList::new(&["ALL", "SIMBAD", "NED", "VIZIER", "NONE"]);
     let resolver = gtk::DropDown::new(Some(resolver_list), gtk::Expression::NONE);
     resolver_box.append(&resolver);
     col.append(&resolver_box);
@@ -2707,7 +3245,7 @@ fn build_spatial_column() -> (
     col.append(&resolver_status);
 
     let radius_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let radius_label = gtk::Label::new(Some("Radius (deg)"));
+    let radius_label = gtk::Label::new(Some(crate::tr_en!("Radius (deg)")));
     radius_label.add_css_class("caption");
     radius_label.set_halign(gtk::Align::Start);
     radius_box.append(&radius_label);
@@ -2718,10 +3256,10 @@ fn build_spatial_column() -> (
     col.append(&radius_box);
 
     let (w, pixel_scale, pixel_scale_unit) =
-        labeled_entry_with_combo("Pixel Scale", "e.g. 0.1..1.0", &["arcsec", "arcmin", "deg"]);
+        labeled_entry_with_combo(crate::tr_en!("Pixel Scale"), crate::tr_en!("e.g. 0.1..1.0"), &["arcsec", "arcmin", "deg"]);
     col.append(&w);
 
-    let spatial_cutout = gtk::CheckButton::with_label("Spatial cutout");
+    let spatial_cutout = gtk::CheckButton::with_label(crate::tr_en!("Spatial cutout"));
     col.append(&spatial_cutout);
 
     (
@@ -2746,23 +3284,23 @@ fn build_temporal_column() -> (
 ) {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let heading = gtk::Label::new(Some("Temporal"));
+    let heading = gtk::Label::new(Some(crate::tr_en!("Temporal")));
     heading.add_css_class("heading");
     heading.set_halign(gtk::Align::Start);
     col.append(&heading);
 
     let (w, obs_date, date_preset) = labeled_entry_with_combo(
-        "Observation Date",
-        "e.g. 2020..2021",
+        crate::tr_en!("Observation Date"),
+        crate::tr_en!("e.g. 2020..2021"),
         &["", "Last24h", "LastWeek", "LastMonth"],
     );
     col.append(&w);
 
     let (w, integration_time, time_unit) =
-        labeled_entry_with_combo("Integration Time", "e.g. 100..3600", &["s", "m", "h", "d"]);
+        labeled_entry_with_combo(crate::tr_en!("Integration Time"), crate::tr_en!("e.g. 100..3600"), &["s", "m", "h", "d"]);
     col.append(&w);
 
-    let (w, time_span) = labeled_entry("Time Span", "e.g. 1..10 d");
+    let (w, time_span) = labeled_entry(crate::tr_en!("Time Span"), crate::tr_en!("e.g. 1..10 d"));
     col.append(&w);
 
     (
@@ -2787,28 +3325,28 @@ fn build_spectral_column() -> (
 ) {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let heading = gtk::Label::new(Some("Spectral"));
+    let heading = gtk::Label::new(Some(crate::tr_en!("Spectral")));
     heading.add_css_class("heading");
     heading.set_halign(gtk::Align::Start);
     col.append(&heading);
 
     let (w, spectral_coverage, spectral_unit) = labeled_entry_with_combo(
-        "Spectral Coverage",
-        "e.g. 400..700",
+        crate::tr_en!("Spectral Coverage"),
+        crate::tr_en!("e.g. 400..700"),
         &["nm", "Angstrom", "um", "mm"],
     );
     col.append(&w);
 
-    let (w, spectral_sampling) = labeled_entry("Spectral Sampling", "");
+    let (w, spectral_sampling) = labeled_entry(crate::tr_en!("Spectral Sampling"), "");
     col.append(&w);
-    let (w, resolving_power) = labeled_entry("Resolving Power", "e.g. 1000..5000");
+    let (w, resolving_power) = labeled_entry(crate::tr_en!("Resolving Power"), crate::tr_en!("e.g. 1000..5000"));
     col.append(&w);
-    let (w, bandpass_width) = labeled_entry("Bandpass Width", "");
+    let (w, bandpass_width) = labeled_entry(crate::tr_en!("Bandpass Width"), "");
     col.append(&w);
-    let (w, rest_frame_energy) = labeled_entry("Rest Frame Energy", "");
+    let (w, rest_frame_energy) = labeled_entry(crate::tr_en!("Rest Frame Energy"), "");
     col.append(&w);
 
-    let spectral_cutout = gtk::CheckButton::with_label("Spectral cutout");
+    let spectral_cutout = gtk::CheckButton::with_label(crate::tr_en!("Spectral cutout"));
     col.append(&spectral_cutout);
 
     (
@@ -2830,13 +3368,13 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
     grid.set_margin_top(8);
 
     let train_labels = [
-        "Band",
-        "Collection",
-        "Instrument",
-        "Filter",
-        "Cal. Level",
-        "Data Type",
-        "Obs. Type",
+        crate::tr_en!("Band"),
+        crate::tr_en!("Collection"),
+        crate::tr_en!("Instrument"),
+        crate::tr_en!("Filter"),
+        crate::tr_en!("Cal. Level"),
+        crate::tr_en!("Data Type"),
+        crate::tr_en!("Obs. Type"),
     ];
 
     let mut lists: Vec<gtk::ListBox> = Vec::new();
@@ -2853,7 +3391,7 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
         scroll.set_max_content_height(180);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Multiple);
-        let placeholder = gtk::Label::new(Some("Loading..."));
+        let placeholder = gtk::Label::new(Some(crate::tr_en!("Loading...")));
         placeholder.add_css_class("dim-label");
         placeholder.add_css_class("caption");
         list.set_placeholder(Some(&placeholder));
@@ -2875,4 +3413,41 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
     ];
 
     (grid, arr)
+}
+
+#[cfg(test)]
+mod stream_download_tests {
+    use super::{format_byte_size, format_download_progress};
+
+    #[test]
+    fn byte_size_scales_units() {
+        assert_eq!(format_byte_size(0), "0 B");
+        assert_eq!(format_byte_size(512), "512 B");
+        assert_eq!(format_byte_size(1024), "1.0 KiB");
+        assert_eq!(format_byte_size(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_byte_size(3 * 1024 * 1024 * 1024), "3.00 GiB");
+    }
+
+    #[test]
+    fn progress_with_known_total_shows_percent() {
+        let s = format_download_progress("M81", 512 * 1024 * 1024, Some(1024 * 1024 * 1024));
+        assert!(s.contains("M81"), "{s}");
+        assert!(s.contains("50%"), "{s}");
+        assert!(s.contains('/'), "{s}");
+    }
+
+    #[test]
+    fn progress_without_total_omits_percent() {
+        let s = format_download_progress("M81", 10 * 1024 * 1024, None);
+        assert!(s.contains("10.0 MiB"), "{s}");
+        assert!(!s.contains('%'), "{s}");
+        assert!(!s.contains('/'), "{s}");
+    }
+
+    #[test]
+    fn progress_clamps_percent_when_downloaded_exceeds_total() {
+        // Guards against >100% if Content-Length under-reports the body.
+        let s = format_download_progress("X", 2048, Some(1024));
+        assert!(s.contains("100%"), "{s}");
+    }
 }

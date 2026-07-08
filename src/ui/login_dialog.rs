@@ -16,7 +16,7 @@ pub async fn show_login_dialog(
     services: &Arc<AppServices>,
 ) -> Option<(String, String, UserInfo)> {
     let dialog = adw::Window::builder()
-        .title("Login to CANFAR")
+        .title(crate::tr_en!("Login to CANFAR"))
         .default_width(400)
         .default_height(380)
         .modal(true)
@@ -33,20 +33,20 @@ pub async fn show_login_dialog(
     content.set_margin_top(16);
     content.set_margin_bottom(24);
 
-    let title = gtk::Label::new(Some("Sign in with your CADC credentials"));
+    let title = gtk::Label::new(Some(crate::tr_en!("Sign in with your CADC credentials")));
     title.add_css_class("title-4");
     content.append(&title);
 
-    let username_row = adw::EntryRow::builder().title("Username").build();
+    let username_row = adw::EntryRow::builder().title(crate::tr_en!("Username")).build();
 
-    let password_row = adw::PasswordEntryRow::builder().title("Password").build();
+    let password_row = adw::PasswordEntryRow::builder().title(crate::tr_en!("Password")).build();
 
     let prefs_group = adw::PreferencesGroup::new();
     prefs_group.add(&username_row);
     prefs_group.add(&password_row);
     content.append(&prefs_group);
 
-    let remember_check = gtk::CheckButton::with_label("Remember me");
+    let remember_check = gtk::CheckButton::with_label(crate::tr_en!("Remember me"));
     remember_check.set_active(true);
     content.append(&remember_check);
 
@@ -63,8 +63,8 @@ pub async fn show_login_dialog(
     let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     button_box.set_halign(gtk::Align::End);
 
-    let cancel_btn = gtk::Button::with_label("Cancel");
-    let login_btn = gtk::Button::with_label("Login");
+    let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
+    let login_btn = gtk::Button::with_label(crate::tr_en!("Login"));
     login_btn.add_css_class("suggested-action");
 
     button_box.append(&cancel_btn);
@@ -110,7 +110,7 @@ pub async fn show_login_dialog(
                 let password = password_row.text().to_string();
 
                 if username.is_empty() || password.is_empty() {
-                    error_label.set_text("Please enter username and password");
+                    error_label.set_text(crate::tr_en!("Please enter username and password"));
                     error_label.set_visible(true);
                     return;
                 }
@@ -172,7 +172,7 @@ pub async fn show_login_dialog(
                 } else {
                     let msg = auth_result
                         .error
-                        .unwrap_or_else(|| "Login failed".to_string());
+                        .unwrap_or_else(|| crate::tr_en!("Login failed").to_string());
                     error_label.set_text(&msg);
                     error_label.set_visible(true);
                 }

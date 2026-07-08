@@ -60,7 +60,7 @@ impl CodeCellWidget {
         let run_button = gtk::Button::from_icon_name("media-playback-start-symbolic");
         run_button.add_css_class("flat");
         run_button.add_css_class("circular");
-        run_button.set_tooltip_text(Some("Run cell (Ctrl+Enter)"));
+        run_button.set_tooltip_text(Some(crate::tr_en!("Run cell (Ctrl+Enter)")));
         run_button.set_halign(gtk::Align::Center);
         run_button.set_icon_name("media-playback-start-symbolic");
 

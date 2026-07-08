@@ -1,3 +1,5 @@
+use crate::helpers::agent_attribution::AgentAttribution;
+use crate::helpers::{column_units, sexagesimal};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -38,11 +40,22 @@ pub struct SearchFormState {
     // Spatial
     pub target: String,
     pub resolver_service: String,
+    /// The resolver service that actually produced `resolved_ra`/`resolved_dec`
+    /// (provenance for a resolved name, e.g. "SIMBAD"/"NED"/"VizieR").
+    #[serde(default)]
+    pub resolver_service_used: Option<String>,
+    /// The epoch/time at which the target name was resolved (RFC-3339 string).
+    #[serde(default)]
+    pub resolution_epoch: Option<String>,
     pub resolved_ra: Option<f64>,
     pub resolved_dec: Option<f64>,
     pub search_radius: f64,
     pub pixel_scale_max: Option<f64>,
     pub pixel_scale_unit: String,
+    /// Optional operator-aware pixel-scale text (RANGE syntax: `> 0.2`, `0.1..0.3`).
+    /// When present it takes precedence over `pixel_scale_max`.
+    #[serde(default)]
+    pub pixel_scale_raw: Option<String>,
     pub spatial_cutout: bool,
 
     // Observation
@@ -176,7 +189,9 @@ impl DataLinkFile {
         self.semantics == "#this"
     }
     pub fn is_preview(&self) -> bool {
-        self.semantics == "#preview"
+        // Require an image content-type so a mislabelled #preview row (e.g. a data
+        // product) is never rendered as an image (matches the reference guard).
+        self.semantics == "#preview" && self.content_type.to_ascii_lowercase().contains("image")
     }
     pub fn is_thumbnail(&self) -> bool {
         self.semantics == "#thumbnail"
@@ -208,6 +223,11 @@ pub struct SavedQuery {
     pub name: String,
     pub adql: String,
     pub created_at: String,
+    /// Provenance stamp when this query was saved via an applied agent proposal.
+    /// `None` for user-authored saves; a `Some(..)` value drives the wand badge.
+    /// `#[serde(default)]` keeps pre-attribution JSON readable.
+    #[serde(default)]
+    pub agent_attribution: Option<AgentAttribution>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -217,6 +237,12 @@ pub struct RecentSearch {
     pub form_state: SearchFormState,
     pub result_count: usize,
     pub searched_at: String,
+    /// Resolver service that produced the coordinates for this search, if any.
+    #[serde(default)]
+    pub resolver_service_used: Option<String>,
+    /// Epoch at which the target name was resolved (RFC-3339 string), if any.
+    #[serde(default)]
+    pub resolution_epoch: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +390,17 @@ pub fn parse_csv(csv: &str, query: Option<&str>) -> SearchResults {
         }
         let mut row = SearchResultRow::default();
         for (j, col) in result.columns.iter().enumerate() {
+            // Store each value under BOTH the raw CSV header (used by cell rendering)
+            // and its cleaned key (used by column filter/sort). Without the cleaned
+            // alias, filtering/sorting any AS-aliased column (RA, Dec, Target, …)
+            // silently missed — `row.get(cleaned_key)` returned "".
             row.values.insert(col.clone(), values[j].clone());
+            let cleaned = clean_key(col);
+            if cleaned != *col {
+                row.values
+                    .entry(cleaned)
+                    .or_insert_with(|| values[j].clone());
+            }
         }
         result.rows.push(row);
     }
@@ -480,6 +516,154 @@ pub fn format_cell(value: &str, format: ColumnFormat) -> String {
     }
 }
 
+/// Format a cell honoring the chosen display unit for unit-menu columns
+/// (RA/Dec sexagesimal vs degrees, spectral, duration, angle, area, dates).
+///
+/// `unit == None` selects the column's default rendering (RA/Dec default to
+/// sexagesimal — the new behaviour; every other column keeps its readable legacy
+/// default). Non-menu columns fall through to the per-key formatters. Port of
+/// CanfarDesktop `CellFormatter.Format(columnKey, raw, unitId)`.
+pub fn format_cell_with_unit(header: &str, raw: &str, unit: Option<&str>) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let key = clean_key(header);
+
+    // An explicit unit chosen from the column's menu overrides default rendering.
+    if let Some(u) = unit {
+        if column_units::has_menu(&key) {
+            return format_with_unit(&key, trimmed, u);
+        }
+    }
+
+    match key.as_str() {
+        "startdate" | "enddate" | "provelastexecuted" => mjd_to_date(trimmed),
+        "ra(j20000)" => sexagesimal::format_ra_str(trimmed),
+        "dec(j20000)" => sexagesimal::format_dec_str(trimmed),
+        "inttime" => format_integration_time(trimmed),
+        "callev" => format_calibration_c(trimmed),
+        "download" | "movingtarget" => format_boolean(trimmed),
+        "minwavelength" | "maxwavelength" | "restframeenergy" => format_wavelength(trimmed),
+        "pixelscale" => format_scientific(trimmed, 4),
+        "fieldofview" => format_scientific(trimmed, 6),
+        "datarelease" => format_timestamp(trimmed),
+        _ => trimmed.to_string(),
+    }
+}
+
+/// Render a unit-menu column's cell in the chosen unit.
+fn format_with_unit(key: &str, raw: &str, unit: &str) -> String {
+    match key {
+        "ra(j20000)" => {
+            if unit == "degrees" {
+                format_ra_degrees(raw)
+            } else {
+                sexagesimal::format_ra_str(raw)
+            }
+        }
+        "dec(j20000)" => {
+            if unit == "degrees" {
+                format_dec_degrees(raw)
+            } else {
+                sexagesimal::format_dec_str(raw)
+            }
+        }
+        "minwavelength" | "maxwavelength" | "restframeenergy" => {
+            column_units::format_spectral(raw, unit)
+        }
+        "inttime" => column_units::format_duration(raw, unit),
+        "pixelscale" | "positionresolution" => column_units::format_angle(raw, unit),
+        "fieldofview" => column_units::format_area(raw, unit),
+        "startdate" | "enddate" => {
+            if unit == "mjd" {
+                raw.to_string()
+            } else {
+                mjd_to_date(raw)
+            }
+        }
+        _ => raw.to_string(),
+    }
+}
+
+// RA degrees: fixed 6 decimals, sign only when negative.
+fn format_ra_degrees(raw: &str) -> String {
+    match raw.parse::<f64>() {
+        Ok(v) if v.is_finite() => format!("{:.6}", v),
+        _ => raw.to_string(),
+    }
+}
+
+// Dec degrees: fixed 6 decimals, always signed.
+fn format_dec_degrees(raw: &str) -> String {
+    match raw.parse::<f64>() {
+        Ok(v) if v.is_finite() => format!("{:+.6}", v),
+        _ => raw.to_string(),
+    }
+}
+
+// Calibration level matching the reference CellFormatter ("Cal", not "Calibrated").
+fn format_calibration_c(raw: &str) -> String {
+    match raw {
+        "0" => "Raw",
+        "1" => "Cal",
+        "2" => "Product",
+        "3" => "Composite",
+        other => other,
+    }
+    .to_string()
+}
+
+fn format_boolean(raw: &str) -> String {
+    if raw.eq_ignore_ascii_case("true") || raw == "1" {
+        "\u{2713}".to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn format_wavelength(raw: &str) -> String {
+    match raw.parse::<f64>() {
+        Ok(v) => {
+            let mag = v.abs();
+            if mag < 0.001 || mag > 1e6 {
+                format!("{:.3e}", v)
+            } else {
+                format!("{}", v)
+            }
+        }
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn format_scientific(raw: &str, decimals: usize) -> String {
+    match raw.parse::<f64>() {
+        Ok(v) => {
+            let mag = v.abs();
+            if mag < 0.001 || mag > 1e6 {
+                format!("{:.*e}", decimals, v)
+            } else {
+                format!("{}", v)
+            }
+        }
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn format_timestamp(raw: &str) -> String {
+    if !raw.contains('T') && !raw.contains(' ') {
+        return raw.to_string();
+    }
+    let cleaned = raw.replace('T', " ").replace('Z', "");
+    // Strip fractional seconds: find '.' at or after index 10.
+    if cleaned.len() > 10 {
+        if let Some(rel) = cleaned[10..].find('.') {
+            return cleaned[..10 + rel].to_string();
+        }
+    }
+    cleaned
+}
+
 /// Convert Modified Julian Date to ISO date string.
 /// Uses the standard formula: Unix seconds = (MJD - 40587.0) * 86400.0
 fn mjd_to_date(value: &str) -> String {
@@ -534,6 +718,20 @@ mod tests {
         assert_eq!(result.total_rows(), 2);
         assert_eq!(result.rows[0].get("col1"), "val1");
         assert_eq!(result.rows[1].get("col3"), "c");
+    }
+
+    #[test]
+    fn aliased_column_is_reachable_by_cleaned_key_for_filter_and_sort() {
+        // Regression: filter/sort key by the CLEANED key ("targetname"), but values
+        // were only stored under the raw header ("Target Name") → always missed.
+        let csv = "Target Name,RA (deg)\nM31,10.68\nNGC 224,10.68";
+        let result = parse_csv(csv, None);
+        // Raw header still works (cell rendering path).
+        assert_eq!(result.rows[0].get("Target Name"), "M31");
+        // Cleaned key now works (filter/sort path).
+        assert_eq!(result.rows[0].get(&clean_key("Target Name")), "M31");
+        assert_eq!(result.rows[0].get(&clean_key("RA (deg)")), "10.68");
+        assert!(!clean_key("Target Name").is_empty());
     }
 
     #[test]
@@ -633,6 +831,95 @@ mod tests {
         // MJD 40587.0 = Unix epoch = 1970-01-01
         let result2 = mjd_to_date("40587.0");
         assert_eq!(result2, "1970-01-01");
+    }
+
+    #[test]
+    fn format_cell_with_unit_ra_defaults_to_sexagesimal() {
+        // 150 deg == 10h; default (None) renders sexagesimal.
+        assert_eq!(
+            format_cell_with_unit("RA (J2000.0)", "150.0", None),
+            "10:00:00.00"
+        );
+        // Explicit degrees unit renders fixed decimals.
+        assert_eq!(
+            format_cell_with_unit("RA (J2000.0)", "150.0", Some("degrees")),
+            "150.000000"
+        );
+    }
+
+    #[test]
+    fn format_cell_with_unit_dec_sign_and_degrees() {
+        assert_eq!(
+            format_cell_with_unit("Dec. (J2000.0)", "22.014", None),
+            sexagesimal::format_dec(22.014)
+        );
+        assert_eq!(
+            format_cell_with_unit("Dec. (J2000.0)", "22.014", Some("degrees")),
+            "+22.014000"
+        );
+    }
+
+    #[test]
+    fn format_cell_with_unit_dates_mjd_vs_calendar() {
+        // Calendar (default) converts MJD → ISO date.
+        assert_eq!(
+            format_cell_with_unit("Start Date", "51544.0", None),
+            "2000-01-01"
+        );
+        // MJD unit passes the raw number through.
+        assert_eq!(
+            format_cell_with_unit("Start Date", "51544.0", Some("mjd")),
+            "51544.0"
+        );
+    }
+
+    #[test]
+    fn format_cell_with_unit_spectral_and_passthrough() {
+        assert_eq!(
+            format_cell_with_unit("Min. Wavelength", "5e-7", Some("nm")),
+            "500.0 nm"
+        );
+        // A non-menu column ignores any unit and returns the trimmed raw value.
+        assert_eq!(
+            format_cell_with_unit("Instrument", "  NIRCam ", Some("nm")),
+            "NIRCam"
+        );
+        // Empty → empty.
+        assert_eq!(format_cell_with_unit("Instrument", "   ", None), "");
+    }
+
+    #[test]
+    fn recent_search_resolver_provenance_roundtrips() {
+        let mut r = RecentSearch::default();
+        r.resolver_service_used = Some("SIMBAD".to_string());
+        r.resolution_epoch = Some("2026-07-08T00:00:00Z".to_string());
+        let json = serde_json::to_string(&r).unwrap();
+        let back: RecentSearch = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.resolver_service_used.as_deref(), Some("SIMBAD"));
+        assert_eq!(back.resolution_epoch.as_deref(), Some("2026-07-08T00:00:00Z"));
+
+        // Legacy payloads that predate the provenance fields still deserialize
+        // (serde default → None). Start from a full serialization and drop the
+        // two new keys so the rest of the required fields remain valid.
+        let mut value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&RecentSearch::default()).unwrap()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("resolver_service_used");
+        obj.remove("resolution_epoch");
+        let legacy: RecentSearch = serde_json::from_value(value).unwrap();
+        assert!(legacy.resolver_service_used.is_none());
+        assert!(legacy.resolution_epoch.is_none());
+    }
+
+    #[test]
+    fn form_state_pixel_scale_raw_defaults_absent() {
+        // New optional fields default to None and survive a JSON round-trip.
+        let s = SearchFormState::new();
+        assert!(s.pixel_scale_raw.is_none());
+        assert!(s.resolver_service_used.is_none());
+        let json = serde_json::to_string(&s).unwrap();
+        let back: SearchFormState = serde_json::from_str(&json).unwrap();
+        assert!(back.pixel_scale_raw.is_none());
     }
 
     #[test]

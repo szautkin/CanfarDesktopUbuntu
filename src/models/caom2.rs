@@ -1,0 +1,98 @@
+//! Domain model for the CAOM-2 observation document returned by
+//! `caom2ops/meta?ID=caom:{collection}/{observationID}`.
+//!
+//! Port of `Models/Caom2/CAOM2Observation.cs` in CanfarDesktop, trimmed to the
+//! fields the Research / observation-detail viewer actually renders. The parser
+//! ignores unknown elements, so additive CAOM2 schema changes never break it.
+
+/// A parsed CAOM-2 observation.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CAOM2Observation {
+    pub collection: String,
+    pub observation_id: String,
+    /// e.g. "OBJECT" / "DARK".
+    pub observation_type: Option<String>,
+    /// "science" | "calibration".
+    pub intent: Option<String>,
+    pub sequence_number: Option<String>,
+    /// "exposure" / "coadd" / ...
+    pub algorithm: Option<String>,
+
+    pub proposal: Option<Caom2Proposal>,
+    pub target: Option<Caom2Target>,
+    pub telescope: Option<Caom2Telescope>,
+    pub instrument: Option<Caom2Instrument>,
+    pub environment: Option<Caom2Environment>,
+
+    pub planes: Vec<Caom2Plane>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Proposal {
+    pub id: Option<String>,
+    pub pi: Option<String>,
+    pub project: Option<String>,
+    pub title: Option<String>,
+    pub keywords: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Target {
+    pub name: Option<String>,
+    /// CAOM2 target `<type>` (renamed `kind` to avoid the Rust keyword).
+    pub kind: Option<String>,
+    pub standard: Option<bool>,
+    pub redshift: Option<f64>,
+    pub moving: Option<bool>,
+    pub keywords: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Telescope {
+    pub name: Option<String>,
+    /// Geocentric ITRF position (x, y, z) in metres.
+    pub geo_location: Option<(f64, f64, f64)>,
+    pub keywords: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Instrument {
+    pub name: Option<String>,
+    pub keywords: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Environment {
+    pub seeing: Option<f64>,
+    pub humidity: Option<f64>,
+    pub elevation: Option<f64>,
+    pub tau: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Plane {
+    pub product_id: String,
+    pub calibration_level: Option<i32>,
+    /// image / spectrum / cube / ...
+    pub data_product_type: Option<String>,
+    /// junk / good / ...
+    pub quality: Option<String>,
+    /// Footprint polygon vertices as (RA, Dec) in degrees.
+    pub position_bounds: Vec<(f64, f64)>,
+    /// Spectral coverage in metres (CAOM2 native).
+    pub energy_lower: Option<f64>,
+    pub energy_upper: Option<f64>,
+    /// Temporal coverage in MJD.
+    pub time_lower: Option<f64>,
+    pub time_upper: Option<f64>,
+    pub artifacts: Vec<Caom2Artifact>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Artifact {
+    pub uri: String,
+    /// science / weight / preview / aux.
+    pub product_type: Option<String>,
+    pub content_type: Option<String>,
+    pub content_length: Option<u64>,
+}

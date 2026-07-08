@@ -32,11 +32,25 @@ pub struct LaunchFormView {
     active_sessions: Rc<RefCell<Vec<Session>>>,
     // Advanced tab
     custom_image_entry: adw::EntryRow,
+    /// Full image URI chosen via the "Find images by package…" discovery
+    /// dialog. When set and still matching the custom image entry text, the
+    /// launch path uses it verbatim (it already includes the registry host)
+    /// instead of prepending the advanced registry combo host.
+    picked_image: Rc<RefCell<Option<String>>>,
     custom_type_combo: gtk::DropDown,
     adv_registry_combo: gtk::DropDown,
     registry_user_entry: adw::EntryRow,
     registry_secret_entry: adw::PasswordEntryRow,
     notebook: gtk::Notebook,
+    // Headless (batch job) tab
+    headless_image_entry: adw::EntryRow,
+    headless_name_entry: adw::EntryRow,
+    headless_cmd_entry: adw::EntryRow,
+    headless_args_entry: adw::EntryRow,
+    headless_replicas: gtk::SpinButton,
+    headless_cores: gtk::SpinButton,
+    headless_ram: gtk::SpinButton,
+    headless_launch_btn: gtk::Button,
 }
 
 impl LaunchFormView {
@@ -53,7 +67,7 @@ impl LaunchFormView {
         header.set_margin_end(16);
         header.set_margin_top(12);
 
-        let title = gtk::Label::new(Some("Launch Session"));
+        let title = gtk::Label::new(Some(crate::tr_en!("Launch Session")));
         title.add_css_class("title-4");
         title.set_halign(gtk::Align::Start);
         title.set_hexpand(true);
@@ -90,33 +104,46 @@ impl LaunchFormView {
                 .unwrap_or(0);
             type_combo.set_selected(idx as u32);
         }
-        let type_row = adw::ActionRow::builder().title("Session Type").build();
+        let type_row = adw::ActionRow::builder().title(crate::tr_en!("Session Type")).build();
         type_row.add_suffix(&type_combo);
         form_group.add(&type_row);
 
         // Image Registry
         let registry_list = gtk::StringList::new(&[]);
         let registry_combo = gtk::DropDown::new(Some(registry_list), gtk::Expression::NONE);
-        let registry_row = adw::ActionRow::builder().title("Image Registry").build();
+        let registry_row = adw::ActionRow::builder().title(crate::tr_en!("Image Registry")).build();
         registry_row.add_suffix(&registry_combo);
         form_group.add(&registry_row);
 
         // Project
         let project_list = gtk::StringList::new(&[]);
         let project_combo = gtk::DropDown::new(Some(project_list), gtk::Expression::NONE);
-        let project_row = adw::ActionRow::builder().title("Project").build();
+        let project_row = adw::ActionRow::builder().title(crate::tr_en!("Project")).build();
         project_row.add_suffix(&project_combo);
         form_group.add(&project_row);
 
         // Image
         let image_list = gtk::StringList::new(&[]);
         let image_combo = gtk::DropDown::new(Some(image_list), gtk::Expression::NONE);
-        let image_row = adw::ActionRow::builder().title("Container Image").build();
+        let image_row = adw::ActionRow::builder().title(crate::tr_en!("Container Image")).build();
+        // Discovery: search images by installed package/capability.
+        let find_images_btn = gtk::Button::from_icon_name("system-search-symbolic");
+        find_images_btn.set_tooltip_text(Some(crate::tr_en!("Find images by package…")));
+        find_images_btn.add_css_class("flat");
+        find_images_btn.set_valign(gtk::Align::Center);
+        image_row.add_suffix(&find_images_btn);
         image_row.add_suffix(&image_combo);
         form_group.add(&image_row);
 
         // Session name
-        let name_entry = adw::EntryRow::builder().title("Session Name").build();
+        let name_entry = adw::EntryRow::builder().title(crate::tr_en!("Session Name")).build();
+        // Manual "Generate name" action: re-derives the auto session name from
+        // the currently selected type (mirrors the reference's GenerateSessionName).
+        let generate_name_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
+        generate_name_btn.set_tooltip_text(Some(crate::tr_en!("Generate name")));
+        generate_name_btn.add_css_class("flat");
+        generate_name_btn.set_valign(gtk::Align::Center);
+        name_entry.add_suffix(&generate_name_btn);
         form_group.add(&name_entry);
 
         standard_box.append(&form_group);
@@ -128,8 +155,8 @@ impl LaunchFormView {
         resource_type_switch.set_valign(gtk::Align::Center);
 
         let resource_row = adw::ActionRow::builder()
-            .title("Fixed Resources")
-            .subtitle("Enable to specify exact CPU/RAM/GPU")
+            .title(crate::tr_en!("Fixed Resources"))
+            .subtitle(crate::tr_en!("Enable to specify exact CPU/RAM/GPU"))
             .build();
         resource_row.add_suffix(&resource_type_switch);
         resource_row.set_activatable_widget(Some(&resource_type_switch));
@@ -141,7 +168,7 @@ impl LaunchFormView {
         resource_selector.widget().set_visible(false);
         standard_box.append(resource_selector.widget());
 
-        notebook.append_page(&standard_box, Some(&gtk::Label::new(Some("Standard"))));
+        notebook.append_page(&standard_box, Some(&gtk::Label::new(Some(crate::tr_en!("Standard")))));
 
         // === Advanced Tab ===
         let advanced_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -151,8 +178,8 @@ impl LaunchFormView {
         advanced_box.set_margin_bottom(8);
 
         let adv_group = adw::PreferencesGroup::builder()
-            .title("Custom Container Image")
-            .description("Launch a session using a custom image URI")
+            .title(crate::tr_en!("Custom Container Image"))
+            .description(crate::tr_en!("Launch a session using a custom image URI"))
             .build();
 
         // Session type
@@ -165,40 +192,111 @@ impl LaunchFormView {
             "headless",
         ]);
         let custom_type_combo = gtk::DropDown::new(Some(custom_type_list), gtk::Expression::NONE);
-        let custom_type_row = adw::ActionRow::builder().title("Session Type").build();
+        let custom_type_row = adw::ActionRow::builder().title(crate::tr_en!("Session Type")).build();
         custom_type_row.add_suffix(&custom_type_combo);
         adv_group.add(&custom_type_row);
 
         // Image Registry (from API repositories)
         let adv_registry_list = gtk::StringList::new(&[]);
         let adv_registry_combo = gtk::DropDown::new(Some(adv_registry_list), gtk::Expression::NONE);
-        let adv_registry_row = adw::ActionRow::builder().title("Image Registry").build();
+        let adv_registry_row = adw::ActionRow::builder().title(crate::tr_en!("Image Registry")).build();
         adv_registry_row.add_suffix(&adv_registry_combo);
         adv_group.add(&adv_registry_row);
 
         // Custom image URI (project/name:tag)
         let custom_image_entry = adw::EntryRow::builder()
-            .title("Image (project/name:tag)")
+            .title(crate::tr_en!("Image (project/name:tag)"))
             .build();
         adv_group.add(&custom_image_entry);
 
         // Registry auth
         let auth_group = adw::PreferencesGroup::builder()
-            .title("Registry Authentication")
-            .description("Credentials for private registries. Leave blank for public images.")
+            .title(crate::tr_en!("Registry Authentication"))
+            .description(crate::tr_en!("Credentials for private registries. Leave blank for public images."))
             .build();
 
-        let registry_user_entry = adw::EntryRow::builder().title("Username").build();
+        let registry_user_entry = adw::EntryRow::builder().title(crate::tr_en!("Username")).build();
         auth_group.add(&registry_user_entry);
 
         let registry_secret_entry = adw::PasswordEntryRow::builder()
-            .title("Token or Password")
+            .title(crate::tr_en!("Token or Password"))
             .build();
         auth_group.add(&registry_secret_entry);
 
         advanced_box.append(&adv_group);
         advanced_box.append(&auth_group);
-        notebook.append_page(&advanced_box, Some(&gtk::Label::new(Some("Advanced"))));
+        notebook.append_page(&advanced_box, Some(&gtk::Label::new(Some(crate::tr_en!("Advanced")))));
+
+        // === Headless (batch job) Tab ===
+        let headless_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        headless_box.set_margin_start(8);
+        headless_box.set_margin_end(8);
+        headless_box.set_margin_top(8);
+        headless_box.set_margin_bottom(8);
+
+        let headless_group = adw::PreferencesGroup::new();
+        headless_group.set_title(crate::tr_en!("Headless Batch Job"));
+        headless_group.set_description(Some(crate::tr_en!(
+            "Run a container command with no interactive UI. Replicas launch the same job N times."
+        )));
+
+        let headless_image_entry = adw::EntryRow::builder()
+            .title(crate::tr_en!("Container Image"))
+            .build();
+        headless_group.add(&headless_image_entry);
+        let headless_name_entry = adw::EntryRow::builder()
+            .title(crate::tr_en!("Job Name"))
+            .build();
+        headless_group.add(&headless_name_entry);
+        let headless_cmd_entry = adw::EntryRow::builder()
+            .title(crate::tr_en!("Command"))
+            .build();
+        headless_group.add(&headless_cmd_entry);
+        let headless_args_entry = adw::EntryRow::builder()
+            .title(crate::tr_en!("Arguments (space-separated)"))
+            .build();
+        headless_group.add(&headless_args_entry);
+
+        let headless_replicas = gtk::SpinButton::with_range(1.0, 20.0, 1.0);
+        headless_replicas.set_value(1.0);
+        headless_replicas.set_valign(gtk::Align::Center);
+        let replicas_row = adw::ActionRow::builder()
+            .title(crate::tr_en!("Replicas"))
+            .subtitle(crate::tr_en!("1–20 identical jobs"))
+            .build();
+        replicas_row.add_suffix(&headless_replicas);
+        headless_group.add(&replicas_row);
+
+        let headless_cores = gtk::SpinButton::with_range(1.0, 256.0, 1.0);
+        headless_cores.set_value(2.0);
+        headless_cores.set_valign(gtk::Align::Center);
+        let cores_row = adw::ActionRow::builder()
+            .title(crate::tr_en!("Cores"))
+            .build();
+        cores_row.add_suffix(&headless_cores);
+        headless_group.add(&cores_row);
+
+        let headless_ram = gtk::SpinButton::with_range(1.0, 512.0, 1.0);
+        headless_ram.set_value(8.0);
+        headless_ram.set_valign(gtk::Align::Center);
+        let ram_row = adw::ActionRow::builder()
+            .title(crate::tr_en!("RAM (GB)"))
+            .build();
+        ram_row.add_suffix(&headless_ram);
+        headless_group.add(&ram_row);
+
+        headless_box.append(&headless_group);
+
+        let headless_launch_btn = gtk::Button::with_label(crate::tr_en!("Launch Job"));
+        headless_launch_btn.add_css_class("suggested-action");
+        headless_launch_btn.set_halign(gtk::Align::End);
+        headless_launch_btn.set_margin_top(8);
+        headless_box.append(&headless_launch_btn);
+
+        notebook.append_page(
+            &headless_box,
+            Some(&gtk::Label::new(Some(crate::tr_en!("Headless")))),
+        );
 
         container.append(&notebook);
 
@@ -216,11 +314,11 @@ impl LaunchFormView {
         bottom.append(&status_label);
 
         let save_template_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
-        save_template_btn.set_tooltip_text(Some("Save as template"));
+        save_template_btn.set_tooltip_text(Some(crate::tr_en!("Save as template")));
         save_template_btn.add_css_class("flat");
         bottom.append(&save_template_btn);
 
-        let launch_btn = gtk::Button::with_label("Launch");
+        let launch_btn = gtk::Button::with_label(crate::tr_en!("Launch"));
         launch_btn.add_css_class("suggested-action");
         bottom.append(&launch_btn);
 
@@ -252,11 +350,20 @@ impl LaunchFormView {
             session_limit_reached: Rc::new(RefCell::new(false)),
             active_sessions,
             custom_image_entry,
+            picked_image: Rc::new(RefCell::new(None)),
             custom_type_combo,
             adv_registry_combo,
             registry_user_entry,
             registry_secret_entry,
             notebook,
+            headless_image_entry,
+            headless_name_entry,
+            headless_cmd_entry,
+            headless_args_entry,
+            headless_replicas,
+            headless_cores,
+            headless_ram,
+            headless_launch_btn,
         });
 
         // Type change -> update registries
@@ -295,6 +402,31 @@ impl LaunchFormView {
             });
         }
 
+        // "Find images by package…" -> open the image discovery dialog. The
+        // picked full image URI is injected into the launch path via
+        // `apply_picked_image` (switches to the Advanced tab).
+        {
+            let view_clone = view.clone();
+            find_images_btn.connect_clicked(move |btn| {
+                let services = view_clone.services.clone();
+                let view_for_pick = view_clone.clone();
+                let on_pick: Rc<dyn Fn(String)> = Rc::new(move |id: String| {
+                    view_for_pick.apply_picked_image(&id);
+                });
+                crate::ui::image_discovery_dialog::show_image_discovery_dialog(
+                    btn, services, on_pick,
+                );
+            });
+        }
+
+        // Manual "Generate name" button next to the session-name field
+        {
+            let view_clone = view.clone();
+            generate_name_btn.connect_clicked(move |_| {
+                view_clone.generate_session_name();
+            });
+        }
+
         // Save as template button
         {
             let view_clone = view.clone();
@@ -319,6 +451,18 @@ impl LaunchFormView {
             });
         }
 
+        // Headless "Launch Job" button
+        {
+            let view_clone = view.clone();
+            let btn = view.headless_launch_btn.clone();
+            btn.connect_clicked(move |_| {
+                let view_clone = view_clone.clone();
+                glib::spawn_future_local(async move {
+                    view_clone.do_launch_headless().await;
+                });
+            });
+        }
+
         view
     }
 
@@ -331,7 +475,7 @@ impl LaunchFormView {
         if reached {
             self.launch_btn.set_sensitive(false);
             self.status_label
-                .set_text("Session limit reached (max 3 concurrent sessions)");
+                .set_text(crate::tr_en!("Session limit reached (max 3 concurrent sessions)"));
         } else {
             self.launch_btn.set_sensitive(true);
             self.status_label.set_text("");
@@ -558,6 +702,60 @@ impl LaunchFormView {
         self.name_entry.set_text(&name);
     }
 
+    /// Re-derive the auto session name from the currently active tab's session
+    /// type (`<type><count+1>`), wired to the manual "Generate name" button.
+    fn generate_session_name(&self) {
+        let session_type = if self.notebook.current_page() == Some(1) {
+            let types = [
+                "notebook",
+                "desktop",
+                "carta",
+                "contributed",
+                "firefly",
+                "headless",
+            ];
+            let idx = self.custom_type_combo.selected() as usize;
+            types.get(idx).unwrap_or(&"notebook").to_string()
+        } else {
+            self.selected_type()
+        };
+        let count = self.session_count_for_type(&session_type);
+        self.name_entry
+            .set_text(&format!("{}{}", session_type, count + 1));
+    }
+
+    /// Inject an image chosen via the discovery dialog into the launch path.
+    /// The picked id is a fully-qualified URI (e.g. `images.canfar.net/…:tag`),
+    /// so it is placed into the Advanced tab's custom image entry (which the
+    /// launch path reads) and the Advanced tab is brought to the front.
+    fn apply_picked_image(&self, id: &str) {
+        *self.picked_image.borrow_mut() = Some(id.to_string());
+        self.custom_image_entry.set_text(id);
+        // Advanced tab is page index 1 (Standard=0, Advanced=1, Headless=2).
+        self.notebook.set_current_page(Some(1));
+        self.status_label
+            .set_text(&format!("Selected image: {}", id));
+    }
+
+    /// Resolve the container image URI for the Advanced tab. When the user
+    /// picked a fully-qualified image via the discovery dialog and left it
+    /// unedited, it is returned verbatim; otherwise the advanced registry host
+    /// is prepended to the entered `project/name:tag` path.
+    fn advanced_image_uri(&self) -> String {
+        let custom_path = self.custom_image_entry.text().to_string();
+        if let Some(picked) = self.picked_image.borrow().as_ref() {
+            if *picked == custom_path {
+                return custom_path;
+            }
+        }
+        let registry_host = self.combo_selected_string(&self.adv_registry_combo);
+        if registry_host.is_empty() {
+            custom_path
+        } else {
+            format!("{}/{}", registry_host, custom_path)
+        }
+    }
+
     async fn do_launch(&self) {
         if *self.session_limit_reached.borrow() {
             return;
@@ -576,14 +774,8 @@ impl LaunchFormView {
             ];
             let idx = self.custom_type_combo.selected() as usize;
             let st = types.get(idx).unwrap_or(&"notebook").to_string();
-            // Prepend registry host to custom image path
-            let registry_host = self.combo_selected_string(&self.adv_registry_combo);
-            let custom_path = self.custom_image_entry.text().to_string();
-            let img = if registry_host.is_empty() {
-                custom_path
-            } else {
-                format!("{}/{}", registry_host, custom_path)
-            };
+            // Resolve custom URI (honours a discovery-picked full image).
+            let img = self.advanced_image_uri();
             let ru = {
                 let text = self.registry_user_entry.text().to_string();
                 if text.is_empty() {
@@ -606,7 +798,7 @@ impl LaunchFormView {
             let img = match self.get_selected_image_id() {
                 Some(id) => id,
                 None => {
-                    self.status_label.set_text("Please select an image");
+                    self.status_label.set_text(crate::tr_en!("Please select an image"));
                     return;
                 }
             };
@@ -615,13 +807,13 @@ impl LaunchFormView {
 
         if image.is_empty() {
             self.status_label
-                .set_text("Please select or enter an image");
+                .set_text(crate::tr_en!("Please select or enter an image"));
             return;
         }
 
         let name = self.name_entry.text().to_string();
         if name.is_empty() {
-            self.status_label.set_text("Please enter a session name");
+            self.status_label.set_text(crate::tr_en!("Please enter a session name"));
             return;
         }
 
@@ -632,11 +824,29 @@ impl LaunchFormView {
                 self.resource_selector.gpus(),
             )
         } else {
-            (
-                self.services.endpoints.config().default_cores,
-                self.services.endpoints.config().default_ram,
-                0,
-            )
+            // Flexible resources: send 0 so the platform allocates (matches the
+            // reference). Sending fixed defaults here would defeat flexible mode.
+            (0, 0, 0)
+        };
+
+        // Snapshot resource mode + project before the async launch (the user may
+        // edit the form while it is in flight) so the recent-launch record and a
+        // later relaunch reproduce the same configuration.
+        let resource_type = if self.resource_type_switch.is_active() {
+            "fixed"
+        } else {
+            "flexible"
+        }
+        .to_string();
+        let project = if is_advanced {
+            None
+        } else {
+            let p = self.combo_selected_string(&self.project_combo);
+            if p.is_empty() {
+                None
+            } else {
+                Some(p)
+            }
         };
 
         let params = SessionLaunchParams {
@@ -650,10 +860,12 @@ impl LaunchFormView {
             env: None,
             registry_username: reg_user,
             registry_secret: reg_secret,
+            args: None,
+            replicas: None,
         };
 
         self.launch_btn.set_sensitive(false);
-        self.status_label.set_text("Launching session...");
+        self.status_label.set_text(crate::tr_en!("Launching session..."));
 
         let svc = self.services.clone();
         let params_clone = params.clone();
@@ -691,6 +903,7 @@ impl LaunchFormView {
                 self.status_label.set_text("");
 
                 // Save to recent launches
+                let now = chrono::Local::now().to_rfc3339();
                 let recent = RecentLaunch {
                     name,
                     session_type,
@@ -698,7 +911,13 @@ impl LaunchFormView {
                     cores,
                     ram,
                     gpus,
-                    timestamp: chrono::Local::now().to_rfc3339(),
+                    timestamp: now.clone(),
+                    project,
+                    resource_type: Some(resource_type),
+                    cmd: None,
+                    args: None,
+                    replicas: None,
+                    launched_at: Some(now),
                 };
                 let _ = self.services.recent_launches.save(recent);
 
@@ -712,6 +931,119 @@ impl LaunchFormView {
         }
 
         self.launch_btn.set_sensitive(true);
+    }
+
+    /// Launch a headless (batch) job from the Headless tab.
+    async fn do_launch_headless(&self) {
+        let image = self.headless_image_entry.text().to_string();
+        if image.is_empty() {
+            self.status_label
+                .set_text(crate::tr_en!("Please enter a container image"));
+            return;
+        }
+        let name = {
+            let n = self.headless_name_entry.text().to_string();
+            if n.is_empty() {
+                format!("headless-{}", chrono::Local::now().timestamp())
+            } else {
+                n
+            }
+        };
+        let cmd = {
+            let c = self.headless_cmd_entry.text().to_string();
+            if c.is_empty() {
+                None
+            } else {
+                Some(c)
+            }
+        };
+        let args = {
+            let v: Vec<String> = self
+                .headless_args_entry
+                .text()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        };
+        let replicas = self.headless_replicas.value() as u32;
+        let cores = self.headless_cores.value() as u32;
+        let ram = self.headless_ram.value() as u32;
+
+        let params = SessionLaunchParams {
+            name: name.clone(),
+            image,
+            session_type: "headless".to_string(),
+            cores,
+            ram,
+            gpus: 0,
+            cmd,
+            env: None,
+            registry_username: None,
+            registry_secret: None,
+            args,
+            replicas: Some(replicas),
+        };
+
+        self.headless_launch_btn.set_sensitive(false);
+        self.status_label
+            .set_text(crate::tr_en!("Launching batch job…"));
+
+        let svc = self.services.clone();
+        let params_clone = params.clone();
+        let result = self
+            .services
+            .spawn(async move {
+                let Some(token) = svc.get_token().await else {
+                    return Err("Not authenticated".to_string());
+                };
+                svc.sessions.launch_session(&token, &params_clone).await
+            })
+            .await;
+
+        match result {
+            Ok(id) => {
+                self.status_label.set_text("");
+                self.services
+                    .toast
+                    .toast(&format!("Launched batch job '{name}' ({id})"));
+
+                // Save to recent launches so the batch job can be relaunched with
+                // its exact command line (cmd/args/replicas) and resources.
+                let now = chrono::Local::now().to_rfc3339();
+                let recent = RecentLaunch {
+                    name: params.name.clone(),
+                    session_type: "headless".to_string(),
+                    image: params.image.clone(),
+                    cores: params.cores,
+                    ram: params.ram,
+                    gpus: params.gpus,
+                    timestamp: now.clone(),
+                    // The headless tab exposes no project selector; it always
+                    // configures explicit cores/ram, so it is a fixed job.
+                    project: None,
+                    resource_type: Some("fixed".to_string()),
+                    cmd: params.cmd.clone(),
+                    args: params.args.clone(),
+                    replicas: params.replicas,
+                    launched_at: Some(now),
+                };
+                let _ = self.services.recent_launches.save(recent);
+
+                if let Some(ref cb) = *self.on_launched.borrow() {
+                    cb();
+                }
+            }
+            Err(e) => {
+                self.status_label
+                    .set_text(&format!("Batch launch failed: {}", e));
+            }
+        }
+        self.headless_launch_btn.set_sensitive(true);
     }
 
     async fn show_save_template_dialog(&self) {
@@ -728,20 +1060,14 @@ impl LaunchFormView {
             ];
             let idx = self.custom_type_combo.selected() as usize;
             let st = types.get(idx).unwrap_or(&"notebook").to_string();
-            let registry_host = self.combo_selected_string(&self.adv_registry_combo);
-            let custom_path = self.custom_image_entry.text().to_string();
-            let img = if registry_host.is_empty() {
-                custom_path
-            } else {
-                format!("{}/{}", registry_host, custom_path)
-            };
+            let img = self.advanced_image_uri();
             (st, img)
         } else {
             let st = self.selected_type();
             let img = match self.get_selected_image_id() {
                 Some(id) => id,
                 None => {
-                    self.status_label.set_text("Please select an image first");
+                    self.status_label.set_text(crate::tr_en!("Please select an image first"));
                     return;
                 }
             };
@@ -762,19 +1088,19 @@ impl LaunchFormView {
             )
         };
 
-        let name_entry = adw::EntryRow::builder().title("Template Name").build();
+        let name_entry = adw::EntryRow::builder().title(crate::tr_en!("Template Name")).build();
 
         let dialog = adw::MessageDialog::builder()
-            .heading("Save as Template")
-            .body("Enter a name for this template:")
+            .heading(crate::tr_en!("Save as Template"))
+            .body(crate::tr_en!("Enter a name for this template:"))
             .build();
         if let Some(win) = self.container.root().and_downcast_ref::<gtk::Window>() {
             dialog.set_transient_for(Some(win));
         }
 
         dialog.set_extra_child(Some(&name_entry));
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("save", "Save");
+        dialog.add_response("cancel", crate::tr_en!("Cancel"));
+        dialog.add_response("save", crate::tr_en!("Save"));
         dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
         dialog.set_default_response(Some("save"));
         dialog.set_close_response("cancel");
@@ -796,7 +1122,7 @@ impl LaunchFormView {
                 gpus,
             );
             match self.services.templates.add(template) {
-                Ok(()) => self.status_label.set_text("Template saved"),
+                Ok(()) => self.status_label.set_text(crate::tr_en!("Template saved")),
                 Err(e) => self
                     .status_label
                     .set_text(&format!("Failed to save template: {}", e)),

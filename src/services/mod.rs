@@ -1,23 +1,39 @@
+pub mod ai_guide;
 pub mod api_error;
+pub mod auth_events;
 pub mod auth_service;
+pub mod caom2_service;
 pub mod cache_service;
 pub mod datalink_service;
 pub mod health_tracker;
 pub mod image_service;
 pub mod kernel_service;
+pub mod notebook_settings_service;
+pub mod image_discovery_coordinator;
+pub mod manifest_store;
+pub mod image_discovery_settings_service;
+pub mod legal_service;
+pub mod network_monitor;
+pub mod mcp_settings_service;
+pub mod ai_compute_service;
 pub mod notebook_store;
 pub mod notification_service;
+pub mod observation_note_store;
 pub mod observation_store;
 pub mod platform_service;
+pub mod recent_cubes_service;
 pub mod recent_launch_service;
 pub mod search_store_service;
+pub mod service_health_probe;
 pub mod session_service;
 pub mod settings_service;
 pub mod storage_service;
+pub mod vizier_service;
 pub mod tap_service;
 pub mod template_service;
 pub mod token_storage;
 pub mod vospace_service;
+pub mod workflow_store;
 
 pub use api_error::ApiError;
 pub use cache_service::CacheService;
@@ -33,9 +49,13 @@ pub use observation_store::{
 pub use platform_service::PlatformService;
 pub use recent_launch_service::RecentLaunchService;
 pub use search_store_service::SearchStoreService;
+#[allow(unused_imports)]
+pub use service_health_probe::{probe_all, ServiceProbeResult};
 pub use session_service::SessionService;
 pub use settings_service::SettingsService;
 pub use storage_service::StorageService;
 pub use template_service::TemplateService;
 pub use token_storage::TokenStorage;
 pub use vospace_service::VoSpaceService;
+#[allow(unused_imports)]
+pub use workflow_store::WorkflowStore;

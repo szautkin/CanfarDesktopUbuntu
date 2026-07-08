@@ -113,15 +113,15 @@ pub async fn show_saved_query_dialog(
     let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     btn_row.set_halign(gtk::Align::End);
 
-    let copy_btn = gtk::Button::with_label("Copy");
+    let copy_btn = gtk::Button::with_label(crate::tr_en!("Copy"));
     copy_btn.set_icon_name("edit-copy-symbolic");
     btn_row.append(&copy_btn);
 
-    let rename_btn = gtk::Button::with_label("Rename");
+    let rename_btn = gtk::Button::with_label(crate::tr_en!("Rename"));
     rename_btn.set_icon_name("document-edit-symbolic");
     btn_row.append(&rename_btn);
 
-    let delete_btn = gtk::Button::with_label("Delete");
+    let delete_btn = gtk::Button::with_label(crate::tr_en!("Delete"));
     delete_btn.add_css_class("destructive-action");
     btn_row.append(&delete_btn);
 
@@ -130,10 +130,10 @@ pub async fn show_saved_query_dialog(
     spacer.set_hexpand(true);
     btn_row.append(&spacer);
 
-    let load_btn = gtk::Button::with_label("Load into Editor");
+    let load_btn = gtk::Button::with_label(crate::tr_en!("Load into Editor"));
     btn_row.append(&load_btn);
 
-    let run_btn = gtk::Button::with_label("Run Query");
+    let run_btn = gtk::Button::with_label(crate::tr_en!("Run Query"));
     run_btn.add_css_class("suggested-action");
     btn_row.append(&run_btn);
 
@@ -166,11 +166,11 @@ pub async fn show_saved_query_dialog(
             if let Some(display) = gtk::gdk::Display::default() {
                 let clipboard = display.clipboard();
                 clipboard.set_text(&adql_for_copy);
-                btn.set_label("Copied!");
+                btn.set_label(crate::tr_en!("Copied!"));
                 // Reset the label after a short delay
                 let btn = btn.clone();
                 glib::timeout_add_seconds_local_once(1, move || {
-                    btn.set_label("Copy");
+                    btn.set_label(crate::tr_en!("Copy"));
                 });
             }
             let _ = &dialog_for_toast;
@@ -191,7 +191,7 @@ pub async fn show_saved_query_dialog(
             glib::spawn_future_local(async move {
                 if let Some(new_name) = crate::ui::rename_dialog::show_rename_dialog(
                     &dialog_ref,
-                    "Rename Query",
+                    crate::tr_en!("Rename Query"),
                     &current_name,
                 )
                 .await

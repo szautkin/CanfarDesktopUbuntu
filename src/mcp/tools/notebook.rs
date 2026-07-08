@@ -1,0 +1,379 @@
+//! Live per-viewer MCP tools for the native Jupyter notebook editor.
+//!
+//! Every tool forwards to the notebook host on the GTK main thread through the
+//! view-state bridge (`viewer_command("notebook", <op>, args)`). Read tools
+//! return a snapshot; mutation tools drive the active notebook tab's existing
+//! mutators and return the resulting notebook state. All tools are agent-safe:
+//! the notebook host is the user's live editor, not a proposal target.
+//!
+//! Mirrors `Mcp/Tools/Write/NotebookTools.cs` from the CanfarDesktop reference.
+//! Tool names are identical to the bridge ops, so dispatch forwards by name.
+
+use super::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
+use crate::mcp::view_state;
+use crate::state::AppServices;
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+/// The optional `notebook` selector shared by most tools: target a specific open
+/// tab by index, id (from list_open_notebooks), or file path; omit for the active tab.
+fn nb_sel() -> Value {
+    json!({
+        "type": "string",
+        "description": "Optional: target a specific open notebook by tab index, id \
+                        (from list_open_notebooks), or file path; omit to target the active tab"
+    })
+}
+
+fn desc(name: &str, description: &str, input_schema: Value, verb: VerbClass) -> ToolDescriptor {
+    ToolDescriptor {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema,
+        verb,
+        agent_safe: true,
+    }
+}
+
+pub fn descriptors() -> Vec<ToolDescriptor> {
+    let sel = nb_sel();
+    vec![
+        desc(
+            "list_open_notebooks",
+            "List the notebook tabs currently OPEN in the editor: each notebook's id, title, file \
+             path, active flag, dirty flag, cell count, and kernel state. Pass an id/path/index as \
+             the `notebook` argument of the other tools to target a specific open notebook.",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+            VerbClass::Read,
+        ),
+        desc(
+            "get_notebook",
+            "Read a notebook tab: id, title, file path, dirty flag, kernel state, selected cell, and \
+             the list of cells (index, type, source, execution count, output count). Use \
+             get_cell_output for a cell's outputs.",
+            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            VerbClass::Read,
+        ),
+        desc(
+            "get_cell_output",
+            "Read the outputs of a code cell (by 0-based index): each output's type, text, and \
+             error/image/html flags (binary image data is flagged, not returned).",
+            json!({"type":"object","properties":{
+                "cell":{"type":"integer","minimum":0,"description":"0-based cell index"},
+                "notebook":sel
+            },"required":["cell"],"additionalProperties":false}),
+            VerbClass::Read,
+        ),
+        desc(
+            "get_kernel_state",
+            "Read a notebook's kernel status (dead / starting / idle / busy / error) + kernel name. \
+             Lighter than get_notebook for polling while a cell runs.",
+            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            VerbClass::Read,
+        ),
+        desc(
+            "add_cell",
+            "Insert a new cell. cell_type is 'code' (default) or 'markdown'; index is the 0-based \
+             position to insert at (default: append at the end).",
+            json!({"type":"object","properties":{
+                "cell_type":{"type":"string","enum":["code","markdown"]},
+                "index":{"type":"integer","minimum":0},
+                "notebook":sel
+            },"required":[],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "edit_cell",
+            "Replace the source text of the cell at a 0-based index.",
+            json!({"type":"object","properties":{
+                "index":{"type":"integer","minimum":0},
+                "source":{"type":"string"},
+                "notebook":sel
+            },"required":["index","source"],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "delete_cell",
+            "Delete the cell at a 0-based index (deleting the last cell leaves one empty code cell).",
+            json!({"type":"object","properties":{
+                "index":{"type":"integer","minimum":0},
+                "notebook":sel
+            },"required":["index"],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "change_cell_type",
+            "Change the type of the cell at a 0-based index to 'code' or 'markdown'.",
+            json!({"type":"object","properties":{
+                "index":{"type":"integer","minimum":0},
+                "cell_type":{"type":"string","enum":["code","markdown"]},
+                "notebook":sel
+            },"required":["index","cell_type"],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "move_cell",
+            "Move the cell at a 0-based index one position up or down.",
+            json!({"type":"object","properties":{
+                "index":{"type":"integer","minimum":0},
+                "direction":{"type":"string","enum":["up","down"]},
+                "notebook":sel
+            },"required":["index","direction"],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "run_cell",
+            "Execute the code cell at a 0-based index (starts the kernel if needed). Returns the \
+             updated notebook state; read the cell's outputs with get_cell_output.",
+            json!({"type":"object","properties":{
+                "index":{"type":"integer","minimum":0},
+                "notebook":sel
+            },"required":["index"],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "run_all",
+            "Execute every code cell in order (starts the kernel if needed).",
+            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "clear_outputs",
+            "Clear all cell outputs and execution counts.",
+            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "start_kernel",
+            "Start the Python kernel and wait for it to become ready (running a cell also auto-starts it).",
+            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "interrupt_kernel",
+            "Interrupt the kernel (stops a long-running cell).",
+            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "restart_kernel",
+            "Restart the Python kernel from a clean state.",
+            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "save_notebook",
+            "Save a notebook. With no path it saves to the current file (fails for an unsaved \
+             notebook — pass a full .ipynb path to save-as).",
+            json!({"type":"object","properties":{
+                "path":{"type":"string","description":"Optional full .ipynb path to save-as"},
+                "notebook":sel
+            },"required":[],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "open_notebook",
+            "Open a notebook/script file (.ipynb / .py, full local path) in the editor as a new tab \
+             and switch to it. Returns the resulting notebook state.",
+            json!({"type":"object","properties":{
+                "path":{"type":"string","description":"Full local path to a .ipynb/.py file"}
+            },"required":["path"],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "create_notebook",
+            "Open a new empty (Untitled) notebook tab and switch to it. Save it with save_notebook \
+             (provide a path).",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+        desc(
+            "create_analysis_notebook",
+            "Build a ready-to-run astropy analysis notebook for a downloaded observation (by CADC \
+             publisher id, from the Research library): a metadata header, a FITS + WCS load cell, \
+             and a template stub. template is 'image' (zscale quick-look, default), 'photometry' \
+             (aperture photometry), or 'cube' (moment map + spectrum). Writes the .ipynb under the \
+             app data dir and opens it in the editor.",
+            json!({"type":"object","properties":{
+                "publisher_id":{"type":"string","description":"The observation's CADC publisher id (from list_downloaded_observations)"},
+                "template":{"type":"string","enum":["image","photometry","cube","auto"],"description":"Template stub (default image)"}
+            },"required":["publisher_id"],"additionalProperties":false}),
+            VerbClass::Write,
+        ),
+    ]
+}
+
+pub async fn dispatch(
+    name: &str,
+    services: &AppServices,
+    args: &Value,
+    _proposals: &Arc<InMemoryProposalStore>,
+) -> Option<ToolResult> {
+    // Not a bridge op: builds a fresh notebook from Research metadata, writes it,
+    // then opens it through the bridge.
+    if name == "create_analysis_notebook" {
+        return Some(create_analysis_notebook(services, args).await);
+    }
+
+    // Tool names are identical to the bridge ops.
+    let op = match name {
+        "list_open_notebooks"
+        | "get_notebook"
+        | "get_cell_output"
+        | "get_kernel_state"
+        | "add_cell"
+        | "edit_cell"
+        | "delete_cell"
+        | "change_cell_type"
+        | "move_cell"
+        | "run_cell"
+        | "run_all"
+        | "clear_outputs"
+        | "start_kernel"
+        | "interrupt_kernel"
+        | "restart_kernel"
+        | "save_notebook"
+        | "open_notebook"
+        | "create_notebook" => name,
+        _ => return None,
+    };
+
+    match view_state::viewer_command("notebook", op, args.clone()).await {
+        Ok(v) => {
+            if let Some(b64) = v.get("image_base64").and_then(|x| x.as_str()) {
+                Some(ToolResult::Image {
+                    data_base64: b64.to_string(),
+                    mime: "image/png".to_string(),
+                    caption: None,
+                })
+            } else {
+                Some(ToolResult::Data(v))
+            }
+        }
+        Err(e) => Some(ToolResult::Failed(e)),
+    }
+}
+
+/// Build an astropy analysis notebook for a downloaded observation, write it to
+/// the app data dir as an `.ipynb`, then open it in the editor via the bridge.
+///
+/// The file is written regardless of whether the viewer bridge is available, so
+/// a headless/agent caller still gets a usable notebook path back (`opened:
+/// false`) when no window is open.
+async fn create_analysis_notebook(services: &AppServices, args: &Value) -> ToolResult {
+    let pid = str_arg(args, "publisher_id");
+    if pid.is_empty() {
+        return ToolResult::Failed("publisher_id is required".to_string());
+    }
+    let template = args
+        .get("template")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Resolve the observation from the Research library (publisher id first, then
+    // local id as a fallback).
+    let list = services.observation_store.load_async().await;
+    let obs = match list
+        .iter()
+        .find(|o| o.publisher_id == pid)
+        .or_else(|| list.iter().find(|o| o.id == pid))
+    {
+        Some(o) => o.clone(),
+        None => {
+            return ToolResult::Failed(format!(
+                "no downloaded observation with publisher id '{}'",
+                pid
+            ))
+        }
+    };
+
+    let doc = crate::helpers::analysis_notebook::build_analysis_notebook(&obs, template.as_deref());
+    let stem = crate::helpers::analysis_notebook::suggested_file_stem(&obs);
+
+    // Serialize + write the .ipynb off the async executor (blocking fs I/O).
+    let written = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let json = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        let dir = directories::ProjectDirs::from("net", "canfar", "Verbinal")
+            .map(|d| d.data_dir().join("analysis-notebooks"))
+            .unwrap_or_else(|| std::path::PathBuf::from("analysis-notebooks"));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{stem}.ipynb"));
+        std::fs::write(&path, json).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await;
+
+    let path = match written {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => return ToolResult::Failed(format!("failed to write analysis notebook: {e}")),
+        Err(e) => return ToolResult::Failed(format!("notebook write task failed: {e}")),
+    };
+
+    // Try to open it live; a missing bridge is not a failure — the file exists.
+    match view_state::viewer_command("notebook", "open_notebook", json!({ "path": path.clone() }))
+        .await
+    {
+        Ok(v) => ToolResult::Data(json!({
+            "created": true,
+            "opened": true,
+            "path": path,
+            "publisherId": pid,
+            "notebook": v,
+        })),
+        Err(e) => ToolResult::Data(json!({
+            "created": true,
+            "opened": false,
+            "path": path,
+            "publisherId": pid,
+            "note": format!("notebook written but not opened in the editor: {e}"),
+        })),
+    }
+}
+
+/// Extract a trimmed string argument (empty string if missing / not a string).
+fn str_arg(args: &Value, key: &str) -> String {
+    args.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Notebook tools apply live through the bridge — they never enqueue proposals.
+pub async fn apply(
+    _s: &AppServices,
+    _p: &PendingProposal,
+) -> Option<Result<String, String>> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptors_unique_nonempty_and_agent_safe() {
+        let d = descriptors();
+        assert!(!d.is_empty());
+        assert!(d.iter().all(|x| !x.name.is_empty()), "names must be non-empty");
+        let mut names: Vec<_> = d.iter().map(|x| x.name.clone()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), d.len(), "tool names must be unique");
+        assert!(d.iter().all(|x| x.agent_safe), "all notebook tools are agent-safe");
+    }
+
+    #[test]
+    fn create_analysis_notebook_descriptor_present_and_write() {
+        let d = descriptors()
+            .into_iter()
+            .find(|x| x.name == "create_analysis_notebook")
+            .expect("create_analysis_notebook descriptor present");
+        assert_eq!(d.verb, VerbClass::Write);
+        assert!(d.agent_safe);
+        // publisher_id is the required argument.
+        let required = d.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "publisher_id"));
+    }
+}

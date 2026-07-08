@@ -1,7 +1,13 @@
 pub mod auth_result;
+pub mod ai_compute;
+pub mod caom2;
 pub mod container_image;
 pub mod fits_image;
 pub mod notebook_document;
+pub mod image_manifest;
+pub mod image_discovery_settings;
+pub mod notebook_settings;
+pub mod observation_note;
 pub mod platform_load;
 pub mod recent_launch;
 pub mod search_result;
@@ -11,7 +17,10 @@ pub mod session_launch_params;
 pub mod session_template;
 pub mod storage_quota;
 pub mod user_info;
+pub mod agent_attribution;
+pub mod volume_data;
 pub mod vospace_node;
+pub mod workflow;
 
 pub use auth_result::AuthResult;
 pub use container_image::{ParsedImage, RawImage};

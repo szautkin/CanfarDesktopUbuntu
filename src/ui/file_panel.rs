@@ -114,17 +114,17 @@ impl FilePanel {
         path_label.set_tooltip_text(Some(start_path.to_str().unwrap_or("")));
 
         let home_btn = gtk::Button::from_icon_name("go-home-symbolic");
-        home_btn.set_tooltip_text(Some("Go to Home"));
+        home_btn.set_tooltip_text(Some(crate::tr_en!("Go to Home")));
         home_btn.add_css_class("flat");
         home_btn.add_css_class("circular");
 
         let up_btn = gtk::Button::from_icon_name("go-up-symbolic");
-        up_btn.set_tooltip_text(Some("Go Up"));
+        up_btn.set_tooltip_text(Some(crate::tr_en!("Go Up")));
         up_btn.add_css_class("flat");
         up_btn.add_css_class("circular");
 
         let refresh_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_btn.set_tooltip_text(Some("Refresh"));
+        refresh_btn.set_tooltip_text(Some(crate::tr_en!("Refresh")));
         refresh_btn.add_css_class("flat");
         refresh_btn.add_css_class("circular");
 

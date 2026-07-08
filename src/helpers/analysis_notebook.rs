@@ -1,0 +1,346 @@
+//! Build a ready-to-run astropy analysis notebook for a downloaded observation.
+//!
+//! Rust port of `Helpers/Notebook/AnalysisNotebookBuilder.cs`. The result is a
+//! valid nbformat 4.5 [`NotebookDocument`] with three cells:
+//!
+//! 1. a **markdown header** — a metadata table (publisher id / collection /
+//!    instrument / cal-level / local file) plus the astropy dependency note;
+//! 2. a **code load cell** — open the FITS, pick the first data-carrying HDU,
+//!    and build a `WCS`;
+//! 3. a **code template stub** — one of `image` (zscale quick-look), `photometry`
+//!    (aperture photometry), or `cube` (moment map + spectrum).
+//!
+//! Pure + serialisable (`serde_json::to_string_pretty`), so the hand-off from a
+//! results row → a pre-filled notebook (SCI-10) is unit-testable. The kernel
+//! must have `astropy` (and `photutils` / `spectral-cube` for the template) —
+//! the header cell says so.
+
+use crate::models::notebook_document::{
+    CellSource, KernelSpec, LanguageInfo, NotebookCell, NotebookDocument, NotebookMetadata,
+};
+use crate::services::observation_store::DownloadedObservation;
+use std::collections::HashMap;
+
+/// The analysis templates the agent/user can request.
+pub const TEMPLATES: [&str; 3] = ["image", "photometry", "cube"];
+
+/// Build an analysis notebook for `obs` using `template` (`"image"` /
+/// `"photometry"` / `"cube"`; `None` / `""` / `"auto"` default to `"image"`).
+pub fn build_analysis_notebook(
+    obs: &DownloadedObservation,
+    template: Option<&str>,
+) -> NotebookDocument {
+    let t = normalize_template(template);
+
+    let path = obs.local_path.replace('\\', "/");
+    let title = if !obs.target_name.is_empty() {
+        obs.target_name.as_str()
+    } else if !obs.observation_id.is_empty() {
+        obs.observation_id.as_str()
+    } else {
+        obs.publisher_id.as_str()
+    };
+
+    let stub = match t.as_str() {
+        "cube" => cube_stub(),
+        "photometry" => photometry_stub(),
+        _ => image_stub(),
+    };
+
+    let cells = vec![
+        markdown_cell(header_markdown(obs, title, &t)),
+        code_cell(load_code(&path)),
+        code_cell(stub),
+    ];
+
+    NotebookDocument {
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: NotebookMetadata {
+            kernelspec: Some(KernelSpec {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: Some(LanguageInfo {
+                name: "python".to_string(),
+                version: None,
+                extra: HashMap::new(),
+            }),
+            extra: HashMap::new(),
+        },
+        cells,
+    }
+}
+
+/// A short, filesystem-safe stem for the generated `.ipynb`, derived from the
+/// observation's title (target / observation id / publisher id). Always
+/// non-empty (`analysis-observation` fallback).
+pub fn suggested_file_stem(obs: &DownloadedObservation) -> String {
+    let raw = if !obs.target_name.is_empty() {
+        obs.target_name.as_str()
+    } else if !obs.observation_id.is_empty() {
+        obs.observation_id.as_str()
+    } else {
+        obs.publisher_id.as_str()
+    };
+    // Lower-case alphanumerics pass through; every other run collapses to a
+    // single '-'.
+    let mut slug = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "analysis-observation".to_string()
+    } else {
+        format!("analysis-{}", slug)
+    }
+}
+
+fn normalize_template(template: Option<&str>) -> String {
+    let t = template.unwrap_or("").trim().to_lowercase();
+    if t.is_empty() || t == "auto" {
+        "image".to_string()
+    } else {
+        t
+    }
+}
+
+fn markdown_cell(text: String) -> NotebookCell {
+    NotebookCell {
+        cell_type: "markdown".to_string(),
+        source: CellSource::Single(text),
+        outputs: Vec::new(),
+        execution_count: None,
+        id: Some(NotebookDocument::generate_cell_id()),
+        metadata: serde_json::Map::new(),
+    }
+}
+
+fn code_cell(text: String) -> NotebookCell {
+    NotebookCell {
+        cell_type: "code".to_string(),
+        source: CellSource::Single(text),
+        outputs: Vec::new(),
+        execution_count: None,
+        id: Some(NotebookDocument::generate_cell_id()),
+        metadata: serde_json::Map::new(),
+    }
+}
+
+fn header_markdown(obs: &DownloadedObservation, title: &str, template: &str) -> String {
+    format!(
+        "# Analysis — {title}\n\
+\n\
+| Field | Value |\n\
+|---|---|\n\
+| Publisher ID | `{pid}` |\n\
+| Collection | {collection} |\n\
+| Instrument | {instrument} |\n\
+| Cal. level | {cal} |\n\
+| Local file | `{path}` |\n\
+\n\
+Auto-generated by Verbinal (`create_analysis_notebook`, template **{template}**). The cells below load the\n\
+FITS with astropy (WCS ready). **Requires `astropy`** in the kernel (and `photutils` / `spectral-cube` for\n\
+the template) — `pip install astropy photutils spectral-cube` if missing.",
+        title = title,
+        pid = obs.publisher_id,
+        collection = obs.collection,
+        instrument = obs.instrument,
+        cal = obs.cal_level,
+        path = obs.local_path,
+        template = template,
+    )
+}
+
+fn load_code(path: &str) -> String {
+    format!(
+        "import numpy as np\n\
+from astropy.io import fits\n\
+from astropy.wcs import WCS\n\
+\n\
+path = r'{path}'\n\
+hdul = fits.open(path)\n\
+hdul.info()\n\
+\n\
+# First HDU that carries data (CADC products often have an empty primary HDU)\n\
+hdu = hdul[0] if hdul[0].data is not None else next((h for h in hdul if h.data is not None), hdul[0])\n\
+header, data = hdu.header, hdu.data\n\
+wcs = WCS(header)\n\
+print('shape:', None if data is None else data.shape, '| BUNIT:', header.get('BUNIT'))",
+        path = path
+    )
+}
+
+fn image_stub() -> String {
+    "# Quick look (zscale + WCS axes)\n\
+import matplotlib.pyplot as plt\n\
+from astropy.visualization import ZScaleInterval, ImageNormalize\n\
+\n\
+if data is not None and data.ndim == 2:\n\
+    norm = ImageNormalize(data, interval=ZScaleInterval())\n\
+    ax = plt.subplot(projection=wcs)\n\
+    im = ax.imshow(data, origin='lower', norm=norm, cmap='gray')\n\
+    plt.colorbar(im, label=header.get('BUNIT', ''))\n\
+    ax.grid(color='white', ls=':', alpha=0.5)\n\
+    plt.show()"
+        .to_string()
+}
+
+fn photometry_stub() -> String {
+    "# Aperture photometry — set the source position + radius, then run\n\
+from astropy.coordinates import SkyCoord\n\
+import astropy.units as u\n\
+from photutils.aperture import SkyCircularAperture, aperture_photometry\n\
+\n\
+# TODO: your source position (degrees)\n\
+coord = SkyCoord(ra=0.0, dec=0.0, unit='deg')\n\
+aperture = SkyCircularAperture(coord, r=2.0 * u.arcsec).to_pixel(wcs)\n\
+print(aperture_photometry(data, aperture))\n\
+print('Pixel units (BUNIT):', header.get('BUNIT'))"
+        .to_string()
+}
+
+fn cube_stub() -> String {
+    "# Spectral cube — moment map + spectrum (edit the spaxel)\n\
+from spectral_cube import SpectralCube\n\
+\n\
+cube = SpectralCube.read(path)  # carries SPECSYS / RESTFRQ / beam\n\
+print(cube)\n\
+\n\
+mom0 = cube.moment(order=0)     # integrated intensity (moment 0)\n\
+mom0.quicklook()\n\
+\n\
+# Spectrum at the central spaxel — edit (x, y)\n\
+x, y = cube.shape[2] // 2, cube.shape[1] // 2\n\
+cube[:, y, x].quicklook()"
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obs() -> DownloadedObservation {
+        DownloadedObservation {
+            id: "local-1".to_string(),
+            publisher_id: "ivo://cadc.nrc.ca/CFHT?1234".to_string(),
+            collection: "CFHT".to_string(),
+            observation_id: "1234567p".to_string(),
+            target_name: "M31".to_string(),
+            instrument: "MegaCam".to_string(),
+            filter: "g".to_string(),
+            ra: "10.68".to_string(),
+            dec: "41.27".to_string(),
+            start_date: "2020-01-01".to_string(),
+            cal_level: "2".to_string(),
+            local_path: "/data/obs/1234567p.fits".to_string(),
+            file_size: 1024,
+            downloaded_at: "2024-01-01T00:00:00Z".to_string(),
+            thumbnail_url: String::new(),
+            preview_url: String::new(),
+            local_preview_path: String::new(),
+            agent_attribution: None,
+        }
+    }
+
+    #[test]
+    fn builds_three_cells_with_header_load_and_stub() {
+        let nb = build_analysis_notebook(&obs(), Some("image"));
+        assert_eq!(nb.nbformat, 4);
+        assert_eq!(nb.nbformat_minor, 5);
+        assert_eq!(nb.cells.len(), 3);
+        assert_eq!(nb.cells[0].cell_type, "markdown");
+        assert_eq!(nb.cells[1].cell_type, "code");
+        assert_eq!(nb.cells[2].cell_type, "code");
+        // Every cell carries an nbformat-4.5 id.
+        assert!(nb.cells.iter().all(|c| c.id.is_some()));
+        // Header table references the observation + template.
+        let header = nb.cells[0].source.joined();
+        assert!(header.contains("# Analysis — M31"));
+        assert!(header.contains("ivo://cadc.nrc.ca/CFHT?1234"));
+        assert!(header.contains("template **image**"));
+        // Load cell references the local path + WCS.
+        let load = nb.cells[1].source.joined();
+        assert!(load.contains("path = r'/data/obs/1234567p.fits'"));
+        assert!(load.contains("wcs = WCS(header)"));
+    }
+
+    #[test]
+    fn template_selects_stub_and_defaults_to_image() {
+        assert!(build_analysis_notebook(&obs(), Some("cube")).cells[2]
+            .source
+            .joined()
+            .contains("SpectralCube"));
+        assert!(build_analysis_notebook(&obs(), Some("photometry")).cells[2]
+            .source
+            .joined()
+            .contains("aperture_photometry"));
+        // None / "" / "auto" all fall back to the image quick-look.
+        for tmpl in [None, Some(""), Some("auto"), Some("IMAGE")] {
+            let stub = build_analysis_notebook(&obs(), tmpl).cells[2].source.joined();
+            assert!(stub.contains("ZScaleInterval"), "template {tmpl:?} should be image");
+        }
+    }
+
+    #[test]
+    fn title_falls_back_to_observation_then_publisher_id() {
+        let mut o = obs();
+        o.target_name.clear();
+        assert!(build_analysis_notebook(&o, None).cells[0]
+            .source
+            .joined()
+            .contains("# Analysis — 1234567p"));
+        o.observation_id.clear();
+        assert!(build_analysis_notebook(&o, None).cells[0]
+            .source
+            .joined()
+            .contains("# Analysis — ivo://cadc.nrc.ca/CFHT?1234"));
+    }
+
+    #[test]
+    fn windows_backslashes_are_normalised_in_load_path() {
+        let mut o = obs();
+        o.local_path = r"C:\data\obs\1234567p.fits".to_string();
+        let load = build_analysis_notebook(&o, None).cells[1].source.joined();
+        assert!(load.contains("path = r'C:/data/obs/1234567p.fits'"));
+    }
+
+    #[test]
+    fn document_serialises_to_valid_nbformat_json() {
+        let nb = build_analysis_notebook(&obs(), Some("cube"));
+        let json = serde_json::to_string_pretty(&nb).unwrap();
+        // Round-trips back into a NotebookDocument.
+        let back: NotebookDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cells.len(), 3);
+        assert!(json.contains("\"nbformat\": 4"));
+        assert!(json.contains("python3"));
+    }
+
+    #[test]
+    fn file_stem_is_slugified_and_prefixed() {
+        assert_eq!(suggested_file_stem(&obs()), "analysis-m31");
+        let mut o = obs();
+        o.target_name = "NGC 5194 / M51".to_string();
+        assert_eq!(suggested_file_stem(&o), "analysis-ngc-5194-m51");
+        // Empty everything => fallback.
+        o.target_name.clear();
+        o.observation_id.clear();
+        o.publisher_id.clear();
+        assert_eq!(suggested_file_stem(&o), "analysis-observation");
+    }
+
+    #[test]
+    fn templates_constant_lists_the_three_stubs() {
+        assert_eq!(TEMPLATES, ["image", "photometry", "cube"]);
+    }
+}

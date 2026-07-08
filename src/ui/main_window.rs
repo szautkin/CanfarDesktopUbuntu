@@ -7,7 +7,9 @@ use crate::ui::fits_viewer::FitsViewer;
 use crate::ui::login_dialog::show_login_dialog;
 use crate::ui::notebook_host::NotebookTabHost;
 use crate::ui::research_page::ResearchPage;
+use crate::ui::cube_tab_host::CubeTabHost;
 use crate::ui::search_page::SearchPage;
+use crate::ui::workflows_page::WorkflowsPage;
 use crate::ui::settings_page::{self, SettingsPage};
 use crate::ui::vospace_browser::VoSpaceBrowser;
 use gtk4::glib;
@@ -30,7 +32,7 @@ pub fn build_main_window(
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("Verbinal - a CANFAR Science Portal")
+        .title(crate::tr_en!("Verbinal - a CANFAR Science Portal"))
         .default_width(1200)
         .default_height(800)
         .build();
@@ -39,19 +41,19 @@ pub fn build_main_window(
 
     // --- Left side: Back, Files toggle, About button + status ---
     let back_btn = gtk::Button::from_icon_name("go-previous-symbolic");
-    back_btn.set_tooltip_text(Some("Back (Alt+Left)"));
+    back_btn.set_tooltip_text(Some(crate::tr_en!("Back (Alt+Left)")));
     back_btn.add_css_class("flat");
     back_btn.set_sensitive(false);
     header.pack_start(&back_btn);
 
     let files_btn = gtk::ToggleButton::new();
     files_btn.set_icon_name("folder-symbolic");
-    files_btn.set_tooltip_text(Some("Toggle File Panel (Ctrl+B)"));
+    files_btn.set_tooltip_text(Some(crate::tr_en!("Toggle File Panel (Ctrl+B)")));
     files_btn.add_css_class("flat");
     header.pack_start(&files_btn);
 
     let about_btn = gtk::Button::from_icon_name("help-about-symbolic");
-    about_btn.set_tooltip_text(Some("About"));
+    about_btn.set_tooltip_text(Some(crate::tr_en!("About")));
     header.pack_start(&about_btn);
 
     let status_label = gtk::Label::new(None);
@@ -59,10 +61,42 @@ pub fn build_main_window(
     status_label.add_css_class("caption");
     header.pack_start(&status_label);
 
+    // --- Transient agent-activity indicator ---
+    // Flashes "⚡ agent working…" with a spinner while an MCP agent has invoked
+    // a tool in the last few seconds; hidden when the agent is idle. Polled once
+    // a second against the global agent-activity log (the MCP router records
+    // each dispatch there — see crate::helpers::agent_activity).
+    let agent_spinner = gtk::Spinner::new();
+    let agent_label = gtk::Label::new(Some(crate::tr_en!("⚡ agent working…")));
+    agent_label.add_css_class("caption");
+    agent_label.add_css_class("accent");
+    let agent_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    agent_box.append(&agent_spinner);
+    agent_box.append(&agent_label);
+    agent_box.set_visible(false);
+    agent_box.set_tooltip_text(Some(crate::tr_en!("An AI agent is working")));
+    header.pack_start(&agent_box);
+    {
+        let agent_box = agent_box.clone();
+        let agent_spinner = agent_spinner.clone();
+        glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+            let active = crate::helpers::agent_activity::is_active_within(5);
+            if active != agent_box.is_visible() {
+                agent_box.set_visible(active);
+                if active {
+                    agent_spinner.start();
+                } else {
+                    agent_spinner.stop();
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     // --- Service health indicator ---
     let health_icon = gtk::Image::from_icon_name("network-idle-symbolic");
     health_icon.set_pixel_size(16);
-    let health_label = gtk::Label::new(Some("Connected"));
+    let health_label = gtk::Label::new(Some(crate::tr_en!("Connected")));
     health_label.add_css_class("caption");
     let health_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     health_box.append(&health_icon);
@@ -87,7 +121,7 @@ pub fn build_main_window(
     health_btn.set_child(Some(&health_box));
     health_btn.set_popover(Some(&health_popover));
     health_btn.add_css_class("flat");
-    health_btn.set_tooltip_text(Some("Service status"));
+    health_btn.set_tooltip_text(Some(crate::tr_en!("Service status")));
     header.pack_start(&health_btn);
 
     // --- Center: ViewSwitcher ---
@@ -103,19 +137,49 @@ pub fn build_main_window(
     header.pack_end(&spinner);
 
     let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
-    settings_btn.set_tooltip_text(Some("Settings"));
+    settings_btn.set_tooltip_text(Some(crate::tr_en!("Settings")));
     header.pack_end(&settings_btn);
 
-    let login_btn = gtk::Button::with_label("Login");
+    // Agent-proposals button — shows a pending-count badge when an AI agent has
+    // queued destructive writes awaiting review; hidden when there are none.
+    let proposals_btn = gtk::Button::new();
+    proposals_btn.set_tooltip_text(Some(crate::tr_en!("Agent proposals awaiting review")));
+    proposals_btn.add_css_class("suggested-action");
+    proposals_btn.set_visible(false);
+    header.pack_end(&proposals_btn);
+    {
+        let services = services.clone();
+        let window = window.clone();
+        proposals_btn.connect_clicked(move |_| {
+            crate::ui::agent_proposals_dialog::show_agent_proposals(&window, services.clone());
+        });
+    }
+    // Poll the pending count every 2s to update the badge / visibility.
+    {
+        let services = services.clone();
+        let btn = proposals_btn.clone();
+        glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+            let n = crate::ui::agent_proposals_dialog::pending_count(&services);
+            if n > 0 {
+                btn.set_label(&format!("⚡ {n}"));
+                btn.set_visible(true);
+            } else {
+                btn.set_visible(false);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    let login_btn = gtk::Button::with_label(crate::tr_en!("Login"));
     login_btn.add_css_class("suggested-action");
     header.pack_end(&login_btn);
 
     let user_menu_btn = gtk::MenuButton::new();
     user_menu_btn.set_visible(false);
-    user_menu_btn.set_tooltip_text(Some("Account"));
+    user_menu_btn.set_tooltip_text(Some(crate::tr_en!("Account")));
     let user_menu = gtk::gio::Menu::new();
-    user_menu.append(Some("Profile"), Some("app.profile"));
-    user_menu.append(Some("Logout"), Some("app.logout"));
+    user_menu.append(Some(crate::tr_en!("Profile")), Some("app.profile"));
+    user_menu.append(Some(crate::tr_en!("Logout")), Some("app.logout"));
     user_menu_btn.set_menu_model(Some(&user_menu));
     header.pack_end(&user_menu_btn);
 
@@ -171,13 +235,29 @@ pub fn build_main_window(
     paned.set_resize_end_child(true);
 
     // --- Degraded mode banner (hidden by default) ---
-    let banner = adw::Banner::new("Some services unreachable — working with cached data");
-    banner.set_button_label(Some("Details"));
+    let banner = adw::Banner::new(crate::tr_en!("Some services unreachable — working with cached data"));
+    banner.set_button_label(Some(crate::tr_en!("Details")));
     banner.set_revealed(false);
+
+    // --- Session-expired banner (hidden by default) ---
+    let session_banner = adw::Banner::new(crate::tr_en!("Your session has expired — please sign in again"));
+    session_banner.set_button_label(Some(crate::tr_en!("Sign In")));
+    session_banner.set_revealed(false);
+
+    // --- Offline hint banner (hidden by default) ---
+    // Revealed by the network monitor when internet connectivity is lost, so the
+    // user understands why remote actions are failing. Mirrors the Windows
+    // MainWindow_OfflineHint status text (NetworkMonitor.StatusChanged).
+    let offline_banner = adw::Banner::new(crate::tr_en!(
+        "You appear to be offline — some features are unavailable"
+    ));
+    offline_banner.set_revealed(false);
 
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header);
     toolbar_view.add_top_bar(&banner);
+    toolbar_view.add_top_bar(&session_banner);
+    toolbar_view.add_top_bar(&offline_banner);
     toolbar_view.set_content(Some(&paned));
 
     // Banner "Details" opens the health popover
@@ -188,7 +268,98 @@ pub fn build_main_window(
         });
     }
 
-    window.set_content(Some(&toolbar_view));
+    // Session-expired banner "Sign In" reuses the header Login flow.
+    {
+        let session_banner_c = session_banner.clone();
+        let login_btn = login_btn.clone();
+        session_banner.connect_button_clicked(move |_| {
+            session_banner_c.set_revealed(false);
+            login_btn.emit_clicked();
+        });
+    }
+
+    // Recover from mid-session 401s: on the auth-expired signal, try a silent
+    // re-auth (with a 60s cooldown after a failure) and, failing that, reveal the
+    // sign-in banner. Bursts of 401s are debounced by the in-progress guard.
+    {
+        let services = services.clone();
+        let session_banner = session_banner.clone();
+        let mut rx = crate::services::auth_events::subscribe();
+        let last_fail: Rc<RefCell<Option<std::time::Instant>>> = Rc::new(RefCell::new(None));
+        let in_progress = Rc::new(std::cell::Cell::new(false));
+        glib::spawn_future_local(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(()) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+                // Already recovering or already prompting — ignore this 401.
+                if in_progress.get() || session_banner.is_revealed() {
+                    continue;
+                }
+                // Cooldown: after a recent silent-reauth failure, go straight to
+                // the banner rather than hammering the login endpoint.
+                let cooled = last_fail
+                    .borrow()
+                    .map(|t| t.elapsed().as_secs() < 60)
+                    .unwrap_or(false);
+                if cooled {
+                    session_banner.set_revealed(true);
+                    continue;
+                }
+                in_progress.set(true);
+                let svc = services.clone();
+                let recovered = services
+                    .spawn(async move { svc.try_silent_reauth().await })
+                    .await;
+                in_progress.set(false);
+                if recovered {
+                    services.toast.toast(crate::tr_en!("Session refreshed"));
+                } else {
+                    *last_fail.borrow_mut() = Some(std::time::Instant::now());
+                    session_banner.set_revealed(true);
+                }
+            }
+        });
+    }
+
+    // Root overlay hosts the shell plus the first-launch Terms-of-Use gate,
+    // which is layered on top and blocks all interaction until accepted.
+    let root_overlay = gtk::Overlay::new();
+    root_overlay.set_child(Some(&toolbar_view));
+    window.set_content(Some(&root_overlay));
+
+    // Terms-of-Use gate: a blocking, non-dismissible overlay shown on first
+    // launch (or after a terms-version bump). Accepting records the version and
+    // frees the shell; "Decline & Exit" quits the app.
+    {
+        let legal = Rc::new(crate::services::legal_service::LegalAgreementService::new());
+        if legal.needs_acceptance() {
+            let french = matches!(crate::i18n::current_lang(), crate::i18n::Lang::Fr);
+            show_terms_gate(app, &root_overlay, &toolbar_view, legal, french);
+        }
+    }
+
+    // --- Network monitor: reveal the offline banner when connectivity drops ---
+    // The probe runs on the tokio runtime (off the GTK main loop) every 15s; the
+    // banner is toggled only on state transitions so it never flickers.
+    {
+        let services = services.clone();
+        let offline_banner = offline_banner.clone();
+        let monitor = Rc::new(crate::services::network_monitor::NetworkMonitor::new());
+        glib::spawn_future_local(async move {
+            loop {
+                let online = services
+                    .spawn(crate::services::network_monitor::NetworkMonitor::probe())
+                    .await;
+                if monitor.set_online(online) {
+                    offline_banner.set_revealed(!online);
+                }
+                glib::timeout_future_seconds(15).await;
+            }
+        });
+    }
 
     // --- Add pages to ViewStack ---
     // Dashboard (added later when logged in)
@@ -202,58 +373,129 @@ pub fn build_main_window(
     let fits_viewer = FitsViewer::new(services.clone());
 
     // Add pages — all 6 modules + settings
-    let dashboard_placeholder = build_welcome_page(&view_stack);
+    // The landing page keeps its auth-gated tiles (Portal, Storage) locked while
+    // signed out; `welcome` is retained so login/logout can toggle that lock.
+    let welcome = Rc::new(build_welcome_page(
+        &view_stack,
+        &window,
+        &services,
+        &login_btn,
+        read_show_ai_guide_tile(),
+    ));
+    let dashboard_placeholder = welcome.root.clone();
 
     // Search module (real implementation)
     let search_page = SearchPage::new(services.clone(), window.clone());
 
+    // "Search Here" from the FITS crosshair → Search form, prefilled.
+    {
+        let view_stack = view_stack.clone();
+        let search_page = search_page.clone();
+        fits_viewer.set_on_search_here(move |ra, dec| {
+            view_stack.set_visible_child_name("search");
+            search_page.show_search_form(ra, dec);
+        });
+    }
+
     // Research module (real implementation)
     let research_page = ResearchPage::new(services.clone());
+
+    // CAOM2 Observation Detail page (opened from Search / Research)
+    let obs_detail = crate::ui::observation_detail_page::ObservationDetailPage::new(services.clone());
     research_page.set_application(app);
 
     // Notebook module (real implementation)
     let notebook_host = NotebookTabHost::new(services.clone());
 
+    // Cube Viewer module (3D spectral cubes)
+    let cube_host = CubeTabHost::new(services.clone());
+
+    // AI Guide module (tune how an MCP agent sees each tool)
+    let ai_guide_page = crate::ui::ai_guide_page::AiGuidePage::new(services.ai_guide.clone());
+
+    // Workflows module (research protocols)
+    let workflows_page = WorkflowsPage::new(services.clone());
+    {
+        // View: deep-links from a workflow step navigate the ViewStack.
+        let view_stack = view_stack.clone();
+        workflows_page.set_on_navigate(move |view_key| {
+            let target = match view_key {
+                "search" => "search",
+                "research" => "research",
+                "storage" => "storage",
+                "notebook" => "notebook",
+                "fitsViewer" => "fits",
+                "workflows" => "workflows",
+                "aiGuide" => "aiguide",
+                "portal" | "landing" => "home",
+                // Any unknown key: no-op (matches Windows tolerance).
+                _ => return,
+            };
+            view_stack.set_visible_child_name(target);
+        });
+    }
+
     view_stack.add_titled_with_icon(
         &dashboard_placeholder,
         Some("home"),
-        "Home",
+        crate::tr_en!("Home"),
         "go-home-symbolic",
     );
     view_stack.add_titled_with_icon(
         vospace_browser.widget(),
         Some("storage"),
-        "Storage",
+        crate::tr_en!("Storage"),
         "drive-multidisk-symbolic",
     );
     view_stack.add_titled_with_icon(
         fits_viewer.widget(),
         Some("fits"),
-        "FITS Viewer",
+        crate::tr_en!("FITS Viewer"),
         "image-x-generic-symbolic",
     );
     view_stack.add_titled_with_icon(
         search_page.widget(),
         Some("search"),
-        "Search",
+        crate::tr_en!("Search"),
         "system-search-symbolic",
     );
     view_stack.add_titled_with_icon(
         research_page.widget(),
         Some("research"),
-        "Research",
+        crate::tr_en!("Research"),
         "document-open-recent-symbolic",
     );
+    // Observation detail is reachable by action, not a switcher tab.
+    let obs_detail_page = view_stack.add_named(obs_detail.widget(), Some("obsdetail"));
+    obs_detail_page.set_visible(false);
     view_stack.add_titled_with_icon(
         notebook_host.widget(),
         Some("notebook"),
-        "Notebook",
+        crate::tr_en!("Notebook"),
         "accessories-text-editor-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        workflows_page.widget(),
+        Some("workflows"),
+        crate::tr_en!("Workflows"),
+        "view-list-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        cube_host.widget(),
+        Some("cube"),
+        crate::tr_en!("Cube Viewer"),
+        "view-paged-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        ai_guide_page.widget(),
+        Some("aiguide"),
+        crate::tr_en!("AI Guide"),
+        "applications-science-symbolic",
     );
     view_stack.add_titled_with_icon(
         &settings_page.widget,
         Some("settings"),
-        "Settings",
+        crate::tr_en!("Settings"),
         "emblem-system-symbolic",
     );
 
@@ -307,6 +549,118 @@ pub fn build_main_window(
             }
         });
         app.add_action(&open_fits_action);
+    }
+
+    // Open cube file action — triggered by VOSpace browser "Open in Cube Viewer"
+    {
+        let cube_host = cube_host.clone();
+        let view_stack = view_stack.clone();
+        let open_cube_action =
+            gtk::gio::SimpleAction::new("open-cube-file", Some(glib::VariantTy::STRING));
+        open_cube_action.connect_activate(move |_, param| {
+            if let Some(path_str) = param.and_then(|v| v.str()) {
+                let path = std::path::PathBuf::from(path_str);
+                view_stack.set_visible_child_name("cube");
+                cube_host.open_path(&path);
+            }
+        });
+        app.add_action(&open_cube_action);
+    }
+
+    // Open CAOM2 observation detail — triggered from Search results / Research.
+    {
+        let obs_detail = obs_detail.clone();
+        let view_stack = view_stack.clone();
+        let open_detail_action =
+            gtk::gio::SimpleAction::new("open-observation-detail", Some(glib::VariantTy::STRING));
+        open_detail_action.connect_activate(move |_, param| {
+            if let Some(publisher_id) = param.and_then(|v| v.str()) {
+                view_stack.set_visible_child_name("obsdetail");
+                obs_detail.show(publisher_id);
+            }
+        });
+        app.add_action(&open_detail_action);
+    }
+
+    // MCP view-state bridge: push view changes into the shared snapshot, and drain
+    // agent steering actions (navigate/open/focus) on the GTK main loop.
+    {
+        // Push the active view into the snapshot whenever it changes.
+        {
+            let view_stack_ref = view_stack.clone();
+            view_stack.connect_visible_child_name_notify(move |_| {
+                let key = view_stack_ref
+                    .visible_child_name()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                crate::mcp::view_state::set_view(&key, &key);
+            });
+        }
+        // Install the action channel and run its receiver on the main loop.
+        let (vs_tx, mut vs_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::mcp::view_state::ViewAction>();
+        crate::mcp::view_state::install_action_sender(vs_tx);
+        {
+            let view_stack = view_stack.clone();
+            let app = app.clone();
+            let search_page = search_page.clone();
+            glib::spawn_future_local(async move {
+                use crate::mcp::view_state::ViewAction;
+                while let Some(action) = vs_rx.recv().await {
+                    match action {
+                        ViewAction::Navigate { key, reply } => {
+                            let target = map_view_key(&key);
+                            let ok = if let Some(t) = target {
+                                view_stack.set_visible_child_name(t);
+                                true
+                            } else {
+                                false
+                            };
+                            let _ = reply.send(ok);
+                        }
+                        ViewAction::OpenFits { path, reply } => {
+                            app.activate_action(
+                                "open-fits-file",
+                                Some(&glib::Variant::from(path.as_str())),
+                            );
+                            let _ = reply.send(true);
+                        }
+                        ViewAction::SetSearchFocus { ra, dec, reply } => {
+                            view_stack.set_visible_child_name("search");
+                            search_page.show_search_form(ra, dec);
+                            let _ = reply.send(true);
+                        }
+                        ViewAction::CloseActiveTab { reply } => {
+                            // Per-module tab closing is not yet wired; report no-op.
+                            let _ = reply.send(false);
+                        }
+                    }
+                }
+            });
+        }
+
+        // Live per-viewer command channel (cube / notebook / fits MCP tools).
+        let (vc_tx, mut vc_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::mcp::view_state::ViewerCommand>();
+        crate::mcp::view_state::install_viewer_sender(vc_tx);
+        {
+            let cube_host = cube_host.clone();
+            let notebook_host = notebook_host.clone();
+            let fits_viewer = fits_viewer.clone();
+            glib::spawn_future_local(async move {
+                while let Some(cmd) = vc_rx.recv().await {
+                    let result = match cmd.target.as_str() {
+                        "cube" => cube_host.handle_viewer_command(&cmd.op, &cmd.args).await,
+                        "notebook" => {
+                            notebook_host.handle_viewer_command(&cmd.op, &cmd.args).await
+                        }
+                        "fits" => fits_viewer.handle_viewer_command(&cmd.op, &cmd.args).await,
+                        other => Err(format!("unknown viewer target: {other}")),
+                    };
+                    let _ = cmd.reply.send(result);
+                }
+            });
+        }
     }
 
     // Open notebook file action — triggered by VOSpace browser "Open in Notebook"
@@ -383,6 +737,7 @@ pub fn build_main_window(
         let view_stack = view_stack.clone();
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
+        let welcome = welcome.clone();
 
         let logout_action = gtk::gio::SimpleAction::new("logout", None);
         logout_action.connect_activate(move |_, _| {
@@ -393,6 +748,7 @@ pub fn build_main_window(
             let view_stack = view_stack.clone();
             let dashboard = dashboard.clone();
             let cached_user_info = cached_user_info.clone();
+            let welcome = welcome.clone();
 
             glib::spawn_future_local(async move {
                 let svc = services.clone();
@@ -404,11 +760,12 @@ pub fn build_main_window(
                 status_label.set_text("");
                 *cached_user_info.borrow_mut() = None;
 
-                // Replace dashboard with placeholder
+                // Re-lock the auth-gated landing tiles, then show the home view.
+                welcome.set_authenticated(false);
                 view_stack.set_visible_child_name("home");
                 *dashboard.borrow_mut() = None;
 
-                services.toast.toast("Logged out successfully");
+                services.toast.toast(crate::tr_en!("Logged out successfully"));
             });
         });
         app.add_action(&logout_action);
@@ -425,6 +782,7 @@ pub fn build_main_window(
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
         let vospace = vospace_browser.clone();
+        let welcome = welcome.clone();
 
         login_btn.connect_clicked(move |_| {
             let window = window_clone.clone();
@@ -436,6 +794,7 @@ pub fn build_main_window(
             let dashboard = dashboard.clone();
             let cached_user_info = cached_user_info.clone();
             let vospace = vospace.clone();
+            let welcome = welcome.clone();
 
             glib::spawn_future_local(async move {
                 if let Some((_username, _token, user_info)) =
@@ -448,6 +807,8 @@ pub fn build_main_window(
                     status_label.set_text(&format!("Welcome, {}", &display));
                     *cached_user_info.borrow_mut() = Some(user_info);
 
+                    // Unlock the auth-gated landing tiles before swapping in the dashboard.
+                    welcome.set_authenticated(true);
                     navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                     vospace.refresh().await;
 
@@ -468,12 +829,13 @@ pub fn build_main_window(
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
         let vospace = vospace_browser.clone();
+        let welcome = welcome.clone();
 
         glib::spawn_future_local(async move {
             if let Some(stored_token) = TokenStorage::get_token() {
                 spinner.set_visible(true);
                 spinner.start();
-                status_label.set_text("Checking authentication...");
+                status_label.set_text(crate::tr_en!("Checking authentication..."));
 
                 let token_clone = stored_token.clone();
                 let svc = services.clone();
@@ -516,6 +878,8 @@ pub fn build_main_window(
                         status_label.set_text(&format!("Welcome, {}", &display));
                         *cached_user_info.borrow_mut() = Some(user_info);
 
+                        // Unlock the auth-gated landing tiles for the restored session.
+                        welcome.set_authenticated(true);
                         navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                         vospace.refresh().await;
 
@@ -523,7 +887,7 @@ pub fn build_main_window(
                     }
                     Err(_) => {
                         TokenStorage::clear();
-                        status_label.set_text("Session expired. Please login.");
+                        status_label.set_text(crate::tr_en!("Session expired. Please login."));
                     }
                 }
 
@@ -549,7 +913,7 @@ pub fn build_main_window(
             // Update header indicator
             if count == 0 {
                 health_icon.set_icon_name(Some("network-idle-symbolic"));
-                health_label.set_text("Connected");
+                health_label.set_text(crate::tr_en!("Connected"));
                 health_icon.remove_css_class("warning");
                 health_icon.remove_css_class("error");
                 health_icon.add_css_class("success");
@@ -578,17 +942,17 @@ pub fn build_main_window(
                 status_lbl.add_css_class("caption");
                 match &status {
                     ServiceStatus::Unknown => {
-                        status_lbl.set_text("Unknown");
+                        status_lbl.set_text(crate::tr_en!("Unknown"));
                         status_lbl.add_css_class("dim-label");
                     }
                     ServiceStatus::Reachable => {
-                        status_lbl.set_text("Online");
+                        status_lbl.set_text(crate::tr_en!("Online"));
                         status_lbl.add_css_class("success");
                     }
                     ServiceStatus::Unreachable { since, .. } => {
                         let local: chrono::DateTime<chrono::Local> = (*since).into();
                         row.set_subtitle(&format!("Last seen {}", local.format("%H:%M")));
-                        status_lbl.set_text("Offline");
+                        status_lbl.set_text(crate::tr_en!("Offline"));
                         status_lbl.add_css_class("error");
                     }
                 }
@@ -818,7 +1182,7 @@ fn setup_keyboard_shortcuts(
 
 fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     let dialog = adw::Window::builder()
-        .title("User Profile")
+        .title(crate::tr_en!("User Profile"))
         .default_width(360)
         .default_height(300)
         .modal(true)
@@ -863,7 +1227,7 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     if let Some(ref email) = info.email {
         if !email.is_empty() {
             let row = adw::ActionRow::builder()
-                .title("Email")
+                .title(crate::tr_en!("Email"))
                 .subtitle(email)
                 .build();
             row.add_prefix(&gtk::Image::from_icon_name("mail-unread-symbolic"));
@@ -874,7 +1238,7 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     if let Some(ref institute) = info.institute {
         if !institute.is_empty() {
             let row = adw::ActionRow::builder()
-                .title("Institute")
+                .title(crate::tr_en!("Institute"))
                 .subtitle(institute)
                 .build();
             row.add_prefix(&gtk::Image::from_icon_name("building-symbolic"));
@@ -885,7 +1249,7 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     if let Some(ref id) = info.internal_id {
         if !id.is_empty() {
             let row = adw::ActionRow::builder()
-                .title("Internal ID")
+                .title(crate::tr_en!("Internal ID"))
                 .subtitle(id)
                 .build();
             row.add_prefix(&gtk::Image::from_icon_name("contact-new-symbolic"));
@@ -918,7 +1282,7 @@ async fn navigate_to_dashboard(
     view_stack.add_titled_with_icon(
         view.widget(),
         Some("home"),
-        "Dashboard",
+        crate::tr_en!("Dashboard"),
         "view-grid-symbolic",
     );
     view_stack.set_visible_child_name("home");
@@ -932,7 +1296,7 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
         .application_name("Verbinal")
         .application_icon("net.canfar.Verbinal")
         .version(env!("CARGO_PKG_VERSION"))
-        .comments("A CANFAR Science Portal Companion\n\nLaunch, monitor, and manage your interactive computing sessions (Notebook, Desktop, CARTA, Firefly) directly from your desktop without needing a browser.\n\nCANFAR is operated by the Canadian Astronomy Data Centre (CADC) and the Digital Research Alliance of Canada.")
+        .comments(crate::tr_en!("A CANFAR Science Portal Companion\n\nLaunch, monitor, and manage your interactive computing sessions (Notebook, Desktop, CARTA, Firefly) directly from your desktop without needing a browser.\n\nCANFAR is operated by the Canadian Astronomy Data Centre (CADC) and the Digital Research Alliance of Canada."))
         .website("https://www.canfar.net")
         .license_type(gtk::License::Agpl30)
         .copyright("\u{00a9} 2025 Serhii Zautkin")
@@ -942,7 +1306,7 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
         .build();
 
     dialog.add_legal_section(
-        "Runtime Info",
+        crate::tr_en!("Runtime Info"),
         None,
         gtk::License::Custom,
         Some(&format!(
@@ -956,10 +1320,198 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
 }
 
 // ---------------------------------------------------------------------------
+// Terms-of-Use gate
+// ---------------------------------------------------------------------------
+
+/// Show the blocking, non-dismissible Terms-of-Use gate layered over the shell.
+///
+/// Port of `ShowTermsGateIfNeeded` in CanfarDesktop's MainWindow. An opaque,
+/// theme-aware backdrop covers the whole window and the shell beneath is made
+/// insensitive so no control behind the gate is reachable by pointer or Tab.
+/// "Accept" records the accepted version (via [`LegalAgreementService::accept`])
+/// and frees the shell; "Decline & Exit" quits the app.
+///
+/// [`LegalAgreementService::accept`]: crate::services::legal_service::LegalAgreementService::accept
+fn show_terms_gate(
+    app: &adw::Application,
+    root_overlay: &gtk::Overlay,
+    shell: &adw::ToolbarView,
+    legal: Rc<crate::services::legal_service::LegalAgreementService>,
+    french: bool,
+) {
+    // Opaque, theme-aware backdrop so nothing behind the gate shows through.
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(".terms-gate-backdrop { background-color: @window_bg_color; }");
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
+    let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    backdrop.add_css_class("terms-gate-backdrop");
+    backdrop.set_hexpand(true);
+    backdrop.set_vexpand(true);
+    // Capture all input so the shell beneath never receives it.
+    backdrop.set_can_target(true);
+
+    // Centered card holding the terms + actions.
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    card.add_css_class("card");
+    card.set_halign(gtk::Align::Center);
+    card.set_valign(gtk::Align::Center);
+    card.set_hexpand(true);
+    card.set_vexpand(true);
+    card.set_size_request(560, -1);
+
+    let inner = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    inner.set_margin_top(24);
+    inner.set_margin_bottom(24);
+    inner.set_margin_start(24);
+    inner.set_margin_end(24);
+
+    let title = gtk::Label::new(Some(crate::helpers::legal_terms::title(french)));
+    title.add_css_class("title-2");
+    title.set_halign(gtk::Align::Start);
+    inner.append(&title);
+
+    let body_scroll = gtk::ScrolledWindow::new();
+    body_scroll.set_min_content_height(320);
+    body_scroll.set_max_content_height(420);
+    body_scroll.set_vexpand(true);
+    body_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+    let body = gtk::Label::new(Some(crate::helpers::legal_terms::body(french)));
+    body.set_wrap(true);
+    body.set_xalign(0.0);
+    body.set_selectable(true);
+    body_scroll.set_child(Some(&body));
+    inner.append(&body_scroll);
+
+    let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    button_row.set_halign(gtk::Align::End);
+    button_row.set_margin_top(8);
+    let decline_btn = gtk::Button::with_label(crate::tr_en!("Decline & Exit"));
+    let accept_btn = gtk::Button::with_label(crate::tr_en!("Accept"));
+    accept_btn.add_css_class("suggested-action");
+    button_row.append(&decline_btn);
+    button_row.append(&accept_btn);
+    inner.append(&button_row);
+
+    card.append(&inner);
+    backdrop.append(&card);
+
+    // Block the shell (pointer + focus/Tab order) while the gate is up.
+    shell.set_sensitive(false);
+    root_overlay.add_overlay(&backdrop);
+
+    {
+        let legal = legal.clone();
+        let root_overlay = root_overlay.clone();
+        let backdrop = backdrop.clone();
+        let shell = shell.clone();
+        accept_btn.connect_clicked(move |_| {
+            legal.accept();
+            root_overlay.remove_overlay(&backdrop);
+            shell.set_sensitive(true);
+        });
+    }
+    {
+        let app = app.clone();
+        decline_btn.connect_clicked(move |_| {
+            app.quit();
+        });
+    }
+
+    accept_btn.grab_focus();
+}
+
+// ---------------------------------------------------------------------------
 // Welcome page with feature tiles
 // ---------------------------------------------------------------------------
 
-fn build_welcome_page(view_stack: &adw::ViewStack) -> gtk::Box {
+/// Map an agent-facing view key to a ViewStack child name. `None` = unknown key.
+fn map_view_key(key: &str) -> Option<&'static str> {
+    match key {
+        "home" | "portal" | "landing" => Some("home"),
+        "search" => Some("search"),
+        "storage" => Some("storage"),
+        "fits" | "fitsViewer" => Some("fits"),
+        "notebook" => Some("notebook"),
+        "research" => Some("research"),
+        "cube" => Some("cube"),
+        "workflows" => Some("workflows"),
+        "aiguide" | "aiGuide" => Some("aiguide"),
+        "settings" => Some("settings"),
+        _ => None,
+    }
+}
+
+/// Retained handle to the landing launchpad so the shell can lock/unlock the
+/// auth-gated tiles as the sign-in state changes.
+struct WelcomePage {
+    root: gtk::Box,
+    /// One setter per auth-gated tile; `true` = locked (signed out).
+    lockers: Vec<Rc<dyn Fn(bool)>>,
+}
+
+impl WelcomePage {
+    /// Lock (signed out) or unlock (signed in) the auth-gated tiles.
+    /// Mirrors `LandingView.SetAuthenticated` in CanfarDesktop.
+    fn set_authenticated(&self, authenticated: bool) {
+        for lock in &self.lockers {
+            lock(!authenticated);
+        }
+    }
+}
+
+/// What a landing tile does when clicked.
+enum TileAction {
+    /// Navigate to a ViewStack child. `requires_auth` tiles are dimmed + locked
+    /// while signed out and route a click to the login flow instead.
+    Navigate {
+        page: &'static str,
+        requires_auth: bool,
+    },
+    /// Open the AI-Assistant connect wizard.
+    AiAssistant,
+}
+
+struct TileSpec {
+    icon: &'static str,
+    title: &'static str,
+    desc: &'static str,
+    action: TileAction,
+}
+
+/// Opt-in read for the AI-Guide landing tile.
+///
+/// Task rule: the tile is hidden unless the user has explicitly enabled it, so a
+/// fresh install (no `mcp_settings.json`) keeps it hidden. We read the shared
+/// MCP-settings JSON directly and only treat the tile as visible when the
+/// `show_ai_guide_tile` key is explicitly present and `true`.
+fn read_show_ai_guide_tile() -> bool {
+    let Some(dirs) = directories::ProjectDirs::from("net", "canfar", "Verbinal") else {
+        return false;
+    };
+    let path = dirs.data_dir().join("mcp_settings.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("show_ai_guide_tile").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+fn build_welcome_page(
+    view_stack: &adw::ViewStack,
+    window: &adw::ApplicationWindow,
+    services: &Arc<AppServices>,
+    login_btn: &gtk::Button,
+    show_ai_guide_tile: bool,
+) -> WelcomePage {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
     page.set_vexpand(true);
 
@@ -987,7 +1539,7 @@ fn build_welcome_page(view_stack: &adw::ViewStack) -> gtk::Box {
     title.set_halign(gtk::Align::Center);
     header_box.append(&title);
 
-    let subtitle = gtk::Label::new(Some("A CANFAR Science Portal Companion"));
+    let subtitle = gtk::Label::new(Some(crate::tr_en!("A CANFAR Science Portal Companion")));
     subtitle.add_css_class("dim-label");
     subtitle.set_halign(gtk::Align::Center);
     header_box.append(&subtitle);
@@ -1000,7 +1552,100 @@ fn build_welcome_page(view_stack: &adw::ViewStack) -> gtk::Box {
 
     content.append(&header_box);
 
-    // Feature tiles in a 3x2 grid (matching Windows 6-tile layout)
+    // Feature tiles laid out in a 3-column grid. Portal & Storage are auth-gated
+    // (locked while signed out); AI Assistant is always shown; AI Guide is opt-in.
+    let mut specs = vec![
+        TileSpec {
+            icon: "computer-symbolic",
+            title: crate::tr_en!("Portal"),
+            desc: crate::tr_en!("Manage sessions & data"),
+            action: TileAction::Navigate {
+                page: "home",
+                requires_auth: true,
+            },
+        },
+        TileSpec {
+            icon: "system-search-symbolic",
+            title: crate::tr_en!("Search"),
+            desc: crate::tr_en!("Explore the CADC archive"),
+            action: TileAction::Navigate {
+                page: "search",
+                requires_auth: false,
+            },
+        },
+        TileSpec {
+            icon: "document-open-recent-symbolic",
+            title: crate::tr_en!("Research"),
+            desc: crate::tr_en!("Downloaded observations"),
+            action: TileAction::Navigate {
+                page: "research",
+                requires_auth: false,
+            },
+        },
+        TileSpec {
+            icon: "drive-multidisk-symbolic",
+            title: crate::tr_en!("Storage"),
+            desc: crate::tr_en!("Browse VOSpace files"),
+            action: TileAction::Navigate {
+                page: "storage",
+                requires_auth: true,
+            },
+        },
+        TileSpec {
+            icon: "accessories-text-editor-symbolic",
+            title: crate::tr_en!("Notebook"),
+            desc: crate::tr_en!("Open & run .ipynb files"),
+            action: TileAction::Navigate {
+                page: "notebook",
+                requires_auth: false,
+            },
+        },
+        TileSpec {
+            icon: "image-x-generic-symbolic",
+            title: crate::tr_en!("FITS Viewer"),
+            desc: crate::tr_en!("View astronomical images"),
+            action: TileAction::Navigate {
+                page: "fits",
+                requires_auth: false,
+            },
+        },
+        TileSpec {
+            icon: "view-list-symbolic",
+            title: crate::tr_en!("Workflows"),
+            desc: crate::tr_en!("Research protocols & checklists"),
+            action: TileAction::Navigate {
+                page: "workflows",
+                requires_auth: false,
+            },
+        },
+        TileSpec {
+            icon: "view-paged-symbolic",
+            title: crate::tr_en!("Cube Viewer"),
+            desc: crate::tr_en!("Explore 3D spectral cubes"),
+            action: TileAction::Navigate {
+                page: "cube",
+                requires_auth: false,
+            },
+        },
+        TileSpec {
+            icon: "network-workgroup-symbolic",
+            title: crate::tr_en!("AI Assistant"),
+            desc: crate::tr_en!("Connect an AI agent to help you"),
+            action: TileAction::AiAssistant,
+        },
+    ];
+    if show_ai_guide_tile {
+        specs.push(TileSpec {
+            icon: "applications-science-symbolic",
+            title: crate::tr_en!("AI Guide"),
+            desc: crate::tr_en!("Pair an AI agent over MCP"),
+            action: TileAction::Navigate {
+                page: "aiguide",
+                requires_auth: false,
+            },
+        });
+    }
+
     let grid = gtk::Grid::new();
     grid.set_row_spacing(16);
     grid.set_column_spacing(16);
@@ -1008,92 +1653,21 @@ fn build_welcome_page(view_stack: &adw::ViewStack) -> gtk::Box {
     grid.set_column_homogeneous(true);
     grid.set_halign(gtk::Align::Center);
 
-    // Row 1: Portal, Search, Research
-    grid.attach(
-        &feature_tile(
-            view_stack,
-            "computer-symbolic",
-            "Portal",
-            "Manage sessions & data",
-            "home",
-        ),
-        0,
-        0,
-        1,
-        1,
-    );
-    grid.attach(
-        &feature_tile(
-            view_stack,
-            "system-search-symbolic",
-            "Search",
-            "Explore the CADC archive",
-            "search",
-        ),
-        1,
-        0,
-        1,
-        1,
-    );
-    grid.attach(
-        &feature_tile(
-            view_stack,
-            "document-open-recent-symbolic",
-            "Research",
-            "Downloaded observations",
-            "research",
-        ),
-        2,
-        0,
-        1,
-        1,
-    );
-
-    // Row 2: Storage, Notebook, FITS Viewer
-    grid.attach(
-        &feature_tile(
-            view_stack,
-            "drive-multidisk-symbolic",
-            "Storage",
-            "Browse VOSpace files",
-            "storage",
-        ),
-        0,
-        1,
-        1,
-        1,
-    );
-    grid.attach(
-        &feature_tile(
-            view_stack,
-            "accessories-text-editor-symbolic",
-            "Notebook",
-            "Open & run .ipynb files",
-            "notebook",
-        ),
-        1,
-        1,
-        1,
-        1,
-    );
-    grid.attach(
-        &feature_tile(
-            view_stack,
-            "image-x-generic-symbolic",
-            "FITS Viewer",
-            "View astronomical images",
-            "fits",
-        ),
-        2,
-        1,
-        1,
-        1,
-    );
+    let mut lockers: Vec<Rc<dyn Fn(bool)>> = Vec::new();
+    for (i, spec) in specs.iter().enumerate() {
+        let (widget, locker) = make_tile(spec, view_stack, window, services, login_btn);
+        if let Some(locker) = locker {
+            lockers.push(locker);
+        }
+        let col = (i % 3) as i32;
+        let row = (i / 3) as i32;
+        grid.attach(&widget, col, row, 1, 1);
+    }
 
     content.append(&grid);
 
     // Login prompt
-    let login_prompt = gtk::Label::new(Some("Log in with your CADC credentials to get started"));
+    let login_prompt = gtk::Label::new(Some(crate::tr_en!("Log in with your CADC credentials to get started")));
     login_prompt.add_css_class("dim-label");
     login_prompt.set_halign(gtk::Align::Center);
     login_prompt.set_margin_top(8);
@@ -1101,16 +1675,21 @@ fn build_welcome_page(view_stack: &adw::ViewStack) -> gtk::Box {
 
     scrolled.set_child(Some(&content));
     page.append(&scrolled);
-    page
+    WelcomePage {
+        root: page,
+        lockers,
+    }
 }
 
-fn feature_tile(
+/// Build one landing tile. Returns the widget to attach plus, for auth-gated
+/// tiles, a `Fn(bool)` that locks (`true`) / unlocks (`false`) its visuals.
+fn make_tile(
+    spec: &TileSpec,
     view_stack: &adw::ViewStack,
-    icon_name: &str,
-    title: &str,
-    description: &str,
-    target_page: &str,
-) -> gtk::Button {
+    window: &adw::ApplicationWindow,
+    services: &Arc<AppServices>,
+    login_btn: &gtk::Button,
+) -> (gtk::Widget, Option<Rc<dyn Fn(bool)>>) {
     let btn = gtk::Button::new();
     btn.add_css_class("flat");
     btn.add_css_class("card");
@@ -1126,17 +1705,17 @@ fn feature_tile(
     inner.set_valign(gtk::Align::Center);
     inner.set_halign(gtk::Align::Center);
 
-    let icon = gtk::Image::from_icon_name(icon_name);
+    let icon = gtk::Image::from_icon_name(spec.icon);
     icon.set_pixel_size(48);
     icon.set_halign(gtk::Align::Center);
     inner.append(&icon);
 
-    let label = gtk::Label::new(Some(title));
+    let label = gtk::Label::new(Some(spec.title));
     label.add_css_class("title-3");
     label.set_halign(gtk::Align::Center);
     inner.append(&label);
 
-    let desc = gtk::Label::new(Some(description));
+    let desc = gtk::Label::new(Some(spec.desc));
     desc.add_css_class("dim-label");
     desc.add_css_class("caption");
     desc.set_halign(gtk::Align::Center);
@@ -1146,15 +1725,86 @@ fn feature_tile(
     inner.append(&desc);
 
     btn.set_child(Some(&inner));
+    btn.set_tooltip_text(Some(spec.desc));
 
-    // Navigate to module on click
-    let vs = view_stack.clone();
-    let target = target_page.to_string();
-    btn.connect_clicked(move |_| {
-        vs.set_visible_child_name(&target);
-    });
+    match spec.action {
+        TileAction::AiAssistant => {
+            let window = window.clone();
+            let services = services.clone();
+            btn.connect_clicked(move |_| {
+                crate::ui::ai_connect_wizard::show_connect_wizard(&window, services.clone());
+            });
+            (btn.upcast(), None)
+        }
+        TileAction::Navigate {
+            page,
+            requires_auth: false,
+        } => {
+            let vs = view_stack.clone();
+            btn.connect_clicked(move |_| {
+                vs.set_visible_child_name(page);
+            });
+            (btn.upcast(), None)
+        }
+        TileAction::Navigate {
+            page,
+            requires_auth: true,
+        } => {
+            // Auth-gated tile: overlay a lock badge, dim the content while locked,
+            // and route clicks to the login flow until signed in.
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&btn));
 
-    btn
+            let lock_img = gtk::Image::from_icon_name("changes-prevent-symbolic");
+            lock_img.set_pixel_size(20);
+            lock_img.add_css_class("dim-label");
+            lock_img.set_halign(gtk::Align::End);
+            lock_img.set_valign(gtk::Align::Start);
+            lock_img.set_margin_top(10);
+            lock_img.set_margin_end(10);
+            // Let clicks fall through to the button beneath.
+            lock_img.set_can_target(false);
+            overlay.add_overlay(&lock_img);
+
+            let locked = Rc::new(std::cell::Cell::new(true));
+
+            {
+                let locked = locked.clone();
+                let login_btn = login_btn.clone();
+                let vs = view_stack.clone();
+                btn.connect_clicked(move |_| {
+                    if locked.get() {
+                        // Signed out: open login; the login flow then continues.
+                        login_btn.emit_clicked();
+                    } else {
+                        vs.set_visible_child_name(page);
+                    }
+                });
+            }
+
+            let locker: Rc<dyn Fn(bool)> = {
+                let locked = locked.clone();
+                let lock_img = lock_img.clone();
+                let inner = inner.clone();
+                let btn = btn.clone();
+                let default_tip = spec.desc.to_string();
+                Rc::new(move |is_locked: bool| {
+                    locked.set(is_locked);
+                    lock_img.set_visible(is_locked);
+                    inner.set_opacity(if is_locked { 0.5 } else { 1.0 });
+                    if is_locked {
+                        btn.set_tooltip_text(Some(crate::tr_en!("Sign in to access")));
+                    } else {
+                        btn.set_tooltip_text(Some(&default_tip));
+                    }
+                })
+            };
+            // Start locked (the shell is signed out at build time).
+            locker(true);
+
+            (overlay.upcast(), Some(locker))
+        }
+    }
 }
 
 fn load_app_icon(pixel_size: i32) -> gtk::Image {

@@ -162,6 +162,54 @@ impl NotificationService {
         true
     }
 
+    /// Send a desktop notification when a headless/batch job completes
+    /// (transitioned into Succeeded/Completed). Returns true if sent.
+    pub fn notify_job_completed(
+        &self,
+        app: &gio::Application,
+        job_id: &str,
+        name: &str,
+        image: &str,
+    ) -> bool {
+        let key = format!("job_completed:{}", job_id);
+        if !self.mark_notified(&key) {
+            return false;
+        }
+
+        let notification = gio::Notification::new("Batch Job Completed");
+        notification.set_body(Some(&format!(
+            "Your batch job '{}' ({}) finished successfully.",
+            name, image
+        )));
+        notification.set_priority(gio::NotificationPriority::Normal);
+        app.send_notification(Some(&key), &notification);
+        true
+    }
+
+    /// Send a desktop notification when a headless/batch job fails
+    /// (transitioned into Failed/Error). Returns true if sent.
+    pub fn notify_job_failed(
+        &self,
+        app: &gio::Application,
+        job_id: &str,
+        name: &str,
+        image: &str,
+    ) -> bool {
+        let key = format!("job_failed:{}", job_id);
+        if !self.mark_notified(&key) {
+            return false;
+        }
+
+        let notification = gio::Notification::new("Batch Job Failed");
+        notification.set_body(Some(&format!(
+            "Your batch job '{}' ({}) failed. Check events & logs for details.",
+            name, image
+        )));
+        notification.set_priority(gio::NotificationPriority::Urgent);
+        app.send_notification(Some(&key), &notification);
+        true
+    }
+
     /// Send a desktop notification when a session is expiring soon.
     pub fn notify_session_expiring(
         &self,

@@ -8,7 +8,7 @@ pub async fn show_download_dialog(
 ) -> Option<std::path::PathBuf> {
     let root = parent.root().and_downcast::<gtk::Window>();
     let dialog = gtk::FileDialog::builder()
-        .title("Save File")
+        .title(crate::tr_en!("Save File"))
         .initial_name(filename)
         .build();
 

@@ -6,12 +6,15 @@
 
 use crate::helpers::notebook_parser;
 use crate::helpers::python_discovery;
-use crate::models::notebook_document::NotebookDocument;
+use crate::models::notebook_document::{CellOutput, NotebookDocument};
+use crate::models::notebook_settings::NotebookSettings;
+use crate::services::notebook_settings_service::NotebookSettingsService;
 use crate::services::notebook_store::NotebookStore;
 use crate::state::AppServices;
 use crate::ui::notebook_page::NotebookPage;
 use gtk4::glib;
 use gtk4::prelude::*;
+use libadwaita::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
 use std::cell::RefCell;
@@ -32,6 +35,12 @@ pub struct NotebookTabHost {
     tab_view: gtk::Notebook,
     /// Parallel Vec of page wrappers (matches tab order).
     pages: Rc<RefCell<Vec<Rc<NotebookPage>>>>,
+    /// Tab title labels, parallel to `pages` (for the `*` unsaved marker).
+    tab_labels: Rc<RefCell<Vec<gtk::Label>>>,
+    /// Per-page autosave checkpoint paths, parallel to `pages`.
+    autosave_paths: Rc<RefCell<Vec<PathBuf>>>,
+    /// Monotonic id for never-saved notebooks (stable autosave keys).
+    untitled_seq: std::cell::Cell<u64>,
     /// Persistent recent-notebooks store.
     store: Rc<NotebookStore>,
     /// Resolved Python interpreter path (may be `None` if Python not found).
@@ -46,17 +55,32 @@ pub struct NotebookTabHost {
     python_label: gtk::Label,
     /// Toast overlay for surfacing errors to the user.
     toast_overlay: adw::ToastOverlay,
+    /// The cell/exec toolbar (kept so `show_toolbar` can toggle its visibility).
+    toolbar: gtk::Box,
+    /// Persisted notebook preferences (font/tab/wrap/python path/…).
+    settings: Rc<RefCell<NotebookSettings>>,
+    /// JSON store backing [`Self::settings`].
+    settings_service: Rc<NotebookSettingsService>,
+    /// Global CSS provider that applies the configured code-cell font size to
+    /// every open notebook's code cells (`.code-cell-source`).
+    font_provider: gtk::CssProvider,
 }
 
 impl NotebookTabHost {
     /// Create a new, empty tab host and resolve Python.
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
+        // ── Notebook settings ────────────────────────────────────────────────
+        let settings_service = Rc::new(NotebookSettingsService::new());
+        let settings = settings_service.load();
+
         // ── Python discovery ─────────────────────────────────────────────────
-        let python_path = python_discovery::find_python(None);
+        // Prefer the explicitly-configured interpreter, falling back to
+        // auto-discovery (find_python already tries the configured path first).
+        let python_path = python_discovery::find_python(settings.python_path.as_deref());
         let python_label_text = python_path
             .as_ref()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "Python not found".to_string());
+            .unwrap_or_else(|| crate::tr_en!("Python not found").to_string());
 
         // ── Root ─────────────────────────────────────────────────────────────
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -73,52 +97,52 @@ impl NotebookTabHost {
         // File group: New, Open, Save, Save As
         let new_btn = gtk::Button::from_icon_name("document-new-symbolic");
         new_btn.add_css_class("flat");
-        new_btn.set_tooltip_text(Some("New Notebook (Ctrl+N)"));
+        new_btn.set_tooltip_text(Some(crate::tr_en!("New Notebook (Ctrl+N)")));
         toolbar.append(&new_btn);
 
         let open_btn = gtk::Button::from_icon_name("document-open-symbolic");
         open_btn.add_css_class("flat");
-        open_btn.set_tooltip_text(Some("Open Notebook (Ctrl+O)"));
+        open_btn.set_tooltip_text(Some(crate::tr_en!("Open Notebook (Ctrl+O)")));
         toolbar.append(&open_btn);
 
         let save_btn = gtk::Button::from_icon_name("document-save-symbolic");
         save_btn.add_css_class("flat");
-        save_btn.set_tooltip_text(Some("Save Notebook (Ctrl+S)"));
+        save_btn.set_tooltip_text(Some(crate::tr_en!("Save Notebook (Ctrl+S)")));
         toolbar.append(&save_btn);
 
         let save_as_btn = gtk::Button::from_icon_name("document-save-as-symbolic");
         save_as_btn.add_css_class("flat");
-        save_as_btn.set_tooltip_text(Some("Save As… (Ctrl+Shift+S)"));
+        save_as_btn.set_tooltip_text(Some(crate::tr_en!("Save As… (Ctrl+Shift+S)")));
         toolbar.append(&save_as_btn);
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
         // Cell group: Add Code, Add Markdown, Move Up, Move Down, Delete
-        let add_code_btn = gtk::Button::with_label("Code");
+        let add_code_btn = gtk::Button::with_label(crate::tr_en!("Code"));
         add_code_btn.set_icon_name("list-add-symbolic");
         add_code_btn.add_css_class("flat");
-        add_code_btn.set_tooltip_text(Some("Add Code Cell"));
+        add_code_btn.set_tooltip_text(Some(crate::tr_en!("Add Code Cell")));
         toolbar.append(&add_code_btn);
 
-        let add_md_btn = gtk::Button::with_label("Md");
+        let add_md_btn = gtk::Button::with_label(crate::tr_en!("Md"));
         add_md_btn.set_icon_name("format-text-rich-symbolic");
         add_md_btn.add_css_class("flat");
-        add_md_btn.set_tooltip_text(Some("Add Markdown Cell"));
+        add_md_btn.set_tooltip_text(Some(crate::tr_en!("Add Markdown Cell")));
         toolbar.append(&add_md_btn);
 
         let move_up_btn = gtk::Button::from_icon_name("go-up-symbolic");
         move_up_btn.add_css_class("flat");
-        move_up_btn.set_tooltip_text(Some("Move Cell Up"));
+        move_up_btn.set_tooltip_text(Some(crate::tr_en!("Move Cell Up")));
         toolbar.append(&move_up_btn);
 
         let move_down_btn = gtk::Button::from_icon_name("go-down-symbolic");
         move_down_btn.add_css_class("flat");
-        move_down_btn.set_tooltip_text(Some("Move Cell Down"));
+        move_down_btn.set_tooltip_text(Some(crate::tr_en!("Move Cell Down")));
         toolbar.append(&move_down_btn);
 
         let delete_cell_btn = gtk::Button::from_icon_name("edit-delete-symbolic");
         delete_cell_btn.add_css_class("flat");
-        delete_cell_btn.set_tooltip_text(Some("Delete Cell"));
+        delete_cell_btn.set_tooltip_text(Some(crate::tr_en!("Delete Cell")));
         toolbar.append(&delete_cell_btn);
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -126,40 +150,61 @@ impl NotebookTabHost {
         // Exec group: Run Cell, Run All, Interrupt, Restart, Clear Outputs
         let run_cell_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
         run_cell_btn.add_css_class("flat");
-        run_cell_btn.set_tooltip_text(Some("Run Cell (Ctrl+Enter)"));
+        run_cell_btn.set_tooltip_text(Some(crate::tr_en!("Run Cell (Ctrl+Enter)")));
         toolbar.append(&run_cell_btn);
 
-        let run_all_btn = gtk::Button::with_label("Run All");
+        let run_all_btn = gtk::Button::with_label(crate::tr_en!("Run All"));
         run_all_btn.set_icon_name("media-seek-forward-symbolic");
         run_all_btn.add_css_class("flat");
-        run_all_btn.set_tooltip_text(Some("Run all cells"));
+        run_all_btn.set_tooltip_text(Some(crate::tr_en!("Run all cells")));
         toolbar.append(&run_all_btn);
 
         let interrupt_btn = gtk::Button::from_icon_name("media-playback-stop-symbolic");
         interrupt_btn.add_css_class("flat");
-        interrupt_btn.set_tooltip_text(Some("Interrupt kernel"));
+        interrupt_btn.set_tooltip_text(Some(crate::tr_en!("Interrupt kernel")));
         toolbar.append(&interrupt_btn);
 
         let restart_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
         restart_btn.add_css_class("flat");
-        restart_btn.set_tooltip_text(Some("Restart kernel"));
+        restart_btn.set_tooltip_text(Some(crate::tr_en!("Restart kernel")));
         toolbar.append(&restart_btn);
 
         let clear_outputs_btn = gtk::Button::from_icon_name("edit-clear-all-symbolic");
         clear_outputs_btn.add_css_class("flat");
-        clear_outputs_btn.set_tooltip_text(Some("Clear All Outputs"));
+        clear_outputs_btn.set_tooltip_text(Some(crate::tr_en!("Clear All Outputs")));
         toolbar.append(&clear_outputs_btn);
+
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        // Cell-structure group: Split, Merge
+        let split_btn = gtk::Button::from_icon_name("edit-cut-symbolic");
+        split_btn.add_css_class("flat");
+        split_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Split Cell at Cursor (Ctrl+Shift+Minus)"
+        )));
+        toolbar.append(&split_btn);
+
+        let merge_btn = gtk::Button::from_icon_name("mail-attachment-symbolic");
+        merge_btn.add_css_class("flat");
+        merge_btn.set_tooltip_text(Some(crate::tr_en!("Merge Cell Below (Shift+M)")));
+        toolbar.append(&merge_btn);
 
         // Spacer
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         toolbar.append(&spacer);
 
+        // Settings button (kept on the right, before the status indicators).
+        let settings_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
+        settings_btn.add_css_class("flat");
+        settings_btn.set_tooltip_text(Some(crate::tr_en!("Notebook Settings")));
+        toolbar.append(&settings_btn);
+
         // Kernel dot
         let kernel_dot = gtk::Label::new(Some("●"));
         kernel_dot.add_css_class("kernel-dot");
         kernel_dot.add_css_class("dim-label");
-        kernel_dot.set_tooltip_text(Some("Kernel status: not started"));
+        kernel_dot.set_tooltip_text(Some(crate::tr_en!("Kernel status: not started")));
         toolbar.append(&kernel_dot);
 
         // Python path label
@@ -200,10 +245,29 @@ impl NotebookTabHost {
 
         let store = Rc::new(NotebookStore::new());
 
+        // Apply the persisted "show toolbar" preference at startup.
+        toolbar.set_visible(settings.show_toolbar);
+
+        // Global font provider: applies the configured code-cell font size to
+        // every notebook's code cells (`.code-cell-source`). Added to the
+        // display once and re-loaded when the font size changes.
+        let font_provider = gtk::CssProvider::new();
+        apply_font_css(&font_provider, settings.font_size);
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &font_provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
         let host = Rc::new(NotebookTabHost {
             widget,
             tab_view,
             pages: Rc::new(RefCell::new(Vec::new())),
+            tab_labels: Rc::new(RefCell::new(Vec::new())),
+            autosave_paths: Rc::new(RefCell::new(Vec::new())),
+            untitled_seq: std::cell::Cell::new(0),
             store,
             python_path: Rc::new(RefCell::new(python_path)),
             services,
@@ -211,7 +275,28 @@ impl NotebookTabHost {
             kernel_dot,
             python_label,
             toast_overlay,
+            toolbar,
+            settings: Rc::new(RefCell::new(settings)),
+            settings_service,
+            font_provider,
         });
+
+        // Autosave tick: every 30s, checkpoint any dirty notebook (atomic write).
+        {
+            let h = host.clone();
+            glib::timeout_add_local(std::time::Duration::from_secs(30), move || {
+                h.autosave_tick();
+                glib::ControlFlow::Continue
+            });
+        }
+
+        // Crash recovery: surface orphaned autosave checkpoints from a prior session.
+        {
+            let h = host.clone();
+            glib::spawn_future_local(async move {
+                h.check_recovery().await;
+            });
+        }
 
         // Wire toolbar buttons
         {
@@ -334,6 +419,47 @@ impl NotebookTabHost {
                 }
             });
         }
+        {
+            let h = host.clone();
+            split_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    page.split_active_cell();
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            merge_btn.connect_clicked(move |_| {
+                if let Some(page) = h.current_page() {
+                    page.merge_cell_below();
+                }
+            });
+        }
+        {
+            let h = host.clone();
+            settings_btn.connect_clicked(move |btn| {
+                let parent = btn.clone().upcast::<gtk::Widget>();
+                h.open_settings_dialog(&parent);
+            });
+        }
+
+        // Ctrl+comma reopens settings even when the toolbar is hidden, so the
+        // "Show toolbar" preference can never lock the user out of settings.
+        {
+            let controller = gtk::EventControllerKey::new();
+            let h = host.clone();
+            controller.connect_key_pressed(move |_, key, _code, modifier| {
+                if modifier.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                    && key == gtk::gdk::Key::comma
+                {
+                    let parent = h.widget.clone().upcast::<gtk::Widget>();
+                    h.open_settings_dialog(&parent);
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            host.widget.add_controller(controller);
+        }
 
         // Wire tab-switch to update the kernel dot from the newly-active tab
         {
@@ -361,12 +487,331 @@ impl NotebookTabHost {
         &self.widget
     }
 
+    /// Handle a live MCP viewer command (`op` + JSON `args`) against the open
+    /// notebooks. Runs on the GTK main thread. Read ops return a snapshot;
+    /// mutation ops go through the page's existing mutators and return the
+    /// resulting notebook state. Ops target the active notebook unless an
+    /// `index`/`path`/`notebook` selector picks another open tab.
+    pub async fn handle_viewer_command(
+        self: &Rc<Self>,
+        op: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        use serde_json::json;
+
+        match op {
+            "list_open_notebooks" => {
+                let active = self.tab_view.current_page();
+                let pages = self.pages.borrow();
+                let items: Vec<serde_json::Value> = pages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let fp = p
+                            .file_path
+                            .borrow()
+                            .as_ref()
+                            .map(|x| x.display().to_string());
+                        json!({
+                            "notebook_id": fp.clone().unwrap_or_else(|| format!("notebook-{i}")),
+                            "title": p.title(),
+                            "file_path": fp,
+                            "is_active": active == Some(i as u32),
+                            "is_dirty": p.is_modified(),
+                            "cell_count": p.cell_count(),
+                            "kernel_state": kernel_keyword(&p.current_kernel_status_label()),
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "count": items.len(), "notebooks": items }))
+            }
+
+            "get_notebook" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let id = self.page_id(&page);
+                Ok(notebook_state_json(&page, &id))
+            }
+
+            "get_cell_output" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let idx = arg_index(args, "cell")
+                    .or_else(|| arg_index(args, "index"))
+                    .ok_or_else(|| "cell (index) is required".to_string())?;
+                let doc = page.snapshot_document();
+                let cell = doc
+                    .cells
+                    .get(idx)
+                    .ok_or_else(|| format!("cell index {idx} out of range"))?;
+                let outputs: Vec<serde_json::Value> =
+                    cell.outputs.iter().map(cell_output_json).collect();
+                Ok(json!({
+                    "index": idx,
+                    "type": cell.cell_type,
+                    "execution_count": cell.execution_count,
+                    "output_count": outputs.len(),
+                    "outputs": outputs,
+                }))
+            }
+
+            "get_kernel_state" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let label = page.current_kernel_status_label();
+                let doc = page.snapshot_document();
+                let kernel_name = doc
+                    .metadata
+                    .kernelspec
+                    .as_ref()
+                    .map(|k| k.name.clone())
+                    .unwrap_or_else(|| "python3".to_string());
+                Ok(json!({
+                    "state": kernel_keyword(&label),
+                    "status_text": label,
+                    "kernel_name": kernel_name,
+                }))
+            }
+
+            "add_cell" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let cell_type =
+                    norm_cell_type(args.get("cell_type").or_else(|| args.get("type")));
+                let count = page.cell_count();
+                let idx = arg_index(args, "index").unwrap_or(count).min(count);
+                page.insert_cell(idx, &cell_type);
+                Ok(self.state_of(&page))
+            }
+
+            "edit_cell" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let idx =
+                    arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
+                let source = args
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "source is required".to_string())?;
+                if idx >= page.cell_count() {
+                    return Err(format!("cell index {idx} out of range"));
+                }
+                page.set_cell_source(idx, source);
+                Ok(self.state_of(&page))
+            }
+
+            "delete_cell" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let idx =
+                    arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
+                if idx >= page.cell_count() {
+                    return Err(format!("cell index {idx} out of range"));
+                }
+                page.delete_cell(idx);
+                Ok(self.state_of(&page))
+            }
+
+            "change_cell_type" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let idx =
+                    arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
+                let ct = args
+                    .get("cell_type")
+                    .or_else(|| args.get("type"))
+                    .and_then(|v| v.as_str());
+                let ct = match ct {
+                    Some("code") => "code",
+                    Some("markdown") => "markdown",
+                    _ => return Err("cell_type must be 'code' or 'markdown'".to_string()),
+                };
+                if idx >= page.cell_count() {
+                    return Err(format!("cell index {idx} out of range"));
+                }
+                page.change_cell_type(idx, ct);
+                Ok(self.state_of(&page))
+            }
+
+            "move_cell" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let idx =
+                    arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
+                let count = page.cell_count();
+                if idx >= count {
+                    return Err(format!("cell index {idx} out of range"));
+                }
+                let to = if let Some(to) = arg_index(args, "to") {
+                    to
+                } else {
+                    match args.get("direction").and_then(|v| v.as_str()) {
+                        Some("up") => {
+                            if idx == 0 {
+                                return Err("cell already at top".to_string());
+                            }
+                            idx - 1
+                        }
+                        Some("down") => {
+                            if idx + 1 >= count {
+                                return Err("cell already at bottom".to_string());
+                            }
+                            idx + 1
+                        }
+                        _ => return Err("direction must be 'up' or 'down'".to_string()),
+                    }
+                };
+                if to >= count {
+                    return Err(format!("target index {to} out of range"));
+                }
+                page.move_cell(idx, to);
+                Ok(self.state_of(&page))
+            }
+
+            "run_cell" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let idx =
+                    arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
+                if idx >= page.cell_count() {
+                    return Err(format!("cell index {idx} out of range"));
+                }
+                page.run_cell(idx);
+                Ok(self.state_of(&page))
+            }
+
+            "run_all" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                page.run_all();
+                Ok(self.state_of(&page))
+            }
+
+            "clear_outputs" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                page.clear_all_outputs();
+                Ok(self.state_of(&page))
+            }
+
+            "start_kernel" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                page.start_kernel_now().await;
+                Ok(self.state_of(&page))
+            }
+
+            "interrupt_kernel" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                page.interrupt_kernel();
+                Ok(self.state_of(&page))
+            }
+
+            "restart_kernel" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                page.restart_kernel();
+                Ok(self.state_of(&page))
+            }
+
+            "save_notebook" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty());
+                match path {
+                    Some(p) => page.save_as(PathBuf::from(p)),
+                    None => page.save(),
+                }
+                .map_err(|e| format!("save failed: {e}"))?;
+                self.refresh_tab_title(&page);
+                Ok(self.state_of(&page))
+            }
+
+            "open_notebook" => {
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "path is required".to_string())?;
+                self.load_from_path(&PathBuf::from(path));
+                let page = self
+                    .current_page()
+                    .ok_or_else(|| "failed to open notebook".to_string())?;
+                Ok(self.state_of(&page))
+            }
+
+            "create_notebook" => {
+                self.trigger_new();
+                let page = self
+                    .current_page()
+                    .ok_or_else(|| "failed to create notebook".to_string())?;
+                Ok(self.state_of(&page))
+            }
+
+            other => Err(format!("notebook op '{other}' is not supported")),
+        }
+    }
+
+    /// Resolve the target page: the `notebook` selector (open-tab index, id, file
+    /// path, or title) when present, otherwise the active tab.
+    fn resolve_page(&self, args: &serde_json::Value) -> Option<Rc<NotebookPage>> {
+        if let Some(sel) = args.get("notebook").and_then(|v| v.as_str()) {
+            let sel = sel.trim();
+            if !sel.is_empty() {
+                // Bare numeric selector → tab index.
+                if let Ok(i) = sel.parse::<usize>() {
+                    if let Some(p) = self.pages.borrow().get(i).cloned() {
+                        return Some(p);
+                    }
+                }
+                // "notebook-N" synthetic id → tab index.
+                if let Some(i) = sel
+                    .strip_prefix("notebook-")
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    if let Some(p) = self.pages.borrow().get(i).cloned() {
+                        return Some(p);
+                    }
+                }
+                // Otherwise match by file path or title.
+                let pages = self.pages.borrow();
+                for p in pages.iter() {
+                    let matches_path = p
+                        .file_path
+                        .borrow()
+                        .as_ref()
+                        .map(|x| x.display().to_string())
+                        .as_deref()
+                        == Some(sel);
+                    if matches_path || p.title() == sel {
+                        return Some(p.clone());
+                    }
+                }
+                return None;
+            }
+        }
+        self.current_page()
+    }
+
+    /// A stable-ish selector id for `page`: its file path, or `notebook-<index>`.
+    fn page_id(&self, page: &Rc<NotebookPage>) -> String {
+        if let Some(p) = page.file_path.borrow().as_ref() {
+            return p.display().to_string();
+        }
+        let idx = self
+            .pages
+            .borrow()
+            .iter()
+            .position(|p| Rc::ptr_eq(p, page));
+        match idx {
+            Some(i) => format!("notebook-{i}"),
+            None => "notebook-?".to_string(),
+        }
+    }
+
+    /// Snapshot `page` into the shared notebook-state JSON shape.
+    fn state_of(&self, page: &Rc<NotebookPage>) -> serde_json::Value {
+        let id = self.page_id(page);
+        notebook_state_json(page, &id)
+    }
+
     /// Open a file chooser dialog and load the selected notebook.
     async fn open_file_dialog(self: Rc<Self>, parent: &gtk::Widget) {
         let root = parent.root().and_downcast::<gtk::Window>();
 
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some("Notebooks"));
+        filter.set_name(Some(crate::tr_en!("Notebooks")));
         filter.add_pattern("*.ipynb");
         filter.add_pattern("*.py");
 
@@ -374,7 +819,7 @@ impl NotebookTabHost {
         filters.append(&filter);
 
         let dialog = gtk::FileDialog::builder()
-            .title("Open Notebook")
+            .title(crate::tr_en!("Open Notebook"))
             .modal(true)
             .filters(&filters)
             .build();
@@ -449,7 +894,20 @@ impl NotebookTabHost {
         let page_widget = page.widget().clone().upcast::<gtk::Widget>();
         let tab_index = self.tab_view.append_page(&page_widget, Some(&tab_box));
 
+        // A stable autosave key: the file path, or a per-session untitled id.
+        let key = match page.file_path.borrow().as_ref() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => {
+                let n = self.untitled_seq.get() + 1;
+                self.untitled_seq.set(n);
+                format!("untitled-{n}")
+            }
+        };
+        let autosave_path = crate::helpers::notebook_autosave::autosave_path_for(&key, title);
+
         self.pages.borrow_mut().push(page.clone());
+        self.tab_labels.borrow_mut().push(tab_label.clone());
+        self.autosave_paths.borrow_mut().push(autosave_path);
 
         // Wire kernel state callback to update the host's dot
         {
@@ -459,49 +917,177 @@ impl NotebookTabHost {
             }));
         }
 
-        // Close button handler — use a stable index captured at creation time.
-        // This is a simplified approach: the index may shift if earlier tabs
-        // are closed, so we search by widget pointer instead.
+        // Show a `*` in the tab title the moment the document becomes dirty.
         {
-            let tab_view = self.tab_view.clone();
-            let pages = self.pages.clone();
-            let content_stack = self.content_stack.clone();
-            let page_ptr = page.widget().clone();
+            let h = self.clone();
+            let p = page.clone();
+            page.set_on_modified(move || h.refresh_tab_title(&p));
+        }
+
+        // Close button — guard unsaved changes (Save / Discard / Cancel).
+        {
+            let h = self.clone();
+            let page = page.clone();
             close_btn.connect_clicked(move |_| {
-                let n = tab_view.n_pages();
-                for i in 0..n {
-                    if let Some(child) = tab_view.nth_page(Some(i)) {
-                        // Compare widget pointer identity
-                        if child == page_ptr.clone().upcast::<gtk::Widget>() {
-                            tab_view.remove_page(Some(i));
-                            let idx_usize = i as usize;
-                            if idx_usize < pages.borrow().len() {
-                                pages.borrow_mut().remove(idx_usize);
-                            }
-                            if pages.borrow().is_empty() {
-                                content_stack.set_visible_child_name("empty");
-                            }
-                            return;
-                        }
+                let h = h.clone();
+                let page = page.clone();
+                glib::spawn_future_local(async move {
+                    if !h.confirm_close(&page).await {
+                        return;
                     }
-                }
-                // Fallback: remove by original index
-                if tab_index < tab_view.n_pages() {
-                    tab_view.remove_page(Some(tab_index));
-                    let idx_usize = tab_index as usize;
-                    if idx_usize < pages.borrow().len() {
-                        pages.borrow_mut().remove(idx_usize);
-                    }
-                    if pages.borrow().is_empty() {
-                        content_stack.set_visible_child_name("empty");
-                    }
-                }
+                    h.remove_page_for(&page);
+                });
             });
         }
 
         // Switch to tabs view
         self.content_stack.set_visible_child_name("tabs");
         self.tab_view.set_current_page(Some(tab_index));
+    }
+
+    /// Update a page's tab title, adding a `*` when it has unsaved changes.
+    fn refresh_tab_title(&self, page: &Rc<NotebookPage>) {
+        let pages = self.pages.borrow();
+        let labels = self.tab_labels.borrow();
+        if let Some(idx) = pages.iter().position(|p| Rc::ptr_eq(p, page)) {
+            if let Some(label) = labels.get(idx) {
+                let base = page.title();
+                if page.is_modified() {
+                    label.set_text(&format!("{base} *"));
+                } else {
+                    label.set_text(&base);
+                }
+            }
+        }
+    }
+
+    /// Ask the user before closing a modified notebook. Returns `true` to proceed
+    /// with closing (saved or discarded), `false` to cancel.
+    async fn confirm_close(self: &Rc<Self>, page: &Rc<NotebookPage>) -> bool {
+        if !page.is_modified() {
+            return true;
+        }
+        let root = self.widget.root().and_downcast::<gtk::Window>();
+        let dialog = adw::MessageDialog::new(
+            root.as_ref(),
+            Some(crate::tr_en!("Save changes?")),
+            Some(&format!(
+                "“{}” has unsaved changes. Save them before closing?",
+                page.title()
+            )),
+        );
+        dialog.add_response("cancel", crate::tr_en!("Cancel"));
+        dialog.add_response("discard", crate::tr_en!("Discard"));
+        dialog.add_response("save", crate::tr_en!("Save"));
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("save"));
+        dialog.set_close_response("cancel");
+        match dialog.choose_future().await.as_str() {
+            "save" => {
+                if page.file_path.borrow().is_none() {
+                    // Never saved — must pick a path; treat cancel-of-save as cancel-close.
+                    self.toast_overlay.add_toast(adw::Toast::new(crate::tr_en!(
+                        "Use Save As to choose a file path, then close"
+                    )));
+                    false
+                } else if let Err(e) = page.save() {
+                    self.toast_overlay
+                        .add_toast(adw::Toast::new(&format!("Save failed: {}", e)));
+                    false
+                } else {
+                    true
+                }
+            }
+            "discard" => true,
+            _ => false, // cancel
+        }
+    }
+
+    /// Remove a page's tab + tracking entries, and delete its autosave checkpoint.
+    fn remove_page_for(&self, page: &Rc<NotebookPage>) {
+        let idx = self
+            .pages
+            .borrow()
+            .iter()
+            .position(|p| Rc::ptr_eq(p, page));
+        let Some(idx) = idx else { return };
+        if (idx as u32) < self.tab_view.n_pages() {
+            self.tab_view.remove_page(Some(idx as u32));
+        }
+        self.pages.borrow_mut().remove(idx);
+        if idx < self.tab_labels.borrow().len() {
+            self.tab_labels.borrow_mut().remove(idx);
+        }
+        if idx < self.autosave_paths.borrow().len() {
+            let path = self.autosave_paths.borrow_mut().remove(idx);
+            crate::helpers::notebook_autosave::delete_autosave(&path);
+        }
+        if self.pages.borrow().is_empty() {
+            self.content_stack.set_visible_child_name("empty");
+        }
+    }
+
+    /// Timer callback: write an autosave checkpoint for every dirty notebook.
+    fn autosave_tick(&self) {
+        let pages = self.pages.borrow();
+        let paths = self.autosave_paths.borrow();
+        for (page, path) in pages.iter().zip(paths.iter()) {
+            if page.is_modified() {
+                let doc = page.snapshot_document();
+                let _ = crate::helpers::notebook_autosave::write_autosave(&doc, path);
+            }
+        }
+    }
+
+    /// On startup, offer to recover orphaned autosave checkpoints from a crash.
+    async fn check_recovery(self: &Rc<Self>) {
+        let orphans = crate::helpers::notebook_autosave::detect_orphans();
+        if orphans.is_empty() {
+            return;
+        }
+        let root = self.widget.root().and_downcast::<gtk::Window>();
+        let dialog = adw::MessageDialog::new(
+            root.as_ref(),
+            Some(crate::tr_en!("Recover notebooks?")),
+            Some(&format!(
+                "{} unsaved notebook checkpoint(s) from a previous session were found. Recover them?",
+                orphans.len()
+            )),
+        );
+        dialog.add_response("later", crate::tr_en!("Later"));
+        dialog.add_response("discard", crate::tr_en!("Discard All"));
+        dialog.add_response("recover", crate::tr_en!("Recover"));
+        dialog.set_response_appearance("recover", adw::ResponseAppearance::Suggested);
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("recover"));
+        dialog.set_close_response("later");
+        match dialog.choose_future().await.as_str() {
+            "recover" => {
+                let python_path = self
+                    .python_path
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("/usr/bin/python3"));
+                for cand in &orphans {
+                    if let Ok(doc) = crate::helpers::notebook_autosave::load_autosave(&cand.path) {
+                        let page = NotebookPage::load_from_document(
+                            self.services.clone(),
+                            python_path.clone(),
+                            doc,
+                            None,
+                        );
+                        // Recovered content is unsaved by definition.
+                        page.set_modified(true);
+                        self.add_tab(page.clone(), &format!("{} (recovered)", cand.display_name));
+                        self.refresh_tab_title(&page);
+                    }
+                    crate::helpers::notebook_autosave::discard(&cand.path);
+                }
+            }
+            "discard" => crate::helpers::notebook_autosave::discard_all(),
+            _ => {} // later: leave the checkpoints in place
+        }
     }
 
     /// Return the currently-active [`NotebookPage`], if any.
@@ -516,14 +1102,21 @@ impl NotebookTabHost {
             if page.file_path.borrow().is_none() {
                 // No path set — show toast and do nothing; user should use Save As
                 self.toast_overlay
-                    .add_toast(adw::Toast::new("Use Save As to choose a file path"));
+                    .add_toast(adw::Toast::new(crate::tr_en!("Use Save As to choose a file path")));
                 return;
             }
             if let Err(e) = page.save() {
                 self.toast_overlay
                     .add_toast(adw::Toast::new(&format!("Save failed: {}", e)));
             } else {
-                self.toast_overlay.add_toast(adw::Toast::new("Saved"));
+                // Clean save → clear the `*` marker and drop the autosave checkpoint.
+                self.refresh_tab_title(&page);
+                if let Some(idx) = self.pages.borrow().iter().position(|p| Rc::ptr_eq(p, &page)) {
+                    if let Some(path) = self.autosave_paths.borrow().get(idx) {
+                        crate::helpers::notebook_autosave::delete_autosave(path);
+                    }
+                }
+                self.toast_overlay.add_toast(adw::Toast::new(crate::tr_en!("Saved")));
             }
         }
     }
@@ -545,7 +1138,7 @@ impl NotebookTabHost {
             doc,
             None,
         );
-        self.add_tab(page, "Untitled");
+        self.add_tab(page, crate::tr_en!("Untitled"));
     }
 
     /// Trigger "Open" via keyboard shortcut. Uses the host's widget as parent.
@@ -580,13 +1173,13 @@ impl NotebookTabHost {
         let root = parent.root().and_downcast::<gtk::Window>();
 
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some("Jupyter Notebook"));
+        filter.set_name(Some(crate::tr_en!("Jupyter Notebook")));
         filter.add_pattern("*.ipynb");
         let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
 
         let dialog = gtk::FileDialog::builder()
-            .title("Save Notebook As")
+            .title(crate::tr_en!("Save Notebook As"))
             .modal(true)
             .filters(&filters)
             .build();
@@ -595,7 +1188,7 @@ impl NotebookTabHost {
             if let Some(path) = file.path() {
                 match page.save_as(path) {
                     Ok(()) => {
-                        self.toast_overlay.add_toast(adw::Toast::new("Saved"));
+                        self.toast_overlay.add_toast(adw::Toast::new(crate::tr_en!("Saved")));
                     }
                     Err(e) => {
                         self.toast_overlay
@@ -620,27 +1213,27 @@ impl NotebookTabHost {
             "idle" => {
                 self.kernel_dot.add_css_class("idle");
                 self.kernel_dot
-                    .set_tooltip_text(Some("Kernel status: idle"));
+                    .set_tooltip_text(Some(crate::tr_en!("Kernel status: idle")));
             }
             "busy" => {
                 self.kernel_dot.add_css_class("busy");
                 self.kernel_dot
-                    .set_tooltip_text(Some("Kernel status: busy"));
+                    .set_tooltip_text(Some(crate::tr_en!("Kernel status: busy")));
             }
             "starting" => {
                 self.kernel_dot.add_css_class("starting");
                 self.kernel_dot
-                    .set_tooltip_text(Some("Kernel status: starting"));
+                    .set_tooltip_text(Some(crate::tr_en!("Kernel status: starting")));
             }
             "error" => {
                 self.kernel_dot.add_css_class("error");
                 self.kernel_dot
-                    .set_tooltip_text(Some("Kernel status: error"));
+                    .set_tooltip_text(Some(crate::tr_en!("Kernel status: error")));
             }
             _ => {
                 self.kernel_dot.add_css_class("dim-label");
                 self.kernel_dot
-                    .set_tooltip_text(Some("Kernel status: not started"));
+                    .set_tooltip_text(Some(crate::tr_en!("Kernel status: not started")));
             }
         }
     }
@@ -715,6 +1308,410 @@ impl NotebookTabHost {
             }
         });
     }
+
+    // ── Notebook settings ──────────────────────────────────────────────────────
+
+    /// Open the notebook settings window (an `adw::Window`, share_dialog idiom).
+    /// Every row persists on change and applies live via [`Self::update_settings`].
+    fn open_settings_dialog(self: &Rc<Self>, parent: &gtk::Widget) {
+        let dialog = adw::Window::builder()
+            .title(crate::tr_en!("Notebook Settings"))
+            .default_width(480)
+            .default_height(560)
+            .modal(true)
+            .build();
+        if let Some(root) = parent.root().and_downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&root));
+        }
+
+        let toolbar_view = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
+        toolbar_view.add_top_bar(&header);
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        content.set_margin_start(18);
+        content.set_margin_end(18);
+        content.set_margin_top(12);
+        content.set_margin_bottom(18);
+
+        let cur = self.settings.borrow().clone();
+
+        // ── Editor ────────────────────────────────────────────────────────────
+        let editor_group = adw::PreferencesGroup::new();
+        editor_group.set_title(crate::tr_en!("Editor"));
+
+        let font_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.font_size as f64,
+                6.0,
+                48.0,
+                1.0,
+                2.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        font_row.set_title(crate::tr_en!("Font size"));
+        editor_group.add(&font_row);
+
+        let tab_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.tab_size as f64,
+                1.0,
+                16.0,
+                1.0,
+                2.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        tab_row.set_title(crate::tr_en!("Tab size (spaces)"));
+        editor_group.add(&tab_row);
+
+        let wrap_row = adw::SwitchRow::new();
+        wrap_row.set_title(crate::tr_en!("Word wrap"));
+        wrap_row.set_active(cur.word_wrap);
+        editor_group.add(&wrap_row);
+        content.append(&editor_group);
+
+        // ── Saving ────────────────────────────────────────────────────────────
+        let saving_group = adw::PreferencesGroup::new();
+        saving_group.set_title(crate::tr_en!("Saving"));
+
+        let autosave_row = adw::SwitchRow::new();
+        autosave_row.set_title(crate::tr_en!("Autosave enabled"));
+        autosave_row.set_active(cur.autosave_enabled);
+        saving_group.add(&autosave_row);
+
+        let interval_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.autosave_interval_secs as f64,
+                5.0,
+                600.0,
+                5.0,
+                15.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        interval_row.set_title(crate::tr_en!("Autosave interval (seconds)"));
+        saving_group.add(&interval_row);
+        content.append(&saving_group);
+
+        // ── Execution ───────────────────────────────────────────────────────────
+        let exec_group = adw::PreferencesGroup::new();
+        exec_group.set_title(crate::tr_en!("Execution"));
+
+        let timeout_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.execution_timeout_secs as f64,
+                0.0,
+                3600.0,
+                5.0,
+                30.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        timeout_row.set_title(crate::tr_en!("Execution timeout (seconds, 0 = never)"));
+        exec_group.add(&timeout_row);
+
+        let py_row = adw::EntryRow::new();
+        py_row.set_title(crate::tr_en!("Python path (blank = auto-detect)"));
+        py_row.set_text(cur.python_path.as_deref().unwrap_or(""));
+        py_row.set_show_apply_button(true);
+        let browse_btn = gtk::Button::from_icon_name("document-open-symbolic");
+        browse_btn.add_css_class("flat");
+        browse_btn.set_valign(gtk::Align::Center);
+        browse_btn.set_tooltip_text(Some(crate::tr_en!("Browse for interpreter")));
+        py_row.add_suffix(&browse_btn);
+        exec_group.add(&py_row);
+        content.append(&exec_group);
+
+        // ── Interface ───────────────────────────────────────────────────────────
+        let ui_group = adw::PreferencesGroup::new();
+        ui_group.set_title(crate::tr_en!("Interface"));
+        let toolbar_row = adw::SwitchRow::new();
+        toolbar_row.set_title(crate::tr_en!("Show toolbar"));
+        toolbar_row.set_subtitle(crate::tr_en!("Reopen settings with Ctrl+comma"));
+        toolbar_row.set_active(cur.show_toolbar);
+        ui_group.add(&toolbar_row);
+        content.append(&ui_group);
+
+        let scrolled = gtk::ScrolledWindow::new();
+        scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scrolled.set_vexpand(true);
+        scrolled.set_child(Some(&content));
+        toolbar_view.set_content(Some(&scrolled));
+        dialog.set_content(Some(&toolbar_view));
+
+        // Read every row → persist + apply. Shared by all change signals.
+        let persist: Rc<dyn Fn()> = Rc::new({
+            let h = self.clone();
+            let font_row = font_row.clone();
+            let tab_row = tab_row.clone();
+            let wrap_row = wrap_row.clone();
+            let autosave_row = autosave_row.clone();
+            let interval_row = interval_row.clone();
+            let timeout_row = timeout_row.clone();
+            let py_row = py_row.clone();
+            let toolbar_row = toolbar_row.clone();
+            move || {
+                let py = py_row.text().trim().to_string();
+                let new = NotebookSettings {
+                    python_path: if py.is_empty() { None } else { Some(py) },
+                    font_size: font_row.value().round() as u32,
+                    tab_size: tab_row.value().round() as u32,
+                    word_wrap: wrap_row.is_active(),
+                    autosave_enabled: autosave_row.is_active(),
+                    autosave_interval_secs: interval_row.value().round() as u32,
+                    execution_timeout_secs: timeout_row.value().round() as u32,
+                    show_toolbar: toolbar_row.is_active(),
+                };
+                h.update_settings(new);
+            }
+        });
+
+        {
+            let p = persist.clone();
+            font_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            tab_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            interval_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            timeout_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            wrap_row.connect_active_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            autosave_row.connect_active_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            toolbar_row.connect_active_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            py_row.connect_apply(move |_| p());
+        }
+
+        // Browse for a Python interpreter with a file chooser.
+        {
+            let py_row = py_row.clone();
+            let persist = persist.clone();
+            let dialog = dialog.clone();
+            browse_btn.connect_clicked(move |_| {
+                let py_row = py_row.clone();
+                let persist = persist.clone();
+                let root = dialog.clone().upcast::<gtk::Window>();
+                glib::spawn_future_local(async move {
+                    let file_dialog = gtk::FileDialog::builder()
+                        .title(crate::tr_en!("Select Python Interpreter"))
+                        .modal(true)
+                        .build();
+                    if let Ok(file) = file_dialog.open_future(Some(&root)).await {
+                        if let Some(path) = file.path() {
+                            py_row.set_text(&path.display().to_string());
+                            persist();
+                        }
+                    }
+                });
+            });
+        }
+
+        dialog.present();
+    }
+
+    /// Persist `new`, then apply it live: font size (global CSS), tab width /
+    /// wrap (every open page), toolbar visibility, and the Python preference.
+    fn update_settings(self: &Rc<Self>, new: NotebookSettings) {
+        let new = new.sanitized();
+        let old_python = self.settings.borrow().python_path.clone();
+
+        if let Err(e) = self.settings_service.save(&new) {
+            self.toast_overlay
+                .add_toast(adw::Toast::new(&format!("Settings save failed: {e}")));
+        }
+
+        // Font size → global provider (restyles every open notebook's cells).
+        apply_font_css(&self.font_provider, new.font_size);
+
+        // Tab width + wrap → each open page's code cells.
+        for page in self.pages.borrow().iter() {
+            page.apply_editor_settings(new.font_size, new.tab_size, new.word_wrap);
+        }
+
+        // Toolbar visibility.
+        self.toolbar.set_visible(new.show_toolbar);
+
+        // Re-resolve Python only when the configured path actually changed —
+        // avoids spawning `python --version` on every font/tab tweak.
+        if old_python != new.python_path {
+            let resolved = python_discovery::find_python(new.python_path.as_deref());
+            let label = resolved
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| crate::tr_en!("Python not found").to_string());
+            self.python_label.set_text(&label);
+            *self.python_path.borrow_mut() = resolved;
+        }
+
+        *self.settings.borrow_mut() = new;
+    }
+}
+
+/// Load the code-cell font-size rule into `provider`. Targets the
+/// `.code-cell-source` node used by every [`NotebookPage`] code cell so a
+/// single global provider restyles all open notebooks at once.
+fn apply_font_css(provider: &gtk::CssProvider, font_size: u32) {
+    let css = format!(".code-cell-source, .code-cell-source text {{ font-size: {font_size}px; }}");
+    provider.load_from_string(&css);
+}
+
+// ---------------------------------------------------------------------------
+// Live MCP notebook-command helpers
+// ---------------------------------------------------------------------------
+
+/// Error string returned when no notebook is open.
+fn no_notebook() -> String {
+    "no notebook open — use open_notebook or create_notebook first".to_string()
+}
+
+/// Read a non-negative integer argument as a `usize`.
+fn arg_index(args: &serde_json::Value, key: &str) -> Option<usize> {
+    args.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
+}
+
+/// Normalise a cell-type argument, defaulting to "code".
+fn norm_cell_type(v: Option<&serde_json::Value>) -> String {
+    match v.and_then(|x| x.as_str()) {
+        Some("markdown") => "markdown".to_string(),
+        _ => "code".to_string(),
+    }
+}
+
+/// Map a kernel status label ("Kernel: idle") to a short state keyword.
+fn kernel_keyword(label: &str) -> &'static str {
+    if label.contains("idle") {
+        "idle"
+    } else if label.contains("busy") {
+        "busy"
+    } else if label.contains("starting") || label.contains("restarting") {
+        "starting"
+    } else if label.contains("failed") || label.contains("error") {
+        "error"
+    } else {
+        "dead"
+    }
+}
+
+/// Cap `s` to at most `max` chars, returning the (possibly truncated) text and a
+/// flag indicating whether truncation occurred.
+fn cap(s: &str, max: usize) -> (String, bool) {
+    if s.chars().count() > max {
+        (s.chars().take(max).collect(), true)
+    } else {
+        (s.to_string(), false)
+    }
+}
+
+/// Character cap applied to cell sources and output text for transport.
+const TEXT_CAP: usize = 10_000;
+
+/// Serialise a single code-cell output into the transport JSON shape (binary
+/// image data is flagged via `has_image`, never inlined here).
+fn cell_output_json(out: &CellOutput) -> serde_json::Value {
+    use serde_json::json;
+    match out {
+        CellOutput::Stream { name, text } => {
+            let (t, tr) = cap(&text.joined(), TEXT_CAP);
+            json!({
+                "output_type": "stream", "name": name, "text": t, "text_truncated": tr,
+                "is_error": false, "error_name": "", "traceback": "", "traceback_truncated": false,
+                "has_image": false, "has_html": false,
+            })
+        }
+        CellOutput::ExecuteResult { execution_count, data, .. } => {
+            let (t, tr) = cap(&data.plain_text().unwrap_or_default(), TEXT_CAP);
+            json!({
+                "output_type": "execute_result", "execution_count": execution_count,
+                "text": t, "text_truncated": tr, "is_error": false, "error_name": "",
+                "traceback": "", "traceback_truncated": false,
+                "has_image": data.has_image(), "has_html": data.text_html.is_some(),
+            })
+        }
+        CellOutput::DisplayData { data, .. } => {
+            let (t, tr) = cap(&data.plain_text().unwrap_or_default(), TEXT_CAP);
+            json!({
+                "output_type": "display_data", "text": t, "text_truncated": tr,
+                "is_error": false, "error_name": "", "traceback": "", "traceback_truncated": false,
+                "has_image": data.has_image(), "has_html": data.text_html.is_some(),
+            })
+        }
+        CellOutput::Error { ename, evalue, traceback } => {
+            let (t, tr) = cap(evalue, TEXT_CAP);
+            let (tb, tbtr) = cap(&traceback.join("\n"), TEXT_CAP);
+            json!({
+                "output_type": "error", "text": t, "text_truncated": tr,
+                "is_error": true, "error_name": ename, "traceback": tb, "traceback_truncated": tbtr,
+                "has_image": false, "has_html": false,
+            })
+        }
+    }
+}
+
+/// Build the full notebook-state JSON (metadata + cell list + kernel) for `page`.
+fn notebook_state_json(page: &Rc<NotebookPage>, id: &str) -> serde_json::Value {
+    use serde_json::json;
+    let doc = page.snapshot_document();
+    let label = page.current_kernel_status_label();
+    let file_path = page
+        .file_path
+        .borrow()
+        .as_ref()
+        .map(|p| p.display().to_string());
+    let cells: Vec<serde_json::Value> = doc
+        .cells
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let (src, trunc) = cap(&cell.source.joined(), TEXT_CAP);
+            json!({
+                "index": i,
+                "type": cell.cell_type,
+                "source": src,
+                "source_truncated": trunc,
+                "execution_count": cell.execution_count,
+                "output_count": cell.outputs.len(),
+            })
+        })
+        .collect();
+    json!({
+        "loaded": true,
+        "notebook_id": id,
+        "title": page.title(),
+        "file_path": file_path,
+        "is_dirty": page.is_modified(),
+        "kernel_state": kernel_keyword(&label),
+        "kernel_status_text": label,
+        "selected_index": page.active_cell_index(),
+        "cell_count": doc.cells.len(),
+        "cells": cells,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -734,19 +1731,19 @@ fn build_empty_state() -> gtk::Box {
     icon.add_css_class("dim-label");
     page.append(&icon);
 
-    let title = gtk::Label::new(Some("Notebook"));
+    let title = gtk::Label::new(Some(crate::tr_en!("Notebook")));
     title.add_css_class("title-2");
     page.append(&title);
 
     let subtitle = gtk::Label::new(Some(
-        "Open a Jupyter notebook (.ipynb) or Python (.py) file",
+        crate::tr_en!("Open a Jupyter notebook (.ipynb) or Python (.py) file"),
     ));
     subtitle.add_css_class("dim-label");
     subtitle.set_justify(gtk::Justification::Center);
     page.append(&subtitle);
 
     // Recent notebooks section
-    let recent_label = gtk::Label::new(Some("Recent Notebooks"));
+    let recent_label = gtk::Label::new(Some(crate::tr_en!("Recent Notebooks")));
     recent_label.add_css_class("heading");
     recent_label.set_margin_top(12);
     page.append(&recent_label);

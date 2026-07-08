@@ -47,8 +47,8 @@ pub async fn show_rename_dialog(
 
     let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     btn_row.set_halign(gtk::Align::End);
-    let cancel_btn = gtk::Button::with_label("Cancel");
-    let rename_btn = gtk::Button::with_label("Rename");
+    let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
+    let rename_btn = gtk::Button::with_label(crate::tr_en!("Rename"));
     rename_btn.add_css_class("suggested-action");
     rename_btn.set_receives_default(true);
     btn_row.append(&cancel_btn);

@@ -25,6 +25,22 @@ pub struct AppServices {
     pub health: ServiceHealthTracker,
     pub cache: CacheService,
     pub observation_store: ObservationStore,
+    pub ai_guide: Arc<crate::services::ai_guide::AiGuideService>,
+    pub mcp_host: Arc<crate::mcp::host::McpHost>,
+    /// Persisted MCP client allow-list / seen-clients registry, shared between the
+    /// approval gate and (future) settings UI.
+    pub mcp_clients: Arc<crate::mcp::client_approval::McpClientApprovalStore>,
+    /// Per-image container-manifest discovery cache (shared with the coordinator).
+    pub image_manifests: Arc<crate::services::manifest_store::JsonManifestStore>,
+    /// Container-image probe orchestrator (schedules Skaha probe jobs).
+    pub image_discovery: Arc<crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator>,
+    /// Live MCP auto-apply policy flag (mirrors the persisted McpSettings toggle):
+    /// when false, even non-destructive agent writes queue for review instead of
+    /// auto-applying. Read by the router, updated by the Settings toggle.
+    pub mcp_auto_apply: Arc<std::sync::atomic::AtomicBool>,
+    /// Live "follow the agent" flag: when true, an external agent tool call
+    /// navigates the UI to the relevant module. Read by the router.
+    pub mcp_follow_activity: Arc<std::sync::atomic::AtomicBool>,
     pub endpoints: Arc<ApiEndpoints>,
     pub token: RwLock<Option<String>>,
     pub username: RwLock<Option<String>>,
@@ -41,6 +57,8 @@ impl AppServices {
         let endpoints = Arc::new(ApiEndpoints::new(config));
         let client = Client::new();
         let (toast, toast_rx) = ToastNotifier::new();
+        let image_manifests =
+            Arc::new(crate::services::manifest_store::JsonManifestStore::new());
 
         let services = Arc::new(AppServices {
             auth: AuthService::new(client.clone(), endpoints.clone()),
@@ -49,8 +67,8 @@ impl AppServices {
             platform: PlatformService::new(client.clone(), endpoints.clone()),
             storage: StorageService::new(client.clone(), endpoints.clone()),
             vospace: VoSpaceService::new(client.clone(), endpoints.clone()),
-            tap: tap_service::TAPService::new(client.clone()),
-            datalink: DataLinkService::new(client.clone()),
+            tap: tap_service::TAPService::new(client.clone(), endpoints.clone()),
+            datalink: DataLinkService::new(client.clone(), endpoints.clone()),
             search_store: SearchStoreService::new(),
             settings,
             recent_launches: RecentLaunchService::new(),
@@ -60,6 +78,22 @@ impl AppServices {
             health: ServiceHealthTracker::new(),
             cache: CacheService::new(),
             observation_store: ObservationStore::new(),
+            ai_guide: Arc::new(crate::services::ai_guide::AiGuideService::new()),
+            mcp_host: Arc::new(crate::mcp::host::McpHost::new()),
+            mcp_clients: Arc::new(crate::mcp::client_approval::McpClientApprovalStore::load()),
+            image_manifests: Arc::clone(&image_manifests),
+            image_discovery: Arc::new(
+                crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator::new(
+                    image_manifests,
+                ),
+            ),
+            mcp_auto_apply: Arc::new(std::sync::atomic::AtomicBool::new(
+                crate::services::mcp_settings_service::McpSettingsService::new().auto_apply_enabled(),
+            )),
+            mcp_follow_activity: Arc::new(std::sync::atomic::AtomicBool::new(
+                crate::services::mcp_settings_service::McpSettingsService::new()
+                    .follow_activity_enabled(),
+            )),
             endpoints,
             token: RwLock::new(None),
             username: RwLock::new(None),

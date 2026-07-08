@@ -15,6 +15,15 @@ pub struct VoSpaceNode {
     pub size: u64,
     pub date: Option<String>,
     pub content_type: Option<String>,
+    /// Access control: world-readable (`ivo://ivoa.net/vospace/core#ispublic`).
+    #[serde(default)]
+    pub is_public: bool,
+    /// GMS group URIs granted read access (`#groupread`).
+    #[serde(default)]
+    pub group_read: Vec<String>,
+    /// GMS group URIs granted write access (`#groupwrite`).
+    #[serde(default)]
+    pub group_write: Vec<String>,
 }
 
 impl VoSpaceNode {
@@ -49,6 +58,9 @@ mod tests {
             size: 512,
             date: None,
             content_type: None,
+            is_public: false,
+            group_read: vec![],
+            group_write: vec![],
         };
         assert_eq!(node.size_display(), "512 B");
     }
@@ -62,6 +74,9 @@ mod tests {
             size: 2_147_483_648,
             date: None,
             content_type: None,
+            is_public: false,
+            group_read: vec![],
+            group_write: vec![],
         };
         assert_eq!(node.size_display(), "2.00 GB");
     }
@@ -75,6 +90,9 @@ mod tests {
             size: 0,
             date: None,
             content_type: None,
+            is_public: false,
+            group_read: vec![],
+            group_write: vec![],
         };
         assert!(folder.is_container());
     }

@@ -1,5 +1,7 @@
 mod config;
 mod helpers;
+mod i18n;
+mod mcp;
 mod models;
 mod services;
 mod state;
@@ -10,6 +12,18 @@ use libadwaita as adw;
 use state::AppServices;
 
 fn main() {
+    // MCP bridge mode: `verbinal mcp` runs a thin stdio<->socket relay that an MCP
+    // client (Claude Desktop / Claude Code CLI) launches; it forwards to the app's
+    // per-user UNIX socket. No GUI in this mode.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let code = match rt.block_on(mcp::bridge::run_stdio_bridge()) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        };
+        std::process::exit(code);
+    }
+
     // Start a background tokio runtime for async HTTP
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -44,6 +58,11 @@ fn main() {
         );
 
         let (services, toast_rx) = AppServices::new(handle.clone());
+
+        // Resolve the UI language from settings (system => environment locale).
+        // Must happen before any widgets are built so tr!() returns the right text.
+        let lang = i18n::lang_from_setting(&services.endpoints.config().language);
+        i18n::set_lang(lang);
 
         // Theme is applied inside build_main_window from saved settings
         ui::build_main_window(app, services, toast_rx);

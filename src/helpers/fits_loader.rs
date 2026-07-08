@@ -40,7 +40,27 @@ use fitsio_sys as sys;
 /// produced by `fpack`.
 #[cfg(feature = "fits")]
 pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
-    unsafe { load_fits_image_raw(path) }
+    // Unwrap a surrounding tar / .tar.gz / .tgz container first (CADC
+    // "download all" bundles). `resolved` — and the TempDir it owns for an
+    // extracted member — stays alive until this function returns, so the
+    // extracted file survives the whole load.
+    let resolved = crate::helpers::fits_container::resolve_fits_path(path)?;
+    unsafe { load_fits_image_raw(&resolved.path, None) }
+}
+
+/// Load a specific HDU (1-based) from a FITS file — used by the extension
+/// selector and the cube viewer (spectral-axis extension).
+#[cfg(feature = "fits")]
+#[allow(dead_code)]
+pub fn load_fits_image_hdu(path: &Path, hdu: usize) -> Result<FitsImageData, String> {
+    unsafe { load_fits_image_raw(path, Some(hdu as i32)) }
+}
+
+/// Enumerate all HDUs in a FITS file (index, name, dimensions, image flag).
+#[cfg(feature = "fits")]
+#[allow(dead_code)]
+pub fn list_hdus(path: &Path) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
+    unsafe { list_hdus_raw(path) }
 }
 
 /// Fallback when cfitsio is not available: returns an error.
@@ -50,6 +70,16 @@ pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
         "FITS support not compiled. Install libcfitsio-dev and rebuild with --features fits to load '{}'",
         path.display()
     ))
+}
+
+#[cfg(not(feature = "fits"))]
+pub fn load_fits_image_hdu(path: &Path, _hdu: usize) -> Result<FitsImageData, String> {
+    load_fits_image(path)
+}
+
+#[cfg(not(feature = "fits"))]
+pub fn list_hdus(_path: &Path) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
+    Ok(Vec::new())
 }
 
 /// Get a human-readable summary of FITS header information.
@@ -120,7 +150,10 @@ unsafe fn check_status(status: i32, context: &str) -> Result<(), String> {
 }
 
 #[cfg(feature = "fits")]
-unsafe fn load_fits_image_raw(path: &Path) -> Result<FitsImageData, String> {
+unsafe fn load_fits_image_raw(
+    path: &Path,
+    target_hdu: Option<i32>,
+) -> Result<FitsImageData, String> {
     // ── 1. Open the file ─────────────────────────────────────────────
     let path_str = path.to_str().ok_or_else(|| {
         format!("FITS path contains invalid UTF-8: {:?}", path)
@@ -187,13 +220,19 @@ unsafe fn load_fits_image_raw(path: &Path) -> Result<FitsImageData, String> {
         }
     }
 
-    let chosen_hdu = match image_hdu {
+    // An explicit target HDU (extension selector / cube viewer) overrides the
+    // auto-detected first image.
+    let chosen_hdu = match target_hdu {
         Some(n) => n,
-        None => {
-            return Err(
-                "No image HDU found in FITS file (checked primary + all extensions)".to_string(),
-            );
-        }
+        None => match image_hdu {
+            Some(n) => n,
+            None => {
+                return Err(
+                    "No image HDU found in FITS file (checked primary + all extensions)"
+                        .to_string(),
+                );
+            }
+        },
     };
 
     // Navigate to the chosen HDU (ffmahd above may already have left us
@@ -272,6 +311,113 @@ unsafe fn load_fits_image_raw(path: &Path) -> Result<FitsImageData, String> {
         header,
         header_ordered,
     ))
+}
+
+#[cfg(feature = "fits")]
+#[allow(dead_code)]
+unsafe fn list_hdus_raw(
+    path: &Path,
+) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
+    use crate::models::fits_image::HduInfo;
+
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format!("FITS path contains invalid UTF-8: {:?}", path))?;
+    let c_path = CString::new(path_str)
+        .map_err(|e| format!("Cannot encode FITS path as C string: {}", e))?;
+    let mut fptr: *mut sys::fitsfile = std::ptr::null_mut();
+    let mut status: i32 = 0;
+    sys::ffopen(&mut fptr, c_path.as_ptr(), sys::READONLY as i32, &mut status);
+    check_status(status, "Cannot open FITS file")?;
+    let handle = FitsHandle { fptr };
+
+    let mut num_hdus: i32 = 0;
+    status = 0;
+    sys::ffthdu(handle.fptr, &mut num_hdus, &mut status);
+    check_status(status, "Cannot read number of HDUs")?;
+
+    let mut out = Vec::new();
+    for hdu_idx in 1..=num_hdus {
+        let mut hdu_type: i32 = 0;
+        status = 0;
+        sys::ffmahd(handle.fptr, hdu_idx, &mut hdu_type, &mut status);
+        if status != 0 {
+            continue;
+        }
+
+        // Dimensions (ffgidm/ffgisz return the *uncompressed* dims for
+        // tile-compressed image HDUs).
+        let mut naxis: i32 = 0;
+        let mut dim_status = 0;
+        sys::ffgidm(handle.fptr, &mut naxis, &mut dim_status);
+        let (mut width, mut height, mut depth) = (0usize, 0usize, 0usize);
+        if dim_status == 0 && naxis >= 1 {
+            let mut naxes = vec![0i64; naxis as usize];
+            let mut sz_status = 0;
+            sys::ffgisz(handle.fptr, naxis, naxes.as_mut_ptr(), &mut sz_status);
+            if sz_status == 0 {
+                width = naxes.first().copied().unwrap_or(0) as usize;
+                height = naxes.get(1).copied().unwrap_or(0) as usize;
+                depth = naxes.get(2).copied().unwrap_or(0) as usize;
+            }
+        }
+
+        let mut is_image = false;
+        if hdu_type == sys::IMAGE_HDU as i32 && naxis >= 2 {
+            is_image = true;
+        } else if hdu_type == sys::BINARY_TBL as i32 {
+            let mut c_status = 0;
+            let compressed = sys::fits_is_compressed_image(handle.fptr, &mut c_status);
+            if c_status == 0 && compressed != 0 && naxis >= 2 {
+                is_image = true;
+            }
+        }
+
+        let name = read_string_key(handle.fptr, "EXTNAME")
+            .or_else(|| read_string_key(handle.fptr, "HDUNAME"))
+            .unwrap_or_else(|| {
+                if hdu_idx == 1 {
+                    "Primary".to_string()
+                } else {
+                    format!("HDU {}", hdu_idx)
+                }
+            });
+
+        out.push(HduInfo {
+            index: hdu_idx as usize,
+            name,
+            width,
+            height,
+            depth,
+            is_image,
+        });
+    }
+    Ok(out)
+}
+
+/// Read a string-valued keyword from the *current* HDU, or `None` if absent.
+#[cfg(feature = "fits")]
+#[allow(dead_code)]
+unsafe fn read_string_key(fptr: *mut sys::fitsfile, key: &str) -> Option<String> {
+    let c_key = CString::new(key).ok()?;
+    let mut val_buf = [0i8; (sys::FLEN_VALUE as usize) + 1];
+    let mut status = 0;
+    sys::ffgkys(
+        fptr,
+        c_key.as_ptr(),
+        val_buf.as_mut_ptr(),
+        std::ptr::null_mut(),
+        &mut status,
+    );
+    if status != 0 {
+        return None;
+    }
+    let s = cstr_to_string(val_buf.as_ptr());
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 #[cfg(feature = "fits")]

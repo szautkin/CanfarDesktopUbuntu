@@ -5,9 +5,37 @@ use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+
+use crate::models::agent_attribution::AgentAttribution;
+use crate::models::observation_note::ObservationNote;
+use crate::services::observation_note_store::ObservationNoteStore;
+use crate::ui::agent_badge::agent_badge;
+
+/// Resolve the optional agent provenance stored on a record into a renderable
+/// [`AgentAttribution`].  The stored string is either a JSON-serialised
+/// `AgentAttribution` (full provenance, as written by MCP agent flows) or a
+/// bare client label (e.g. `"Claude Desktop"`), in which case we synthesise an
+/// attribution using the record's `downloaded_at` as the timestamp.  Returns
+/// `None` when the record has no attribution (the common, non-agent case).
+fn agent_attribution_from(obs: &DownloadedObservation) -> Option<AgentAttribution> {
+    let raw = obs.agent_attribution.as_deref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // Prefer a full JSON payload so client/tool/timestamp/fingerprint survive.
+    if let Ok(attr) = serde_json::from_str::<AgentAttribution>(raw) {
+        return Some(attr);
+    }
+    // Fall back to treating the value as a plain client label.
+    Some(AgentAttribution::new(
+        raw.to_string(),
+        crate::tr_en!("mcp"),
+        obs.downloaded_at.clone(),
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // ResearchPage
@@ -34,6 +62,24 @@ pub struct ResearchPage {
     /// Container for the currently rendered detail view.  Cleared and
     /// rebuilt on every selection change.
     detail_container: gtk::Box,
+
+    // ── Research-notes editor state ────────────────────────────────────
+    // Notes are keyed by publisher ID; `note_edit_id` is the id the editor
+    // currently holds.  Saving always writes under it, and we flush under the
+    // OUTGOING id before loading a new one, so quick selection switches never
+    // cross-contaminate notes (mirrors the Windows `_noteEditId` guard).
+    note_store: ObservationNoteStore,
+    note_edit_id: RefCell<Option<String>>,
+    /// Suppresses autosave while the editor is being seeded from the store.
+    note_suppress: Cell<bool>,
+    /// Pending 700ms debounce timer; `None` when no edit is queued.
+    note_debounce: RefCell<Option<glib::SourceId>>,
+    /// Current in-editor rating (0–5), read on save.
+    note_rating: Cell<u8>,
+    /// Live refs to the editor widgets so save/flush can read their values.
+    note_buffer: RefCell<Option<gtk::TextBuffer>>,
+    note_tags_entry: RefCell<Option<gtk::Entry>>,
+    star_buttons: RefCell<Vec<gtk::Button>>,
 }
 
 impl ResearchPage {
@@ -52,12 +98,20 @@ impl ResearchPage {
         toolbar.set_margin_bottom(6);
 
         let filter_entry = gtk::SearchEntry::new();
-        filter_entry.set_placeholder_text(Some("Search by collection, target, instrument…"));
+        filter_entry.set_placeholder_text(Some(crate::tr_en!("Search by collection, target, instrument…")));
         filter_entry.set_hexpand(true);
         toolbar.append(&filter_entry);
 
+        let export_btn = make_icon_button(
+            "document-save-symbolic",
+            crate::tr_en!("Export…"),
+            crate::tr_en!("Export a research bundle (observations + notes) as a .zip"),
+            None,
+        );
+        toolbar.append(&export_btn);
+
         let refresh_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_btn.set_tooltip_text(Some("Refresh list"));
+        refresh_btn.set_tooltip_text(Some(crate::tr_en!("Refresh list")));
         toolbar.append(&refresh_btn);
 
         widget.append(&toolbar);
@@ -87,14 +141,14 @@ impl ResearchPage {
         // Empty state — copy includes bookmarked-only entries
         let empty_status = adw::StatusPage::new();
         empty_status.set_icon_name(Some("document-open-recent-symbolic"));
-        empty_status.set_title("No Saved Observations");
+        empty_status.set_title(crate::tr_en!("No Saved Observations"));
         empty_status.set_description(Some(
-            "Search the CADC archive, then save or download observations \
-             to see them here.",
+            crate::tr_en!("Search the CADC archive, then save or download observations \
+             to see them here."),
         ));
 
         // CTA button → jumps to the Search page
-        let go_to_search_btn = gtk::Button::with_label("Go to Search");
+        let go_to_search_btn = gtk::Button::with_label(crate::tr_en!("Go to Search"));
         go_to_search_btn.add_css_class("suggested-action");
         go_to_search_btn.add_css_class("pill");
         go_to_search_btn.set_halign(gtk::Align::Center);
@@ -129,7 +183,7 @@ impl ResearchPage {
         left_pane.append(&content_stack);
 
         // Count label — thin status bar at the bottom of the left pane
-        let count_label = gtk::Label::new(Some("0 observations"));
+        let count_label = gtk::Label::new(Some(crate::tr_en!("0 observations")));
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
         count_label.set_margin_start(12);
@@ -151,9 +205,9 @@ impl ResearchPage {
         // Empty placeholder shown when nothing is selected
         let detail_empty = adw::StatusPage::new();
         detail_empty.set_icon_name(Some("document-open-symbolic"));
-        detail_empty.set_title("Select an observation");
+        detail_empty.set_title(crate::tr_en!("Select an observation"));
         detail_empty.set_description(Some(
-            "Saved observations from CADC archive searches appear on the left.",
+            crate::tr_en!("Saved observations from CADC archive searches appear on the left."),
         ));
         detail_stack.add_named(&detail_empty, Some("empty"));
 
@@ -190,6 +244,14 @@ impl ResearchPage {
             content_stack,
             detail_stack,
             detail_container,
+            note_store: ObservationNoteStore::new(),
+            note_edit_id: RefCell::new(None),
+            note_suppress: Cell::new(false),
+            note_debounce: RefCell::new(None),
+            note_rating: Cell::new(0),
+            note_buffer: RefCell::new(None),
+            note_tags_entry: RefCell::new(None),
+            star_buttons: RefCell::new(Vec::new()),
         });
 
         // Wire signals
@@ -208,6 +270,16 @@ impl ResearchPage {
             let p = Rc::clone(&page);
             refresh_btn.connect_clicked(move |_| {
                 p.reload();
+            });
+        }
+
+        {
+            let p = Rc::clone(&page);
+            export_btn.connect_clicked(move |_| {
+                let p = Rc::clone(&p);
+                glib::spawn_future_local(async move {
+                    p.export_bundle().await;
+                });
             });
         }
 
@@ -309,7 +381,7 @@ impl ResearchPage {
 
         if observations.is_empty() {
             self.content_stack.set_visible_child_name("empty");
-            self.count_label.set_text("No observations");
+            self.count_label.set_text(crate::tr_en!("No observations"));
             return;
         }
 
@@ -329,6 +401,13 @@ impl ResearchPage {
 
     /// Reset the right-side detail pane to the empty placeholder.
     fn clear_detail(&self) {
+        // Persist any pending edit before we tear the editor widgets down.
+        self.flush_note();
+        *self.note_edit_id.borrow_mut() = None;
+        *self.note_buffer.borrow_mut() = None;
+        *self.note_tags_entry.borrow_mut() = None;
+        self.star_buttons.borrow_mut().clear();
+
         while let Some(child) = self.detail_container.first_child() {
             self.detail_container.remove(&child);
         }
@@ -385,18 +464,24 @@ impl ResearchPage {
         kind_badge.set_valign(gtk::Align::Center);
         kind_badge.set_margin_end(6);
         if obs.is_bookmarked() {
-            kind_badge.set_text("Bookmarked");
+            kind_badge.set_text(crate::tr_en!("Bookmarked"));
             kind_badge.add_css_class("badge-bookmarked");
         } else {
             let size_text = obs.formatted_size();
             if size_text.is_empty() {
-                kind_badge.set_text("FITS");
+                kind_badge.set_text(crate::tr_en!("FITS"));
             } else {
                 kind_badge.set_text(&size_text);
             }
             kind_badge.add_css_class("badge-fits");
         }
         row.add_suffix(&kind_badge);
+
+        // Agent provenance badge — shown only when an AI agent created this
+        // record over MCP (matches ResearchPage.xaml's inline AgentBadge).
+        if let Some(attr) = agent_attribution_from(obs) {
+            row.add_suffix(&agent_badge(&attr));
+        }
 
         row
     }
@@ -407,6 +492,14 @@ impl ResearchPage {
 
     /// Populate the right-side detail pane for the selected observation.
     fn show_detail(self: &Rc<Self>, obs: &DownloadedObservation) {
+        // Persist the OUTGOING observation's note, then drop the stale editor
+        // widget refs before rebuilding (mirrors the Windows FlushNote on
+        // selection change).  Must flush BEFORE clearing the refs it reads.
+        self.flush_note();
+        *self.note_buffer.borrow_mut() = None;
+        *self.note_tags_entry.borrow_mut() = None;
+        self.star_buttons.borrow_mut().clear();
+
         // Clear previous detail
         while let Some(child) = self.detail_container.first_child() {
             self.detail_container.remove(&child);
@@ -433,7 +526,7 @@ impl ResearchPage {
             // Legacy record saved before managed storage was introduced.
             // Show a subtle banner telling the user to re-save for offline access.
             let banner = gtk::Label::new(Some(
-                "Legacy record — re-save from the Search page to cache the preview locally.",
+                crate::tr_en!("Legacy record — re-save from the Search page to cache the preview locally."),
             ));
             banner.add_css_class("dim-label");
             banner.add_css_class("caption");
@@ -448,7 +541,7 @@ impl ResearchPage {
         } else if !obs.observation_id.is_empty() {
             obs.observation_id.clone()
         } else {
-            "Observation".to_string()
+            crate::tr_en!("Observation").to_string()
         };
         let title_label = gtk::Label::new(Some(&title_text));
         title_label.add_css_class("title-2");
@@ -472,6 +565,19 @@ impl ResearchPage {
             self.detail_container.append(&subtitle);
         }
 
+        // ── Agent provenance badge (only for agent-created records) ─────
+        if let Some(attr) = agent_attribution_from(obs) {
+            let attr_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            attr_row.set_halign(gtk::Align::Start);
+            attr_row.set_margin_top(2);
+            let caption = gtk::Label::new(Some(crate::tr_en!("Created by AI agent")));
+            caption.add_css_class("caption");
+            caption.add_css_class("dim-label");
+            attr_row.append(&caption);
+            attr_row.append(&agent_badge(&attr));
+            self.detail_container.append(&attr_row);
+        }
+
         // ── Action bar ─────────────────────────────────────────────────
         let action_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         action_row.set_halign(gtk::Align::Start);
@@ -485,8 +591,8 @@ impl ResearchPage {
         if file_exists {
             let open_btn = make_icon_button(
                 "document-open-symbolic",
-                "Open",
-                "Open the FITS file in the viewer",
+                crate::tr_en!("Open (FITS)"),
+                crate::tr_en!("Open the file in the 2D FITS viewer"),
                 Some("suggested-action"),
             );
             let local_path = obs.local_path.clone();
@@ -495,7 +601,7 @@ impl ResearchPage {
             open_btn.connect_clicked(move |_| {
                 if !std::path::Path::new(&local_path).exists() {
                     svc.toast
-                        .toast("File not found — it may have been moved or deleted");
+                        .toast(crate::tr_en!("File not found — it may have been moved or deleted"));
                     return;
                 }
                 if let Some(app) = app_ref.borrow().as_ref() {
@@ -508,11 +614,76 @@ impl ResearchPage {
             });
             action_row.append(&open_btn);
 
+            // Open as Cube — offered for FITS-like files; the cube loader declines
+            // non-cubes with a toast (matches the reference's dual-viewer choice).
+            if is_cube_openable(&obs.local_path) {
+                let cube_btn = make_icon_button(
+                    "view-paged-symbolic",
+                    crate::tr_en!("Open as Cube"),
+                    crate::tr_en!("Open a spectral cube in the 3D Cube Viewer"),
+                    None,
+                );
+                let local_path = obs.local_path.clone();
+                let app_ref = Rc::clone(&self.application);
+                let svc = self.services.clone();
+                cube_btn.connect_clicked(move |_| {
+                    if !std::path::Path::new(&local_path).exists() {
+                        svc.toast.toast(crate::tr_en!(
+                            "File not found — it may have been moved or deleted"
+                        ));
+                        return;
+                    }
+                    if let Some(app) = app_ref.borrow().as_ref() {
+                        let ag: &gtk::gio::ActionGroup = app.upcast_ref();
+                        ag.activate_action(
+                            "open-cube-file",
+                            Some(&glib::Variant::from(local_path.as_str())),
+                        );
+                    }
+                });
+                action_row.append(&cube_btn);
+
+                // Sniff-driven recommendation hint. `fits_sniff::inspect` reads only
+                // header metadata; run it off the GLib thread so a slow disk / large
+                // header never stalls the UI. When it detects a spectral third axis
+                // we reveal the hint so the user prefers the Cube Viewer. (Reference:
+                // ResearchViewModel's post-download viewer recommendation.)
+                let reco_label = gtk::Label::new(None);
+                reco_label.add_css_class("caption");
+                reco_label.add_css_class("accent");
+                reco_label.set_valign(gtk::Align::Center);
+                reco_label.set_visible(false);
+                action_row.append(&reco_label);
+
+                let path = obs.local_path.clone();
+                let svc = self.services.clone();
+                glib::spawn_future_local(async move {
+                    let p = std::path::PathBuf::from(path);
+                    let shape = svc
+                        .spawn(async move {
+                            tokio::task::spawn_blocking(move || {
+                                crate::helpers::fits_sniff::inspect(&p)
+                            })
+                            .await
+                            .ok()
+                        })
+                        .await;
+                    if let Some(shape) = shape {
+                        if shape.recommend_cube() {
+                            reco_label.set_text(crate::tr_en!(
+                                "Spectral cube detected — Open as Cube recommended"
+                            ));
+                            reco_label.set_visible(true);
+                        }
+                    }
+                });
+            }
+
             // Show in File Manager
             let show_btn = make_icon_button(
                 "folder-symbolic",
-                "Show in Files",
-                "Open the containing folder in the file manager",
+                crate::tr_en!("Show in Files"),
+                crate::tr_en!("Open the containing folder in the file manager"),
                 None,
             );
             let local_path = obs.local_path.clone();
@@ -529,24 +700,68 @@ impl ResearchPage {
                             .toast(&format!("Could not open file manager: {}", e));
                     }
                 } else {
-                    svc.toast.toast("Unable to locate parent directory");
+                    svc.toast.toast(crate::tr_en!("Unable to locate parent directory"));
                 }
             });
             action_row.append(&show_btn);
         } else if !obs.is_bookmarked() {
-            // File expected but missing from disk
-            let missing_lbl = gtk::Label::new(Some("File missing from disk"));
+            // File expected but missing from disk. Offer a one-click re-download
+            // that resolves the DataLink #this URL and streams it back into the
+            // managed directory (mirrors ResearchViewModel.DownloadObservationFileAsync).
+            let missing_lbl = gtk::Label::new(Some(crate::tr_en!("File missing from disk")));
             missing_lbl.add_css_class("warning");
             missing_lbl.add_css_class("caption");
             missing_lbl.set_margin_end(8);
             action_row.append(&missing_lbl);
+
+            let download_btn = make_icon_button(
+                "folder-download-symbolic",
+                crate::tr_en!("Download FITS"),
+                crate::tr_en!("Re-download the FITS file to the Research library"),
+                Some("suggested-action"),
+            );
+            let this = Rc::clone(self);
+            let obs_clone = obs.clone();
+            download_btn.connect_clicked(move |btn| {
+                // Guard against double-clicks — the streamed download can take a
+                // while; disable the button for the duration.
+                btn.set_sensitive(false);
+                let this = Rc::clone(&this);
+                let obs_clone = obs_clone.clone();
+                glib::spawn_future_local(async move {
+                    this.download_missing_file(&obs_clone).await;
+                });
+            });
+            action_row.append(&download_btn);
         }
+
+        // CAOM2 Observation Detail (metadata — works even without a local file)
+        let details_btn = make_icon_button(
+            "view-more-symbolic",
+            crate::tr_en!("Details"),
+            crate::tr_en!("View the full CAOM2 observation metadata"),
+            None,
+        );
+        {
+            let pub_id = obs.publisher_id.clone();
+            let app_ref = Rc::clone(&self.application);
+            details_btn.connect_clicked(move |_| {
+                if let Some(app) = app_ref.borrow().as_ref() {
+                    let ag: &gtk::gio::ActionGroup = app.upcast_ref();
+                    ag.activate_action(
+                        "open-observation-detail",
+                        Some(&glib::Variant::from(pub_id.as_str())),
+                    );
+                }
+            });
+        }
+        action_row.append(&details_btn);
 
         // Copy Publisher ID
         let copy_btn = make_icon_button(
             "edit-copy-symbolic",
-            "Copy ID",
-            "Copy the publisher DID to the clipboard",
+            crate::tr_en!("Copy ID"),
+            crate::tr_en!("Copy the publisher DID to the clipboard"),
             None,
         );
         {
@@ -555,7 +770,7 @@ impl ResearchPage {
             copy_btn.connect_clicked(move |btn| {
                 let display = btn.display();
                 display.clipboard().set_text(&pub_id);
-                svc.toast.toast("Publisher ID copied");
+                svc.toast.toast(crate::tr_en!("Publisher ID copied"));
             });
         }
         action_row.append(&copy_btn);
@@ -570,8 +785,8 @@ impl ResearchPage {
             // Legacy metadata-only record: simple "Remove" button
             let del_btn = make_icon_button(
                 "user-trash-symbolic",
-                "Remove",
-                "Remove this observation from the library",
+                crate::tr_en!("Remove"),
+                crate::tr_en!("Remove this observation from the library"),
                 Some("destructive-action"),
             );
             let this = Rc::clone(self);
@@ -596,8 +811,8 @@ impl ResearchPage {
             // store entry AND the managed directory (preview + FITS file).
             let del_btn = make_icon_button(
                 "user-trash-symbolic",
-                "Delete",
-                "Remove from Research and delete the local files",
+                crate::tr_en!("Delete"),
+                crate::tr_en!("Remove from Research and delete the local files"),
                 Some("destructive-action"),
             );
             let this = Rc::clone(self);
@@ -625,7 +840,7 @@ impl ResearchPage {
 
         // ── Observation Metadata group ─────────────────────────────────
         let metadata_group = adw::PreferencesGroup::new();
-        metadata_group.set_title("Observation Metadata");
+        metadata_group.set_title(crate::tr_en!("Observation Metadata"));
 
         let add_row = |group: &adw::PreferencesGroup, label: &str, value: &str| {
             if !value.is_empty() {
@@ -638,44 +853,253 @@ impl ResearchPage {
             }
         };
 
-        add_row(&metadata_group, "Collection", &obs.collection);
-        add_row(&metadata_group, "Observation ID", &obs.observation_id);
-        add_row(&metadata_group, "Target Name", &obs.target_name);
-        add_row(&metadata_group, "Instrument", &obs.instrument);
-        add_row(&metadata_group, "Filter", &obs.filter);
-        add_row(&metadata_group, "RA (J2000)", &obs.ra);
-        add_row(&metadata_group, "Dec (J2000)", &obs.dec);
-        add_row(&metadata_group, "Start Date", &obs.start_date);
-        add_row(&metadata_group, "Calibration Level", &obs.cal_level);
+        add_row(&metadata_group, crate::tr_en!("Collection"), &obs.collection);
+        add_row(&metadata_group, crate::tr_en!("Observation ID"), &obs.observation_id);
+        add_row(&metadata_group, crate::tr_en!("Target Name"), &obs.target_name);
+        add_row(&metadata_group, crate::tr_en!("Instrument"), &obs.instrument);
+        add_row(&metadata_group, crate::tr_en!("Filter"), &obs.filter);
+        add_row(&metadata_group, crate::tr_en!("RA (J2000)"), &obs.ra);
+        add_row(&metadata_group, crate::tr_en!("Dec (J2000)"), &obs.dec);
+        add_row(&metadata_group, crate::tr_en!("Start Date"), &obs.start_date);
+        add_row(&metadata_group, crate::tr_en!("Calibration Level"), &obs.cal_level);
         self.detail_container.append(&metadata_group);
 
         // ── File Info group ────────────────────────────────────────────
         let file_group = adw::PreferencesGroup::new();
-        file_group.set_title("File Info");
+        file_group.set_title(crate::tr_en!("File Info"));
         file_group.set_margin_top(12);
 
         if obs.is_bookmarked() {
             let row = adw::ActionRow::builder()
-                .title("Status")
-                .subtitle("Bookmarked (metadata only — no file downloaded)")
+                .title(crate::tr_en!("Status"))
+                .subtitle(crate::tr_en!("Bookmarked (metadata only — no file downloaded)"))
                 .build();
             file_group.add(&row);
         } else {
-            add_row(&file_group, "Path", &obs.local_path);
+            add_row(&file_group, crate::tr_en!("Path"), &obs.local_path);
             let size_str = obs.formatted_size();
             if !size_str.is_empty() {
-                add_row(&file_group, "Size", &size_str);
+                add_row(&file_group, crate::tr_en!("Size"), &size_str);
             }
             let exists_str = if file_exists {
-                "Yes"
+                crate::tr_en!("Yes")
             } else {
-                "Missing — file not found on disk"
+                crate::tr_en!("Missing — file not found on disk")
             };
-            add_row(&file_group, "File exists", exists_str);
+            add_row(&file_group, crate::tr_en!("File exists"), exists_str);
         }
-        add_row(&file_group, "Saved at", &format_rfc3339(&obs.downloaded_at));
-        add_row(&file_group, "Publisher ID", &obs.publisher_id);
+        add_row(&file_group, crate::tr_en!("Saved at"), &format_rfc3339(&obs.downloaded_at));
+        add_row(&file_group, crate::tr_en!("Publisher ID"), &obs.publisher_id);
         self.detail_container.append(&file_group);
+
+        // ── Research Notes editor (rating + note + tags, debounced autosave) ─
+        self.build_notes_editor(obs);
+    }
+
+    // -----------------------------------------------------------------------
+    // Research-notes editor
+    // -----------------------------------------------------------------------
+
+    /// Build the rating/note/tags editor into the detail pane and seed it from
+    /// the note store for `obs`.  Notes are keyed by publisher ID; without one
+    /// there is nothing to persist against, so the editor is skipped.
+    ///
+    /// Ported from `ResearchPage.xaml.cs` `BuildNotesEditor`.
+    fn build_notes_editor(self: &Rc<Self>, obs: &DownloadedObservation) {
+        if obs.publisher_id.is_empty() {
+            *self.note_edit_id.borrow_mut() = None;
+            return;
+        }
+
+        // Seed with events suppressed so setting the initial values does not
+        // trigger an autosave.
+        self.note_suppress.set(true);
+        *self.note_edit_id.borrow_mut() = Some(obs.publisher_id.clone());
+
+        let saved = self.note_store.get(&obs.publisher_id);
+
+        // Section header.
+        let header = gtk::Label::new(Some(crate::tr_en!("Research Notes")));
+        header.add_css_class("heading");
+        header.set_halign(gtk::Align::Start);
+        header.set_margin_top(12);
+        self.detail_container.append(&header);
+
+        // ── Rating row: five star buttons + a clear button ──────────────
+        let rating_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        rating_row.set_halign(gtk::Align::Start);
+
+        let rating_label = gtk::Label::new(Some(crate::tr_en!("Rating")));
+        rating_label.add_css_class("dim-label");
+        rating_row.append(&rating_label);
+
+        let stars_box = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let mut star_btns: Vec<gtk::Button> = Vec::with_capacity(5);
+        for i in 0..5u8 {
+            let btn = gtk::Button::new();
+            btn.add_css_class("flat");
+            btn.set_child(Some(&gtk::Image::from_icon_name("non-starred-symbolic")));
+            btn.set_tooltip_text(Some(&format!(
+                "{} star{}",
+                i + 1,
+                if i == 0 { "" } else { "s" }
+            )));
+            let this = Rc::clone(self);
+            btn.connect_clicked(move |_| {
+                let clicked = i + 1;
+                // Clicking the current top star clears the rating (matches the
+                // reference RatingControl's IsClearEnabled behavior).
+                let new = if this.note_rating.get() == clicked { 0 } else { clicked };
+                this.set_rating(new);
+                this.schedule_note_save();
+            });
+            stars_box.append(&btn);
+            star_btns.push(btn);
+        }
+        rating_row.append(&stars_box);
+        *self.star_buttons.borrow_mut() = star_btns;
+
+        let clear_btn = gtk::Button::from_icon_name("edit-clear-symbolic");
+        clear_btn.add_css_class("flat");
+        clear_btn.set_tooltip_text(Some(crate::tr_en!("Clear rating")));
+        {
+            let this = Rc::clone(self);
+            clear_btn.connect_clicked(move |_| {
+                this.set_rating(0);
+                this.schedule_note_save();
+            });
+        }
+        rating_row.append(&clear_btn);
+        self.detail_container.append(&rating_row);
+
+        // ── Multiline note ──────────────────────────────────────────────
+        let note_scroll = gtk::ScrolledWindow::new();
+        note_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        note_scroll.set_min_content_height(96);
+        note_scroll.add_css_class("card");
+        let note_view = gtk::TextView::new();
+        note_view.set_wrap_mode(gtk::WrapMode::WordChar);
+        note_view.set_left_margin(6);
+        note_view.set_right_margin(6);
+        note_view.set_top_margin(6);
+        note_view.set_bottom_margin(6);
+        let buffer = note_view.buffer();
+        note_scroll.set_child(Some(&note_view));
+        self.detail_container.append(&note_scroll);
+        {
+            let this = Rc::clone(self);
+            buffer.connect_changed(move |_| this.schedule_note_save());
+        }
+
+        // ── Tags (comma-separated) ──────────────────────────────────────
+        let tags_entry = gtk::Entry::new();
+        tags_entry.set_placeholder_text(Some(crate::tr_en!("Tags (comma-separated)")));
+        {
+            let this = Rc::clone(self);
+            tags_entry.connect_changed(move |_| this.schedule_note_save());
+        }
+        self.detail_container.append(&tags_entry);
+
+        // Seed values from the store.
+        let (rating, note_text, tags_text) = match saved {
+            Some(n) => (n.rating, n.note, n.tags.join(", ")),
+            None => (0, String::new(), String::new()),
+        };
+        buffer.set_text(&note_text);
+        tags_entry.set_text(&tags_text);
+
+        *self.note_buffer.borrow_mut() = Some(buffer);
+        *self.note_tags_entry.borrow_mut() = Some(tags_entry);
+        self.set_rating(rating);
+
+        self.note_suppress.set(false);
+    }
+
+    /// Update the in-editor rating and refresh the star icons.
+    fn set_rating(&self, rating: u8) {
+        let r = rating.min(5);
+        self.note_rating.set(r);
+        for (i, btn) in self.star_buttons.borrow().iter().enumerate() {
+            if let Some(img) = btn.child().and_then(|c| c.downcast::<gtk::Image>().ok()) {
+                let icon = if (i as u8) < r {
+                    "starred-symbolic"
+                } else {
+                    "non-starred-symbolic"
+                };
+                img.set_icon_name(Some(icon));
+            }
+        }
+    }
+
+    /// Restart the 700ms debounce on any edit (mirrors `OnNoteEdited`).
+    fn schedule_note_save(self: &Rc<Self>) {
+        if self.note_suppress.get() {
+            return;
+        }
+        // Cancel a still-pending timer before arming a fresh one.
+        if let Some(src) = self.note_debounce.borrow_mut().take() {
+            src.remove();
+        }
+        let this = Rc::clone(self);
+        let src = glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
+            // Clear our stored handle first so `save_note_now` / `flush_note`
+            // never try to remove this already-fired source.
+            this.note_debounce.borrow_mut().take();
+            this.save_note_now();
+        });
+        *self.note_debounce.borrow_mut() = Some(src);
+    }
+
+    /// Persist the editor's current values immediately under the id it is
+    /// editing (mirrors `SaveNoteNow`).
+    fn save_note_now(&self) {
+        // Stop any pending debounce.
+        if let Some(src) = self.note_debounce.borrow_mut().take() {
+            src.remove();
+        }
+        let edit_id = match self.note_edit_id.borrow().clone() {
+            Some(id) => id,
+            None => return,
+        };
+        let buffer_ref = self.note_buffer.borrow();
+        let tags_ref = self.note_tags_entry.borrow();
+        let (buffer, tags_entry) = match (buffer_ref.as_ref(), tags_ref.as_ref()) {
+            (Some(b), Some(t)) => (b, t),
+            _ => return,
+        };
+
+        let note_text = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .to_string();
+        let tags: Vec<String> = tags_entry
+            .text()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let note = ObservationNote {
+            publisher_id: edit_id,
+            rating: self.note_rating.get(),
+            note: note_text.trim().to_string(),
+            tags,
+            updated: chrono::Utc::now().to_rfc3339(),
+            // User-authored note from the UI — no agent badge.
+            agent_attribution: None,
+        };
+        // Blocking write of a tiny JSON file; ignore errors (read-only disk
+        // must not crash the UI). An empty note removes the entry in `save`.
+        let _ = self.note_store.save(note);
+    }
+
+    /// Flush any pending edit immediately (called before switching
+    /// observations, mirrors `FlushNote`).
+    fn flush_note(&self) {
+        let pending = self.note_debounce.borrow_mut().take();
+        if let Some(src) = pending {
+            src.remove();
+            self.save_note_now();
+        }
     }
 
     /// Remove an observation from the Research library.  Deletes the
@@ -704,7 +1128,229 @@ impl ResearchPage {
         drop(list);
 
         self.rebuild_rows(&remaining);
-        self.services.toast.toast("Removed from Research");
+        self.services.toast.toast(crate::tr_en!("Removed from Research"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Re-download a record whose local file went missing
+    // -----------------------------------------------------------------------
+
+    /// Resolve the observation's DataLink `#this` URL, stream the science file
+    /// back into the managed directory, and update `local_path` / `file_size`
+    /// on the store record and the in-memory list — then re-render the detail
+    /// pane so the Open actions appear.  Reuses `search_page`'s streaming idiom
+    /// (`stream_download_to_file`).  Ported from
+    /// `ResearchViewModel.DownloadObservationFileAsync`.
+    async fn download_missing_file(self: &Rc<Self>, obs: &DownloadedObservation) {
+        use crate::services::managed_dir_for;
+
+        let publisher_id = obs.publisher_id.clone();
+        if publisher_id.is_empty() {
+            self.services
+                .toast
+                .toast(crate::tr_en!("No publisher ID — cannot download this observation"));
+            self.show_detail(obs);
+            return;
+        }
+
+        // ── Resolve DataLink for the #this science URL (off-thread) ────────
+        self.services.toast.toast(crate::tr_en!("Resolving download link…"));
+        let svc = self.services.clone();
+        let pid = publisher_id.clone();
+        let dl_result = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                svc.datalink.resolve(&pid, token.as_deref()).await
+            })
+            .await;
+
+        // Prefer the #this science file; fall back to the synthesised package URL.
+        let (science_url, science_name) = match dl_result {
+            Ok(dl) => match dl.files.iter().find(|f| f.is_science_data()).cloned() {
+                Some(f) => (f.url.clone(), Some(f.filename())),
+                None => (
+                    dl.download_url
+                        .clone()
+                        .unwrap_or_else(|| self.services.datalink.download_url(&publisher_id)),
+                    None,
+                ),
+            },
+            Err(_) => (self.services.datalink.download_url(&publisher_id), None),
+        };
+
+        // ── Destination: reuse the recorded path if present, else rebuild it
+        //    under the managed directory (the dir may have been pruned). ─────
+        let dest_path: std::path::PathBuf = if !obs.local_path.is_empty() {
+            std::path::PathBuf::from(&obs.local_path)
+        } else {
+            let filename = science_name
+                .clone()
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| format!("{}.fits", obs.id));
+            managed_dir_for(&obs.id).join(filename)
+        };
+        if let Some(parent) = dest_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                self.services
+                    .toast
+                    .toast(&format!("Cannot create storage directory: {}", e));
+                self.show_detail(obs);
+                return;
+            }
+        }
+
+        // ── Stream the file to disk (same idiom as the search_page save flow)
+        let label = if !obs.target_name.is_empty() {
+            obs.target_name.clone()
+        } else {
+            publisher_id.clone()
+        };
+        self.services.toast.toast(&format!("Downloading {}…", label));
+
+        let svc = self.services.clone();
+        let url_clone = science_url.clone();
+        let dest = dest_path.clone();
+        let toast_handle = self.services.toast.clone();
+        let progress_label = label.clone();
+        let dl = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                crate::ui::search_page::stream_download_to_file(
+                    &url_clone,
+                    token.as_deref(),
+                    &dest,
+                    &toast_handle,
+                    &progress_label,
+                )
+                .await
+            })
+            .await;
+
+        let file_size = match dl {
+            Ok(n) => n,
+            Err(e) => {
+                self.services.toast.toast(&format!("Download failed: {}", e));
+                self.show_detail(obs);
+                return;
+            }
+        };
+
+        // ── Update the record in place and persist ─────────────────────────
+        let mut updated = obs.clone();
+        updated.local_path = dest_path.to_string_lossy().to_string();
+        updated.file_size = file_size;
+
+        let svc = self.services.clone();
+        let to_save = updated.clone();
+        let _ = self
+            .services
+            .spawn(async move { svc.observation_store.save_async(to_save).await })
+            .await;
+
+        // Reflect the change in the currently displayed list so a later
+        // selection sees the downloaded file without a full reload.
+        {
+            let mut list = self.current_list.borrow_mut();
+            if let Some(entry) = list.iter_mut().find(|o| o.id == updated.id) {
+                *entry = updated.clone();
+            }
+        }
+
+        self.services.toast.toast(&format!("Downloaded {}", label));
+        // Re-render the detail pane — the Open / Open as Cube actions now appear.
+        self.show_detail(&updated);
+    }
+
+    // -----------------------------------------------------------------------
+    // Research export bundle
+    // -----------------------------------------------------------------------
+
+    /// Build a Claude-friendly research bundle (observations.json + notes.json +
+    /// notes.md), pop a save-file picker, and write it to a `.zip`.  The store
+    /// read + zip write are offloaded so the UI thread never blocks.  Mirrors
+    /// the reference `ResearchPage.xaml.cs` `OnExportClick`.
+    async fn export_bundle(self: &Rc<Self>) {
+        // Persist any in-flight note edit so it is included in the export.
+        self.flush_note();
+
+        // Gather the data. Observations come off the blocking pool; the notes
+        // file is tiny so we read it inline (same as the note editor does).
+        let svc = self.services.clone();
+        let observations = self
+            .services
+            .spawn(async move { svc.observation_store.load_async().await })
+            .await;
+        let notes = self.note_store.all();
+
+        if observations.is_empty() && notes.is_empty() {
+            self.services
+                .toast
+                .toast(crate::tr_en!("Nothing to export yet — save an observation first"));
+            return;
+        }
+
+        // ── Save-file picker (defaults to research-bundle.zip) ─────────────
+        let root = self.widget.root().and_downcast::<gtk::Window>();
+
+        let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+        let zip_filter = gtk::FileFilter::new();
+        zip_filter.set_name(Some(crate::tr_en!("ZIP archive")));
+        zip_filter.add_pattern("*.zip");
+        filters.append(&zip_filter);
+
+        let dialog = gtk::FileDialog::builder()
+            .title(crate::tr_en!("Export Research Bundle"))
+            .modal(true)
+            .initial_name("research-bundle.zip")
+            .filters(&filters)
+            .build();
+
+        let file = match dialog.save_future(root.as_ref()).await {
+            Ok(f) => f,
+            Err(_) => return, // user cancelled
+        };
+        let mut path = match file.path() {
+            Some(p) => p,
+            None => return,
+        };
+        // Default a missing/other extension to .zip.
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            != Some("zip".to_string())
+        {
+            path.set_extension("zip");
+        }
+
+        // ── Write on the blocking pool — pure Rust, no GTK ─────────────────
+        let write_path = path.clone();
+        let result = self
+            .services
+            .spawn(async move {
+                tokio::task::spawn_blocking(move || {
+                    crate::helpers::research_exporter::write_bundle_zip(
+                        &write_path,
+                        &observations,
+                        &notes,
+                    )
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("blocking pool error: {e}")))
+            })
+            .await;
+
+        match result {
+            Ok(count) => self.services.toast.toast(format!(
+                "Exported {} observation{} to {}",
+                count,
+                if count == 1 { "" } else { "s" },
+                path.display()
+            )),
+            Err(e) => self.services.toast.toast(format!("Export failed: {e}")),
+        }
     }
 }
 
@@ -742,6 +1388,14 @@ fn is_fits_path(path: &str) -> bool {
     lower.ends_with(".fits") || lower.ends_with(".fit") || lower.ends_with(".fts")
 }
 
+/// Whether the file is worth offering an "Open as Cube" action for: any plain
+/// FITS file plus tile-compressed `.fits.fz` files (which `is_fits_path` misses
+/// because they end in `.fz`).  The Cube Viewer declines non-cubes gracefully,
+/// so a broad match here only costs a toast in the worst case.
+fn is_cube_openable(path: &str) -> bool {
+    is_fits_path(path) || path.to_lowercase().ends_with(".fz")
+}
+
 /// Show an `AdwMessageDialog` confirming that the user wants to remove
 /// an observation from the Research library. This deletes both the store
 /// record and the managed directory (preview + FITS). Returns `true` iff
@@ -753,7 +1407,7 @@ async fn confirm_delete(widget: &impl IsA<gtk::Widget>, target_name: &str) -> bo
     };
 
     let body = if target_name.is_empty() {
-        "This will permanently remove the observation and its local files.\n\nThis cannot be undone.".to_string()
+        crate::tr_en!("This will permanently remove the observation and its local files.\n\nThis cannot be undone.").to_string()
     } else {
         format!(
             "This will permanently remove {} and its local files.\n\nThis cannot be undone.",
@@ -763,11 +1417,11 @@ async fn confirm_delete(widget: &impl IsA<gtk::Widget>, target_name: &str) -> bo
 
     let dialog = adw::MessageDialog::new(
         Some(&root),
-        Some("Remove from Research?"),
+        Some(crate::tr_en!("Remove from Research?")),
         Some(&body),
     );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("delete", "Delete");
+    dialog.add_response("cancel", crate::tr_en!("Cancel"));
+    dialog.add_response("delete", crate::tr_en!("Delete"));
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -791,4 +1445,69 @@ async fn confirm_delete(widget: &impl IsA<gtk::Widget>, target_name: &str) -> bo
     let _ = rx.await;
     let val = *result.borrow();
     val
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blank_obs() -> DownloadedObservation {
+        DownloadedObservation {
+            id: "obs-1".into(),
+            publisher_id: "ivo://cadc/CFHT?1".into(),
+            collection: String::new(),
+            observation_id: String::new(),
+            target_name: String::new(),
+            instrument: String::new(),
+            filter: String::new(),
+            ra: String::new(),
+            dec: String::new(),
+            start_date: String::new(),
+            cal_level: String::new(),
+            local_path: String::new(),
+            file_size: 0,
+            downloaded_at: "2024-01-01T00:00:00Z".into(),
+            thumbnail_url: String::new(),
+            preview_url: String::new(),
+            local_preview_path: String::new(),
+            agent_attribution: None,
+        }
+    }
+
+    #[test]
+    fn cube_openable_matches_fits_and_fz() {
+        assert!(is_cube_openable("/data/cube.fits"));
+        assert!(is_cube_openable("/data/CUBE.FITS.FZ"));
+        assert!(is_cube_openable("/data/x.fz"));
+        assert!(!is_cube_openable("/data/preview.jpg"));
+    }
+
+    #[test]
+    fn attribution_absent_yields_none() {
+        let obs = blank_obs();
+        assert!(agent_attribution_from(&obs).is_none());
+        let mut blankish = blank_obs();
+        blankish.agent_attribution = Some("   ".into());
+        assert!(agent_attribution_from(&blankish).is_none());
+    }
+
+    #[test]
+    fn attribution_from_bare_label() {
+        let mut obs = blank_obs();
+        obs.agent_attribution = Some("Claude Desktop".into());
+        let attr = agent_attribution_from(&obs).expect("some attribution");
+        assert_eq!(attr.client, "Claude Desktop");
+        // Timestamp falls back to the record's downloaded_at.
+        assert_eq!(attr.timestamp, "2024-01-01T00:00:00Z");
+        assert_eq!(attr.fingerprint.len(), 6);
+    }
+
+    #[test]
+    fn attribution_from_full_json_round_trip() {
+        let mut obs = blank_obs();
+        let original = AgentAttribution::new("Claude Code", "save_observation", "2026-01-02T03:04:05Z");
+        obs.agent_attribution = Some(serde_json::to_string(&original).unwrap());
+        let attr = agent_attribution_from(&obs).expect("some attribution");
+        assert_eq!(attr, original);
+    }
 }

@@ -18,9 +18,52 @@ pub struct FitsHeaderPanel {
 
 impl FitsHeaderPanel {
     pub fn new(entries: Vec<(String, String, String)>) -> Rc<Self> {
+        Self::new_with_info(entries, Vec::new())
+    }
+
+    /// Construct with an at-a-glance Image Info summary block rendered above the
+    /// searchable raw header.
+    pub fn new_with_info(
+        entries: Vec<(String, String, String)>,
+        info: Vec<(String, String)>,
+    ) -> Rc<Self> {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         container.set_width_request(320);
         container.set_vexpand(true);
+
+        // Image Info summary (dimensions, WCS, pixel scale, FoV, sky centre, …)
+        if !info.is_empty() {
+            let info_title = gtk::Label::new(Some(crate::tr_en!("Image Info")));
+            info_title.add_css_class("heading");
+            info_title.set_halign(gtk::Align::Start);
+            info_title.set_margin_start(8);
+            info_title.set_margin_end(8);
+            info_title.set_margin_top(8);
+            info_title.set_margin_bottom(4);
+            container.append(&info_title);
+
+            let info_grid = gtk::Grid::new();
+            info_grid.set_column_spacing(10);
+            info_grid.set_row_spacing(2);
+            info_grid.set_margin_start(12);
+            info_grid.set_margin_end(12);
+            info_grid.set_margin_bottom(8);
+            for (i, (label, value)) in info.iter().enumerate() {
+                let l = gtk::Label::new(Some(label));
+                l.add_css_class("caption-heading");
+                l.set_halign(gtk::Align::Start);
+                info_grid.attach(&l, 0, i as i32, 1, 1);
+                let v = gtk::Label::new(Some(value));
+                v.add_css_class("caption");
+                v.set_halign(gtk::Align::Start);
+                v.set_hexpand(true);
+                v.set_selectable(true);
+                v.set_wrap(true);
+                info_grid.attach(&v, 1, i as i32, 1, 1);
+            }
+            container.append(&info_grid);
+            container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        }
 
         // Header
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -28,7 +71,7 @@ impl FitsHeaderPanel {
         header.set_margin_end(8);
         header.set_margin_top(8);
         header.set_margin_bottom(4);
-        let title = gtk::Label::new(Some("FITS Header"));
+        let title = gtk::Label::new(Some(crate::tr_en!("FITS Header")));
         title.add_css_class("heading");
         title.set_halign(gtk::Align::Start);
         title.set_hexpand(true);
@@ -37,7 +80,7 @@ impl FitsHeaderPanel {
 
         // Search
         let search_entry = gtk::SearchEntry::new();
-        search_entry.set_placeholder_text(Some("Filter keywords…"));
+        search_entry.set_placeholder_text(Some(crate::tr_en!("Filter keywords…")));
         search_entry.set_margin_start(8);
         search_entry.set_margin_end(8);
         search_entry.set_margin_bottom(4);

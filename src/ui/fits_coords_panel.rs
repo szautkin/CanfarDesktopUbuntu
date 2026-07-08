@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 type GoToCallback = Rc<RefCell<Option<Box<dyn Fn(f64, f64)>>>>;
 type SaveBookmarkCallback = Rc<RefCell<Option<Box<dyn Fn() -> Option<(f64, f64, String)>>>>>;
+type SearchHereCallback = Rc<RefCell<Option<Box<dyn Fn(f64, f64)>>>>;
 
 pub struct FitsCoordsPanel {
     widget: gtk::Revealer,
@@ -23,8 +24,12 @@ pub struct FitsCoordsPanel {
     dec_entry: gtk::Entry,
     bookmarks_list: gtk::ListBox,
     bookmarks: Rc<RefCell<Vec<FitsBookmark>>>,
+    /// The current crosshair's sky position (when a WCS is available).
+    current_radec: Rc<RefCell<Option<(f64, f64)>>>,
     on_go_to: GoToCallback,
     on_save_bookmark: SaveBookmarkCallback,
+    on_search_here: SearchHereCallback,
+    search_here_btn: gtk::Button,
 }
 
 impl FitsCoordsPanel {
@@ -39,12 +44,12 @@ impl FitsCoordsPanel {
 
         // ── Current Crosshair section ────────────────────────────────────────
         let section1 = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let sec1_title = gtk::Label::new(Some("Current Crosshair"));
+        let sec1_title = gtk::Label::new(Some(crate::tr_en!("Current Crosshair")));
         sec1_title.add_css_class("heading");
         sec1_title.set_halign(gtk::Align::Start);
         section1.append(&sec1_title);
 
-        let crosshair_label = gtk::Label::new(Some("(right-click on image)"));
+        let crosshair_label = gtk::Label::new(Some(crate::tr_en!("(right-click on image)")));
         crosshair_label.add_css_class("monospace");
         crosshair_label.add_css_class("caption");
         crosshair_label.add_css_class("dim-label");
@@ -53,33 +58,40 @@ impl FitsCoordsPanel {
         section1.append(&crosshair_label);
 
         let bookmark_label_entry = gtk::Entry::new();
-        bookmark_label_entry.set_placeholder_text(Some("Bookmark label…"));
+        bookmark_label_entry.set_placeholder_text(Some(crate::tr_en!("Bookmark label…")));
         section1.append(&bookmark_label_entry);
 
-        let save_bookmark_btn = gtk::Button::with_label("Save Bookmark");
+        let save_bookmark_btn = gtk::Button::with_label(crate::tr_en!("Save Bookmark"));
         save_bookmark_btn.set_icon_name("starred-symbolic");
         save_bookmark_btn.add_css_class("suggested-action");
         section1.append(&save_bookmark_btn);
+
+        // "Search Here" — take the crosshair sky position to the Search form.
+        let search_here_btn = gtk::Button::with_label(crate::tr_en!("Search Here"));
+        search_here_btn.set_icon_name("system-search-symbolic");
+        search_here_btn.set_tooltip_text(Some(crate::tr_en!("Search the archive at this position")));
+        search_here_btn.set_sensitive(false);
+        section1.append(&search_here_btn);
 
         container.append(&section1);
         container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         // ── Go To Coordinate section ─────────────────────────────────────────
         let section2 = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let sec2_title = gtk::Label::new(Some("Go To Coordinate"));
+        let sec2_title = gtk::Label::new(Some(crate::tr_en!("Go To Coordinate")));
         sec2_title.add_css_class("heading");
         sec2_title.set_halign(gtk::Align::Start);
         section2.append(&sec2_title);
 
         let ra_entry = gtk::Entry::new();
-        ra_entry.set_placeholder_text(Some("RA (degrees)"));
+        ra_entry.set_placeholder_text(Some(crate::tr_en!("RA (degrees)")));
         section2.append(&ra_entry);
 
         let dec_entry = gtk::Entry::new();
-        dec_entry.set_placeholder_text(Some("Dec (degrees)"));
+        dec_entry.set_placeholder_text(Some(crate::tr_en!("Dec (degrees)")));
         section2.append(&dec_entry);
 
-        let go_btn = gtk::Button::with_label("Go To");
+        let go_btn = gtk::Button::with_label(crate::tr_en!("Go To"));
         go_btn.set_icon_name("go-next-symbolic");
         section2.append(&go_btn);
 
@@ -89,7 +101,7 @@ impl FitsCoordsPanel {
         // ── Bookmarks list section ───────────────────────────────────────────
         let section3 = gtk::Box::new(gtk::Orientation::Vertical, 6);
         section3.set_vexpand(true);
-        let sec3_title = gtk::Label::new(Some("Bookmarks"));
+        let sec3_title = gtk::Label::new(Some(crate::tr_en!("Bookmarks")));
         sec3_title.add_css_class("heading");
         sec3_title.set_halign(gtk::Align::Start);
         section3.append(&sec3_title);
@@ -121,9 +133,24 @@ impl FitsCoordsPanel {
             dec_entry,
             bookmarks_list,
             bookmarks: Rc::new(RefCell::new(fits_bookmarks::load_bookmarks())),
+            current_radec: Rc::new(RefCell::new(None)),
             on_go_to: Rc::new(RefCell::new(None)),
             on_save_bookmark: Rc::new(RefCell::new(None)),
+            on_search_here: Rc::new(RefCell::new(None)),
+            search_here_btn,
         });
+
+        // Wire Search Here
+        {
+            let p = panel.clone();
+            panel.search_here_btn.connect_clicked(move |_| {
+                if let Some((ra, dec)) = *p.current_radec.borrow() {
+                    if let Some(cb) = p.on_search_here.borrow().as_ref() {
+                        cb(ra, dec);
+                    }
+                }
+            });
+        }
 
         // Wire Go To
         {
@@ -186,15 +213,27 @@ impl FitsCoordsPanel {
                         "Pixel ({:.1}, {:.1})\nRA  {}\nDec {}",
                         px, py, ra_str, dec_str
                     ));
+                    *self.current_radec.borrow_mut() = Some((ra, dec));
+                    self.search_here_btn.set_sensitive(true);
                 } else {
                     self.crosshair_label
                         .set_text(&format!("Pixel ({:.1}, {:.1})\nNo WCS", px, py));
+                    *self.current_radec.borrow_mut() = None;
+                    self.search_here_btn.set_sensitive(false);
                 }
             }
             None => {
-                self.crosshair_label.set_text("(right-click on image)");
+                self.crosshair_label.set_text(crate::tr_en!("(right-click on image)"));
+                *self.current_radec.borrow_mut() = None;
+                self.search_here_btn.set_sensitive(false);
             }
         }
+    }
+
+    /// Register a callback invoked when "Search Here" is pressed, with the
+    /// crosshair's `(ra, dec)` in degrees.
+    pub fn set_on_search_here(&self, cb: impl Fn(f64, f64) + 'static) {
+        *self.on_search_here.borrow_mut() = Some(Box::new(cb));
     }
 
     pub fn set_on_go_to(&self, cb: impl Fn(f64, f64) + 'static) {
@@ -217,7 +256,7 @@ impl FitsCoordsPanel {
 
         let bookmarks = self.bookmarks.borrow().clone();
         if bookmarks.is_empty() {
-            let empty = gtk::Label::new(Some("No bookmarks yet"));
+            let empty = gtk::Label::new(Some(crate::tr_en!("No bookmarks yet")));
             empty.add_css_class("dim-label");
             empty.add_css_class("caption");
             empty.set_margin_top(8);
@@ -254,7 +293,7 @@ impl FitsCoordsPanel {
 
             let go_bm_btn = gtk::Button::from_icon_name("go-next-symbolic");
             go_bm_btn.add_css_class("flat");
-            go_bm_btn.set_tooltip_text(Some("Go to bookmark"));
+            go_bm_btn.set_tooltip_text(Some(crate::tr_en!("Go to bookmark")));
             {
                 let p = self.clone();
                 let ra = bm.ra_deg;
@@ -269,7 +308,7 @@ impl FitsCoordsPanel {
 
             let del_bm_btn = gtk::Button::from_icon_name("edit-delete-symbolic");
             del_bm_btn.add_css_class("flat");
-            del_bm_btn.set_tooltip_text(Some("Delete bookmark"));
+            del_bm_btn.set_tooltip_text(Some(crate::tr_en!("Delete bookmark")));
             {
                 let p = self.clone();
                 let id = bm.id;

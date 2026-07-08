@@ -30,6 +30,10 @@ impl ApiError {
 pub async fn check_response(resp: reqwest::Response) -> Result<reqwest::Response, ApiError> {
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        // A mid-session token expiry: signal the shell so it can recover the
+        // session (silent re-auth, else prompt sign-in) instead of this being
+        // swallowed as a generic failure.
+        crate::services::auth_events::notify_unauthorized();
         return Err(ApiError::Unauthorized);
     }
     if !status.is_success() {

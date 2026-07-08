@@ -79,6 +79,12 @@ impl Session {
     pub fn is_pending(&self) -> bool {
         self.status.eq_ignore_ascii_case("pending")
     }
+
+    /// A headless (batch) job — has no interactive Open URL and must NOT count
+    /// toward the interactive-session cap or appear in the Active Sessions strip.
+    pub fn is_headless(&self) -> bool {
+        self.session_type.eq_ignore_ascii_case("headless")
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ use crate::models::SessionLaunchParams;
 use crate::state::AppServices;
 use crate::ui::batch_jobs_dialog::show_batch_jobs_dialog;
 use crate::ui::batch_jobs_view::BatchJobsView;
+use crate::ui::canfar_images::CanfarImagesView;
 use crate::ui::delete_dialog::show_delete_dialog;
 use crate::ui::launch_dialog::show_launch_dialog;
 use crate::ui::launch_form::LaunchFormView;
@@ -29,6 +30,7 @@ pub struct DashboardView {
     recent_launches: Rc<RecentLaunchesView>,
     template_manager: Rc<TemplateManager>,
     batch_jobs: Rc<BatchJobsView>,
+    canfar_images: Rc<CanfarImagesView>,
     services: Arc<AppServices>,
 }
 
@@ -69,7 +71,21 @@ impl DashboardView {
         grid.attach(launch_form.widget(), 0, 1, 1, 1);
         grid.attach(&right_bottom, 1, 1, 1, 1);
 
-        container.append(&grid);
+        // Full-width CANFAR Images widget below the 2×2 grid.
+        let canfar_images = CanfarImagesView::new(services.clone());
+
+        // Wrap the grid + images card in a scroller so the page never clips the
+        // full-width card on a short window.
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.append(&grid);
+        content.append(canfar_images.widget());
+
+        let scrolled = gtk::ScrolledWindow::new();
+        scrolled.set_vscrollbar_policy(gtk::PolicyType::Automatic);
+        scrolled.set_hscrollbar_policy(gtk::PolicyType::Never);
+        scrolled.set_vexpand(true);
+        scrolled.set_child(Some(&content));
+        container.append(&scrolled);
 
         let dashboard = DashboardView {
             container,
@@ -80,6 +96,7 @@ impl DashboardView {
             recent_launches,
             template_manager,
             batch_jobs,
+            canfar_images,
             services,
         };
 
@@ -232,6 +249,8 @@ impl DashboardView {
                         env: None,
                         registry_username: None,
                         registry_secret: None,
+                        args: None,
+                        replicas: None,
                     };
 
                     let svc = services.clone();
@@ -295,6 +314,8 @@ impl DashboardView {
                         env: None,
                         registry_username: None,
                         registry_secret: None,
+                        args: None,
+                        replicas: None,
                     };
 
                     let svc = services.clone();
@@ -346,6 +367,21 @@ impl DashboardView {
                     });
                 });
         }
+
+        // Canfar Images — "Use this image" fires the use-launch-image app action
+        // with the picked image id (mirrors DashboardPage.OnUseImageRequested,
+        // which selects the image in the launch form).
+        {
+            let canfar_images = self.canfar_images.clone();
+            self.canfar_images.set_on_use_image(move |image_id| {
+                if let Some(win) = canfar_images.widget().root().and_downcast::<gtk::Window>() {
+                    if let Some(app) = win.application() {
+                        let variant = glib::Variant::from(image_id.as_str());
+                        app.activate_action("use-launch-image", Some(&variant));
+                    }
+                }
+            });
+        }
     }
 
     pub async fn load_data(&self) {
@@ -354,6 +390,7 @@ impl DashboardView {
         self.platform_load.refresh().await;
         self.launch_form.load_images().await;
         self.batch_jobs.refresh().await;
+        self.canfar_images.refresh().await;
 
         self.recent_launches.refresh();
 

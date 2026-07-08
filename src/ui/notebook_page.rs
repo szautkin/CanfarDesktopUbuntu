@@ -12,17 +12,26 @@
 //! `Rc<RefCell<>>` on the GLib main thread.
 
 use crate::helpers::notebook_parser;
+use crate::helpers::notebook_undo::UndoRedoStack;
 use crate::models::notebook_document::{CellOutput, CellSource, NotebookCell, NotebookDocument};
 use crate::services::kernel_service::LocalKernelService;
+use crate::services::notebook_settings_service::NotebookSettingsService;
 use crate::state::AppServices;
 use crate::ui::notebook_cell::{CellWidget, CodeCellWidget, MarkdownCellWidget};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+
+thread_local! {
+    /// Process-wide (GTK main-thread) cell clipboard for command-mode
+    /// Copy (`C`) / Paste-below (`V`), shared across every open notebook tab —
+    /// the equivalent of the reference's `static NotebookCell? _clipboardCell`.
+    static CELL_CLIPBOARD: RefCell<Option<NotebookCell>> = const { RefCell::new(None) };
+}
 
 // ---------------------------------------------------------------------------
 // Interaction mode
@@ -70,6 +79,19 @@ pub struct NotebookPage {
     /// Optional callback invoked whenever the kernel state changes.
     /// The callback receives a short state keyword: "idle", "busy", "starting", "dead", "error".
     on_state_changed: RefCell<Option<Rc<dyn Fn(&str)>>>,
+    /// Optional callback fired when the document transitions to modified — the host
+    /// uses it to add a `*` to the tab title and notify the autosave timer.
+    on_modified: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Undo/redo history of whole-document snapshots. Pushed before every
+    /// structural cell mutation; drives `undo()` / `redo()`.
+    undo_stack: Rc<RefCell<UndoRedoStack>>,
+    /// Code-cell font size (points) — used to size tab stops. Font rendering
+    /// itself is applied globally by the tab host via a shared CSS provider.
+    editor_font_size: Cell<u32>,
+    /// Code-cell tab width in spaces.
+    editor_tab_size: Cell<u32>,
+    /// Whether code cells wrap long lines.
+    editor_word_wrap: Cell<bool>,
     /// App services (needed to bridge tokio → glib).
     services: Arc<AppServices>,
 }
@@ -141,6 +163,11 @@ impl NotebookPage {
             python_path,
         )));
 
+        // Editor preferences (font/tab/wrap) come from the persisted notebook
+        // settings. Font rendering is applied globally by the host; here we
+        // only need the values to size tab stops and pick the wrap mode.
+        let editor = NotebookSettingsService::new().load();
+
         let page = Rc::new(NotebookPage {
             widget,
             cell_list,
@@ -153,6 +180,11 @@ impl NotebookPage {
             modified: Rc::new(RefCell::new(false)),
             kernel_status,
             on_state_changed: RefCell::new(None),
+            on_modified: RefCell::new(None),
+            undo_stack: Rc::new(RefCell::new(UndoRedoStack::new())),
+            editor_font_size: Cell::new(editor.font_size),
+            editor_tab_size: Cell::new(editor.tab_size),
+            editor_word_wrap: Cell::new(editor.word_wrap),
             services,
         });
 
@@ -254,7 +286,7 @@ impl NotebookPage {
                         }
                     }
 
-                    *page.modified.borrow_mut() = true;
+                    page.mark_modified();
                 }
                 Err(e) => {
                     let error_output = CellOutput::Error {
@@ -303,6 +335,13 @@ impl NotebookPage {
 
     /// Insert a new cell of `cell_type` ("code" or "markdown") at `index`.
     pub fn insert_cell(self: &Rc<Self>, index: usize, cell_type: &str) {
+        self.push_undo();
+        self.insert_cell_inner(index, cell_type);
+    }
+
+    /// Insert a cell without recording an undo point (callers that already
+    /// pushed an undo snapshot use this to avoid a spurious extra entry).
+    fn insert_cell_inner(self: &Rc<Self>, index: usize, cell_type: &str) {
         let new_cell = NotebookCell {
             cell_type: cell_type.to_string(),
             source: CellSource::Single(String::new()),
@@ -317,7 +356,7 @@ impl NotebookPage {
             .borrow_mut()
             .cells
             .insert(insert_at, new_cell);
-        *self.modified.borrow_mut() = true;
+        self.mark_modified();
         self.rebuild_cell_list();
         self.set_active_cell(insert_at);
     }
@@ -329,15 +368,17 @@ impl NotebookPage {
             return;
         }
 
+        self.push_undo();
         self.document.borrow_mut().cells.remove(index);
 
-        // Ensure at least one cell remains
+        // Ensure at least one cell remains (Jupyter inserts a fresh code cell).
+        // Use the no-undo insert so the single delete stays one undo step.
         if self.document.borrow().cells.is_empty() {
-            self.insert_cell(0, "code");
+            self.insert_cell_inner(0, "code");
             return;
         }
 
-        *self.modified.borrow_mut() = true;
+        self.mark_modified();
         self.rebuild_cell_list();
 
         let new_active = index
@@ -352,9 +393,10 @@ impl NotebookPage {
         if from >= len || to >= len || from == to {
             return;
         }
+        self.push_undo();
         let cell = self.document.borrow_mut().cells.remove(from);
         self.document.borrow_mut().cells.insert(to, cell);
-        *self.modified.borrow_mut() = true;
+        self.mark_modified();
         self.rebuild_cell_list();
         self.set_active_cell(to);
     }
@@ -429,6 +471,54 @@ impl NotebookPage {
         *self.modified.borrow()
     }
 
+    /// Mark the document dirty and notify the host (tab `*` marker + autosave).
+    fn mark_modified(&self) {
+        *self.modified.borrow_mut() = true;
+        if let Some(cb) = self.on_modified.borrow().as_ref() {
+            cb();
+        }
+    }
+
+    /// Register a callback fired when the document becomes modified.
+    pub fn set_on_modified(&self, cb: impl Fn() + 'static) {
+        *self.on_modified.borrow_mut() = Some(Rc::new(cb));
+    }
+
+    /// Explicitly set the modified flag (e.g. mark a recovered notebook dirty).
+    pub fn set_modified(&self, value: bool) {
+        *self.modified.borrow_mut() = value;
+        if value {
+            if let Some(cb) = self.on_modified.borrow().as_ref() {
+                cb();
+            }
+        }
+    }
+
+    /// A display title for the tab — the file stem, or "Untitled".
+    pub fn title(&self) -> String {
+        self.file_path
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string())
+    }
+
+    /// A consistent snapshot of the document with the live cell text synced in —
+    /// used by autosave (does not touch `file_path` or the modified flag).
+    pub fn snapshot_document(&self) -> NotebookDocument {
+        {
+            let widgets = self.cell_widgets.borrow();
+            let mut doc = self.document.borrow_mut();
+            for (i, widget) in widgets.iter().enumerate() {
+                if let Some(cell) = doc.cells.get_mut(i) {
+                    cell.source = CellSource::Single(widget.get_source());
+                }
+            }
+        }
+        self.document.borrow().clone()
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// Clear and re-populate the `cell_list` from the current document.
@@ -453,6 +543,7 @@ impl NotebookPage {
                     code.set_execution_count(n);
                 }
                 code.set_outputs(&cell.outputs);
+                self.apply_prefs_to_code_view(code.text_view());
                 CellWidget::Code(code)
             };
 
@@ -574,7 +665,7 @@ impl NotebookPage {
                 code.clear_execution_count();
             }
         }
-        *self.modified.borrow_mut() = true;
+        self.mark_modified();
     }
 
     /// Save the notebook to a new path ("Save As").
@@ -668,8 +759,31 @@ impl NotebookPage {
                         page.run_cell(idx);
                         glib::Propagation::Stop
                     }
-                    // Z → undo placeholder
-                    gtk::gdk::Key::z if !ctrl => glib::Propagation::Stop,
+                    // Z → undo
+                    gtk::gdk::Key::z if !ctrl && !shift => {
+                        page.undo();
+                        glib::Propagation::Stop
+                    }
+                    // Shift+Z → redo
+                    gtk::gdk::Key::Z if !ctrl => {
+                        page.redo();
+                        glib::Propagation::Stop
+                    }
+                    // C → copy the active cell
+                    gtk::gdk::Key::c if !ctrl => {
+                        page.copy_active_cell();
+                        glib::Propagation::Stop
+                    }
+                    // V → paste the clipboard cell below
+                    gtk::gdk::Key::v if !ctrl => {
+                        page.paste_cell_below();
+                        glib::Propagation::Stop
+                    }
+                    // Shift+M → merge the active cell with the one below
+                    gtk::gdk::Key::M if !ctrl => {
+                        page.merge_cell_below();
+                        glib::Propagation::Stop
+                    }
                     _ => glib::Propagation::Proceed,
                 },
 
@@ -701,6 +815,12 @@ impl NotebookPage {
                         }
                         glib::Propagation::Stop
                     }
+                    // Ctrl+Shift+Minus → split the cell at the cursor. Shift maps
+                    // the `-` key to `_` on most layouts, so accept both.
+                    gtk::gdk::Key::minus | gtk::gdk::Key::underscore if ctrl && shift => {
+                        page.split_active_cell();
+                        glib::Propagation::Stop
+                    }
                     _ => glib::Propagation::Proceed,
                 },
             }
@@ -711,8 +831,43 @@ impl NotebookPage {
         self.widget.set_can_focus(true);
     }
 
+    /// Replace the source text of the cell at `index` (used by the live MCP
+    /// `edit_cell` tool). Goes through the same undo + `mark_modified` +
+    /// `rebuild_cell_list` path as the interactive editors.
+    pub fn set_cell_source(self: &Rc<Self>, index: usize, source: &str) {
+        if index >= self.document.borrow().cells.len() {
+            return;
+        }
+        self.push_undo();
+        {
+            let mut doc = self.document.borrow_mut();
+            if let Some(cell) = doc.cells.get_mut(index) {
+                cell.source = CellSource::Single(source.to_string());
+            }
+        }
+        self.mark_modified();
+        self.rebuild_cell_list();
+        self.set_active_cell(index);
+    }
+
+    /// Start the Python kernel and await readiness (used by the live MCP
+    /// `start_kernel` tool). Wraps the private constructor-time starter.
+    pub async fn start_kernel_now(self: &Rc<Self>) {
+        self.start_kernel().await;
+    }
+
     /// Change the cell type at `index` and rebuild the list.
-    fn change_cell_type(self: &Rc<Self>, index: usize, new_type: &str) {
+    pub fn change_cell_type(self: &Rc<Self>, index: usize, new_type: &str) {
+        // No-op (and no undo point) when the type is already what was asked for.
+        {
+            let doc = self.document.borrow();
+            match doc.cells.get(index) {
+                Some(cell) if cell.cell_type == new_type => return,
+                None => return,
+                _ => {}
+            }
+        }
+
         let current_source = {
             let widgets = self.cell_widgets.borrow();
             widgets
@@ -721,19 +876,255 @@ impl NotebookPage {
                 .unwrap_or_default()
         };
 
+        self.push_undo();
+
         {
             let mut doc = self.document.borrow_mut();
             if let Some(cell) = doc.cells.get_mut(index) {
-                if cell.cell_type != new_type {
-                    cell.cell_type = new_type.to_string();
-                    cell.source = CellSource::Single(current_source);
-                    cell.outputs.clear();
-                }
+                cell.cell_type = new_type.to_string();
+                cell.source = CellSource::Single(current_source);
+                cell.outputs.clear();
+                cell.execution_count = None;
             }
         }
 
-        *self.modified.borrow_mut() = true;
+        self.mark_modified();
         self.rebuild_cell_list();
         self.set_active_cell(index);
+    }
+
+    // ── Undo / Redo ───────────────────────────────────────────────────────────
+
+    /// Snapshot the current document (with live widget text synced in) onto the
+    /// undo stack. Must be called *before* any structural cell mutation
+    /// (add / delete / move / type-change / split / merge / paste).
+    fn push_undo(&self) {
+        let snapshot = self.snapshot_document();
+        self.undo_stack.borrow_mut().push(snapshot);
+    }
+
+    /// Restore the previous document state, if any.
+    pub fn undo(self: &Rc<Self>) {
+        let current = self.snapshot_document();
+        let restored = self.undo_stack.borrow_mut().undo(current);
+        if let Some(doc) = restored {
+            self.restore_document(doc);
+        }
+    }
+
+    /// Re-apply the most recently undone state, if any.
+    pub fn redo(self: &Rc<Self>) {
+        let current = self.snapshot_document();
+        let restored = self.undo_stack.borrow_mut().redo(current);
+        if let Some(doc) = restored {
+            self.restore_document(doc);
+        }
+    }
+
+    /// Replace the live document with `doc`, clamp the active cell, rebuild the
+    /// cell list, and mark the notebook modified (shared by undo/redo).
+    fn restore_document(self: &Rc<Self>, doc: NotebookDocument) {
+        let len = doc.cells.len();
+        *self.document.borrow_mut() = doc;
+        // Keep the active index inside the restored bounds.
+        if len > 0 {
+            let clamped = (*self.active_cell.borrow()).min(len - 1);
+            *self.active_cell.borrow_mut() = clamped;
+        } else {
+            *self.active_cell.borrow_mut() = 0;
+        }
+        self.rebuild_cell_list();
+        self.mark_modified();
+    }
+
+    // ── Cell operations (split / merge / copy / paste) ────────────────────────
+
+    /// Split the active cell at the text cursor into two cells of the same
+    /// type. The text before the cursor stays in the current cell; the text
+    /// after moves into a new cell inserted directly below.
+    pub fn split_active_cell(self: &Rc<Self>) {
+        let idx = *self.active_cell.borrow();
+        if idx >= self.document.borrow().cells.len() {
+            return;
+        }
+
+        // Read the current source and cursor char-offset from the active widget.
+        let (full, cursor) = {
+            let widgets = self.cell_widgets.borrow();
+            let (source, offset) = match widgets.get(idx) {
+                Some(CellWidget::Code(c)) => {
+                    (c.get_source(), c.text_view().buffer().cursor_position())
+                }
+                Some(CellWidget::Markdown(m)) => {
+                    (m.get_source(), m.text_view().buffer().cursor_position())
+                }
+                None => return,
+            };
+            (source, offset.max(0) as usize)
+        };
+
+        // Convert the char offset to a byte index so we can split the String.
+        let byte_idx = full
+            .char_indices()
+            .nth(cursor)
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| full.len());
+        let (top, bottom) = full.split_at(byte_idx);
+        let top = top.to_string();
+        let bottom = bottom.to_string();
+
+        self.push_undo();
+
+        let cell_type = self.document.borrow().cells[idx].cell_type.clone();
+        {
+            let mut doc = self.document.borrow_mut();
+            if let Some(cell) = doc.cells.get_mut(idx) {
+                cell.source = CellSource::Single(top);
+            }
+            let new_cell = NotebookCell {
+                cell_type,
+                source: CellSource::Single(bottom),
+                outputs: Vec::new(),
+                execution_count: None,
+                id: Some(NotebookDocument::generate_cell_id()),
+                metadata: serde_json::Map::new(),
+            };
+            doc.cells.insert(idx + 1, new_cell);
+        }
+
+        self.mark_modified();
+        self.rebuild_cell_list();
+        self.set_active_cell(idx + 1);
+    }
+
+    /// Merge the active cell with the cell directly below it, joining their
+    /// sources with a newline. No-op when the active cell is the last one.
+    pub fn merge_cell_below(self: &Rc<Self>) {
+        let idx = *self.active_cell.borrow();
+        if idx + 1 >= self.document.borrow().cells.len() {
+            return;
+        }
+
+        // Pick up the latest edited text from both widgets before merging.
+        let (top_src, below_src) = {
+            let widgets = self.cell_widgets.borrow();
+            let a = widgets.get(idx).map(|w| w.get_source()).unwrap_or_default();
+            let b = widgets
+                .get(idx + 1)
+                .map(|w| w.get_source())
+                .unwrap_or_default();
+            (a, b)
+        };
+
+        self.push_undo();
+
+        {
+            let mut doc = self.document.borrow_mut();
+            let merged = format!("{top_src}\n{below_src}");
+            if let Some(cell) = doc.cells.get_mut(idx) {
+                cell.source = CellSource::Single(merged);
+            }
+            doc.cells.remove(idx + 1);
+        }
+
+        self.mark_modified();
+        self.rebuild_cell_list();
+        self.set_active_cell(idx);
+    }
+
+    /// Copy the active cell (type + current source) to the shared clipboard.
+    pub fn copy_active_cell(&self) {
+        let idx = *self.active_cell.borrow();
+        let source = {
+            let widgets = self.cell_widgets.borrow();
+            match widgets.get(idx) {
+                Some(w) => w.get_source(),
+                None => return,
+            }
+        };
+        let cell_type = match self.document.borrow().cells.get(idx) {
+            Some(c) => c.cell_type.clone(),
+            None => return,
+        };
+        let clip = NotebookCell {
+            cell_type,
+            source: CellSource::Single(source),
+            outputs: Vec::new(),
+            execution_count: None,
+            id: Some(NotebookDocument::generate_cell_id()),
+            metadata: serde_json::Map::new(),
+        };
+        CELL_CLIPBOARD.with(|c| *c.borrow_mut() = Some(clip));
+    }
+
+    /// Paste the clipboard cell directly below the active cell. No-op when the
+    /// clipboard is empty.
+    pub fn paste_cell_below(self: &Rc<Self>) {
+        let clip = CELL_CLIPBOARD.with(|c| c.borrow().clone());
+        let Some(clip) = clip else {
+            return;
+        };
+
+        self.push_undo();
+
+        let insert_at = {
+            let len = self.document.borrow().cells.len();
+            (*self.active_cell.borrow() + 1).min(len)
+        };
+        let new_cell = NotebookCell {
+            cell_type: clip.cell_type.clone(),
+            source: CellSource::Single(clip.source.joined()),
+            outputs: Vec::new(),
+            execution_count: None,
+            id: Some(NotebookDocument::generate_cell_id()),
+            metadata: serde_json::Map::new(),
+        };
+        self.document.borrow_mut().cells.insert(insert_at, new_cell);
+
+        self.mark_modified();
+        self.rebuild_cell_list();
+        self.set_active_cell(insert_at);
+    }
+
+    // ── Editor preferences ─────────────────────────────────────────────────────
+
+    /// Apply editor preferences (font size, tab width, word wrap) live. Font
+    /// rendering is handled globally by the tab host's CSS provider; here we
+    /// update the tab stops (sized from the font) and wrap mode on every code
+    /// cell's text view.
+    pub fn apply_editor_settings(&self, font_size: u32, tab_size: u32, word_wrap: bool) {
+        self.editor_font_size.set(font_size);
+        self.editor_tab_size.set(tab_size);
+        self.editor_word_wrap.set(word_wrap);
+        let widgets = self.cell_widgets.borrow();
+        for w in widgets.iter() {
+            if let CellWidget::Code(code) = w {
+                self.apply_prefs_to_code_view(code.text_view());
+            }
+        }
+    }
+
+    /// Set wrap mode + tab stops on a single code-cell text view from the
+    /// current stored preferences.
+    fn apply_prefs_to_code_view(&self, tv: &gtk::TextView) {
+        let wrap = if self.editor_word_wrap.get() {
+            gtk::WrapMode::Word
+        } else {
+            gtk::WrapMode::None
+        };
+        tv.set_wrap_mode(wrap);
+
+        // Tab stops: monospace character width ≈ 0.6 × font size (px). We lay
+        // down a run of evenly-spaced left tab stops so any tab lands on a
+        // `tab_size`-column boundary.
+        let tab_size = self.editor_tab_size.get().max(1) as f64;
+        let char_px = (self.editor_font_size.get() as f64 * 0.6).max(4.0);
+        let step = (char_px * tab_size).round().max(1.0) as i32;
+        let stops: i32 = 48;
+        let mut tabs = gtk::pango::TabArray::new(stops, true);
+        for i in 0..stops {
+            tabs.set_tab(i, gtk::pango::TabAlign::Left, step * (i + 1));
+        }
+        tv.set_tabs(&tabs);
     }
 }

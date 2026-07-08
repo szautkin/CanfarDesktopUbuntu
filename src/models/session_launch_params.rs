@@ -12,10 +12,18 @@ pub struct SessionLaunchParams {
     pub env: Option<String>,
     pub registry_username: Option<String>,
     pub registry_secret: Option<String>,
+    /// Headless-job command arguments (each becomes a repeated `args` form field).
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// Headless-job replica count (1–20); `None` for interactive sessions.
+    #[serde(default)]
+    pub replicas: Option<u32>,
 }
 
 impl SessionLaunchParams {
     pub fn to_form_pairs(&self) -> Vec<(&str, String)> {
+        // Cores/RAM are sent verbatim: a value of 0 means "platform-managed"
+        // (flexible allocation), matching the reference's flexible-mode contract.
         let mut pairs = vec![
             ("name", self.name.clone()),
             ("image", self.image.clone()),
@@ -28,6 +36,14 @@ impl SessionLaunchParams {
         }
         if let Some(ref cmd) = self.cmd {
             pairs.push(("cmd", cmd.clone()));
+        }
+        if let Some(ref args) = self.args {
+            for arg in args {
+                pairs.push(("args", arg.clone()));
+            }
+        }
+        if let Some(replicas) = self.replicas {
+            pairs.push(("replicas", replicas.to_string()));
         }
         if let Some(ref env) = self.env {
             pairs.push(("env", env.clone()));
@@ -52,6 +68,8 @@ mod tests {
             env: None,
             registry_username: None,
             registry_secret: None,
+            args: None,
+            replicas: None,
         }
     }
 
@@ -95,6 +113,30 @@ mod tests {
         assert_eq!(pairs.len(), 7);
         assert!(pairs.contains(&("cmd", "/bin/bash".to_string())));
         assert!(pairs.contains(&("env", "FOO=bar".to_string())));
+    }
+
+    #[test]
+    fn form_pairs_headless_args_and_replicas() {
+        let mut params = base_params();
+        params.session_type = "headless".to_string();
+        params.cmd = Some("python".to_string());
+        params.args = Some(vec!["run.py".to_string(), "--fast".to_string()]);
+        params.replicas = Some(5);
+        let pairs = params.to_form_pairs();
+        assert_eq!(pairs.iter().filter(|(k, _)| *k == "args").count(), 2);
+        assert!(pairs.contains(&("args", "run.py".to_string())));
+        assert!(pairs.contains(&("replicas", "5".to_string())));
+        assert!(pairs.contains(&("cmd", "python".to_string())));
+    }
+
+    #[test]
+    fn flexible_sends_zero_cores_and_ram() {
+        let mut params = base_params();
+        params.cores = 0;
+        params.ram = 0;
+        let pairs = params.to_form_pairs();
+        assert!(pairs.contains(&("cores", "0".to_string())));
+        assert!(pairs.contains(&("ram", "0".to_string())));
     }
 
     #[test]

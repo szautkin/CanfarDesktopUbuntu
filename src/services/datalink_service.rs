@@ -1,22 +1,23 @@
+use crate::config::ApiEndpoints;
 use crate::models::search_result::{DataLinkFile, DataLinkResult};
 use crate::services::api_error::ApiError;
 use reqwest::Client;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-
-const DATALINK_URL: &str = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink";
-const DOWNLOAD_URL: &str = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/pkg";
 
 pub struct DataLinkService {
     client: Client,
+    endpoints: Arc<ApiEndpoints>,
     cache: Mutex<HashMap<String, DataLinkResult>>,
     image_semaphore: Semaphore,
 }
 
 impl DataLinkService {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: Client, endpoints: Arc<ApiEndpoints>) -> Self {
         DataLinkService {
             client,
+            endpoints,
             cache: Mutex::new(HashMap::new()),
             image_semaphore: Semaphore::new(3), // max 3 concurrent image downloads
         }
@@ -38,7 +39,7 @@ impl DataLinkService {
 
         let url = format!(
             "{}?id={}&request=downloads-only",
-            DATALINK_URL,
+            self.endpoints.datalink_base_url(),
             urlencoding::encode(publisher_id)
         );
 
@@ -67,7 +68,7 @@ impl DataLinkService {
         let mut result = parse_votable(&xml, publisher_id);
         result.download_url = Some(format!(
             "{}?ID={}",
-            DOWNLOAD_URL,
+            self.endpoints.pkg_url(),
             urlencoding::encode(publisher_id)
         ));
 
@@ -81,8 +82,12 @@ impl DataLinkService {
     }
 
     /// Download URL for direct package download (no DataLink resolution needed).
-    pub fn download_url(publisher_id: &str) -> String {
-        format!("{}?ID={}", DOWNLOAD_URL, urlencoding::encode(publisher_id))
+    pub fn download_url(&self, publisher_id: &str) -> String {
+        format!(
+            "{}?ID={}",
+            self.endpoints.pkg_url(),
+            urlencoding::encode(publisher_id)
+        )
     }
 
     /// Download a thumbnail/preview image with concurrency limiting.
@@ -215,6 +220,10 @@ fn parse_votable(xml: &str, publisher_id: &str) -> DataLinkResult {
             .cloned()
             .unwrap_or_default();
         if url.is_empty() {
+            continue;
+        }
+        // Security: drop any non-HTTPS access_url (downgrade / SSRF defence).
+        if !url.trim().to_ascii_lowercase().starts_with("https://") {
             continue;
         }
 

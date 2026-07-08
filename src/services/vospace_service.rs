@@ -1,5 +1,6 @@
 use crate::config::ApiEndpoints;
 use crate::helpers::vospace_parser;
+use crate::models::vospace_node::NodeType;
 use crate::models::VoSpaceNode;
 use crate::services::api_error::{check_response, ApiError};
 use reqwest::Client;
@@ -64,6 +65,67 @@ impl VoSpaceService {
         Ok(())
     }
 
+    /// Fetch a single node's metadata (type + ACL) so a Share dialog can be
+    /// prefilled with the node's current access-control state.
+    pub async fn get_node(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+    ) -> Result<VoSpaceNode, ApiError> {
+        let url = self.endpoints.vospace_nodes_url(username, path);
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(token)
+            .header("Accept", "text/xml")
+            .send()
+            .await?;
+        let resp = check_response(resp).await?;
+        let xml = resp
+            .text()
+            .await
+            .map_err(|e| ApiError::Parse(e.to_string()))?;
+        vospace_parser::parse_node(&xml).map_err(ApiError::Parse)
+    }
+
+    /// Set the access-control properties (public flag + read/write groups) of a
+    /// node via VOSpace `setNode` (HTTP POST). `None` for a dimension leaves it
+    /// unchanged; `Some(empty)` revokes; `Some(list)` replaces.
+    ///
+    /// `node_type` must echo the node's existing type — it comes from the listed
+    /// node or a prior [`get_node`].
+    pub async fn set_node_acl(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+        node_type: &NodeType,
+        group_read: Option<Vec<String>>,
+        group_write: Option<Vec<String>>,
+        is_public: Option<bool>,
+    ) -> Result<(), ApiError> {
+        let url = self.endpoints.vospace_nodes_url(username, path);
+        let node_uri = self.endpoints.vospace_node_uri(username, path);
+        let body = vospace_parser::build_set_acl_node_xml(
+            &node_uri,
+            node_type,
+            group_read.as_deref(),
+            group_write.as_deref(),
+            is_public,
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(token)
+            .header("Content-Type", "text/xml")
+            .body(body)
+            .send()
+            .await?;
+        check_response(resp).await?;
+        Ok(())
+    }
+
     /// Delete a node (file or folder) at the given path.
     pub async fn delete_node(
         &self,
@@ -103,6 +165,25 @@ impl VoSpaceService {
     /// Get the download URL for a file.
     pub fn download_url(&self, username: &str, path: &str) -> String {
         self.endpoints.vospace_files_url(username, path)
+    }
+
+    /// Download a file's contents into memory (e.g. to parse a VOSpace-stored
+    /// workflow document without touching disk).
+    #[allow(dead_code)]
+    pub async fn download_bytes(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, ApiError> {
+        let url = self.endpoints.vospace_files_url(username, path);
+        let resp = self.client.get(&url).bearer_auth(token).send().await?;
+        let resp = check_response(resp).await?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        Ok(bytes.to_vec())
     }
 
     /// Download a file to a local path.

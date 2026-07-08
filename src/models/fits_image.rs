@@ -1,5 +1,21 @@
 use std::collections::HashMap;
 
+/// Zenithal projection family resolved from CTYPE, with a linear fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Projection {
+    Tan,
+    Sin,
+    Stg,
+    Zea,
+    Linear,
+}
+
+/// World Coordinate System parameters extracted from a FITS header.
+///
+/// Ported from `Models/Fits/WcsInfo.cs`: supports the CD matrix and CDELT+CROTA2
+/// conventions, the four common zenithal projections (TAN/SIN/STG/ZEA) with a
+/// linear fallback, SIP distortion (Shupe et al. 2005), and an approximate
+/// reconstruction from legacy RA/DEC keywords.
 #[derive(Debug, Clone)]
 pub struct WcsInfo {
     pub crpix1: f64,
@@ -10,31 +26,202 @@ pub struct WcsInfo {
     pub cd1_2: f64,
     pub cd2_1: f64,
     pub cd2_2: f64,
+    pub ctype1: String,
+    pub ctype2: String,
+    /// SIP forward/inverse coefficient tables indexed `[p][q]` = coeff of uᵖvᵍ.
+    pub sip_a: Option<Vec<Vec<f64>>>,
+    pub sip_b: Option<Vec<Vec<f64>>>,
+    pub sip_ap: Option<Vec<Vec<f64>>>,
+    pub sip_bp: Option<Vec<Vec<f64>>>,
+    /// True when reconstructed from legacy RA/DEC keywords — spatial ops are approximate.
+    pub is_approximate: bool,
+}
+
+impl Default for WcsInfo {
+    fn default() -> Self {
+        WcsInfo {
+            crpix1: 0.0,
+            crpix2: 0.0,
+            crval1: 0.0,
+            crval2: 0.0,
+            cd1_1: 0.0,
+            cd1_2: 0.0,
+            cd2_1: 0.0,
+            cd2_2: 0.0,
+            ctype1: String::new(),
+            ctype2: String::new(),
+            sip_a: None,
+            sip_b: None,
+            sip_ap: None,
+            sip_bp: None,
+            is_approximate: false,
+        }
+    }
 }
 
 impl WcsInfo {
-    /// Convert pixel coordinates to sky coordinates (RA, Dec) in degrees.
-    /// Linear approximation only (sufficient for small fields; TAN/SIN projections deferred).
-    pub fn pixel_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
-        let dx = x - self.crpix1;
-        let dy = y - self.crpix2;
-        let ra = self.crval1 + self.cd1_1 * dx + self.cd1_2 * dy;
-        let dec = self.crval2 + self.cd2_1 * dx + self.cd2_2 * dy;
-        (ra, dec)
+    /// A usable solution requires a non-degenerate CD matrix.
+    pub fn is_valid(&self) -> bool {
+        self.cd1_1 != 0.0 || self.cd2_2 != 0.0
     }
 
-    /// Convert sky coordinates (RA, Dec in degrees) to pixel coordinates.
-    /// Inverse of `pixel_to_sky` using the CD-matrix inverse.
-    pub fn sky_to_pixel(&self, ra: f64, dec: f64) -> (f64, f64) {
-        let dra = ra - self.crval1;
-        let ddec = dec - self.crval2;
-        let det = self.cd1_1 * self.cd2_2 - self.cd1_2 * self.cd2_1;
-        if det.abs() < 1e-20 {
-            return (self.crpix1, self.crpix2);
+    /// The algorithm code from a CTYPE string. Per FITS WCS Paper II, CTYPE is
+    /// `<coord>-<ALGO>` so the algorithm is the token AFTER the coordinate name
+    /// (`RA---TAN` → `TAN`); a further token is a distortion suffix, not the
+    /// projection (`RA---TAN-SIP` → `TAN`). Taking the last token misreads every
+    /// SIP image as linear.
+    fn projection_code(ctype: &str) -> &str {
+        ctype.split('-').filter(|s| !s.is_empty()).nth(1).unwrap_or("")
+    }
+
+    /// Resolved projection; both axes must agree or we fall back to Linear.
+    pub fn proj(&self) -> Projection {
+        let p1 = Self::projection_code(&self.ctype1);
+        let p2 = Self::projection_code(&self.ctype2);
+        if !p1.eq_ignore_ascii_case(p2) {
+            return Projection::Linear;
         }
-        let dx = (self.cd2_2 * dra - self.cd1_2 * ddec) / det;
-        let dy = (-self.cd2_1 * dra + self.cd1_1 * ddec) / det;
-        (self.crpix1 + dx, self.crpix2 + dy)
+        match p1.to_ascii_uppercase().as_str() {
+            "TAN" => Projection::Tan,
+            "SIN" => Projection::Sin,
+            "STG" => Projection::Stg,
+            "ZEA" => Projection::Zea,
+            _ => Projection::Linear,
+        }
+    }
+
+    /// Rotation from celestial North (East of North), in degrees. Rotate the image
+    /// by `-north_angle()` to display North-up.
+    pub fn north_angle(&self) -> f64 {
+        (-self.cd1_2).atan2(self.cd2_2).to_degrees()
+    }
+
+    /// True if the image has a parity flip (East appears right instead of left).
+    pub fn has_parity_flip(&self) -> bool {
+        (self.cd1_1 * self.cd2_2 - self.cd1_2 * self.cd2_1) > 0.0
+    }
+
+    /// Pixel scale in arcseconds per pixel (geometric mean of axis scales).
+    pub fn pixel_scale_arcsec(&self) -> f64 {
+        let sx = (self.cd1_1 * self.cd1_1 + self.cd2_1 * self.cd2_1).sqrt();
+        let sy = (self.cd1_2 * self.cd1_2 + self.cd2_2 * self.cd2_2).sqrt();
+        (sx * sy).sqrt() * 3600.0
+    }
+
+    /// Evaluate a SIP polynomial Σ c[p][q]·uᵖ·vᵍ.
+    fn sip_poly(c: &[Vec<f64>], u: f64, v: f64) -> f64 {
+        let order = c.len().saturating_sub(1);
+        let mut sum = 0.0;
+        for p in 0..=order {
+            let row = &c[p];
+            for q in 0..=(order - p) {
+                let coeff = row.get(q).copied().unwrap_or(0.0);
+                if coeff != 0.0 {
+                    sum += coeff * u.powi(p as i32) * v.powi(q as i32);
+                }
+            }
+        }
+        sum
+    }
+
+    /// Convert pixel `(x, y)` to world `(RA, Dec)` in degrees using a rigorous
+    /// spherical deprojection for TAN/SIN/STG/ZEA (with SIP), linear otherwise.
+    pub fn pixel_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
+        let mut dx = x - self.crpix1;
+        let mut dy = y - self.crpix2;
+        if let (Some(a), Some(b)) = (&self.sip_a, &self.sip_b) {
+            let fx = dx + Self::sip_poly(a, dx, dy);
+            let fy = dy + Self::sip_poly(b, dx, dy);
+            dx = fx;
+            dy = fy;
+        }
+        let xi = self.cd1_1 * dx + self.cd1_2 * dy;
+        let eta = self.cd2_1 * dx + self.cd2_2 * dy;
+        match deproject(xi, eta, self.crval1, self.crval2, self.proj()) {
+            Some(world) => world,
+            None => (self.crval1 + xi, self.crval2 + eta),
+        }
+    }
+
+    /// Convert world `(RA, Dec)` in degrees to pixel `(x, y)`. Returns `None` if
+    /// the CD matrix is singular or the coordinate is outside the projection domain.
+    pub fn world_to_pixel(&self, ra: f64, dec: f64) -> Option<(f64, f64)> {
+        let det = self.cd1_1 * self.cd2_2 - self.cd1_2 * self.cd2_1;
+        if det.abs() < 1e-30 {
+            return None;
+        }
+        let proj = self.proj();
+        let (xi, eta) = match project(ra, dec, self.crval1, self.crval2, proj) {
+            Some((xi, eta)) => (xi, eta),
+            None if proj == Projection::Linear => (ra - self.crval1, dec - self.crval2),
+            None => return None,
+        };
+        let mut dx = (self.cd2_2 * xi - self.cd1_2 * eta) / det;
+        let mut dy = (-self.cd2_1 * xi + self.cd1_1 * eta) / det;
+        if let (Some(ap), Some(bp)) = (&self.sip_ap, &self.sip_bp) {
+            let u = dx + Self::sip_poly(ap, dx, dy);
+            let v = dy + Self::sip_poly(bp, dx, dy);
+            dx = u;
+            dy = v;
+        }
+        Some((self.crpix1 + dx, self.crpix2 + dy))
+    }
+
+    /// Infallible inverse (falls back to the reference pixel) for callers that
+    /// don't need the domain check. Prefer [`world_to_pixel`] when bounds matter.
+    pub fn sky_to_pixel(&self, ra: f64, dec: f64) -> (f64, f64) {
+        self.world_to_pixel(ra, dec)
+            .unwrap_or((self.crpix1, self.crpix2))
+    }
+
+    /// A short human label for the WCS solution kind (for the Image Info panel).
+    pub fn solution_kind(&self) -> &'static str {
+        if self.is_approximate {
+            "approximate"
+        } else if !self.is_valid() {
+            "none"
+        } else {
+            match self.proj() {
+                Projection::Linear => "linear",
+                _ => {
+                    if self.sip_a.is_some() {
+                        "TAN+SIP"
+                    } else {
+                        // Report the actual projection family.
+                        match self.proj() {
+                            Projection::Tan => "TAN",
+                            Projection::Sin => "SIN",
+                            Projection::Stg => "STG",
+                            Projection::Zea => "ZEA",
+                            Projection::Linear => "linear",
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Format as a CADC resolver-compatible coordinate string
+    /// `"HH:MM:SS.ss,+DD:MM:SS.s"` (no spaces).
+    pub fn format_for_resolver(ra_deg: f64, dec_deg: f64) -> String {
+        let mut ra = ra_deg / 15.0;
+        if ra < 0.0 {
+            ra += 24.0;
+        }
+        let rh = ra as i32;
+        let rm = ((ra - rh as f64) * 60.0) as i32;
+        let rs = (ra - rh as f64 - rm as f64 / 60.0) * 3600.0;
+        let sign = if dec_deg >= 0.0 { "+" } else { "-" };
+        let dec = dec_deg.abs();
+        let dd = dec as i32;
+        let dm = ((dec - dd as f64) * 60.0) as i32;
+        let ds = (dec - dd as f64 - dm as f64 / 60.0) * 3600.0;
+        let rs_int = (rs * 100.0).round() as i32;
+        let ds_int = (ds * 10.0).round() as i32;
+        format!(
+            "{:02}:{:02}:{:04},{}{:02}:{:02}:{:03}",
+            rh, rm, rs_int, sign, dd, dm, ds_int
+        )
     }
 
     /// Format RA/Dec as sexagesimal strings
@@ -55,6 +242,236 @@ impl WcsInfo {
         let dec_str = format!("{}{:02}d{:02}m{:05.2}s", sign, d, dm, ds);
 
         (ra_str, dec_str)
+    }
+}
+
+/// Forward project `(RA, Dec)` → intermediate world `(ξ, η)` in degrees.
+/// Returns `None` for projection-domain violations or a Linear request.
+/// (Calabretta & Greisen 2002, A&A 395, 1077.)
+pub fn project(
+    ra: f64,
+    dec: f64,
+    crval1: f64,
+    crval2: f64,
+    projection: Projection,
+) -> Option<(f64, f64)> {
+    if projection == Projection::Linear {
+        return None;
+    }
+    let ra_rad = ra.to_radians();
+    let dec_rad = dec.to_radians();
+    let ra0 = crval1.to_radians();
+    let dec0 = crval2.to_radians();
+    let rad_to_deg = 180.0 / std::f64::consts::PI;
+
+    let cos_psi =
+        dec_rad.sin() * dec0.sin() + dec_rad.cos() * dec0.cos() * (ra_rad - ra0).cos();
+    let x_num = dec_rad.cos() * (ra_rad - ra0).sin();
+    let y_num = dec_rad.sin() * dec0.cos() - dec_rad.cos() * dec0.sin() * (ra_rad - ra0).cos();
+
+    match projection {
+        Projection::Tan => {
+            if cos_psi <= 1e-12 {
+                return None;
+            }
+            Some((x_num / cos_psi * rad_to_deg, y_num / cos_psi * rad_to_deg))
+        }
+        Projection::Sin => Some((x_num * rad_to_deg, y_num * rad_to_deg)),
+        Projection::Stg => {
+            let denom = 1.0 + cos_psi;
+            if denom <= 1e-12 {
+                return None;
+            }
+            Some((2.0 * x_num / denom * rad_to_deg, 2.0 * y_num / denom * rad_to_deg))
+        }
+        Projection::Zea => {
+            if cos_psi <= -1.0 + 1e-12 {
+                return None;
+            }
+            let factor = (2.0 / (1.0 + cos_psi)).sqrt();
+            Some((x_num * factor * rad_to_deg, y_num * factor * rad_to_deg))
+        }
+        Projection::Linear => None,
+    }
+}
+
+/// Inverse project intermediate world `(ξ, η)` in degrees → `(RA, Dec)`.
+/// Returns `None` when outside the projection domain. RA normalised to `[0, 360)`.
+pub fn deproject(
+    xi: f64,
+    eta: f64,
+    crval1: f64,
+    crval2: f64,
+    projection: Projection,
+) -> Option<(f64, f64)> {
+    if projection == Projection::Linear {
+        return None;
+    }
+    let xi_rad = xi.to_radians();
+    let eta_rad = eta.to_radians();
+    let rho = (xi_rad * xi_rad + eta_rad * eta_rad).sqrt();
+    let ra0 = crval1.to_radians();
+    let dec0 = crval2.to_radians();
+
+    if rho < 1e-12 {
+        return Some((crval1, crval2));
+    }
+
+    let (cos_psi, sin_psi) = match projection {
+        Projection::Tan => {
+            let denom = (1.0 + rho * rho).sqrt();
+            (1.0 / denom, rho / denom)
+        }
+        Projection::Sin => {
+            if rho > 1.0 {
+                return None;
+            }
+            (((1.0 - rho * rho).max(0.0)).sqrt(), rho)
+        }
+        Projection::Stg => {
+            let half_psi = (rho / 2.0).atan();
+            ((2.0 * half_psi).cos(), (2.0 * half_psi).sin())
+        }
+        Projection::Zea => {
+            if rho > 2.0 {
+                return None;
+            }
+            let half_psi = (rho / 2.0).asin();
+            ((2.0 * half_psi).cos(), (2.0 * half_psi).sin())
+        }
+        Projection::Linear => return None,
+    };
+
+    let sin_b = xi_rad / rho;
+    let cos_b = eta_rad / rho;
+
+    let sin_dec = cos_psi * dec0.sin() + sin_psi * cos_b * dec0.cos();
+    let dec_rad = sin_dec.clamp(-1.0, 1.0).asin();
+
+    let y_arg = sin_psi * sin_b;
+    let x_arg = cos_psi * dec0.cos() - sin_psi * cos_b * dec0.sin();
+    let ra_rad = ra0 + y_arg.atan2(x_arg);
+
+    let mut ra_deg = ra_rad.to_degrees() % 360.0;
+    if ra_deg < 0.0 {
+        ra_deg += 360.0;
+    }
+    Some((ra_deg, dec_rad.to_degrees()))
+}
+
+/// Parse a sexagesimal RA string in hours (`"HH:MM:SS.s"` / `"HH MM SS"`) → degrees.
+fn parse_ra_sexagesimal(s: &str) -> Option<f64> {
+    let parts: Vec<f64> = s
+        .trim()
+        .split([':', ' '])
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| t.parse().ok())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let hours = parts[0] + parts.get(1).copied().unwrap_or(0.0) / 60.0
+        + parts.get(2).copied().unwrap_or(0.0) / 3600.0;
+    Some(hours * 15.0)
+}
+
+/// Parse a sexagesimal Dec string in degrees (`"+DD:MM:SS.s"`) → degrees.
+fn parse_dec_sexagesimal(s: &str) -> Option<f64> {
+    let trimmed = s.trim();
+    let neg = trimmed.starts_with('-');
+    let parts: Vec<f64> = trimmed
+        .trim_start_matches(['+', '-'])
+        .split([':', ' '])
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| t.parse().ok())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let deg = parts[0] + parts.get(1).copied().unwrap_or(0.0) / 60.0
+        + parts.get(2).copied().unwrap_or(0.0) / 3600.0;
+    Some(if neg { -deg } else { deg })
+}
+
+/// Read a SIP coefficient set (`<prefix>_ORDER` + `<prefix>_p_q`) into a `[p][q]`
+/// table, or `None` when absent.
+fn read_sip_coefficients(header: &HashMap<String, String>, prefix: &str) -> Option<Vec<Vec<f64>>> {
+    let get_f64 =
+        |key: &str| -> Option<f64> { header.get(key).and_then(|v| v.trim().parse().ok()) };
+    let order = get_f64(&format!("{}_ORDER", prefix))? as usize;
+    if order < 1 || order > 9 {
+        return None;
+    }
+    let mut c = vec![vec![0.0; order + 1]; order + 1];
+    let mut any = false;
+    for p in 0..=order {
+        for q in 0..=(order - p) {
+            if let Some(v) = get_f64(&format!("{}_{}_{}", prefix, p, q)) {
+                c[p][q] = v;
+                any = true;
+            }
+        }
+    }
+    if any {
+        Some(c)
+    } else {
+        None
+    }
+}
+
+/// Metadata for one HDU (extension) in a FITS file, for the extension selector.
+#[derive(Debug, Clone)]
+pub struct HduInfo {
+    /// 1-based CFITSIO HDU number.
+    pub index: usize,
+    /// EXTNAME, or "Primary" / "HDU N".
+    pub name: String,
+    pub width: usize,
+    pub height: usize,
+    /// NAXIS3 (0 when the HDU is 2D).
+    pub depth: usize,
+    /// True when this HDU is a loadable ≥2D image (regular or tile-compressed).
+    pub is_image: bool,
+}
+
+impl HduInfo {
+    /// A short one-line label for the selector, e.g. "1: SCI 2048×4096".
+    pub fn label(&self) -> String {
+        let dims = if self.depth > 1 {
+            format!("{}×{}×{}", self.width, self.height, self.depth)
+        } else {
+            format!("{}×{}", self.width, self.height)
+        };
+        if self.is_image {
+            format!("{}: {} {}", self.index, self.name, dims)
+        } else {
+            format!("{}: {} (non-image)", self.index, self.name)
+        }
+    }
+}
+
+/// Human description of a FITS BITPIX value.
+fn describe_bitpix(bitpix: &str) -> String {
+    match bitpix.parse::<i32>() {
+        Ok(8) => "8-bit unsigned integer".into(),
+        Ok(16) => "16-bit integer".into(),
+        Ok(32) => "32-bit integer".into(),
+        Ok(64) => "64-bit integer".into(),
+        Ok(-32) => "32-bit float".into(),
+        Ok(-64) => "64-bit float".into(),
+        _ => bitpix.to_string(),
+    }
+}
+
+/// Format an angular field of view given in arcseconds, auto-selecting °/′/″.
+fn format_fov(arcsec: f64) -> String {
+    let a = arcsec.abs();
+    if a >= 3600.0 {
+        format!("{:.2}°", a / 3600.0)
+    } else if a >= 60.0 {
+        format!("{:.1}′", a / 60.0)
+    } else {
+        format!("{:.1}″", a)
     }
 }
 
@@ -130,17 +547,180 @@ impl FitsImageData {
     fn parse_wcs(header: &HashMap<String, String>) -> Option<WcsInfo> {
         let get_f64 =
             |key: &str| -> Option<f64> { header.get(key).and_then(|v| v.trim().parse().ok()) };
+        let get_str = |key: &str| -> String {
+            header
+                .get(key)
+                .map(|v| v.trim().trim_matches('\'').trim().to_string())
+                .unwrap_or_default()
+        };
+        let contains = |key: &str| header.contains_key(key);
+
+        let ctype1 = get_str("CTYPE1");
+        let ctype2 = get_str("CTYPE2");
+
+        // Build the CD matrix from CD*_* if present, else CDELT + CROTA2.
+        let (cd1_1, cd1_2, cd2_1, cd2_2) = if contains("CD1_1") {
+            (
+                get_f64("CD1_1").unwrap_or(0.0),
+                get_f64("CD1_2").unwrap_or(0.0),
+                get_f64("CD2_1").unwrap_or(0.0),
+                get_f64("CD2_2").unwrap_or(0.0),
+            )
+        } else if contains("CDELT1") || contains("CDELT2") {
+            let cdelt1 = get_f64("CDELT1").unwrap_or(0.0);
+            let cdelt2 = get_f64("CDELT2").unwrap_or(0.0);
+            let crota2 = get_f64("CROTA2").unwrap_or(0.0).to_radians();
+            (
+                cdelt1 * crota2.cos(),
+                -cdelt2 * crota2.sin(),
+                cdelt1 * crota2.sin(),
+                cdelt2 * crota2.cos(),
+            )
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+
+        let mut wcs = WcsInfo {
+            crpix1: get_f64("CRPIX1").unwrap_or(0.0),
+            crpix2: get_f64("CRPIX2").unwrap_or(0.0),
+            crval1: get_f64("CRVAL1").unwrap_or(0.0),
+            crval2: get_f64("CRVAL2").unwrap_or(0.0),
+            cd1_1,
+            cd1_2,
+            cd2_1,
+            cd2_2,
+            ctype1: ctype1.clone(),
+            ctype2,
+            ..WcsInfo::default()
+        };
+
+        // SIP distortion (CTYPE "…-SIP").
+        if ctype1.to_ascii_uppercase().contains("SIP") {
+            wcs.sip_a = read_sip_coefficients(header, "A");
+            wcs.sip_b = read_sip_coefficients(header, "B");
+            wcs.sip_ap = read_sip_coefficients(header, "AP");
+            wcs.sip_bp = read_sip_coefficients(header, "BP");
+        }
+
+        // Degenerate/half-zero CD: try a legacy reconstruction from RA/DEC keywords.
+        if wcs.cd1_1 == 0.0 || wcs.cd2_2 == 0.0 {
+            if let Some(legacy) = Self::parse_legacy_wcs(header) {
+                return Some(legacy);
+            }
+        }
+
+        // No usable solution at all → no WCS.
+        if !wcs.is_valid() {
+            return None;
+        }
+        Some(wcs)
+    }
+
+    /// Approximate WCS from legacy RA/DEC keywords + a plate scale, when standard
+    /// WCS keywords are absent. Assumes RA/DEC is the image centre.
+    fn parse_legacy_wcs(header: &HashMap<String, String>) -> Option<WcsInfo> {
+        let get_f64 =
+            |key: &str| -> Option<f64> { header.get(key).and_then(|v| v.trim().parse().ok()) };
+        let ra = header
+            .get("RA")
+            .and_then(|s| parse_ra_sexagesimal(s))
+            .or_else(|| get_f64("RA"))?;
+        let dec = header
+            .get("DEC")
+            .and_then(|s| parse_dec_sexagesimal(s))
+            .or_else(|| get_f64("DEC"))?;
+
+        let naxis1 = get_f64("NAXIS1").unwrap_or(0.0);
+        let naxis2 = get_f64("NAXIS2").unwrap_or(0.0);
+        if naxis1 <= 0.0 || naxis2 <= 0.0 {
+            return None;
+        }
+
+        let mut scale = get_f64("SECPIX").unwrap_or(0.0);
+        if scale == 0.0 {
+            scale = get_f64("PIXSCALE").unwrap_or(0.0);
+        }
+        if scale == 0.0 {
+            scale = get_f64("SCALE").unwrap_or(0.0);
+        }
+        if scale == 0.0 {
+            scale = 0.5; // conservative default (arcsec/px)
+        }
+        let cdelt = scale / 3600.0;
 
         Some(WcsInfo {
-            crpix1: get_f64("CRPIX1")?,
-            crpix2: get_f64("CRPIX2")?,
-            crval1: get_f64("CRVAL1")?,
-            crval2: get_f64("CRVAL2")?,
-            cd1_1: get_f64("CD1_1").or_else(|| get_f64("CDELT1"))?,
-            cd1_2: get_f64("CD1_2").unwrap_or(0.0),
-            cd2_1: get_f64("CD2_1").unwrap_or(0.0),
-            cd2_2: get_f64("CD2_2").or_else(|| get_f64("CDELT2"))?,
+            crpix1: naxis1 / 2.0,
+            crpix2: naxis2 / 2.0,
+            crval1: ra,
+            crval2: dec,
+            cd1_1: -cdelt,
+            cd1_2: 0.0,
+            cd2_1: 0.0,
+            cd2_2: cdelt,
+            ctype1: "RA---TAN".to_string(),
+            ctype2: "DEC--TAN".to_string(),
+            is_approximate: true,
+            ..WcsInfo::default()
         })
+    }
+
+    /// An at-a-glance summary of the image for the Image Info panel: label/value
+    /// rows covering dimensions, data type, WCS solution, pixel scale, field of
+    /// view, sky centre, orientation, and instrument metadata.
+    pub fn image_info_rows(&self) -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        rows.push((
+            "Dimensions".into(),
+            format!("{} × {} px", self.width, self.height),
+        ));
+        if let Some(bitpix) = self.header.get("BITPIX") {
+            rows.push(("Data type".into(), describe_bitpix(bitpix.trim())));
+        }
+        match &self.wcs {
+            Some(w) if w.is_valid() => {
+                rows.push(("WCS".into(), w.solution_kind().to_string()));
+                let scale = w.pixel_scale_arcsec();
+                rows.push(("Pixel scale".into(), format!("{:.3}″/px", scale)));
+                rows.push((
+                    "Field of view".into(),
+                    format!(
+                        "{} × {}",
+                        format_fov(scale * self.width as f64),
+                        format_fov(scale * self.height as f64)
+                    ),
+                ));
+                let (ra, dec) =
+                    w.pixel_to_sky(self.width as f64 / 2.0, self.height as f64 / 2.0);
+                let (ra_s, dec_s) = WcsInfo::format_coords(ra, dec);
+                rows.push(("Sky centre".into(), format!("{}  {}", ra_s, dec_s)));
+                let parity = if w.has_parity_flip() {
+                    "flipped"
+                } else {
+                    "normal"
+                };
+                rows.push((
+                    "Orientation".into(),
+                    format!("N {:+.1}° · {}", w.north_angle(), parity),
+                ));
+            }
+            _ => rows.push(("WCS".into(), "none".into())),
+        }
+        for (key, label) in [
+            ("OBJECT", "Object"),
+            ("TELESCOP", "Telescope"),
+            ("INSTRUME", "Instrument"),
+            ("FILTER", "Filter"),
+            ("DATE-OBS", "Date"),
+            ("EXPTIME", "Exposure"),
+        ] {
+            if let Some(v) = self.header.get(key) {
+                let v = v.trim().trim_matches('\'').trim();
+                if !v.is_empty() {
+                    rows.push((label.to_string(), v.to_string()));
+                }
+            }
+        }
+        rows
     }
 
     /// Get pixel value at (x, y), returns None if out of bounds
@@ -157,9 +737,8 @@ impl FitsImageData {
 mod tests {
     use super::*;
 
-    #[test]
-    fn wcs_pixel_to_sky() {
-        let wcs = WcsInfo {
+    fn tan_wcs() -> WcsInfo {
+        WcsInfo {
             crpix1: 100.0,
             crpix2: 100.0,
             crval1: 180.0,
@@ -168,10 +747,89 @@ mod tests {
             cd1_2: 0.0,
             cd2_1: 0.0,
             cd2_2: 0.001,
-        };
-        let (ra, dec) = wcs.pixel_to_sky(100.0, 100.0);
-        assert!((ra - 180.0).abs() < 1e-10);
-        assert!((dec - 45.0).abs() < 1e-10);
+            ctype1: "RA---TAN".to_string(),
+            ctype2: "DEC--TAN".to_string(),
+            ..WcsInfo::default()
+        }
+    }
+
+    #[test]
+    fn wcs_reference_pixel_maps_to_crval() {
+        let (ra, dec) = tan_wcs().pixel_to_sky(100.0, 100.0);
+        assert!((ra - 180.0).abs() < 1e-9);
+        assert!((dec - 45.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn wcs_roundtrips_tan() {
+        let w = tan_wcs();
+        let (ra, dec) = w.pixel_to_sky(150.0, 80.0);
+        let (px, py) = w.world_to_pixel(ra, dec).unwrap();
+        assert!((px - 150.0).abs() < 1e-6, "px={}", px);
+        assert!((py - 80.0).abs() < 1e-6, "py={}", py);
+    }
+
+    #[test]
+    fn projection_code_ignores_sip_suffix() {
+        let mut w = tan_wcs();
+        w.ctype1 = "RA---TAN-SIP".to_string();
+        w.ctype2 = "DEC--TAN-SIP".to_string();
+        assert_eq!(w.proj(), Projection::Tan);
+    }
+
+    #[test]
+    fn sip_distortion_shifts_result() {
+        let mut w = tan_wcs();
+        // A_ORDER 2 with a nonzero A_1_1 term perturbs off-reference pixels.
+        w.sip_a = Some(vec![
+            vec![0.0, 0.0, 0.0],
+            vec![0.0, 0.01, 0.0],
+            vec![0.0, 0.0, 0.0],
+        ]);
+        w.sip_b = Some(vec![vec![0.0; 3]; 3]);
+        let plain = tan_wcs().pixel_to_sky(150.0, 130.0);
+        let distorted = w.pixel_to_sky(150.0, 130.0);
+        assert!((plain.0 - distorted.0).abs() > 1e-6 || (plain.1 - distorted.1).abs() > 1e-6);
+    }
+
+    #[test]
+    fn north_angle_and_parity() {
+        let w = tan_wcs();
+        assert!(w.north_angle().abs() < 1e-9); // no rotation
+        assert!(!w.has_parity_flip()); // det < 0
+        assert!((w.pixel_scale_arcsec() - 3.6).abs() < 1e-6); // 0.001 deg = 3.6"
+    }
+
+    #[test]
+    fn parse_wcs_cdelt_crota() {
+        let mut h = HashMap::new();
+        h.insert("CRPIX1".into(), "50".into());
+        h.insert("CRPIX2".into(), "50".into());
+        h.insert("CRVAL1".into(), "10".into());
+        h.insert("CRVAL2".into(), "20".into());
+        h.insert("CDELT1".into(), "-0.001".into());
+        h.insert("CDELT2".into(), "0.001".into());
+        h.insert("CROTA2".into(), "0".into());
+        h.insert("CTYPE1".into(), "RA---TAN".into());
+        h.insert("CTYPE2".into(), "DEC--TAN".into());
+        let w = FitsImageData::parse_wcs(&h).unwrap();
+        assert!((w.cd1_1 + 0.001).abs() < 1e-12);
+        assert!((w.cd2_2 - 0.001).abs() < 1e-12);
+        assert_eq!(w.solution_kind(), "TAN");
+    }
+
+    #[test]
+    fn legacy_wcs_is_approximate() {
+        let mut h = HashMap::new();
+        h.insert("RA".into(), "12:00:00".into());
+        h.insert("DEC".into(), "+45:00:00".into());
+        h.insert("NAXIS1".into(), "1000".into());
+        h.insert("NAXIS2".into(), "1000".into());
+        h.insert("SECPIX".into(), "0.5".into());
+        let w = FitsImageData::parse_wcs(&h).unwrap();
+        assert!(w.is_approximate);
+        assert!((w.crval1 - 180.0).abs() < 1e-9);
+        assert_eq!(w.solution_kind(), "approximate");
     }
 
     #[test]
@@ -179,6 +837,28 @@ mod tests {
         let (ra, dec) = WcsInfo::format_coords(180.0, 45.0);
         assert!(ra.starts_with("12h00m"));
         assert!(dec.starts_with("+45d00m"));
+    }
+
+    #[test]
+    fn hdu_label_formats() {
+        let sci = HduInfo {
+            index: 1,
+            name: "SCI".into(),
+            width: 2048,
+            height: 4096,
+            depth: 0,
+            is_image: true,
+        };
+        assert_eq!(sci.label(), "1: SCI 2048×4096");
+        let tbl = HduInfo {
+            index: 2,
+            name: "EVENTS".into(),
+            width: 0,
+            height: 0,
+            depth: 0,
+            is_image: false,
+        };
+        assert_eq!(tbl.label(), "2: EVENTS (non-image)");
     }
 
     #[test]

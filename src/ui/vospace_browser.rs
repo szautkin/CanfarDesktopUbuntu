@@ -150,23 +150,23 @@ impl VoSpaceBrowser {
         toolbar.append(&breadcrumb_label);
 
         let up_btn = gtk::Button::from_icon_name("go-up-symbolic");
-        up_btn.set_tooltip_text(Some("Go Up"));
+        up_btn.set_tooltip_text(Some(crate::tr_en!("Go Up")));
         toolbar.append(&up_btn);
 
         let new_folder_btn = gtk::Button::from_icon_name("folder-new-symbolic");
-        new_folder_btn.set_tooltip_text(Some("New Folder"));
+        new_folder_btn.set_tooltip_text(Some(crate::tr_en!("New Folder")));
         toolbar.append(&new_folder_btn);
 
         let upload_btn = gtk::Button::from_icon_name("document-send-symbolic");
-        upload_btn.set_tooltip_text(Some("Upload Files"));
+        upload_btn.set_tooltip_text(Some(crate::tr_en!("Upload Files")));
         toolbar.append(&upload_btn);
 
         let copy_path_btn = gtk::Button::from_icon_name("edit-copy-symbolic");
-        copy_path_btn.set_tooltip_text(Some("Copy Current Path"));
+        copy_path_btn.set_tooltip_text(Some(crate::tr_en!("Copy Current Path")));
         toolbar.append(&copy_path_btn);
 
         let refresh_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_btn.set_tooltip_text(Some("Refresh"));
+        refresh_btn.set_tooltip_text(Some(crate::tr_en!("Refresh")));
         toolbar.append(&refresh_btn);
 
         widget.append(&toolbar);
@@ -182,18 +182,18 @@ impl VoSpaceBrowser {
         sort_header.set_margin_bottom(2);
         sort_header.add_css_class("dim-label");
 
-        let sort_btn_name = gtk::Button::with_label("Name ▲");
+        let sort_btn_name = gtk::Button::with_label(crate::tr_en!("Name ▲"));
         sort_btn_name.add_css_class("flat");
         sort_btn_name.set_hexpand(true);
         sort_btn_name.set_halign(gtk::Align::Start);
         sort_header.append(&sort_btn_name);
 
-        let sort_btn_size = gtk::Button::with_label("Size");
+        let sort_btn_size = gtk::Button::with_label(crate::tr_en!("Size"));
         sort_btn_size.add_css_class("flat");
         sort_btn_size.set_size_request(110, -1);
         sort_header.append(&sort_btn_size);
 
-        let sort_btn_modified = gtk::Button::with_label("Modified");
+        let sort_btn_modified = gtk::Button::with_label(crate::tr_en!("Modified"));
         sort_btn_modified.add_css_class("flat");
         sort_btn_modified.set_size_request(180, -1);
         sort_header.append(&sort_btn_modified);
@@ -218,7 +218,7 @@ impl VoSpaceBrowser {
 
         file_list_box.set_placeholder(Some(
             &gtk::Label::builder()
-                .label("Login to browse your VOSpace files")
+                .label(crate::tr_en!("Login to browse your VOSpace files"))
                 .css_classes(vec!["dim-label".to_string()])
                 .margin_top(24)
                 .margin_bottom(24)
@@ -551,7 +551,7 @@ impl VoSpaceBrowser {
         row_box.append(&name_label);
 
         let size_text = if node.is_container() {
-            "Folder".to_string()
+            crate::tr_en!("Folder").to_string()
         } else {
             node.size_display()
         };
@@ -570,7 +570,7 @@ impl VoSpaceBrowser {
         // Download button (files only)
         if !node.is_container() {
             let dl_btn = gtk::Button::from_icon_name("folder-download-symbolic");
-            dl_btn.set_tooltip_text(Some("Download"));
+            dl_btn.set_tooltip_text(Some(crate::tr_en!("Download")));
             dl_btn.set_valign(gtk::Align::Center);
             dl_btn.add_css_class("flat");
             let b = self.clone();
@@ -584,7 +584,7 @@ impl VoSpaceBrowser {
         // Delete button
         {
             let del_btn = gtk::Button::from_icon_name("user-trash-symbolic");
-            del_btn.set_tooltip_text(Some("Delete"));
+            del_btn.set_tooltip_text(Some(crate::tr_en!("Delete")));
             del_btn.set_valign(gtk::Align::Center);
             del_btn.add_css_class("flat");
             let b = self.clone();
@@ -711,7 +711,7 @@ impl VoSpaceBrowser {
         let remote_path = self.build_remote_path(&node.name);
 
         let dialog = gtk::FileDialog::builder()
-            .title("Save As")
+            .title(crate::tr_en!("Save As"))
             .initial_name(&node.name)
             .build();
 
@@ -792,6 +792,51 @@ impl VoSpaceBrowser {
             }
             Err(e) => {
                 self.show_toast(&format!("Failed to open FITS: {}", e));
+            }
+        }
+    }
+
+    /// Download a FITS cube to a temp location and open it in the Cube Viewer.
+    async fn action_open_cube(self: &Rc<Self>, idx: usize) {
+        let node = match self.nodes.borrow().get(idx).cloned() {
+            Some(n) if is_fits_file(&n.name) => n,
+            _ => return,
+        };
+
+        let remote_path = self.build_remote_path(&node.name);
+        let local_path = std::env::temp_dir().join(&node.name);
+        let local_path_clone = local_path.clone();
+        let svc = self.services.clone();
+
+        let result = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                let username = svc.get_username().await;
+                match (token, username) {
+                    (Some(tok), Some(user)) => {
+                        svc.vospace
+                            .download_file(&tok, &user, &remote_path, &local_path_clone)
+                            .await
+                    }
+                    _ => Err(crate::services::ApiError::Unauthorized),
+                }
+            })
+            .await;
+
+        match result {
+            Ok(_) => {
+                if let Some(window) = self.widget.root().and_downcast::<adw::ApplicationWindow>() {
+                    if let Some(app) = window.application() {
+                        let path_str = local_path.to_string_lossy().to_string();
+                        let variant = glib::Variant::from(path_str.as_str());
+                        app.activate_action("open-cube-file", Some(&variant));
+                    }
+                }
+                self.show_toast(&format!("Opened {} in Cube Viewer", node.name));
+            }
+            Err(e) => {
+                self.show_toast(&format!("Failed to open cube: {}", e));
             }
         }
     }
@@ -907,19 +952,94 @@ impl VoSpaceBrowser {
         }
     }
 
+    async fn action_share(self: &Rc<Self>, idx: usize) {
+        let node = match self.nodes.borrow().get(idx).cloned() {
+            Some(n) => n,
+            None => return,
+        };
+        let path = self.build_remote_path(&node.name);
+
+        // Fetch the node's current ACL (a directory listing may omit ACL props),
+        // so the dialog prefills correctly and Save never silently revokes.
+        let svc = self.services.clone();
+        let path_for_get = path.clone();
+        let fetched = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                let username = svc.get_username().await;
+                match (token, username) {
+                    (Some(tok), Some(user)) => {
+                        svc.vospace.get_node(&tok, &user, &path_for_get).await.ok()
+                    }
+                    _ => None,
+                }
+            })
+            .await;
+        let current = fetched.unwrap_or_else(|| node.clone());
+
+        let result = match crate::ui::share_dialog::show_share_dialog(
+            &self.widget,
+            &node.name,
+            current.is_public,
+            &current.group_read,
+            &current.group_write,
+        )
+        .await
+        {
+            Some(r) => r,
+            None => return,
+        };
+
+        let node_type = node.node_type.clone();
+        let svc = self.services.clone();
+        let path_apply = path.clone();
+        let apply = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                let username = svc.get_username().await;
+                match (token, username) {
+                    (Some(tok), Some(user)) => {
+                        svc.vospace
+                            .set_node_acl(
+                                &tok,
+                                &user,
+                                &path_apply,
+                                &node_type,
+                                Some(result.group_read),
+                                Some(result.group_write),
+                                Some(result.is_public),
+                            )
+                            .await
+                    }
+                    _ => Err(crate::services::ApiError::Unauthorized),
+                }
+            })
+            .await;
+
+        match apply {
+            Ok(()) => {
+                self.show_toast(&format!("Sharing updated for {}", node.name));
+                self.refresh().await;
+            }
+            Err(e) => self.show_toast(&format!("Share failed: {}", e)),
+        }
+    }
+
     async fn action_rename(self: &Rc<Self>, idx: usize) {
         let node = match self.nodes.borrow().get(idx).cloned() {
             Some(n) => n,
             None => return,
         };
         if node.is_container() {
-            self.show_toast("Rename not supported for folders yet");
+            self.show_toast(crate::tr_en!("Rename not supported for folders yet"));
             return;
         }
 
         let new_name = match crate::ui::rename_dialog::show_rename_dialog(
             &self.widget,
-            "Rename File",
+            crate::tr_en!("Rename File"),
             &node.name,
         )
         .await
@@ -966,7 +1086,7 @@ impl VoSpaceBrowser {
 
     async fn create_folder_dialog(self: &Rc<Self>) {
         let dialog = adw::Window::builder()
-            .title("New Folder")
+            .title(crate::tr_en!("New Folder"))
             .default_width(360)
             .modal(true)
             .build();
@@ -986,14 +1106,14 @@ impl VoSpaceBrowser {
         content.set_margin_bottom(24);
 
         let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some("Folder name"));
+        entry.set_placeholder_text(Some(crate::tr_en!("Folder name")));
         entry.set_activates_default(true);
         content.append(&entry);
 
         let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         btn_row.set_halign(gtk::Align::End);
-        let cancel_btn = gtk::Button::with_label("Cancel");
-        let create_btn = gtk::Button::with_label("Create");
+        let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
+        let create_btn = gtk::Button::with_label(crate::tr_en!("Create"));
         create_btn.add_css_class("suggested-action");
         create_btn.set_receives_default(true);
         btn_row.append(&cancel_btn);
@@ -1082,7 +1202,7 @@ impl VoSpaceBrowser {
     async fn upload_files_dialog(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>) {
         let root = parent.root().and_downcast::<gtk::Window>();
 
-        let dialog = gtk::FileDialog::builder().title("Upload Files").build();
+        let dialog = gtk::FileDialog::builder().title(crate::tr_en!("Upload Files")).build();
 
         let files = match dialog.open_multiple_future(root.as_ref()).await {
             Ok(f) => f,
@@ -1181,14 +1301,14 @@ impl VoSpaceBrowser {
                 .root()
                 .and_then(|r| r.downcast::<gtk::Window>().ok())
                 .as_ref(),
-            Some("Delete Item"),
+            Some(crate::tr_en!("Delete Item")),
             Some(&format!(
                 "Are you sure you want to delete '{}'? This cannot be undone.",
                 name
             )),
         );
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("delete", "Delete");
+        dialog.add_response("cancel", crate::tr_en!("Cancel"));
+        dialog.add_response("delete", crate::tr_en!("Delete"));
         dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -1252,19 +1372,21 @@ fn build_context_menu(
 ) {
     let menu = gtk::gio::Menu::new();
     if node_is_fits {
-        menu.append(Some("Open in FITS Viewer"), Some("row.open-fits"));
+        menu.append(Some(crate::tr_en!("Open in FITS Viewer")), Some("row.open-fits"));
+        menu.append(Some(crate::tr_en!("Open in Cube Viewer")), Some("row.open-cube"));
     }
     if node_is_notebook {
-        menu.append(Some("Open in Notebook"), Some("row.open-notebook"));
+        menu.append(Some(crate::tr_en!("Open in Notebook")), Some("row.open-notebook"));
     }
     if !node_is_container {
-        menu.append(Some("Download"), Some("row.download"));
+        menu.append(Some(crate::tr_en!("Download")), Some("row.download"));
     }
-    menu.append(Some("Copy Path"), Some("row.copy-path"));
+    menu.append(Some(crate::tr_en!("Copy Path")), Some("row.copy-path"));
+    menu.append(Some(crate::tr_en!("Share…")), Some("row.share"));
     if !node_is_container {
-        menu.append(Some("Rename"), Some("row.rename"));
+        menu.append(Some(crate::tr_en!("Rename")), Some("row.rename"));
     }
-    menu.append(Some("Delete"), Some("row.delete"));
+    menu.append(Some(crate::tr_en!("Delete")), Some("row.delete"));
 
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
     popover.set_parent(row);
@@ -1282,6 +1404,18 @@ fn build_context_menu(
         action.connect_activate(move |_, _| {
             let b = b.clone();
             glib::spawn_future_local(async move { b.action_open_fits(idx).await });
+        });
+        ag.add_action(&action);
+    }
+
+    // open-cube
+    {
+        let b = browser.clone();
+        let action = gtk::gio::SimpleAction::new("open-cube", None);
+        action.set_enabled(node_is_fits);
+        action.connect_activate(move |_, _| {
+            let b = b.clone();
+            glib::spawn_future_local(async move { b.action_open_cube(idx).await });
         });
         ag.add_action(&action);
     }
@@ -1315,6 +1449,21 @@ fn build_context_menu(
         let action = gtk::gio::SimpleAction::new("copy-path", None);
         action.connect_activate(move |_, _| {
             b.action_copy_node_path(idx);
+        });
+        ag.add_action(&action);
+    }
+
+    // share
+    {
+        let b = browser.clone();
+        let popover_weak = popover.downgrade();
+        let action = gtk::gio::SimpleAction::new("share", None);
+        action.connect_activate(move |_, _| {
+            if let Some(p) = popover_weak.upgrade() {
+                p.popdown();
+            }
+            let b = b.clone();
+            glib::spawn_future_local(async move { b.action_share(idx).await });
         });
         ag.add_action(&action);
     }

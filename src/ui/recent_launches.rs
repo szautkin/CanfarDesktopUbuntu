@@ -32,20 +32,20 @@ impl RecentLaunchesView {
         header.set_margin_end(16);
         header.set_margin_top(12);
 
-        let title = gtk::Label::new(Some("Recent Launches"));
+        let title = gtk::Label::new(Some(crate::tr_en!("Recent Launches")));
         title.add_css_class("title-4");
         title.set_halign(gtk::Align::Start);
         title.set_hexpand(true);
         header.append(&title);
 
         let clear_btn = gtk::Button::from_icon_name("edit-clear-all-symbolic");
-        clear_btn.set_tooltip_text(Some("Clear history"));
+        clear_btn.set_tooltip_text(Some(crate::tr_en!("Clear history")));
         header.append(&clear_btn);
         container.append(&header);
 
         // Filter
         let filter_entry = gtk::SearchEntry::new();
-        filter_entry.set_placeholder_text(Some("Filter..."));
+        filter_entry.set_placeholder_text(Some(crate::tr_en!("Filter...")));
         filter_entry.set_margin_start(16);
         filter_entry.set_margin_end(16);
         container.append(&filter_entry);
@@ -112,6 +112,7 @@ impl RecentLaunchesView {
         let filter = self.filter_entry.text().to_string().to_lowercase();
 
         let limit_reached = *self.session_limit_reached.borrow();
+        let now = chrono::Local::now().to_rfc3339();
 
         for (idx, launch) in launches.iter().enumerate() {
             if !filter.is_empty() {
@@ -123,14 +124,35 @@ impl RecentLaunchesView {
                 }
             }
 
+            // Project / image (project omitted for custom + headless entries).
+            let img_part = match launch.project_display() {
+                Some(project) => format!("{}/{}", project, launch.display_image()),
+                None => launch.display_image(),
+            };
+            // Flexible vs Fixed (with the exact resources when fixed).
+            let resource_part = if launch.is_flexible() {
+                launch.resource_type_display().to_string()
+            } else {
+                let mut s = format!(
+                    "{} · CPU:{} RAM:{}G",
+                    launch.resource_type_display(),
+                    launch.cores,
+                    launch.ram,
+                );
+                if launch.gpus > 0 {
+                    s.push_str(&format!(" GPU:{}", launch.gpus));
+                }
+                s
+            };
+
             let row = adw::ActionRow::builder()
                 .title(&launch.name)
                 .subtitle(format!(
-                    "{} | {} | CPU:{} RAM:{}G",
+                    "{} | {} | {} | {}",
                     launch.type_display(),
-                    launch.display_image(),
-                    launch.cores,
-                    launch.ram,
+                    img_part,
+                    resource_part,
+                    launch.relative_date(&now),
                 ))
                 .build();
 
@@ -138,7 +160,7 @@ impl RecentLaunchesView {
             row.add_prefix(&icon);
 
             let relaunch_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
-            relaunch_btn.set_tooltip_text(Some("Relaunch"));
+            relaunch_btn.set_tooltip_text(Some(crate::tr_en!("Relaunch")));
             relaunch_btn.set_valign(gtk::Align::Center);
             relaunch_btn.set_sensitive(!limit_reached);
             {
@@ -153,7 +175,7 @@ impl RecentLaunchesView {
             row.add_suffix(&relaunch_btn);
 
             let remove_btn = gtk::Button::from_icon_name("edit-delete-symbolic");
-            remove_btn.set_tooltip_text(Some("Remove"));
+            remove_btn.set_tooltip_text(Some(crate::tr_en!("Remove")));
             remove_btn.set_valign(gtk::Align::Center);
             {
                 let services = self.services.clone();
@@ -172,7 +194,7 @@ impl RecentLaunchesView {
         }
 
         if launches.is_empty() || (self.list_box.first_child().is_none()) {
-            let empty = gtk::Label::new(Some("No recent launches"));
+            let empty = gtk::Label::new(Some(crate::tr_en!("No recent launches")));
             empty.add_css_class("dim-label");
             empty.set_margin_top(16);
             empty.set_margin_bottom(16);

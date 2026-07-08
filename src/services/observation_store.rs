@@ -41,6 +41,13 @@ pub struct DownloadedObservation {
     /// the network once an observation is saved.
     #[serde(default)]
     pub local_preview_path: String,
+    /// Optional AI-agent provenance recorded when this record was created over
+    /// MCP.  Holds either a JSON-serialised `AgentAttribution` or a bare client
+    /// label; the Research page renders an `agent_badge` when it is present.
+    /// Optional + `#[serde(default)]` so pre-existing JSON stays readable.
+    /// Mirrors `DownloadedObservation.AgentAttribution` in the Windows reference.
+    #[serde(default)]
+    pub agent_attribution: Option<String>,
 }
 
 impl DownloadedObservation {
@@ -135,18 +142,12 @@ impl ObservationStore {
             Ok(json) => json,
             Err(_) => return Vec::new(),
         };
-        let mut list: Vec<DownloadedObservation> =
-            serde_json::from_str(&raw).unwrap_or_default();
-
-        // Purge phantom entries: records whose on-disk file is gone.
-        let before = list.len();
-        list.retain(|obs| obs.is_bookmarked() || std::path::Path::new(&obs.local_path).exists());
-        if list.len() != before {
-            // Best-effort rewrite; ignore errors so a read-only disk still
-            // returns a usable list.
-            let _ = self.write(&list);
-        }
-        list
+        // Do NOT prune records whose on-disk file is currently missing: the file
+        // may live on an offline/unmounted volume, and dropping the record would
+        // lose its metadata permanently. The UI shows a "file missing" affordance
+        // (and offers to re-download) rather than deleting the record. (Matches the
+        // reference ObservationStore's explicit no-prune contract.)
+        serde_json::from_str(&raw).unwrap_or_default()
     }
 
     /// Append (or replace by `id`) an observation and flush to disk.
@@ -305,6 +306,7 @@ mod tests {
             thumbnail_url: String::new(),
             preview_url: String::new(),
             local_preview_path: String::new(),
+            agent_attribution: None,
         }
     }
 
@@ -375,5 +377,16 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].thumbnail_url, "");
         assert_eq!(parsed[0].preview_url, "");
+        // Legacy records predate agent attribution → defaults to None.
+        assert_eq!(parsed[0].agent_attribution, None);
+    }
+
+    #[test]
+    fn agent_attribution_round_trips() {
+        let mut obs = sample_obs();
+        obs.agent_attribution = Some("Claude Desktop".into());
+        let json = serde_json::to_string(&obs).unwrap();
+        let back: DownloadedObservation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.agent_attribution.as_deref(), Some("Claude Desktop"));
     }
 }

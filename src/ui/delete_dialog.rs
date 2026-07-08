@@ -11,15 +11,15 @@ pub async fn show_delete_dialog(parent: &impl IsA<gtk::Widget>, session_name: &s
             .root()
             .and_then(|r| r.downcast::<gtk::Window>().ok())
             .as_ref(),
-        Some("Delete Session"),
+        Some(crate::tr_en!("Delete Session")),
         Some(&format!(
             "Are you sure you want to delete session '{}'?\n\nThis action cannot be undone.",
             session_name
         )),
     );
 
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("delete", "Delete");
+    dialog.add_response("cancel", crate::tr_en!("Cancel"));
+    dialog.add_response("delete", crate::tr_en!("Delete"));
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");

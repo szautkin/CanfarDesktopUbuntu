@@ -1,3 +1,5 @@
+use crate::helpers::range_parser::{self, ParsedRange, RangeOp};
+use crate::helpers::sexagesimal;
 use crate::helpers::unit_converter;
 use crate::models::search_result::SearchFormState;
 
@@ -101,19 +103,137 @@ fn add_observation_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
 // ---------------------------------------------------------------------------
 
 fn add_spatial_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
-    if let (Some(ra), Some(dec)) = (state.resolved_ra, state.resolved_dec) {
-        clauses.push(format!(
-            "INTERSECTS(Plane.position_bounds, CIRCLE('ICRS', {}, {}, {})) = 1",
-            ra, dec, state.search_radius
-        ));
-    } else if !state.target.is_empty() {
-        // Unresolved target name — fallback to name search
-        add_text_like(clauses, "Observation.target_name", &state.target);
+    // Precedence mirrors the Windows/macOS SpatialBuilder: a coordinate-range box,
+    // then a direct coordinate pair (decimal OR colon-sexagesimal), then resolved
+    // name coordinates, then a plain target-name substring match.
+    let target = state.target.trim();
+    if !target.is_empty() {
+        if let Some((ra_lo, ra_hi, dec_lo, dec_hi)) = try_parse_coord_range(target) {
+            clauses.push(format!(
+                "INTERSECTS( RANGE_S2D({}, {}, {}, {}), Plane.position_bounds ) = 1",
+                ra_lo, ra_hi, dec_lo, dec_hi
+            ));
+        } else if let Some((ra, dec, radius)) =
+            try_parse_coordinate_pair(target, state.search_radius)
+        {
+            clauses.push(circle_clause(ra, dec, radius));
+        } else if let (Some(ra), Some(dec)) = (state.resolved_ra, state.resolved_dec) {
+            clauses.push(circle_clause(ra, dec, state.search_radius));
+        } else {
+            // Unresolved target name — fall back to name search.
+            add_text_like(clauses, "Observation.target_name", target);
+        }
+    } else if let (Some(ra), Some(dec)) = (state.resolved_ra, state.resolved_dec) {
+        clauses.push(circle_clause(ra, dec, state.search_radius));
     }
 
-    if let Some(ps) = state.pixel_scale_max {
+    // Pixel scale: an operator-aware raw text field (RANGE syntax) takes precedence
+    // over the legacy numeric max.
+    if let Some(raw) = state
+        .pixel_scale_raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(range) = range_parser::parse_range(raw) {
+            add_converted_range_clause(
+                "Plane.position_sampleSize",
+                &range,
+                &state.pixel_scale_unit,
+                clauses,
+                |v, u| v.trim().parse::<f64>().ok().and_then(|n| unit_converter::to_degrees(n, u)),
+            );
+        }
+    } else if let Some(ps) = state.pixel_scale_max {
         let deg = unit_converter::to_degrees(ps, &state.pixel_scale_unit).unwrap_or(ps / 3600.0);
         clauses.push(format!("Plane.position_sampleSize <= {}", deg));
+    }
+}
+
+/// `INTERSECTS( CIRCLE('ICRS', ra, dec, radius), Plane.position_bounds ) = 1`.
+fn circle_clause(ra: f64, dec: f64, radius: f64) -> String {
+    format!(
+        "INTERSECTS( CIRCLE('ICRS', {}, {}, {}), Plane.position_bounds ) = 1",
+        ra, dec, radius
+    )
+}
+
+/// Parse a coordinate-range box `"raLo..raHi decLo..decHi"` (decimal degrees) for
+/// a `RANGE_S2D` search. Returns `None` unless the input is exactly two `..`-ranges.
+fn try_parse_coord_range(input: &str) -> Option<(f64, f64, f64, f64)> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.len() != 2 || !parts[0].contains("..") || !parts[1].contains("..") {
+        return None;
+    }
+    let ra: Vec<&str> = parts[0].split("..").collect();
+    let dec: Vec<&str> = parts[1].split("..").collect();
+    if ra.len() != 2 || dec.len() != 2 {
+        return None;
+    }
+    Some((
+        ra[0].trim().parse().ok()?,
+        ra[1].trim().parse().ok()?,
+        dec[0].trim().parse().ok()?,
+        dec[1].trim().parse().ok()?,
+    ))
+}
+
+/// Parse a direct coordinate pair `"RA DEC [radius]"` from the target field. RA/Dec
+/// may be decimal degrees (`"10.68 41.27"`) or colon-delimited sexagesimal
+/// (`"10:42:44 +41:16:09"`). Radius is optional with an optional unit
+/// (deg/arcmin/arcsec or `'`). Returns `None` for a plain name like `"M31"`.
+fn try_parse_coordinate_pair(input: &str, default_radius: f64) -> Option<(f64, f64, f64)> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let ra = try_parse_angle(parts[0], true)?;
+    let dec = try_parse_angle(parts[1], false)?;
+    if !(0.0..=360.0).contains(&ra) || !(-90.0..=90.0).contains(&dec) {
+        return None;
+    }
+    let mut radius = default_radius;
+    if parts.len() >= 3 {
+        let parsed = parse_radius(parts[2]);
+        if parsed > 0.0 {
+            radius = parsed;
+        }
+    }
+    Some((ra, dec, radius))
+}
+
+/// Decimal degrees, or colon-delimited sexagesimal (RA in hours, Dec in degrees).
+fn try_parse_angle(token: &str, is_ra: bool) -> Option<f64> {
+    if let Ok(v) = token.parse::<f64>() {
+        return Some(v); // decimal degrees
+    }
+    if token.contains(':') {
+        return if is_ra {
+            sexagesimal::parse_ra(token)
+        } else {
+            sexagesimal::parse_dec(token)
+        };
+    }
+    None
+}
+
+/// Parse a radius token with optional unit to degrees. Returns 0.0 if unparseable.
+/// `'` is treated as arcmin (mirrors the reference `ParseRadius`).
+fn parse_radius(input: &str) -> f64 {
+    let trimmed = input.trim().replace('\'', "arcmin");
+    let lower = trimmed.to_ascii_lowercase();
+    let (num, factor) = if let Some(p) = lower.strip_suffix("arcmin") {
+        (p, 1.0 / 60.0)
+    } else if let Some(p) = lower.strip_suffix("arcsec") {
+        (p, 1.0 / 3600.0)
+    } else if let Some(p) = lower.strip_suffix("deg") {
+        (p, 1.0)
+    } else {
+        (lower.as_str(), 1.0)
+    };
+    match num.trim().parse::<f64>() {
+        Ok(v) => v * factor,
+        Err(_) => 0.0,
     }
 }
 
@@ -147,39 +267,59 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
             ));
         }
         _ => {
-            // Custom date range — try expanding partial dates first
-            let raw = &state.obs_date_raw;
-            let (start_str, end_str) = if !raw.is_empty() {
-                expand_date_to_range(raw)
-            } else {
-                (state.obs_date_start.clone(), state.obs_date_end.clone())
-            };
-
-            let mjd_start = if !start_str.is_empty() {
-                date_to_mjd(&start_str)
-            } else {
+            let raw = state.obs_date_raw.trim();
+            // Explicit range operators (>, >=, <, <=) on the observation-date field
+            // map onto time_bounds comparisons (ported AddDateRangeClause). Plain
+            // values and "A..B" ranges keep the existing partial-date expansion.
+            let op_range = if raw.is_empty() {
                 None
-            };
-            let mjd_end = if !end_str.is_empty() {
-                date_to_mjd(&end_str)
             } else {
-                None
+                range_parser::parse_range(raw).filter(|r| {
+                    matches!(
+                        r.op,
+                        RangeOp::GreaterThan
+                            | RangeOp::GreaterThanOrEqual
+                            | RangeOp::LessThan
+                            | RangeOp::LessThanOrEqual
+                    )
+                })
             };
+            if let Some(range) = op_range {
+                add_date_range_clause(&range, clauses, None);
+            } else {
+                // Custom date range — try expanding partial dates first
+                let (start_str, end_str) = if !raw.is_empty() {
+                    expand_date_to_range(raw)
+                } else {
+                    (state.obs_date_start.clone(), state.obs_date_end.clone())
+                };
 
-            match (mjd_start, mjd_end) {
-                (Some(lo), Some(hi)) => {
-                    clauses.push(format!(
-                        "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                        lo, hi
-                    ));
+                let mjd_start = if !start_str.is_empty() {
+                    date_to_mjd(&start_str)
+                } else {
+                    None
+                };
+                let mjd_end = if !end_str.is_empty() {
+                    date_to_mjd(&end_str)
+                } else {
+                    None
+                };
+
+                match (mjd_start, mjd_end) {
+                    (Some(lo), Some(hi)) => {
+                        clauses.push(format!(
+                            "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
+                            lo, hi
+                        ));
+                    }
+                    (Some(lo), None) => {
+                        clauses.push(format!("Plane.time_bounds_lower >= {}", lo));
+                    }
+                    (None, Some(hi)) => {
+                        clauses.push(format!("Plane.time_bounds_upper <= {}", hi));
+                    }
+                    _ => {}
                 }
-                (Some(lo), None) => {
-                    clauses.push(format!("Plane.time_bounds_lower >= {}", lo));
-                }
-                (None, Some(hi)) => {
-                    clauses.push(format!("Plane.time_bounds_upper <= {}", hi));
-                }
-                _ => {}
             }
         }
     }
@@ -200,15 +340,109 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         clauses.push(format!("Plane.time_bounds_width <= {}", max));
     }
 
-    // Data release
-    if !state.data_release.is_empty() {
-        let (start, end) = expand_date_to_range(&state.data_release);
-        if let Some(mjd) = date_to_mjd(&start) {
-            clauses.push(format!("Plane.dataRelease <= {}", mjd));
-        } else if let Some(mjd) = date_to_mjd(&end) {
-            clauses.push(format!("Plane.dataRelease <= {}", mjd));
+    // Data release — full range-operator support (ported AddDateRangeClause with a
+    // dedicated column). ">2020", ">=2020-06", "<2021", "2019..2021", or "2020".
+    if !state.data_release.trim().is_empty() {
+        if let Some(range) = range_parser::parse_range(&state.data_release) {
+            add_date_range_clause(&range, clauses, Some("Plane.dataRelease"));
         }
     }
+}
+
+/// Apply a parsed date range to the query (port of `ADQLBuilder.AddDateRangeClause`).
+///
+/// With `column = Some(col)` the bounds compare directly against `col` (MJD);
+/// with `column = None` they map onto `Plane.time_bounds_*` / an
+/// `INTERSECTS(INTERVAL(...))` overlap. Values are parsed leniently (a bare year
+/// or year-month expands to its start/end date).
+fn add_date_range_clause(range: &ParsedRange, clauses: &mut Vec<String>, column: Option<&str>) {
+    match range.op {
+        RangeOp::Between => {
+            if let (Some(lo), Some(hi)) = (
+                date_to_mjd_flexible(&range.value1),
+                range.value2.as_deref().and_then(date_to_mjd_flexible),
+            ) {
+                push_interval(clauses, column, lo, hi);
+            }
+        }
+        RangeOp::GreaterThan => {
+            if let Some(v) = date_to_mjd_flexible(&range.value1) {
+                clauses.push(format!(
+                    "{} > {}",
+                    column.unwrap_or("Plane.time_bounds_lower"),
+                    v
+                ));
+            }
+        }
+        RangeOp::GreaterThanOrEqual => {
+            if let Some(v) = date_to_mjd_flexible(&range.value1) {
+                clauses.push(format!(
+                    "{} >= {}",
+                    column.unwrap_or("Plane.time_bounds_lower"),
+                    v
+                ));
+            }
+        }
+        RangeOp::LessThan => {
+            if let Some(v) = date_to_mjd_flexible(&range.value1) {
+                clauses.push(format!(
+                    "{} < {}",
+                    column.unwrap_or("Plane.time_bounds_upper"),
+                    v
+                ));
+            }
+        }
+        RangeOp::LessThanOrEqual => {
+            if let Some(v) = date_to_mjd_flexible(&range.value1) {
+                clauses.push(format!(
+                    "{} <= {}",
+                    column.unwrap_or("Plane.time_bounds_upper"),
+                    v
+                ));
+            }
+        }
+        RangeOp::Equals => {
+            if let Some((lo, hi)) = expand_date_to_mjd_range(&range.value1) {
+                push_interval(clauses, column, lo, hi);
+            }
+        }
+    }
+}
+
+/// Between/Equals bounds: a direct `col >= lo AND col <= hi` when a column is
+/// given, else an `INTERSECTS(INTERVAL(...))` overlap against the time samples.
+fn push_interval(clauses: &mut Vec<String>, column: Option<&str>, lo: f64, hi: f64) {
+    match column {
+        Some(col) => clauses.push(format!("{} >= {} AND {} <= {}", col, lo, col, hi)),
+        None => clauses.push(format!(
+            "INTERSECTS( INTERVAL( {}, {} ), Plane.time_bounds_samples ) = 1",
+            lo, hi
+        )),
+    }
+}
+
+/// Parse a date value to MJD, expanding a bare year/year-month to its start date.
+fn date_to_mjd_flexible(s: &str) -> Option<f64> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    date_to_mjd(t).or_else(|| {
+        let (start, _) = expand_single_date(t);
+        if start.is_empty() {
+            None
+        } else {
+            date_to_mjd(&start)
+        }
+    })
+}
+
+/// Expand a date value to an inclusive MJD range (`"2020"` → whole year, etc.).
+fn expand_date_to_mjd_range(s: &str) -> Option<(f64, f64)> {
+    let (start, end) = expand_single_date(s.trim());
+    let lo = date_to_mjd(&start)?;
+    let hi = if end.is_empty() { lo } else { date_to_mjd(&end)? };
+    Some((lo, hi))
 }
 
 /// Get the current Modified Julian Date.
@@ -430,6 +664,56 @@ fn add_in_clause(clauses: &mut Vec<String>, column: &str, value: &str) {
             .map(|v| format!("'{}'", escape_sql(v)))
             .collect();
         clauses.push(format!("{} IN ({})", column, quoted.join(", ")));
+    }
+}
+
+/// Apply a parsed numeric range to a column, converting each side via `convert`
+/// (port of `ADQLBuilder.AddConvertedRangeClause`). Supports `=`, `<`, `<=`, `>`,
+/// `>=` and `A..B`. `Between` sides are normalised low→high.
+fn add_converted_range_clause<F>(
+    column: &str,
+    range: &ParsedRange,
+    unit: &str,
+    clauses: &mut Vec<String>,
+    convert: F,
+) where
+    F: Fn(&str, &str) -> Option<f64>,
+{
+    match range.op {
+        RangeOp::Between => {
+            if let (Some(v1), Some(v2)) = (
+                convert(&range.value1, unit),
+                range.value2.as_deref().and_then(|s| convert(s, unit)),
+            ) {
+                let (lo, hi) = if v1 <= v2 { (v1, v2) } else { (v2, v1) };
+                clauses.push(format!("{} >= {} AND {} <= {}", column, lo, column, hi));
+            }
+        }
+        RangeOp::GreaterThan => {
+            if let Some(v) = convert(&range.value1, unit) {
+                clauses.push(format!("{} > {}", column, v));
+            }
+        }
+        RangeOp::GreaterThanOrEqual => {
+            if let Some(v) = convert(&range.value1, unit) {
+                clauses.push(format!("{} >= {}", column, v));
+            }
+        }
+        RangeOp::LessThan => {
+            if let Some(v) = convert(&range.value1, unit) {
+                clauses.push(format!("{} < {}", column, v));
+            }
+        }
+        RangeOp::LessThanOrEqual => {
+            if let Some(v) = convert(&range.value1, unit) {
+                clauses.push(format!("{} <= {}", column, v));
+            }
+        }
+        RangeOp::Equals => {
+            if let Some(v) = convert(&range.value1, unit) {
+                clauses.push(format!("{} = {}", column, v));
+            }
+        }
     }
 }
 
@@ -674,5 +958,160 @@ mod tests {
         let adql = build(&state);
         assert!(adql.contains("energy_emBand = 'Optical'"));
         assert!(adql.contains("instrument_name IN ('ACS', 'WFC3')"));
+    }
+
+    // ── Target coordinate parsing ───────────────────────────────────────────
+
+    #[test]
+    fn target_decimal_pair_makes_circle() {
+        let mut state = SearchFormState::new();
+        state.target = "10.68 41.27".to_string();
+        state.search_radius = 0.1;
+        let adql = build(&state);
+        assert!(adql.contains("CIRCLE('ICRS', 10.68, 41.27, 0.1)"), "{}", adql);
+        assert!(adql.contains(", Plane.position_bounds ) = 1"));
+        // Not treated as a target-name LIKE (the SELECT still lists target_name).
+        assert!(!adql.contains("lower(Observation.target_name)"));
+    }
+
+    #[test]
+    fn target_sexagesimal_pair_makes_circle() {
+        let mut state = SearchFormState::new();
+        state.target = "10:00:00 +41:16:00".to_string();
+        let adql = build(&state);
+        // 10h == 150 deg.
+        assert!(adql.contains("CIRCLE('ICRS', 150"), "{}", adql);
+    }
+
+    #[test]
+    fn target_pair_with_radius_unit() {
+        let mut state = SearchFormState::new();
+        state.target = "10.0 20.0 5arcmin".to_string();
+        let adql = build(&state);
+        // 5 arcmin == 5/60 deg.
+        let deg = 5.0 / 60.0;
+        assert!(adql.contains(&format!("CIRCLE('ICRS', 10, 20, {})", deg)), "{}", adql);
+    }
+
+    #[test]
+    fn target_coord_range_makes_range_s2d() {
+        let mut state = SearchFormState::new();
+        state.target = "10..20 30..40".to_string();
+        let adql = build(&state);
+        assert!(adql.contains("RANGE_S2D(10, 20, 30, 40)"), "{}", adql);
+        assert!(adql.contains("INTERSECTS( RANGE_S2D"));
+    }
+
+    #[test]
+    fn target_name_falls_back_to_like_then_resolved() {
+        // Plain name, unresolved → LIKE.
+        let mut state = SearchFormState::new();
+        state.target = "M31".to_string();
+        let adql = build(&state);
+        assert!(adql.contains("lower(Observation.target_name) LIKE"), "{}", adql);
+        assert!(adql.contains("%m31%") || adql.contains("%M31%"));
+
+        // Plain name, resolved coords present → CIRCLE from resolved coords.
+        let mut state2 = SearchFormState::new();
+        state2.target = "M31".to_string();
+        state2.resolved_ra = Some(10.68);
+        state2.resolved_dec = Some(41.27);
+        let adql2 = build(&state2);
+        assert!(adql2.contains("CIRCLE('ICRS', 10.68, 41.27"), "{}", adql2);
+        assert!(!adql2.contains("lower(Observation.target_name)"));
+    }
+
+    #[test]
+    fn parse_radius_units() {
+        assert!((parse_radius("0.5deg") - 0.5).abs() < 1e-12);
+        assert!((parse_radius("30arcsec") - 30.0 / 3600.0).abs() < 1e-12);
+        assert!((parse_radius("2'") - 2.0 / 60.0).abs() < 1e-12);
+        assert!((parse_radius("1.5") - 1.5).abs() < 1e-12); // bare → degrees
+        assert_eq!(parse_radius("abc"), 0.0);
+    }
+
+    // ── Range operators ─────────────────────────────────────────────────────
+
+    #[test]
+    fn data_release_range_operators() {
+        let mut gt = SearchFormState::new();
+        gt.data_release = ">2020".to_string();
+        assert!(build(&gt).contains("Plane.dataRelease >"), "greater-than");
+
+        let mut le = SearchFormState::new();
+        le.data_release = "<=2021-06".to_string();
+        assert!(build(&le).contains("Plane.dataRelease <="), "less-equal");
+
+        let mut eq = SearchFormState::new();
+        eq.data_release = "2020".to_string();
+        let a = build(&eq);
+        // Equals on a bare year expands to a >= .. AND <= .. range.
+        assert!(a.contains("Plane.dataRelease >=") && a.contains("Plane.dataRelease <="), "{}", a);
+
+        let mut bt = SearchFormState::new();
+        bt.data_release = "2019-01-01..2021-01-01".to_string();
+        let b = build(&bt);
+        assert!(b.contains("Plane.dataRelease >=") && b.contains("Plane.dataRelease <="), "{}", b);
+    }
+
+    #[test]
+    fn obs_date_operator_maps_to_time_bounds() {
+        let mut gt = SearchFormState::new();
+        gt.obs_date_raw = ">2020-01-01".to_string();
+        let a = build(&gt);
+        assert!(a.contains("Plane.time_bounds_lower >"), "{}", a);
+
+        let mut lt = SearchFormState::new();
+        lt.obs_date_raw = "<2021-01-01".to_string();
+        let b = build(&lt);
+        assert!(b.contains("Plane.time_bounds_upper <"), "{}", b);
+
+        // A plain year keeps the existing INTERVAL-overlap expansion.
+        let mut plain = SearchFormState::new();
+        plain.obs_date_raw = "2020".to_string();
+        assert!(build(&plain).contains("INTERSECTS( INTERVAL("));
+    }
+
+    #[test]
+    fn obs_date_operator_keeps_integration_time_clause() {
+        // Regression: the operator branch must not short-circuit later clauses.
+        let mut state = SearchFormState::new();
+        state.obs_date_raw = ">2020-01-01".to_string();
+        state.integration_time_min = Some(60.0);
+        let adql = build(&state);
+        assert!(adql.contains("Plane.time_bounds_lower >"));
+        assert!(adql.contains("time_exposure >= 60"));
+    }
+
+    #[test]
+    fn pixel_scale_raw_operator_overrides_max() {
+        let mut state = SearchFormState::new();
+        state.pixel_scale_raw = Some("> 0.2".to_string());
+        state.pixel_scale_unit = "arcsec".to_string();
+        let adql = build(&state);
+        // 0.2 arcsec == 0.2/3600 deg.
+        let deg = 0.2 / 3600.0;
+        assert!(adql.contains(&format!("Plane.position_sampleSize > {}", deg)), "{}", adql);
+    }
+
+    #[test]
+    fn add_converted_range_clause_all_ops() {
+        let ident = |v: &str, _u: &str| v.trim().parse::<f64>().ok();
+
+        let mut c = Vec::new();
+        add_converted_range_clause("X", &range_parser::parse_range("5..1").unwrap(), "", &mut c, ident);
+        assert_eq!(c[0], "X >= 1 AND X <= 5"); // normalised low→high
+
+        let mut c = Vec::new();
+        add_converted_range_clause("X", &range_parser::parse_range(">= 3").unwrap(), "", &mut c, ident);
+        assert_eq!(c[0], "X >= 3");
+
+        let mut c = Vec::new();
+        add_converted_range_clause("X", &range_parser::parse_range("< 7").unwrap(), "", &mut c, ident);
+        assert_eq!(c[0], "X < 7");
+
+        let mut c = Vec::new();
+        add_converted_range_clause("X", &range_parser::parse_range("42").unwrap(), "", &mut c, ident);
+        assert_eq!(c[0], "X = 42");
     }
 }
