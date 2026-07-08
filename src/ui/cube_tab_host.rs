@@ -334,7 +334,7 @@ impl CubeTabHost {
         spinner.set_size_request(48, 48);
         spinner.start();
         loading.append(&spinner);
-        let load_label = gtk::Label::new(Some(&format!("Loading {name}…")));
+        let load_label = gtk::Label::new(Some(&crate::tr_fmt!("Loading {}…", name)));
         load_label.add_css_class("dim-label");
         loading.append(&load_label);
 
@@ -382,7 +382,7 @@ impl CubeTabHost {
                 }
                 Ok(Err(e)) => {
                     this.toast_overlay
-                        .add_toast(adw::Toast::new(&format!("Failed to load cube: {e}")));
+                        .add_toast(adw::Toast::new(&crate::tr_fmt!("Failed to load cube: {}", e)));
                 }
                 Err(_) => {}
             }

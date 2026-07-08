@@ -166,11 +166,17 @@ impl ImageDiscoveryCoordinator {
         let types = self.lookup_image_types(services, &token, image_id).await;
         let strategy = strategy(types.as_deref());
 
-        // Registry auth + inspector image (extracted before any await so the
-        // std Mutex guard is never held across a suspension point).
+        // Registry auth + inspector image. Re-load the persisted settings FRESH
+        // here (rather than using the copy cached at app startup) so an inspector
+        // image / registry credentials the user just set in Settings are honoured
+        // — otherwise the coordinator's stale copy would fall back to the default
+        // `skaha/terminal` inspector. (Extracted before any await so the std Mutex
+        // guard is never held across a suspension point.)
         let (inspector_image, auth_header) = {
-            let s = self.settings.lock().unwrap_or_else(|e| e.into_inner());
-            (s.resolve_inspector_image(), s.current_auth_header())
+            let fresh = ImageDiscoverySettingsService::new();
+            let mut cached = self.settings.lock().unwrap_or_else(|e| e.into_inner());
+            *cached = fresh;
+            (cached.resolve_inspector_image(), cached.current_auth_header())
         };
         let (registry_username, registry_secret) = match auth_header.as_deref() {
             Some(h) => match decode_auth_header(h) {

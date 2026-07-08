@@ -845,7 +845,7 @@ impl NotebookTabHost {
             Ok(d) => d,
             Err(e) => {
                 self.toast_overlay
-                    .add_toast(adw::Toast::new(&format!("Failed to load: {}", e)));
+                    .add_toast(adw::Toast::new(&crate::tr_fmt!("Failed to load: {}", e)));
                 return;
             }
         };
@@ -971,7 +971,7 @@ impl NotebookTabHost {
         let dialog = adw::MessageDialog::new(
             root.as_ref(),
             Some(crate::tr_en!("Save changes?")),
-            Some(&format!(
+            Some(&crate::tr_fmt!(
                 "“{}” has unsaved changes. Save them before closing?",
                 page.title()
             )),
@@ -993,7 +993,7 @@ impl NotebookTabHost {
                     false
                 } else if let Err(e) = page.save() {
                     self.toast_overlay
-                        .add_toast(adw::Toast::new(&format!("Save failed: {}", e)));
+                        .add_toast(adw::Toast::new(&crate::tr_fmt!("Save failed: {}", e)));
                     false
                 } else {
                     true
@@ -1050,7 +1050,7 @@ impl NotebookTabHost {
         let dialog = adw::MessageDialog::new(
             root.as_ref(),
             Some(crate::tr_en!("Recover notebooks?")),
-            Some(&format!(
+            Some(&crate::tr_fmt!(
                 "{} unsaved notebook checkpoint(s) from a previous session were found. Recover them?",
                 orphans.len()
             )),
@@ -1079,7 +1079,10 @@ impl NotebookTabHost {
                         );
                         // Recovered content is unsaved by definition.
                         page.set_modified(true);
-                        self.add_tab(page.clone(), &format!("{} (recovered)", cand.display_name));
+                        self.add_tab(
+                            page.clone(),
+                            &crate::tr_fmt!("{} (recovered)", cand.display_name),
+                        );
                         self.refresh_tab_title(&page);
                     }
                     crate::helpers::notebook_autosave::discard(&cand.path);
@@ -1107,7 +1110,7 @@ impl NotebookTabHost {
             }
             if let Err(e) = page.save() {
                 self.toast_overlay
-                    .add_toast(adw::Toast::new(&format!("Save failed: {}", e)));
+                    .add_toast(adw::Toast::new(&crate::tr_fmt!("Save failed: {}", e)));
             } else {
                 // Clean save → clear the `*` marker and drop the autosave checkpoint.
                 self.refresh_tab_title(&page);
@@ -1192,7 +1195,7 @@ impl NotebookTabHost {
                     }
                     Err(e) => {
                         self.toast_overlay
-                            .add_toast(adw::Toast::new(&format!("Save failed: {}", e)));
+                            .add_toast(adw::Toast::new(&crate::tr_fmt!("Save failed: {}", e)));
                     }
                 }
             }
@@ -1544,7 +1547,7 @@ impl NotebookTabHost {
 
         if let Err(e) = self.settings_service.save(&new) {
             self.toast_overlay
-                .add_toast(adw::Toast::new(&format!("Settings save failed: {e}")));
+                .add_toast(adw::Toast::new(&crate::tr_fmt!("Settings save failed: {}", e)));
         }
 
         // Font size → global provider (restyles every open notebook's cells).

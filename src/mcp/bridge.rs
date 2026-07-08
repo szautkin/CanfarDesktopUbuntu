@@ -16,17 +16,66 @@
 //! Mirrors `Mcp/Bridge/BridgeRelay.cs::RelayAsync`.
 
 use std::io;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use crate::mcp::socket_path::socket_path;
 
+/// How long the bridge waits for the app's listener to come up after launching it.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Connect to the in-app listener and relay stdio ↔ socket until either end
-/// closes. Returns the connect error unchanged if the app is not running.
+/// closes.
+///
+/// If the initial connect fails — the app isn't running, or a stale socket file
+/// is left over from a previous session — the bridge launches the Verbinal app
+/// (which auto-starts the MCP server when the user left it enabled) and retries
+/// for a bounded window, so an AI client can connect without the app already
+/// being open. The connect error is only surfaced if that window elapses.
 pub async fn run_stdio_bridge() -> io::Result<()> {
-    let stream = UnixStream::connect(socket_path()).await?;
+    let path = socket_path();
+    let stream = match UnixStream::connect(&path).await {
+        Ok(s) => s,
+        Err(_) => {
+            launch_app_detached();
+            connect_with_retry(&path, CONNECT_TIMEOUT).await?
+        }
+    };
     relay(tokio::io::stdin(), tokio::io::stdout(), stream).await
+}
+
+/// Spawn the Verbinal GUI (no args) detached from this bridge's stdio so it can
+/// bind the control socket. Single-instance by app-id, so a running app just gets
+/// re-activated rather than duplicated. Best-effort — the retry loop reports any
+/// real failure.
+fn launch_app_detached() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
+/// Poll-connect to `path` until it succeeds or `timeout` elapses (a stale socket
+/// yields `ECONNREFUSED` until the app re-binds it).
+async fn connect_with_retry(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match UnixStream::connect(path).await {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                if Instant::now() >= deadline {
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+    }
 }
 
 /// Pump bytes in both directions between a stdio pair (`input`/`output`) and a

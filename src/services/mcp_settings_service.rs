@@ -79,6 +79,10 @@ pub struct McpSettings {
     pub follow_activity_enabled: bool,
     /// Show the AI-Guide tile on the landing launchpad. Default true.
     pub show_ai_guide_tile: bool,
+    /// Whether the MCP server was left enabled — so it is auto-started on the next
+    /// app launch (an AI client can then connect without the user re-enabling it).
+    /// Default false (opt-in).
+    pub server_enabled: bool,
 }
 
 impl Default for McpSettings {
@@ -87,6 +91,7 @@ impl Default for McpSettings {
             auto_apply_enabled: true,
             follow_activity_enabled: true,
             show_ai_guide_tile: true,
+            server_enabled: false,
         }
     }
 }
@@ -136,6 +141,15 @@ impl McpSettingsService {
 
     pub fn set_follow_activity_enabled(&self, value: bool) {
         self.state.borrow_mut().follow_activity_enabled = value;
+        self.save();
+    }
+
+    pub fn server_enabled(&self) -> bool {
+        self.state.borrow().server_enabled
+    }
+
+    pub fn set_server_enabled(&self, value: bool) {
+        self.state.borrow_mut().server_enabled = value;
         self.save();
     }
 

@@ -420,9 +420,13 @@ impl SettingsPage {
                             services.mcp_clients.clone(),
                         ));
                     services.mcp_host.start(services.clone(), gate);
+                    crate::services::mcp_settings_service::McpSettingsService::new()
+                        .set_server_enabled(true);
                     services.toast.toast(crate::tr_en!("MCP server started"));
                 } else {
                     services.mcp_host.stop();
+                    crate::services::mcp_settings_service::McpSettingsService::new()
+                        .set_server_enabled(false);
                     services.toast.toast(crate::tr_en!("MCP server stopped"));
                 }
                 refresh_status();
@@ -756,7 +760,7 @@ impl SettingsPage {
                         let (icon, detail) = if r.reachable {
                             (
                                 "emblem-ok-symbolic",
-                                format!(
+                                crate::tr_fmt!(
                                     "reachable — {} ({} ms)",
                                     r.status.map(|s| s.to_string()).unwrap_or_default(),
                                     r.latency_ms
@@ -765,7 +769,7 @@ impl SettingsPage {
                         } else {
                             (
                                 "dialog-error-symbolic",
-                                format!(
+                                crate::tr_fmt!(
                                     "unreachable — {}",
                                     r.error.clone().unwrap_or_else(|| "error".to_string())
                                 ),

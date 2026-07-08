@@ -31,7 +31,10 @@ pub fn show_connect_wizard(parent: &impl IsA<gtk::Widget>, services: Arc<AppServ
     let window = adw::Window::builder()
         .title("Connect an AI agent")
         .default_width(540)
-        .default_height(480)
+        .default_height(560)
+        .width_request(400)
+        .height_request(480)
+        .resizable(true)
         .modal(true)
         .build();
 
@@ -205,14 +208,12 @@ picks this up the next time it launches.",
     stack.add_named(&verify_page, Some(PAGES[3]));
 
     body.append(&stack);
-    toolbar_view.set_content(Some(&body));
 
     // ── Footer: Back / Next ─────────────────────────────────────────────────
+    // Pinned at the bottom of the body (below the vexpanding step stack) so the
+    // proceed button is always visible even on short / HiDPI-scaled displays.
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    footer.set_margin_start(18);
-    footer.set_margin_end(18);
     footer.set_margin_top(6);
-    footer.set_margin_bottom(12);
     let back_btn = gtk::Button::with_label("Back");
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -221,8 +222,9 @@ picks this up the next time it launches.",
     footer.append(&back_btn);
     footer.append(&spacer);
     footer.append(&next_btn);
-    toolbar_view.add_bottom_bar(&footer);
+    body.append(&footer);
 
+    toolbar_view.set_content(Some(&body));
     window.set_content(Some(&toolbar_view));
 
     // ── Navigation state + step renderer ────────────────────────────────────
@@ -305,6 +307,8 @@ picks this up the next time it launches.",
                     services.mcp_clients.clone(),
                 ));
             services.mcp_host.start(services.clone(), gate);
+            // Remember it's on so it auto-starts on the next launch.
+            crate::services::mcp_settings_service::McpSettingsService::new().set_server_enabled(true);
             status_label.remove_css_class("error");
             status_label.set_text("MCP server is running.");
             btn.set_sensitive(false);

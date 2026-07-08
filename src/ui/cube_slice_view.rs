@@ -578,7 +578,7 @@ impl CubeSliceView {
             s.spectrum = spectrum;
         }
         self.spectrum_title
-            .set_text(&format!("Spectrum at ({}, {})", dx, dy));
+            .set_text(&crate::tr_fmt!("Spectrum at ({}, {})", dx, dy));
         self.spectrum_revealer.set_reveal_child(true);
         self.spectrum_area.queue_draw();
     }

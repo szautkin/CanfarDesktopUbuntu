@@ -174,7 +174,7 @@ impl SessionListView {
                         .cached_time_label(&CacheKey::Sessions)
                         .unwrap_or_else(|| "unknown".into());
                     self.update_sessions(entry.data);
-                    self.services.toast.toast(&format!(
+                    self.services.toast.toast(&crate::tr_fmt!(
                         "Sessions unreachable — cached list from {}",
                         time_label
                     ));
@@ -220,11 +220,9 @@ impl SessionListView {
             .collect();
 
         let count = sessions.iter().filter(|s| !s.is_headless()).count();
-        self.count_label.set_text(&format!(
-            "{} session{}",
-            count,
-            if count == 1 { "" } else { "s" }
-        ));
+        let count_tmpl = if count == 1 { "{} session" } else { "{} sessions" };
+        self.count_label
+            .set_text(&crate::tr_fmt!(count_tmpl, count));
         self.empty_label.set_visible(visible.is_empty());
 
         for session in &visible {
@@ -269,7 +267,7 @@ impl SessionListView {
                 loop {
                     // Countdown from 15 to 1
                     for remaining in (1..=AUTO_REFRESH_SECS).rev() {
-                        countdown_label.set_text(&format!("refresh in {}s", remaining));
+                        countdown_label.set_text(&crate::tr_fmt!("refresh in {}s", remaining));
                         glib::timeout_future_seconds(1).await;
                     }
                     countdown_label.set_text(crate::tr_en!("refreshing..."));
@@ -300,11 +298,8 @@ impl SessionListView {
                         cards_box.remove(&child);
                     }
                     let count = new_sessions.len();
-                    count_label.set_text(&format!(
-                        "{} session{}",
-                        count,
-                        if count == 1 { "" } else { "s" }
-                    ));
+                    let count_tmpl = if count == 1 { "{} session" } else { "{} sessions" };
+                    count_label.set_text(&crate::tr_fmt!(count_tmpl, count));
                     let visible: Vec<&Session> = new_sessions
                         .iter()
                         .filter(|s| match active_filter {

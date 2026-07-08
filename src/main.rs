@@ -64,6 +64,16 @@ fn main() {
         let lang = i18n::lang_from_setting(&services.endpoints.config().language);
         i18n::set_lang(lang);
 
+        // Auto-start the MCP server if it was left enabled, so an AI client
+        // (Claude Desktop / Code) can connect on the next launch without the user
+        // re-enabling it. Uses the persisted client-approval gate.
+        if crate::services::mcp_settings_service::McpSettingsService::new().server_enabled() {
+            let gate: std::sync::Arc<dyn crate::mcp::server::ApprovalGate> = std::sync::Arc::new(
+                crate::mcp::client_approval::ApprovalStoreGate::new(services.mcp_clients.clone()),
+            );
+            services.mcp_host.start(services.clone(), gate);
+        }
+
         // Theme is applied inside build_main_window from saved settings
         ui::build_main_window(app, services, toast_rx);
     });

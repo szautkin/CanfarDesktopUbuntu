@@ -626,7 +626,7 @@ impl FitsViewer {
                         let text = format!("{}  {}  ({:.6}, {:.6})", ra_s, dec_s, ra, dec);
                         btn.clipboard().set_text(&text);
                         v.status_label
-                            .set_text(&format!("Copied  {}  {}", ra_s, dec_s));
+                            .set_text(&crate::tr_fmt!("Copied  {}  {}", ra_s, dec_s));
                     }
                     None => v
                         .status_label
@@ -1065,7 +1065,7 @@ impl FitsViewer {
                 self.update_hdu_and_banner(&tab);
             }
             Err(e) => {
-                self.status_label.set_text(&format!("Error: {}", e));
+                self.status_label.set_text(&crate::tr_fmt!("Error: {}", e));
             }
         }
     }
@@ -1151,7 +1151,7 @@ impl FitsViewer {
         let data = match fits_loader::load_fits_image_hdu(path, hdu_index) {
             Ok(d) => d,
             Err(e) => {
-                self.status_label.set_text(&format!("Error: {}", e));
+                self.status_label.set_text(&crate::tr_fmt!("Error: {}", e));
                 // Revert the dropdown to the still-displayed HDU.
                 self.set_hdu_selector(&old_tab.hdus(), old_tab.hdu_index());
                 return;
@@ -1276,8 +1276,9 @@ impl FitsViewer {
         });
 
         if let Some(name) = self.tab_name(b_idx) {
-            self.status_label.set_text(&format!(
-                "Blinking vs {name}  (Space pause · Left/Right show A/B · Esc stop)"
+            self.status_label.set_text(&crate::tr_fmt!(
+                "Blinking vs {}  (Space pause · Left/Right show A/B · Esc stop)",
+                name
             ));
         }
     }
@@ -1396,7 +1397,7 @@ impl FitsViewer {
     /// Update the blink target MenuButton label to the current target tab.
     fn update_blink_target_label(&self) {
         if let Some(name) = self.tab_name(self.blink_target.get()) {
-            self.blink_target_btn.set_label(&format!("vs {name}"));
+            self.blink_target_btn.set_label(&crate::tr_fmt!("vs {}", name));
         }
     }
 
@@ -1424,7 +1425,7 @@ impl FitsViewer {
             let mb_c = mb.clone();
             btn.connect_clicked(move |_| {
                 target.set(i);
-                mb_c.set_label(&format!("vs {name}"));
+                mb_c.set_label(&crate::tr_fmt!("vs {}", name));
                 popover_c.popdown();
             });
             vbox.append(&btn);

@@ -93,7 +93,7 @@ impl StorageQuotaView {
                 self.status_label.set_visible(false);
             }
             Err(e) => {
-                self.status_label.set_text(&format!("Error: {}", e));
+                self.status_label.set_text(&crate::tr_fmt!("Error: {}", e));
                 self.status_label.set_visible(true);
             }
         }
@@ -128,23 +128,26 @@ impl StorageQuotaView {
         }
         self.content_box.append(&progress);
 
-        let used_label = gtk::Label::new(Some(&format!("Used: {:.1} GB", used_gb)));
+        let used_label =
+            gtk::Label::new(Some(&crate::tr_fmt!("Used: {} GB", format!("{:.1}", used_gb))));
         used_label.set_halign(gtk::Align::Start);
         used_label.add_css_class("caption");
         self.content_box.append(&used_label);
 
-        let quota_label = gtk::Label::new(Some(&format!("Quota: {:.1} GB", quota_gb)));
+        let quota_label =
+            gtk::Label::new(Some(&crate::tr_fmt!("Quota: {} GB", format!("{:.1}", quota_gb))));
         quota_label.set_halign(gtk::Align::Start);
         quota_label.add_css_class("caption");
         self.content_box.append(&quota_label);
 
-        let percent_label = gtk::Label::new(Some(&format!("Usage: {:.1}%", pct)));
+        let percent_label =
+            gtk::Label::new(Some(&crate::tr_fmt!("Usage: {}%", format!("{:.1}", pct))));
         percent_label.set_halign(gtk::Align::Start);
         percent_label.add_css_class("caption");
         self.content_box.append(&percent_label);
 
         if let Some(ref date) = quota.last_update {
-            let date_label = gtk::Label::new(Some(&format!("last update: {}", date)));
+            let date_label = gtk::Label::new(Some(&crate::tr_fmt!("last update: {}", date)));
             date_label.set_halign(gtk::Align::Start);
             date_label.add_css_class("dim-label");
             date_label.add_css_class("caption");

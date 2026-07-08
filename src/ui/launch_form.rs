@@ -531,7 +531,7 @@ impl LaunchFormView {
             }
             Err(e) => {
                 self.status_label
-                    .set_text(&format!("Failed to load images: {}", e));
+                    .set_text(&crate::tr_fmt!("Failed to load images: {}", e));
             }
         }
     }
@@ -734,7 +734,7 @@ impl LaunchFormView {
         // Advanced tab is page index 1 (Standard=0, Advanced=1, Headless=2).
         self.notebook.set_current_page(Some(1));
         self.status_label
-            .set_text(&format!("Selected image: {}", id));
+            .set_text(&crate::tr_fmt!("Selected image: {}", id));
     }
 
     /// Resolve the container image URI for the Advanced tab. When the user
@@ -926,7 +926,8 @@ impl LaunchFormView {
                 }
             }
             Err(e) => {
-                self.status_label.set_text(&format!("Launch failed: {}", e));
+                self.status_label
+                    .set_text(&crate::tr_fmt!("Launch failed: {}", e));
             }
         }
 
@@ -1010,7 +1011,7 @@ impl LaunchFormView {
                 self.status_label.set_text("");
                 self.services
                     .toast
-                    .toast(&format!("Launched batch job '{name}' ({id})"));
+                    .toast(&crate::tr_fmt!("Launched batch job '{}' ({})", name, id));
 
                 // Save to recent launches so the batch job can be relaunched with
                 // its exact command line (cmd/args/replicas) and resources.
@@ -1040,7 +1041,7 @@ impl LaunchFormView {
             }
             Err(e) => {
                 self.status_label
-                    .set_text(&format!("Batch launch failed: {}", e));
+                    .set_text(&crate::tr_fmt!("Batch launch failed: {}", e));
             }
         }
         self.headless_launch_btn.set_sensitive(true);
@@ -1125,7 +1126,7 @@ impl LaunchFormView {
                 Ok(()) => self.status_label.set_text(crate::tr_en!("Template saved")),
                 Err(e) => self
                     .status_label
-                    .set_text(&format!("Failed to save template: {}", e)),
+                    .set_text(&crate::tr_fmt!("Failed to save template: {}", e)),
             }
         }
     }

@@ -804,7 +804,7 @@ pub fn build_main_window(
                     login_btn.set_visible(false);
                     user_menu_btn.set_label(&display);
                     user_menu_btn.set_visible(true);
-                    status_label.set_text(&format!("Welcome, {}", &display));
+                    status_label.set_text(&crate::tr_fmt!("Welcome, {}", &display));
                     *cached_user_info.borrow_mut() = Some(user_info);
 
                     // Unlock the auth-gated landing tiles before swapping in the dashboard.
@@ -812,7 +812,7 @@ pub fn build_main_window(
                     navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                     vospace.refresh().await;
 
-                    services.toast.toast(&format!("Welcome back, {}!", &display));
+                    services.toast.toast(&crate::tr_fmt!("Welcome back, {}!", &display));
                 }
             });
         });
@@ -875,7 +875,7 @@ pub fn build_main_window(
                         login_btn.set_visible(false);
                         user_menu_btn.set_label(&display);
                         user_menu_btn.set_visible(true);
-                        status_label.set_text(&format!("Welcome, {}", &display));
+                        status_label.set_text(&crate::tr_fmt!("Welcome, {}", &display));
                         *cached_user_info.borrow_mut() = Some(user_info);
 
                         // Unlock the auth-gated landing tiles for the restored session.
@@ -883,7 +883,7 @@ pub fn build_main_window(
                         navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                         vospace.refresh().await;
 
-                        services.toast.toast(&format!("Welcome back, {}!", &display));
+                        services.toast.toast(&crate::tr_fmt!("Welcome back, {}!", &display));
                     }
                     Err(_) => {
                         TokenStorage::clear();
@@ -919,7 +919,7 @@ pub fn build_main_window(
                 health_icon.add_css_class("success");
             } else {
                 health_icon.set_icon_name(Some("dialog-warning-symbolic"));
-                health_label.set_text(&format!("{} offline", count));
+                health_label.set_text(&crate::tr_fmt!("{} offline", count));
                 health_icon.remove_css_class("success");
                 health_icon.add_css_class("warning");
             }
@@ -951,7 +951,7 @@ pub fn build_main_window(
                     }
                     ServiceStatus::Unreachable { since, .. } => {
                         let local: chrono::DateTime<chrono::Local> = (*since).into();
-                        row.set_subtitle(&format!("Last seen {}", local.format("%H:%M")));
+                        row.set_subtitle(&crate::tr_fmt!("Last seen {}", local.format("%H:%M")));
                         status_lbl.set_text(crate::tr_en!("Offline"));
                         status_lbl.add_css_class("error");
                     }
@@ -1309,7 +1309,7 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
         crate::tr_en!("Runtime Info"),
         None,
         gtk::License::Custom,
-        Some(&format!(
+        Some(&crate::tr_fmt!(
             "Runtime: Rust {}\nPlatform: {}\nFramework: GTK4 + libadwaita",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,

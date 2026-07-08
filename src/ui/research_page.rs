@@ -37,6 +37,22 @@ fn agent_attribution_from(obs: &DownloadedObservation) -> Option<AgentAttributio
     ))
 }
 
+/// Build the renderable badge model for a record whose provenance is stored as
+/// the compact [`crate::helpers::agent_attribution::AgentAttribution`] stamp
+/// (origin label + apply time).  The stamp doesn't record the tool dimension, so
+/// it degrades to the generic "mcp" agent label — matching the bare-label
+/// fallback in [`agent_attribution_from`].  Used for the notes surface, whose
+/// [`ObservationNote`] carries the compact stamp rather than a JSON string.
+fn badge_from_stamp(
+    stamp: &crate::helpers::agent_attribution::AgentAttribution,
+) -> AgentAttribution {
+    AgentAttribution::new(
+        stamp.origin.clone(),
+        crate::tr_en!("mcp"),
+        stamp.applied_at.clone(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // ResearchPage
 // ---------------------------------------------------------------------------
@@ -70,6 +86,10 @@ pub struct ResearchPage {
     // cross-contaminate notes (mirrors the Windows `_noteEditId` guard).
     note_store: ObservationNoteStore,
     note_edit_id: RefCell<Option<String>>,
+    /// Provenance stamp of the note currently in the editor, if it was authored
+    /// by an AI agent.  Seeded from the store on selection and re-applied on save
+    /// so an autosave/user edit doesn't strip the "created by AI agent" badge.
+    note_attribution: RefCell<Option<crate::helpers::agent_attribution::AgentAttribution>>,
     /// Suppresses autosave while the editor is being seeded from the store.
     note_suppress: Cell<bool>,
     /// Pending 700ms debounce timer; `None` when no edit is queued.
@@ -246,6 +266,7 @@ impl ResearchPage {
             detail_container,
             note_store: ObservationNoteStore::new(),
             note_edit_id: RefCell::new(None),
+            note_attribution: RefCell::new(None),
             note_suppress: Cell::new(false),
             note_debounce: RefCell::new(None),
             note_rating: Cell::new(0),
@@ -404,6 +425,7 @@ impl ResearchPage {
         // Persist any pending edit before we tear the editor widgets down.
         self.flush_note();
         *self.note_edit_id.borrow_mut() = None;
+        *self.note_attribution.borrow_mut() = None;
         *self.note_buffer.borrow_mut() = None;
         *self.note_tags_entry.borrow_mut() = None;
         self.star_buttons.borrow_mut().clear();
@@ -908,6 +930,7 @@ impl ResearchPage {
     fn build_notes_editor(self: &Rc<Self>, obs: &DownloadedObservation) {
         if obs.publisher_id.is_empty() {
             *self.note_edit_id.borrow_mut() = None;
+            *self.note_attribution.borrow_mut() = None;
             return;
         }
 
@@ -918,12 +941,23 @@ impl ResearchPage {
 
         let saved = self.note_store.get(&obs.publisher_id);
 
-        // Section header.
+        // Remember any agent provenance so re-saving the note keeps its badge.
+        let note_attr = saved.as_ref().and_then(|n| n.agent_attribution.clone());
+        *self.note_attribution.borrow_mut() = note_attr.clone();
+
+        // Section header — with an inline agent badge when the note was authored
+        // by an AI agent over MCP (mirrors the observation surfaces above).
+        let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header_row.set_halign(gtk::Align::Start);
+        header_row.set_margin_top(12);
         let header = gtk::Label::new(Some(crate::tr_en!("Research Notes")));
         header.add_css_class("heading");
         header.set_halign(gtk::Align::Start);
-        header.set_margin_top(12);
-        self.detail_container.append(&header);
+        header_row.append(&header);
+        if let Some(stamp) = &note_attr {
+            header_row.append(&agent_badge(&badge_from_stamp(stamp)));
+        }
+        self.detail_container.append(&header_row);
 
         // ── Rating row: five star buttons + a clear button ──────────────
         let rating_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -1084,8 +1118,9 @@ impl ResearchPage {
             note: note_text.trim().to_string(),
             tags,
             updated: chrono::Utc::now().to_rfc3339(),
-            // User-authored note from the UI — no agent badge.
-            agent_attribution: None,
+            // Preserve any agent provenance seeded from the store; a purely
+            // user-authored note carries `None` and shows no badge.
+            agent_attribution: self.note_attribution.borrow().clone(),
         };
         // Blocking write of a tiny JSON file; ignore errors (read-only disk
         // must not crash the UI). An empty note removes the entry in `save`.

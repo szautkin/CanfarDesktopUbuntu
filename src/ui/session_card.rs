@@ -114,16 +114,18 @@ impl SessionCard {
         // Resources
         let res_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
 
-        let cpu_label = gtk::Label::new(Some(&format!("CPU: {}", session.requested_cpu_cores)));
+        let cpu_label =
+            gtk::Label::new(Some(&crate::tr_fmt!("CPU: {}", session.requested_cpu_cores)));
         cpu_label.add_css_class("caption");
         res_box.append(&cpu_label);
 
-        let ram_label = gtk::Label::new(Some(&format!("RAM: {}", session.requested_ram)));
+        let ram_label = gtk::Label::new(Some(&crate::tr_fmt!("RAM: {}", session.requested_ram)));
         ram_label.add_css_class("caption");
         res_box.append(&ram_label);
 
         if session.requested_gpu_cores != "0" {
-            let gpu_label = gtk::Label::new(Some(&format!("GPU: {}", session.requested_gpu_cores)));
+            let gpu_label =
+                gtk::Label::new(Some(&crate::tr_fmt!("GPU: {}", session.requested_gpu_cores)));
             gpu_label.add_css_class("caption");
             res_box.append(&gpu_label);
         }
@@ -150,12 +152,14 @@ impl SessionCard {
                 prefix.add_css_class("dim-label");
                 usage_box.append(&prefix);
                 if has_cpu {
-                    let lbl = gtk::Label::new(Some(&format!("CPU: {}", session.cpu_cores_in_use)));
+                    let lbl =
+                        gtk::Label::new(Some(&crate::tr_fmt!("CPU: {}", session.cpu_cores_in_use)));
                     lbl.add_css_class("caption");
                     usage_box.append(&lbl);
                 }
                 if has_ram {
-                    let lbl = gtk::Label::new(Some(&format!("RAM: {}", session.ram_in_use)));
+                    let lbl =
+                        gtk::Label::new(Some(&crate::tr_fmt!("RAM: {}", session.ram_in_use)));
                     lbl.add_css_class("caption");
                     usage_box.append(&lbl);
                 }

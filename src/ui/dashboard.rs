@@ -183,12 +183,12 @@ impl DashboardView {
                                     .sessions
                                     .get_events(&token, &id_c)
                                     .await
-                                    .unwrap_or_else(|e| format!("Error: {}", e));
+                                    .unwrap_or_else(|e| crate::tr_fmt!("Error: {}", e));
                                 let logs = svc
                                     .sessions
                                     .get_logs(&token, &id_c)
                                     .await
-                                    .unwrap_or_else(|e| format!("Error: {}", e));
+                                    .unwrap_or_else(|e| crate::tr_fmt!("Error: {}", e));
                                 (events, logs)
                             })
                             .await;

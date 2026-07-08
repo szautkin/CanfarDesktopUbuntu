@@ -46,6 +46,95 @@ static EN_TO_FR: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m
 });
 
+/// Hand-maintained French translations for the dynamic `{}`-placeholder *templates*
+/// introduced by the [`tr_fmt!`] sweep (toasts / status / labels built at runtime).
+///
+/// These live here rather than in the generated `catalog.rs` because they use Rust
+/// `{}` placeholders and have no counterpart in the reference RESW files, so the
+/// `scripts/gen_i18n_catalog.py` generator (which reads those RESW files) cannot
+/// emit them. When adding a new `tr_fmt!("…{}…", …)` call site whose English
+/// template is not already listed here, add the `(english, french)` pair below —
+/// the English literal must match the call-site template byte-for-byte.
+#[rustfmt::skip]
+static FMT_PAIRS: &[(&str, &str)] = &[
+    ("Error: {}",                                   "Erreur : {}"),
+    ("Failed to load images: {}",                   "Échec du chargement des images : {}"),
+    ("Selected image: {}",                          "Image sélectionnée : {}"),
+    ("Launch failed: {}",                           "Échec du lancement : {}"),
+    ("Batch launch failed: {}",                     "Échec du lancement par lots : {}"),
+    ("Failed to save template: {}",                 "Échec de l’enregistrement du modèle : {}"),
+    ("Launched batch job '{}' ({})",                "Tâche par lots « {} » lancée ({})"),
+    ("Failed to load: {}",                          "Échec du chargement : {}"),
+    ("Save failed: {}",                             "Échec de l’enregistrement : {}"),
+    ("Settings save failed: {}",                    "Échec de l’enregistrement des paramètres : {}"),
+    ("“{}” has unsaved changes. Save them before closing?",
+     "« {} » comporte des modifications non enregistrées. Les enregistrer avant de fermer ?"),
+    ("{} unsaved notebook checkpoint(s) from a previous session were found. Recover them?",
+     "{} point(s) de sauvegarde de carnet non enregistrés d’une session précédente ont été trouvés. Les récupérer ?"),
+    ("{} (recovered)",                              "{} (récupéré)"),
+    ("Used: {} GB",                                 "Utilisé : {} Go"),
+    ("Quota: {} GB",                                "Quota : {} Go"),
+    ("Usage: {}%",                                  "Utilisation : {} %"),
+    ("last update: {}",                             "dernière mise à jour : {}"),
+    ("Welcome, {}",                                 "Bienvenue, {}"),
+    ("Welcome back, {}!",                           "Bon retour, {} !"),
+    ("{} offline",                                  "{} hors ligne"),
+    ("Last seen {}",                                "Vu pour la dernière fois {}"),
+    ("Runtime: Rust {}\nPlatform: {}\nFramework: GTK4 + libadwaita",
+     "Environnement d’exécution : Rust {}\nPlateforme : {}\nCadre : GTK4 + libadwaita"),
+    ("reachable — {} ({} ms)",                      "accessible — {} ({} ms)"),
+    ("unreachable — {}",                            "inaccessible — {}"),
+    ("Sessions unreachable — cached list from {}",  "Sessions inaccessibles — liste en cache du {}"),
+    ("{} session",                                  "{} session"),
+    ("{} sessions",                                 "{} sessions"),
+    ("refresh in {}s",                              "actualisation dans {} s"),
+    ("CPU: {}",                                     "CPU : {}"),
+    ("RAM: {}",                                     "RAM : {}"),
+    ("GPU: {}",                                     "GPU : {}"),
+    ("Copied: {}",                                  "Copié : {}"),
+    ("Copied  {}  {}",                              "Copié  {}  {}"),
+    ("Cached listing from {}",                      "Liste en cache du {}"),
+    ("VOSpace unreachable — showing cached listing from {}",
+     "VOSpace inaccessible — affichage de la liste en cache du {}"),
+    ("{} items",                                    "{} éléments"),
+    ("Downloaded {} ({} bytes)",                    "Téléchargé {} ({} octets)"),
+    ("Download failed: {}",                         "Échec du téléchargement : {}"),
+    ("Opened {} in FITS Viewer",                    "{} ouvert dans la visionneuse FITS"),
+    ("Failed to open FITS: {}",                     "Échec de l’ouverture du FITS : {}"),
+    ("Opened {} in Cube Viewer",                    "{} ouvert dans la visionneuse de cubes"),
+    ("Failed to open cube: {}",                     "Échec de l’ouverture du cube : {}"),
+    ("Opened {} in Notebook",                       "{} ouvert dans le carnet"),
+    ("Failed to open notebook: {}",                 "Échec de l’ouverture du carnet : {}"),
+    ("Deleted {}",                                  "{} supprimé"),
+    ("Delete failed: {}",                           "Échec de la suppression : {}"),
+    ("Sharing updated for {}",                      "Partage mis à jour pour {}"),
+    ("Share failed: {}",                            "Échec du partage : {}"),
+    ("Renamed {} → {}",                             "Renommé {} → {}"),
+    ("Rename failed: {}",                           "Échec du renommage : {}"),
+    ("Created folder '{}'",                         "Dossier « {} » créé"),
+    ("Failed to create folder: {}",                 "Échec de la création du dossier : {}"),
+    ("Uploaded {}",                                 "{} téléversé"),
+    ("Upload failed for {}: {}",                    "Échec du téléversement de {} : {}"),
+    ("Uploaded {} files",                           "{} fichiers téléversés"),
+    ("Are you sure you want to delete '{}'? This cannot be undone.",
+     "Voulez-vous vraiment supprimer « {} » ? Cette action est irréversible."),
+    ("Name{}",                                      "Nom{}"),
+    ("Size{}",                                      "Taille{}"),
+    ("Modified{}",                                  "Modifié{}"),
+    ("vs {}",                                       "vs {}"),
+    ("Blinking vs {}  (Space pause · Left/Right show A/B · Esc stop)",
+     "Clignotement vs {}  (Espace pause · Gauche/Droite affiche A/B · Échap arrêt)"),
+    ("Loading {}…",                                 "Chargement de {}…"),
+    ("Failed to load cube: {}",                     "Échec du chargement du cube : {}"),
+    ("Spectrum at ({}, {})",                        "Spectre à ({}, {})"),
+    ("Saved {}",                                    "Enregistré {}"),
+    ("Export failed: {}",                           "Échec de l’exportation : {}"),
+];
+
+/// Reverse index for [`tr_fmt`]: an English `{}`-template → its French form.
+static FMT_EN_TO_FR: Lazy<HashMap<&'static str, &'static str>> =
+    Lazy::new(|| FMT_PAIRS.iter().copied().collect());
+
 // GTK runs on a single thread, but a global RwLock keeps `set_lang`/`current_lang`
 // callable from anywhere without unsafe.
 static CURRENT: RwLock<Lang> = RwLock::new(Lang::En);
@@ -127,11 +216,89 @@ pub fn tr_en(english: &'static str) -> &'static str {
     }
 }
 
+/// Reverse-lookup the French form of an English `{}`-placeholder *template*, the
+/// dynamic-string analogue of [`tr_en`]. Checks the hand-maintained [`FMT_PAIRS`]
+/// map first, then the generated catalog's reverse index (so a template that also
+/// happens to be a catalog value still localizes), then falls back to `english`.
+///
+/// Because the template is `'static`, the English fallback is returned directly —
+/// so `tr_fmt!` always has a `'static` template to substitute into, in any language.
+pub fn tr_fmt_template(english: &'static str) -> &'static str {
+    match current_lang() {
+        Lang::En => english,
+        Lang::Fr => FMT_EN_TO_FR
+            .get(english)
+            .copied()
+            .or_else(|| EN_TO_FR.get(english).copied())
+            .unwrap_or(english),
+    }
+}
+
+/// Substitute sequential `{}` placeholders in `template` with `args`, formatting
+/// each via [`Display`](std::fmt::Display). `{{` / `}}` unescape to literal braces.
+///
+/// Unlike `format!`, a template/arg-count mismatch never panics: a `{}` with no
+/// remaining arg is emitted verbatim and surplus args are ignored. This matters
+/// because the *French* template is chosen at runtime and must tolerate a
+/// placeholder count that drifts from the English original.
+pub fn tr_fmt_apply(template: &str, args: &[&dyn std::fmt::Display]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(template.len() + args.len() * 8);
+    let mut args = args.iter();
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => match chars.peek() {
+                Some('{') => {
+                    chars.next();
+                    out.push('{');
+                }
+                Some('}') => {
+                    chars.next();
+                    match args.next() {
+                        Some(a) => {
+                            let _ = write!(out, "{}", a);
+                        }
+                        None => out.push_str("{}"),
+                    }
+                }
+                _ => out.push('{'),
+            },
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                }
+                out.push('}');
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// `tr_en!("Login")` -> [`tr_en`] (localize an English literal in place).
 #[macro_export]
 macro_rules! tr_en {
     ($english:expr) => {
         $crate::i18n::tr_en($english)
+    };
+}
+
+/// `tr_fmt!("{} observations", n)` — localize a `{}`-placeholder *template* (an
+/// English `&'static str`, usually a literal) via [`tr_fmt_template`], then fill
+/// the placeholders with `args`, each formatted with `Display`. Returns a `String`
+/// and is a drop-in for the equivalent `format!` call, adding French translation
+/// (English fallback when the template has no French entry in [`FMT_PAIRS`]).
+///
+/// Pre-format any argument that needs a format spec, e.g.
+/// `tr_fmt!("Used: {} GB", format!("{:.1}", gb))` — the template keeps a plain `{}`.
+#[macro_export]
+macro_rules! tr_fmt {
+    ($template:expr $(, $arg:expr)* $(,)?) => {
+        $crate::i18n::tr_fmt_apply(
+            $crate::i18n::tr_fmt_template($template),
+            &[$(&$arg as &dyn ::std::fmt::Display),*],
+        )
     };
 }
 
@@ -175,6 +342,41 @@ mod tests {
     fn lang_from_setting_maps_values() {
         assert_eq!(lang_from_setting("fr"), Lang::Fr);
         assert_eq!(lang_from_setting("en"), Lang::En);
+    }
+
+    #[test]
+    fn tr_fmt_apply_substitutes_sequential() {
+        assert_eq!(
+            tr_fmt_apply("{} of {}", &[&3usize as &dyn std::fmt::Display, &9usize]),
+            "3 of 9"
+        );
+    }
+
+    #[test]
+    fn tr_fmt_apply_handles_escapes_and_mismatch() {
+        // Escaped braces survive; a placeholder with no arg is left verbatim.
+        assert_eq!(tr_fmt_apply("{{x}} {}", &[]), "{x} {}");
+        // Surplus args are ignored, no panic.
+        assert_eq!(tr_fmt_apply("a {}", &[&1i32 as &dyn std::fmt::Display, &2i32]), "a 1");
+    }
+
+    #[test]
+    fn tr_fmt_french_template_substitutes() {
+        // The FR reverse-lookup + substitution path a `tr_fmt!` in French mode takes.
+        let fr = FMT_EN_TO_FR.get("Error: {}").copied().unwrap();
+        assert_eq!(tr_fmt_apply(fr, &[&"boom" as &dyn std::fmt::Display]), "Erreur : boom");
+    }
+
+    #[test]
+    fn tr_fmt_templates_have_matching_placeholder_counts() {
+        // Each FR template must expose the same number of `{}` slots as its EN form,
+        // or arguments would silently drop / leak through.
+        fn slots(s: &str) -> usize {
+            s.match_indices("{}").count()
+        }
+        for (en, fr) in FMT_PAIRS {
+            assert_eq!(slots(en), slots(fr), "placeholder mismatch: {en:?} vs {fr:?}");
+        }
     }
 
     #[test]

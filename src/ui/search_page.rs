@@ -16,6 +16,7 @@ use crate::models::search_result::{
 #[path = "../helpers/filter_to_adql.rs"]
 mod filter_to_adql;
 use crate::state::AppServices;
+use crate::ui::agent_badge::agent_badge;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -24,6 +25,20 @@ use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// Convert the compact provenance stamp stored on a [`SavedQuery`] into the badge
+/// model the shared [`agent_badge`] widget renders.  The stamp records the agent's
+/// origin label + apply time; the tool dimension isn't stored, so it degrades to
+/// the generic "mcp" agent label (matching the Research page's badge).
+fn saved_query_badge(
+    stamp: &crate::helpers::agent_attribution::AgentAttribution,
+) -> crate::models::agent_attribution::AgentAttribution {
+    crate::models::agent_attribution::AgentAttribution::new(
+        stamp.origin.clone(),
+        crate::tr_en!("mcp"),
+        stamp.applied_at.clone(),
+    )
+}
 
 pub struct SearchPage {
     widget: gtk::Box,
@@ -1986,6 +2001,12 @@ impl SearchPage {
             let icon = gtk::Image::from_icon_name("view-list-bullet-symbolic");
             icon.add_css_class("dim-label");
             row.add_prefix(&icon);
+
+            // Agent provenance badge — shown only when an AI agent saved this
+            // query over MCP (matches the Research list rows' inline AgentBadge).
+            if let Some(stamp) = &saved.agent_attribution {
+                row.add_suffix(&agent_badge(&saved_query_badge(stamp)));
+            }
 
             // Suffix: Run + Details + Delete
             let run_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");

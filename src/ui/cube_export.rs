@@ -81,8 +81,8 @@ pub fn export_image_dialog(parent: &impl IsA<gtk::Widget>, width: i32, height: i
         };
 
         match result {
-            Ok(()) => notify(&parent, &format!("Saved {}", path.display())),
-            Err(e) => notify(&parent, &format!("Export failed: {e}")),
+            Ok(()) => notify(&parent, &crate::tr_fmt!("Saved {}", path.display())),
+            Err(e) => notify(&parent, &crate::tr_fmt!("Export failed: {}", e)),
         }
     });
 }
@@ -633,11 +633,11 @@ pub fn show_cube_export(
                 };
                 match result {
                     Ok(()) => {
-                        notify(&parent_widget, &format!("Saved {}", path.display()));
+                        notify(&parent_widget, &crate::tr_fmt!("Saved {}", path.display()));
                         status.set_text("");
                         window.close();
                     }
-                    Err(e) => status.set_text(&format!("Export failed: {e}")),
+                    Err(e) => status.set_text(&crate::tr_fmt!("Export failed: {}", e)),
                 }
             });
         });

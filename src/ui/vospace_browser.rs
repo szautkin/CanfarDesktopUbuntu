@@ -295,7 +295,7 @@ impl VoSpaceBrowser {
                 let current = b.current_path.borrow().clone();
                 let vos_path = format!("vos://cadc.nrc.ca~arc/{}", current);
                 btn.display().clipboard().set_text(&vos_path);
-                b.show_toast(&format!("Copied: {}", vos_path));
+                b.show_toast(&crate::tr_fmt!("Copied: {}", vos_path));
             });
         }
 
@@ -432,13 +432,13 @@ impl VoSpaceBrowser {
                     *self.nodes.borrow_mut() = entry.data;
                     self.redisplay_sorted();
                     self.status_label
-                        .set_text(&format!("Cached listing from {}", time_label));
-                    self.services.toast.toast(&format!(
+                        .set_text(&crate::tr_fmt!("Cached listing from {}", time_label));
+                    self.services.toast.toast(&crate::tr_fmt!(
                         "VOSpace unreachable — showing cached listing from {}",
                         time_label
                     ));
                 } else {
-                    self.status_label.set_text(&format!("Error: {}", e));
+                    self.status_label.set_text(&crate::tr_fmt!("Error: {}", e));
                 }
                 self.services.health.set(
                     ServiceName::VoSpace,
@@ -489,10 +489,10 @@ impl VoSpaceBrowser {
 
         // Update column header button labels
         self.sort_btn_name
-            .set_label(&format!("Name{}", state.indicator(SortColumn::Name)));
+            .set_label(&crate::tr_fmt!("Name{}", state.indicator(SortColumn::Name)));
         self.sort_btn_size
-            .set_label(&format!("Size{}", state.indicator(SortColumn::Size)));
-        self.sort_btn_modified.set_label(&format!(
+            .set_label(&crate::tr_fmt!("Size{}", state.indicator(SortColumn::Size)));
+        self.sort_btn_modified.set_label(&crate::tr_fmt!(
             "Modified{}",
             state.indicator(SortColumn::Modified)
         ));
@@ -510,7 +510,7 @@ impl VoSpaceBrowser {
 
         let path = self.current_path.borrow().clone();
         self.breadcrumb_label.set_text(&format!("/{}", path));
-        self.status_label.set_text(&format!("{} items", count));
+        self.status_label.set_text(&crate::tr_fmt!("{} items", count));
 
         // Store sorted order so row index callbacks stay consistent
         *self.nodes.borrow_mut() = nodes;
@@ -744,8 +744,10 @@ impl VoSpaceBrowser {
             .await;
 
         match result {
-            Ok(bytes) => self.show_toast(&format!("Downloaded {} ({} bytes)", fname, bytes)),
-            Err(e) => self.show_toast(&format!("Download failed: {}", e)),
+            Ok(bytes) => {
+                self.show_toast(&crate::tr_fmt!("Downloaded {} ({} bytes)", fname, bytes))
+            }
+            Err(e) => self.show_toast(&crate::tr_fmt!("Download failed: {}", e)),
         }
     }
 
@@ -788,10 +790,10 @@ impl VoSpaceBrowser {
                         app.activate_action("open-fits-file", Some(&variant));
                     }
                 }
-                self.show_toast(&format!("Opened {} in FITS Viewer", node.name));
+                self.show_toast(&crate::tr_fmt!("Opened {} in FITS Viewer", node.name));
             }
             Err(e) => {
-                self.show_toast(&format!("Failed to open FITS: {}", e));
+                self.show_toast(&crate::tr_fmt!("Failed to open FITS: {}", e));
             }
         }
     }
@@ -833,10 +835,10 @@ impl VoSpaceBrowser {
                         app.activate_action("open-cube-file", Some(&variant));
                     }
                 }
-                self.show_toast(&format!("Opened {} in Cube Viewer", node.name));
+                self.show_toast(&crate::tr_fmt!("Opened {} in Cube Viewer", node.name));
             }
             Err(e) => {
-                self.show_toast(&format!("Failed to open cube: {}", e));
+                self.show_toast(&crate::tr_fmt!("Failed to open cube: {}", e));
             }
         }
     }
@@ -879,10 +881,10 @@ impl VoSpaceBrowser {
                         app.activate_action("open-notebook-file", Some(&variant));
                     }
                 }
-                self.show_toast(&format!("Opened {} in Notebook", node.name));
+                self.show_toast(&crate::tr_fmt!("Opened {} in Notebook", node.name));
             }
             Err(e) => {
-                self.show_toast(&format!("Failed to open notebook: {}", e));
+                self.show_toast(&crate::tr_fmt!("Failed to open notebook: {}", e));
             }
         }
     }
@@ -897,7 +899,7 @@ impl VoSpaceBrowser {
             self.build_remote_path(&node.name)
         );
         self.widget.display().clipboard().set_text(&vos_path);
-        self.show_toast(&format!("Copied: {}", vos_path));
+        self.show_toast(&crate::tr_fmt!("Copied: {}", vos_path));
     }
 
     async fn action_delete(self: &Rc<Self>, idx: usize, parent_widget: &impl IsA<gtk::Widget>) {
@@ -943,11 +945,11 @@ impl VoSpaceBrowser {
 
         match result {
             Ok(()) => {
-                self.show_toast(&format!("Deleted {}", name_owned));
+                self.show_toast(&crate::tr_fmt!("Deleted {}", name_owned));
                 self.refresh().await;
             }
             Err(e) => {
-                self.show_toast(&format!("Delete failed: {}", e));
+                self.show_toast(&crate::tr_fmt!("Delete failed: {}", e));
             }
         }
     }
@@ -1020,10 +1022,10 @@ impl VoSpaceBrowser {
 
         match apply {
             Ok(()) => {
-                self.show_toast(&format!("Sharing updated for {}", node.name));
+                self.show_toast(&crate::tr_fmt!("Sharing updated for {}", node.name));
                 self.refresh().await;
             }
-            Err(e) => self.show_toast(&format!("Share failed: {}", e)),
+            Err(e) => self.show_toast(&crate::tr_fmt!("Share failed: {}", e)),
         }
     }
 
@@ -1071,11 +1073,11 @@ impl VoSpaceBrowser {
 
         match result {
             Ok(()) => {
-                self.show_toast(&format!("Renamed {} → {}", old_name, new_name));
+                self.show_toast(&crate::tr_fmt!("Renamed {} → {}", old_name, new_name));
                 self.refresh().await;
             }
             Err(e) => {
-                self.show_toast(&format!("Rename failed: {}", e));
+                self.show_toast(&crate::tr_fmt!("Rename failed: {}", e));
             }
         }
     }
@@ -1185,11 +1187,11 @@ impl VoSpaceBrowser {
 
             match result {
                 Ok(()) => {
-                    self.show_toast(&format!("Created folder '{}'", name_owned));
+                    self.show_toast(&crate::tr_fmt!("Created folder '{}'", name_owned));
                     self.refresh().await;
                 }
                 Err(e) => {
-                    self.show_toast(&format!("Failed to create folder: {}", e));
+                    self.show_toast(&crate::tr_fmt!("Failed to create folder: {}", e));
                 }
             }
         }
@@ -1276,16 +1278,16 @@ impl VoSpaceBrowser {
                 .await;
 
             match result {
-                Ok(()) => self.show_toast(&format!("Uploaded {}", fname)),
+                Ok(()) => self.show_toast(&crate::tr_fmt!("Uploaded {}", fname)),
                 Err(e) => {
-                    self.show_toast(&format!("Upload failed for {}: {}", fname, e));
+                    self.show_toast(&crate::tr_fmt!("Upload failed for {}: {}", fname, e));
                     any_error = true;
                 }
             }
         }
 
         if !any_error && total > 1 {
-            self.show_toast(&format!("Uploaded {} files", total));
+            self.show_toast(&crate::tr_fmt!("Uploaded {} files", total));
         }
 
         self.refresh().await;
@@ -1302,7 +1304,7 @@ impl VoSpaceBrowser {
                 .and_then(|r| r.downcast::<gtk::Window>().ok())
                 .as_ref(),
             Some(crate::tr_en!("Delete Item")),
-            Some(&format!(
+            Some(&crate::tr_fmt!(
                 "Are you sure you want to delete '{}'? This cannot be undone.",
                 name
             )),
