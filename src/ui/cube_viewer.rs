@@ -811,11 +811,11 @@ struct Controls {
 
 fn build_controls(_name: &str) -> (Controls, Controls) {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    column.set_margin_start(14);
-    column.set_margin_end(14);
-    column.set_margin_top(14);
-    column.set_margin_bottom(14);
-    column.set_width_request(240);
+    column.set_margin_start(12);
+    column.set_margin_end(12);
+    column.set_margin_top(12);
+    column.set_margin_bottom(12);
+    column.set_width_request(280);
 
     // ── DISPLAY ─────────────────────────────────────────────────────────────
     column.append(&section_header(crate::tr_en!("DISPLAY")));

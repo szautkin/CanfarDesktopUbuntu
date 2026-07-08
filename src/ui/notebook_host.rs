@@ -127,15 +127,21 @@ impl NotebookTabHost {
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-        // Add-cell group (frequent): Code, Markdown
-        let add_code_btn = gtk::Button::with_label(crate::tr_en!("Code"));
-        add_code_btn.set_icon_name("list-add-symbolic");
+        // Add-cell group (frequent): Code, Markdown (icon + label)
+        let add_code_btn = gtk::Button::new();
+        let add_code_content = adw::ButtonContent::new();
+        add_code_content.set_icon_name("list-add-symbolic");
+        add_code_content.set_label(crate::tr_en!("Code"));
+        add_code_btn.set_child(Some(&add_code_content));
         add_code_btn.add_css_class("flat");
         add_code_btn.set_tooltip_text(Some(crate::tr_en!("Add Code Cell")));
         toolbar.append(&add_code_btn);
 
-        let add_md_btn = gtk::Button::with_label(crate::tr_en!("Md"));
-        add_md_btn.set_icon_name("format-text-rich-symbolic");
+        let add_md_btn = gtk::Button::new();
+        let add_md_content = adw::ButtonContent::new();
+        add_md_content.set_icon_name("format-text-rich-symbolic");
+        add_md_content.set_label(crate::tr_en!("Markdown"));
+        add_md_btn.set_child(Some(&add_md_content));
         add_md_btn.add_css_class("flat");
         add_md_btn.set_tooltip_text(Some(crate::tr_en!("Add Markdown Cell")));
         toolbar.append(&add_md_btn);
@@ -146,8 +152,11 @@ impl NotebookTabHost {
         run_cell_btn.set_tooltip_text(Some(crate::tr_en!("Run Cell (Ctrl+Enter)")));
         toolbar.append(&run_cell_btn);
 
-        let run_all_btn = gtk::Button::with_label(crate::tr_en!("Run All"));
-        run_all_btn.set_icon_name("media-seek-forward-symbolic");
+        let run_all_btn = gtk::Button::new();
+        let run_all_content = adw::ButtonContent::new();
+        run_all_content.set_icon_name("media-seek-forward-symbolic");
+        run_all_content.set_label(crate::tr_en!("Run All"));
+        run_all_btn.set_child(Some(&run_all_content));
         run_all_btn.add_css_class("flat");
         run_all_btn.set_tooltip_text(Some(crate::tr_en!("Run all cells")));
         toolbar.append(&run_all_btn);

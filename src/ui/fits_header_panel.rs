@@ -36,10 +36,10 @@ impl FitsHeaderPanel {
             let info_title = gtk::Label::new(Some(crate::tr_en!("Image Info")));
             info_title.add_css_class("heading");
             info_title.set_halign(gtk::Align::Start);
-            info_title.set_margin_start(8);
-            info_title.set_margin_end(8);
-            info_title.set_margin_top(8);
-            info_title.set_margin_bottom(4);
+            info_title.set_margin_start(12);
+            info_title.set_margin_end(12);
+            info_title.set_margin_top(12);
+            info_title.set_margin_bottom(6);
             container.append(&info_title);
 
             let info_grid = gtk::Grid::new();

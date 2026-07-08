@@ -61,8 +61,11 @@ impl CubeTabHost {
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         toolbar.add_css_class("toolbar");
 
-        let open_btn = gtk::Button::with_label(crate::tr_en!("Open Cube…"));
-        open_btn.set_icon_name("document-open-symbolic");
+        let open_btn = gtk::Button::new();
+        let open_content = adw::ButtonContent::new();
+        open_content.set_icon_name("document-open-symbolic");
+        open_content.set_label(crate::tr_en!("Open Cube…"));
+        open_btn.set_child(Some(&open_content));
         open_btn.add_css_class("suggested-action");
         open_btn.set_tooltip_text(Some(crate::tr_en!("Open a FITS spectral cube (NAXIS≥3)")));
         toolbar.append(&open_btn);

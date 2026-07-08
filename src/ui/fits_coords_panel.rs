@@ -36,10 +36,10 @@ impl FitsCoordsPanel {
     pub fn new() -> Rc<Self> {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
         container.set_width_request(280);
-        container.set_margin_start(8);
-        container.set_margin_end(8);
-        container.set_margin_top(8);
-        container.set_margin_bottom(8);
+        container.set_margin_start(12);
+        container.set_margin_end(12);
+        container.set_margin_top(12);
+        container.set_margin_bottom(12);
         container.set_vexpand(true);
 
         // ── Current Crosshair section ────────────────────────────────────────

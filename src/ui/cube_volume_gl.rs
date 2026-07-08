@@ -191,8 +191,14 @@ impl CubeVolumeGl {
             let state = state.clone();
             let area_for_size = area.clone();
             area.connect_render(move |_area, _ctx| {
-                let w = area_for_size.width().max(1);
-                let h = area_for_size.height().max(1);
+                // The GL framebuffer is in DEVICE pixels: on HiDPI (scale 2) it is
+                // twice the logical widget size. A viewport set from logical
+                // width()/height() would render into the bottom-left quarter —
+                // visibly "outside" the cairo axes overlay, which draws in
+                // logical coordinates over the full area.
+                let sf = area_for_size.scale_factor().max(1);
+                let w = area_for_size.width().max(1) * sf;
+                let h = area_for_size.height().max(1) * sf;
                 unsafe { render_gl(&mut state.borrow_mut(), w, h) };
                 glib::Propagation::Stop
             });
