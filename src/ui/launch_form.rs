@@ -55,17 +55,15 @@ pub struct LaunchFormView {
 
 impl LaunchFormView {
     pub fn new(services: Arc<AppServices>, active_sessions: Rc<RefCell<Vec<Session>>>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
         container.add_css_class("card");
-        container.set_margin_start(8);
-        container.set_margin_end(8);
-        container.set_margin_bottom(8);
+        container.set_margin_start(12);
+        container.set_margin_end(12);
+        container.set_margin_top(12);
+        container.set_margin_bottom(12);
 
         // Header
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.set_margin_start(16);
-        header.set_margin_end(16);
-        header.set_margin_top(12);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
         let title = gtk::Label::new(Some(crate::tr_en!("Launch Session")));
         title.add_css_class("title-4");
@@ -77,16 +75,13 @@ impl LaunchFormView {
 
         // Tabs: Standard / Advanced
         let notebook = gtk::Notebook::new();
-        notebook.set_margin_start(12);
-        notebook.set_margin_end(12);
-        notebook.set_margin_bottom(12);
 
         // === Standard Tab ===
-        let standard_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        standard_box.set_margin_start(8);
-        standard_box.set_margin_end(8);
-        standard_box.set_margin_top(8);
-        standard_box.set_margin_bottom(8);
+        let standard_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        standard_box.set_margin_start(12);
+        standard_box.set_margin_end(12);
+        standard_box.set_margin_top(12);
+        standard_box.set_margin_bottom(12);
 
         let form_group = adw::PreferencesGroup::new();
 
@@ -171,11 +166,11 @@ impl LaunchFormView {
         notebook.append_page(&standard_box, Some(&gtk::Label::new(Some(crate::tr_en!("Standard")))));
 
         // === Advanced Tab ===
-        let advanced_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        advanced_box.set_margin_start(8);
-        advanced_box.set_margin_end(8);
-        advanced_box.set_margin_top(8);
-        advanced_box.set_margin_bottom(8);
+        let advanced_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        advanced_box.set_margin_start(12);
+        advanced_box.set_margin_end(12);
+        advanced_box.set_margin_top(12);
+        advanced_box.set_margin_bottom(12);
 
         let adv_group = adw::PreferencesGroup::builder()
             .title(crate::tr_en!("Custom Container Image"))
@@ -228,11 +223,11 @@ impl LaunchFormView {
         notebook.append_page(&advanced_box, Some(&gtk::Label::new(Some(crate::tr_en!("Advanced")))));
 
         // === Headless (batch job) Tab ===
-        let headless_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        headless_box.set_margin_start(8);
-        headless_box.set_margin_end(8);
-        headless_box.set_margin_top(8);
-        headless_box.set_margin_bottom(8);
+        let headless_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        headless_box.set_margin_start(12);
+        headless_box.set_margin_end(12);
+        headless_box.set_margin_top(12);
+        headless_box.set_margin_bottom(12);
 
         let headless_group = adw::PreferencesGroup::new();
         headless_group.set_title(crate::tr_en!("Headless Batch Job"));
@@ -290,7 +285,6 @@ impl LaunchFormView {
         let headless_launch_btn = gtk::Button::with_label(crate::tr_en!("Launch Job"));
         headless_launch_btn.add_css_class("suggested-action");
         headless_launch_btn.set_halign(gtk::Align::End);
-        headless_launch_btn.set_margin_top(8);
         headless_box.append(&headless_launch_btn);
 
         notebook.append_page(
@@ -301,10 +295,7 @@ impl LaunchFormView {
         container.append(&notebook);
 
         // Status + Launch button
-        let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        bottom.set_margin_start(16);
-        bottom.set_margin_end(16);
-        bottom.set_margin_bottom(12);
+        let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
         let status_label = gtk::Label::new(None);
         status_label.add_css_class("dim-label");

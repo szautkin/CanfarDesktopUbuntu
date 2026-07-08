@@ -269,22 +269,21 @@ impl AiGuidePage {
         clamp.set_tightening_threshold(800);
         scroller.set_child(Some(&clamp));
 
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        content.set_margin_start(24);
-        content.set_margin_end(24);
-        content.set_margin_top(24);
-        content.set_margin_bottom(24);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
         clamp.set_child(Some(&content));
 
         // ── Header card: intro + stat chips + filter box + match count ──
         let header = gtk::Box::new(gtk::Orientation::Vertical, 12);
         header.add_css_class("card");
-        header.set_margin_start(0);
-        let header_inner = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        header_inner.set_margin_start(16);
-        header_inner.set_margin_end(16);
-        header_inner.set_margin_top(16);
-        header_inner.set_margin_bottom(16);
+        let header_inner = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        header_inner.set_margin_start(12);
+        header_inner.set_margin_end(12);
+        header_inner.set_margin_top(12);
+        header_inner.set_margin_bottom(12);
         header.append(&header_inner);
 
         let intro = gtk::Label::new(Some(crate::tr_en!(
@@ -298,7 +297,7 @@ impl AiGuidePage {
         header_inner.append(&intro);
 
         // Stat chips.
-        let chips = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let (tools_box, tools_chip) = make_chip("");
         let (overridden_chip_box, overridden_chip) = make_chip("");
         let (categories_box, categories_chip) = make_chip("");
@@ -458,12 +457,12 @@ impl AiGuidePage {
         btn.set_size_request(-1, 118);
 
         let v = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        v.set_margin_start(14);
-        v.set_margin_end(14);
+        v.set_margin_start(12);
+        v.set_margin_end(12);
         v.set_margin_top(12);
         v.set_margin_bottom(12);
 
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let icon = gtk::Image::from_icon_name(cat.icon);
         icon.add_css_class("accent");
         icon.set_valign(gtk::Align::Center);
@@ -533,7 +532,7 @@ impl AiGuidePage {
         }
         self.focus_container.append(&back);
 
-        let head = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let icon = gtk::Image::from_icon_name(cat.icon);
         icon.set_pixel_size(24);
         icon.add_css_class("accent");
@@ -651,10 +650,10 @@ impl AiGuidePage {
         row.add_suffix(&badge);
 
         // ── Editor body ──
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
         content.set_margin_start(12);
         content.set_margin_end(12);
-        content.set_margin_top(8);
+        content.set_margin_top(12);
         content.set_margin_bottom(12);
 
         let default_label = gtk::Label::new(Some(&format!("Built-in: {}", d.description)));
@@ -909,10 +908,10 @@ async fn show_guide_dialog(
     toolbar_view.add_top_bar(&header);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    content.set_margin_start(24);
-    content.set_margin_end(24);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
     content.set_margin_top(12);
-    content.set_margin_bottom(24);
+    content.set_margin_bottom(12);
 
     let blurb = gtk::Label::new(Some(crate::tr_en!(
         "A guide tool is read-only guidance the agent can call by name. Give it a name and a \
@@ -987,7 +986,7 @@ async fn show_guide_dialog(
     error.set_visible(false);
     content.append(&error);
 
-    let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     btn_row.set_halign(gtk::Align::End);
     let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
     let save_btn = gtk::Button::with_label(crate::tr_en!("Save"));

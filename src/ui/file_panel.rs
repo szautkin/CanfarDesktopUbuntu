@@ -100,9 +100,9 @@ impl FilePanel {
         // ----------------------------------------------------------------
         // Mini header bar inside the panel
         // ----------------------------------------------------------------
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        header.set_margin_start(8);
-        header.set_margin_end(4);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header.set_margin_start(12);
+        header.set_margin_end(12);
         header.set_margin_top(6);
         header.set_margin_bottom(6);
 
@@ -146,6 +146,10 @@ impl FilePanel {
         let list_box = gtk::ListBox::new();
         list_box.set_selection_mode(gtk::SelectionMode::Single);
         list_box.add_css_class("navigation-sidebar");
+        list_box.set_margin_start(12);
+        list_box.set_margin_end(12);
+        list_box.set_margin_top(6);
+        list_box.set_margin_bottom(12);
         scrolled.set_child(Some(&list_box));
 
         widget.append(&header);
@@ -329,11 +333,11 @@ impl FilePanel {
 // ---------------------------------------------------------------------------
 
 fn build_row(entry: &DirEntry) -> gtk::ListBoxRow {
-    let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    row_box.set_margin_start(8);
-    row_box.set_margin_end(8);
-    row_box.set_margin_top(4);
-    row_box.set_margin_bottom(4);
+    let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row_box.set_margin_start(6);
+    row_box.set_margin_end(6);
+    row_box.set_margin_top(6);
+    row_box.set_margin_bottom(6);
 
     let icon = gtk::Image::from_icon_name(entry.icon_name());
     icon.set_pixel_size(16);

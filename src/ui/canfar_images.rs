@@ -66,17 +66,17 @@ pub struct CanfarImagesView {
 
 impl CanfarImagesView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
         container.add_css_class("card");
-        container.set_margin_start(8);
-        container.set_margin_end(8);
-        container.set_margin_top(8);
-        container.set_margin_bottom(8);
+        container.set_margin_start(12);
+        container.set_margin_end(12);
+        container.set_margin_top(12);
+        container.set_margin_bottom(12);
 
         // ── Header: title · (count) · Find-by-package · spinner · refresh ──
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.set_margin_start(16);
-        header.set_margin_end(16);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header.set_margin_start(12);
+        header.set_margin_end(12);
         header.set_margin_top(12);
 
         let title = gtk::Label::new(Some(crate::tr_en!("CANFAR Images")));
@@ -112,8 +112,8 @@ impl CanfarImagesView {
         // ── Per-type filter bar (linked toggle buttons) ──
         let filter_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         filter_bar.add_css_class("linked");
-        filter_bar.set_margin_start(16);
-        filter_bar.set_margin_end(16);
+        filter_bar.set_margin_start(12);
+        filter_bar.set_margin_end(12);
         filter_bar.set_halign(gtk::Align::Start);
         container.append(&filter_bar);
 
@@ -121,8 +121,8 @@ impl CanfarImagesView {
         let subtitle = gtk::Label::new(None);
         subtitle.add_css_class("dim-label");
         subtitle.set_halign(gtk::Align::Start);
-        subtitle.set_margin_start(16);
-        subtitle.set_margin_end(16);
+        subtitle.set_margin_start(12);
+        subtitle.set_margin_end(12);
         container.append(&subtitle);
 
         // ── Scrollable row list ──
@@ -136,8 +136,8 @@ impl CanfarImagesView {
         let list_box = gtk::ListBox::new();
         list_box.add_css_class("boxed-list");
         list_box.set_selection_mode(gtk::SelectionMode::None);
-        list_box.set_margin_start(16);
-        list_box.set_margin_end(16);
+        list_box.set_margin_start(12);
+        list_box.set_margin_end(12);
         list_box.set_margin_bottom(12);
         scrolled.set_child(Some(&list_box));
         container.append(&scrolled);

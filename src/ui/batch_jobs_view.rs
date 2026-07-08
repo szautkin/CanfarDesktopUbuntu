@@ -54,9 +54,12 @@ pub struct BatchJobsView {
 
 impl BatchJobsView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
         container.add_css_class("card");
-        container.set_margin_bottom(8);
+        container.set_margin_start(12);
+        container.set_margin_end(12);
+        container.set_margin_top(12);
+        container.set_margin_bottom(12);
 
         let (header, spinner, refresh_btn) = card_header("Batch Jobs");
 
@@ -72,13 +75,12 @@ impl BatchJobsView {
         container.append(&header);
 
         let grid = gtk::Grid::new();
-        grid.set_row_spacing(8);
-        grid.set_column_spacing(8);
+        grid.set_row_spacing(6);
+        grid.set_column_spacing(6);
         grid.set_row_homogeneous(true);
         grid.set_column_homogeneous(true);
-        grid.set_margin_start(16);
-        grid.set_margin_end(16);
-        grid.set_margin_top(8);
+        grid.set_margin_start(12);
+        grid.set_margin_end(12);
         grid.set_margin_bottom(12);
 
         let (pending_btn, pending_label) = make_stat_tile("Pending", "batch-dot-pending");
@@ -301,9 +303,9 @@ fn make_stat_tile(name: &str, dot_class: &str) -> (gtk::Button, gtk::Label) {
     let btn = gtk::Button::new();
     btn.add_css_class("flat");
 
-    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    hbox.set_margin_start(8);
-    hbox.set_margin_end(8);
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    hbox.set_margin_start(6);
+    hbox.set_margin_end(6);
     hbox.set_margin_top(6);
     hbox.set_margin_bottom(6);
 

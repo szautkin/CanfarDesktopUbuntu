@@ -27,10 +27,10 @@ impl SessionCard {
         container.set_halign(gtk::Align::Start);
         container.set_valign(gtk::Align::Start);
         container.add_css_class("card");
-        container.set_margin_start(4);
-        container.set_margin_end(4);
-        container.set_margin_top(4);
-        container.set_margin_bottom(4);
+        container.set_margin_start(6);
+        container.set_margin_end(6);
+        container.set_margin_top(6);
+        container.set_margin_bottom(6);
 
         // Session type icon centered at top
         let icon = session_type_icon(&session.session_type, 48);
@@ -41,7 +41,7 @@ impl SessionCard {
         let inner = gtk::Box::new(gtk::Orientation::Vertical, 6);
         inner.set_margin_start(12);
         inner.set_margin_end(12);
-        inner.set_margin_top(8);
+        inner.set_margin_top(6);
         inner.set_margin_bottom(12);
 
         // Name + status row
@@ -75,9 +75,9 @@ impl SessionCard {
 
         // Times
         if !session.start_time.is_empty() {
-            let times_box = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+            let times_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
 
-            let start_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            let start_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             let start_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
             start_icon.set_pixel_size(12);
             start_box.append(&start_icon);
@@ -87,7 +87,7 @@ impl SessionCard {
             times_box.append(&start_box);
 
             if !session.expiry_time.is_empty() {
-                let expiry_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+                let expiry_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
                 let expiry_icon = gtk::Image::from_icon_name("alarm-symbolic");
                 expiry_icon.set_pixel_size(12);
                 expiry_box.append(&expiry_icon);
@@ -112,7 +112,7 @@ impl SessionCard {
         }
 
         // Resources
-        let res_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let res_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
         let cpu_label =
             gtk::Label::new(Some(&crate::tr_fmt!("CPU: {}", session.requested_cpu_cores)));
@@ -146,7 +146,7 @@ impl SessionCard {
             let has_cpu = !session.cpu_cores_in_use.is_empty() && session.cpu_cores_in_use != "0";
             let has_ram = !session.ram_in_use.is_empty() && session.ram_in_use != "0";
             if has_cpu || has_ram {
-                let usage_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                let usage_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
                 let prefix = gtk::Label::new(Some(crate::tr_en!("In use:")));
                 prefix.add_css_class("caption");
                 prefix.add_css_class("dim-label");
@@ -168,9 +168,9 @@ impl SessionCard {
         }
 
         // Action buttons
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.set_halign(gtk::Align::End);
-        actions.set_margin_top(4);
+        actions.set_margin_top(6);
 
         let open_btn = gtk::Button::from_icon_name("web-browser-symbolic");
         open_btn.set_tooltip_text(Some(crate::tr_en!("Open in browser")));

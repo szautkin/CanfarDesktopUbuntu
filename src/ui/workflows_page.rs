@@ -65,11 +65,8 @@ impl WorkflowsPage {
         // ----------------------------------------------------------------
         // Toolbar: New + Import
         // ----------------------------------------------------------------
-        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        toolbar.set_margin_start(12);
-        toolbar.set_margin_end(12);
-        toolbar.set_margin_top(12);
-        toolbar.set_margin_bottom(6);
+        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        toolbar.add_css_class("toolbar");
 
         let new_btn = make_icon_button(
             "document-new-symbolic",
@@ -144,10 +141,10 @@ impl WorkflowsPage {
         detail_scroll.set_hexpand(true);
 
         let detail_container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        detail_container.set_margin_start(24);
-        detail_container.set_margin_end(24);
-        detail_container.set_margin_top(24);
-        detail_container.set_margin_bottom(24);
+        detail_container.set_margin_start(12);
+        detail_container.set_margin_end(12);
+        detail_container.set_margin_top(12);
+        detail_container.set_margin_bottom(12);
         detail_scroll.set_child(Some(&detail_container));
         detail_stack.add_named(&detail_scroll, Some("detail"));
 
@@ -363,7 +360,7 @@ impl WorkflowsPage {
         }
 
         // ── Metadata line: source badge · Time · tags ──────────────────
-        let meta = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let meta = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         meta.set_halign(gtk::Align::Start);
 
         let source_text = match info.source {
@@ -398,7 +395,6 @@ impl WorkflowsPage {
             prog_lbl.add_css_class("caption");
             prog_lbl.add_css_class("dim-label");
             prog_lbl.set_halign(gtk::Align::Start);
-            prog_lbl.set_margin_top(4);
             container.append(&prog_lbl);
 
             let bar = gtk::ProgressBar::new();
@@ -407,10 +403,8 @@ impl WorkflowsPage {
         }
 
         // ── Action bar ─────────────────────────────────────────────────
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.set_halign(gtk::Align::Start);
-        actions.set_margin_top(8);
-        actions.set_margin_bottom(4);
 
         // Duplicate to Local (always available)
         let dup_btn = make_icon_button(
@@ -525,7 +519,6 @@ impl WorkflowsPage {
             warn.set_halign(gtk::Align::Start);
             warn.set_xalign(0.0);
             warn.set_wrap(true);
-            warn.set_margin_top(6);
             container.append(&warn);
         }
     }
@@ -729,8 +722,7 @@ impl WorkflowsPage {
         }
 
         // Save / Cancel row.
-        let btns = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        btns.set_margin_top(8);
+        let btns = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
         let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
         {
@@ -853,8 +845,8 @@ fn section_header(text: &str) -> gtk::ListBoxRow {
     label.set_halign(gtk::Align::Start);
     label.set_margin_start(12);
     label.set_margin_end(12);
-    label.set_margin_top(10);
-    label.set_margin_bottom(4);
+    label.set_margin_top(12);
+    label.set_margin_bottom(6);
     row.set_child(Some(&label));
     row
 }
@@ -871,7 +863,7 @@ fn hint_row(text: &str) -> gtk::ListBoxRow {
     label.set_halign(gtk::Align::Start);
     label.set_margin_start(12);
     label.set_margin_end(12);
-    label.set_margin_top(4);
+    label.set_margin_top(6);
     label.set_margin_bottom(6);
     row.set_child(Some(&label));
     row
@@ -888,8 +880,8 @@ fn workflow_row(info: &WorkflowInfo) -> gtk::ListBoxRow {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
     vbox.set_margin_start(12);
     vbox.set_margin_end(12);
-    vbox.set_margin_top(8);
-    vbox.set_margin_bottom(8);
+    vbox.set_margin_top(6);
+    vbox.set_margin_bottom(6);
 
     let title = gtk::Label::new(Some(&info.doc.title));
     title.add_css_class("heading");

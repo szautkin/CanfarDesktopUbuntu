@@ -29,11 +29,12 @@ pub struct SessionListView {
 
 impl SessionListView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
         container.add_css_class("card");
-        container.set_margin_start(8);
-        container.set_margin_end(8);
-        container.set_margin_top(8);
+        container.set_margin_start(12);
+        container.set_margin_end(12);
+        container.set_margin_top(12);
+        container.set_margin_bottom(12);
         container.set_vexpand(true);
 
         let (header, loading_spinner, refresh_btn) = card_header(crate::tr_en!("Active Sessions"));
@@ -72,7 +73,7 @@ impl SessionListView {
         scrolled.set_vexpand(true);
         scrolled.set_min_content_height(200);
 
-        let cards_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let cards_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         cards_box.set_margin_start(12);
         cards_box.set_margin_end(12);
         cards_box.set_margin_bottom(12);

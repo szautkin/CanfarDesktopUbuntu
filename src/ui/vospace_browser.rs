@@ -137,7 +137,7 @@ impl VoSpaceBrowser {
         // ----------------------------------------------------------------
         // Toolbar
         // ----------------------------------------------------------------
-        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         toolbar.set_margin_start(12);
         toolbar.set_margin_end(12);
         toolbar.set_margin_top(12);
@@ -178,8 +178,8 @@ impl VoSpaceBrowser {
         let sort_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         sort_header.set_margin_start(12);
         sort_header.set_margin_end(12);
-        sort_header.set_margin_top(4);
-        sort_header.set_margin_bottom(2);
+        sort_header.set_margin_top(6);
+        sort_header.set_margin_bottom(6);
         sort_header.add_css_class("dim-label");
 
         let sort_btn_name = gtk::Button::with_label(crate::tr_en!("Name ▲"));
@@ -235,6 +235,7 @@ impl VoSpaceBrowser {
         status_label.add_css_class("dim-label");
         status_label.add_css_class("caption");
         status_label.set_margin_start(12);
+        status_label.set_margin_end(12);
         status_label.set_margin_bottom(6);
         status_label.set_halign(gtk::Align::Start);
         widget.append(&status_label);
@@ -534,9 +535,9 @@ impl VoSpaceBrowser {
         };
 
         // Row content box
-        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row_box.set_margin_start(8);
-        row_box.set_margin_end(8);
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row_box.set_margin_start(6);
+        row_box.set_margin_end(6);
         row_box.set_margin_top(6);
         row_box.set_margin_bottom(6);
 
@@ -1112,7 +1113,7 @@ impl VoSpaceBrowser {
         entry.set_activates_default(true);
         content.append(&entry);
 
-        let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         btn_row.set_halign(gtk::Align::End);
         let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
         let create_btn = gtk::Button::with_label(crate::tr_en!("Create"));

@@ -111,11 +111,8 @@ impl ResearchPage {
         // ----------------------------------------------------------------
         // Toolbar / filter bar
         // ----------------------------------------------------------------
-        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        toolbar.set_margin_start(12);
-        toolbar.set_margin_end(12);
-        toolbar.set_margin_top(12);
-        toolbar.set_margin_bottom(6);
+        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        toolbar.add_css_class("toolbar");
 
         let filter_entry = gtk::SearchEntry::new();
         filter_entry.set_placeholder_text(Some(crate::tr_en!("Search by collection, target, instrument…")));
@@ -192,11 +189,11 @@ impl ResearchPage {
 
         let list_box = gtk::ListBox::new();
         list_box.set_selection_mode(gtk::SelectionMode::Single);
-        list_box.add_css_class("navigation-sidebar");
-        list_box.set_margin_start(0);
-        list_box.set_margin_end(0);
-        list_box.set_margin_top(0);
-        list_box.set_margin_bottom(0);
+        list_box.add_css_class("boxed-list");
+        list_box.set_margin_start(12);
+        list_box.set_margin_end(12);
+        list_box.set_margin_top(12);
+        list_box.set_margin_bottom(12);
         scrolled.set_child(Some(&list_box));
         content_stack.add_named(&scrolled, Some("list"));
 
@@ -208,7 +205,7 @@ impl ResearchPage {
         count_label.add_css_class("caption");
         count_label.set_margin_start(12);
         count_label.set_margin_end(12);
-        count_label.set_margin_top(4);
+        count_label.set_margin_top(6);
         count_label.set_margin_bottom(6);
         count_label.set_halign(gtk::Align::Start);
         left_pane.append(&count_label);
@@ -238,10 +235,10 @@ impl ResearchPage {
         detail_scroll.set_hexpand(true);
 
         let detail_container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        detail_container.set_margin_start(24);
-        detail_container.set_margin_end(24);
-        detail_container.set_margin_top(24);
-        detail_container.set_margin_bottom(24);
+        detail_container.set_margin_start(12);
+        detail_container.set_margin_end(12);
+        detail_container.set_margin_top(12);
+        detail_container.set_margin_bottom(12);
         detail_scroll.set_child(Some(&detail_container));
         detail_stack.add_named(&detail_scroll, Some("detail"));
 
@@ -569,7 +566,7 @@ impl ResearchPage {
         title_label.add_css_class("title-2");
         title_label.set_halign(gtk::Align::Start);
         title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        title_label.set_margin_top(4);
+        title_label.set_margin_top(6);
         self.detail_container.append(&title_label);
 
         let mut sub_parts: Vec<String> = Vec::new();
@@ -591,7 +588,7 @@ impl ResearchPage {
         if let Some(attr) = agent_attribution_from(obs) {
             let attr_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             attr_row.set_halign(gtk::Align::Start);
-            attr_row.set_margin_top(2);
+            attr_row.set_margin_top(6);
             let caption = gtk::Label::new(Some(crate::tr_en!("Created by AI agent")));
             caption.add_css_class("caption");
             caption.add_css_class("dim-label");
@@ -601,10 +598,10 @@ impl ResearchPage {
         }
 
         // ── Action bar ─────────────────────────────────────────────────
-        let action_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let action_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         action_row.set_halign(gtk::Align::Start);
-        action_row.set_margin_top(8);
-        action_row.set_margin_bottom(8);
+        action_row.set_margin_top(6);
+        action_row.set_margin_bottom(6);
 
         let file_exists = !obs.is_bookmarked()
             && std::path::Path::new(&obs.local_path).exists();
@@ -733,7 +730,7 @@ impl ResearchPage {
             let missing_lbl = gtk::Label::new(Some(crate::tr_en!("File missing from disk")));
             missing_lbl.add_css_class("warning");
             missing_lbl.add_css_class("caption");
-            missing_lbl.set_margin_end(8);
+            missing_lbl.set_margin_end(6);
             action_row.append(&missing_lbl);
 
             let download_btn = make_icon_button(
@@ -950,8 +947,9 @@ impl ResearchPage {
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header_row.set_halign(gtk::Align::Start);
         header_row.set_margin_top(12);
+        header_row.set_margin_bottom(6);
         let header = gtk::Label::new(Some(crate::tr_en!("Research Notes")));
-        header.add_css_class("heading");
+        header.add_css_class("title-4");
         header.set_halign(gtk::Align::Start);
         header_row.append(&header);
         if let Some(stamp) = &note_attr {

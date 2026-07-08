@@ -136,10 +136,10 @@ impl SearchPage {
         // =====================================================================
         let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         main_box.set_hexpand(true);
-        main_box.set_margin_start(24);
-        main_box.set_margin_top(24);
-        main_box.set_margin_bottom(16);
-        main_box.set_margin_end(16);
+        main_box.set_margin_start(12);
+        main_box.set_margin_top(12);
+        main_box.set_margin_bottom(12);
+        main_box.set_margin_end(12);
 
         let title = gtk::Label::new(Some(crate::tr_en!("CADC Archive Search")));
         title.add_css_class("title-2");
@@ -159,14 +159,14 @@ impl SearchPage {
         form_scroll.set_vexpand(true);
 
         let form_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        form_content.set_margin_start(4);
-        form_content.set_margin_end(4);
+        form_content.set_margin_start(12);
+        form_content.set_margin_end(12);
         form_content.set_margin_top(12);
-        form_content.set_margin_bottom(8);
+        form_content.set_margin_bottom(12);
 
         // --- 4 constraint columns (matching CADC web) ---
         let columns = gtk::Grid::new();
-        columns.set_column_spacing(16);
+        columns.set_column_spacing(12);
         columns.set_column_homogeneous(true);
 
         // Col 1: Observation
@@ -220,7 +220,8 @@ impl SearchPage {
         let train_expander = gtk::Expander::new(Some(crate::tr_en!("Additional Constraints")));
         let (train_grid, train_lists) = build_data_train();
         train_expander.set_child(Some(&train_grid));
-        train_expander.set_margin_top(8);
+        // Vertical gap to the columns grid above is provided by form_content's
+        // own 12px box spacing — no extra margin needed here.
         form_content.append(&train_expander);
 
         form_scroll.set_child(Some(&form_content));
@@ -228,10 +229,7 @@ impl SearchPage {
 
         // --- Pinned action bar (bottom of form tab, outside scroll) ---
         let action_bar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        action_bar.set_margin_start(4);
-        action_bar.set_margin_end(4);
-        action_bar.set_margin_top(12);
-        action_bar.set_margin_bottom(8);
+        action_bar.add_css_class("toolbar");
 
         let search_btn = gtk::Button::new();
         let search_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -274,10 +272,7 @@ impl SearchPage {
 
         // Results toolbar
         let results_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        results_toolbar.set_margin_start(4);
-        results_toolbar.set_margin_end(4);
-        results_toolbar.set_margin_top(8);
-        results_toolbar.set_margin_bottom(4);
+        results_toolbar.add_css_class("toolbar");
 
         let results_count_label = gtk::Label::new(Some(crate::tr_en!("No results")));
         results_count_label.add_css_class("caption");
@@ -329,15 +324,16 @@ impl SearchPage {
         let results_scroll = gtk::ScrolledWindow::new();
         results_scroll.set_vexpand(true);
         let results_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        results_panel.set_margin_start(12);
+        results_panel.set_margin_end(12);
+        results_panel.set_margin_top(12);
+        results_panel.set_margin_bottom(12);
         results_scroll.set_child(Some(&results_panel));
         results_tab.append(&results_scroll);
 
         // Pagination
         let page_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        page_bar.set_margin_start(4);
-        page_bar.set_margin_end(4);
-        page_bar.set_margin_top(8);
-        page_bar.set_margin_bottom(8);
+        page_bar.add_css_class("toolbar");
 
         let first_btn = gtk::Button::from_icon_name("go-first-symbolic");
         first_btn.set_tooltip_text(Some(crate::tr_en!("First page")));
@@ -360,10 +356,11 @@ impl SearchPage {
         notebook.append_page(&results_tab, Some(&gtk::Label::new(Some(crate::tr_en!("Results")))));
 
         // ====== TAB 3: ADQL EDITOR ======
-        let adql_tab = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        adql_tab.set_margin_start(4);
-        adql_tab.set_margin_end(4);
+        let adql_tab = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        adql_tab.set_margin_start(12);
+        adql_tab.set_margin_end(12);
         adql_tab.set_margin_top(12);
+        adql_tab.set_margin_bottom(12);
 
         let adql_scroll = gtk::ScrolledWindow::new();
         adql_scroll.set_vexpand(true);
@@ -371,14 +368,15 @@ impl SearchPage {
         adql_editor.set_monospace(true);
         adql_editor.set_wrap_mode(gtk::WrapMode::Word);
         adql_editor.set_editable(true);
-        adql_editor.set_margin_start(8);
-        adql_editor.set_margin_end(8);
-        adql_editor.set_margin_top(8);
-        adql_editor.set_margin_bottom(8);
+        adql_editor.set_margin_start(12);
+        adql_editor.set_margin_end(12);
+        adql_editor.set_margin_top(12);
+        adql_editor.set_margin_bottom(12);
         adql_scroll.set_child(Some(&adql_editor));
         adql_tab.append(&adql_scroll);
 
         let adql_action = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        adql_action.add_css_class("toolbar");
         let exec_btn = gtk::Button::new();
         let exec_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         exec_content.append(&gtk::Image::from_icon_name("media-playback-start-symbolic"));
@@ -405,16 +403,14 @@ impl SearchPage {
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 12);
         sidebar.set_margin_start(12);
         sidebar.set_margin_end(12);
-        sidebar.set_margin_top(24);
-        sidebar.set_margin_bottom(16);
+        sidebar.set_margin_top(12);
+        sidebar.set_margin_bottom(12);
 
         // Recent Searches card
-        let recent_card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let recent_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
         recent_card.add_css_class("card");
-        recent_card.set_margin_start(4);
-        recent_card.set_margin_end(4);
 
-        let recent_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let recent_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         recent_header.set_margin_start(12);
         recent_header.set_margin_end(12);
         recent_header.set_margin_top(12);
@@ -431,9 +427,9 @@ impl SearchPage {
 
         let recent_list = gtk::ListBox::new();
         recent_list.set_selection_mode(gtk::SelectionMode::None);
-        recent_list.set_margin_start(4);
-        recent_list.set_margin_end(4);
-        recent_list.set_margin_bottom(8);
+        recent_list.set_margin_start(12);
+        recent_list.set_margin_end(12);
+        recent_list.set_margin_bottom(12);
         recent_list.set_placeholder(Some(
             &gtk::Label::builder()
                 .label(crate::tr_en!("No recent searches"))
@@ -446,10 +442,8 @@ impl SearchPage {
         sidebar.append(&recent_card);
 
         // Saved Queries card
-        let saved_card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let saved_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
         saved_card.add_css_class("card");
-        saved_card.set_margin_start(4);
-        saved_card.set_margin_end(4);
 
         let saved_title = gtk::Label::new(Some(crate::tr_en!("Saved Queries")));
         saved_title.add_css_class("heading");
@@ -458,7 +452,7 @@ impl SearchPage {
         saved_title.set_margin_top(12);
         saved_card.append(&saved_title);
 
-        let save_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let save_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         save_row.set_margin_start(12);
         save_row.set_margin_end(12);
         let save_name_entry = gtk::Entry::new();
@@ -472,9 +466,9 @@ impl SearchPage {
 
         let saved_list = gtk::ListBox::new();
         saved_list.set_selection_mode(gtk::SelectionMode::None);
-        saved_list.set_margin_start(4);
-        saved_list.set_margin_end(4);
-        saved_list.set_margin_bottom(8);
+        saved_list.set_margin_start(12);
+        saved_list.set_margin_end(12);
+        saved_list.set_margin_bottom(12);
         saved_card.append(&saved_list);
         sidebar.append(&saved_card);
 
@@ -1125,8 +1119,6 @@ impl SearchPage {
 
         // Header row with clickable sort + filter entries
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        header_row.set_margin_start(8);
-        header_row.set_margin_end(8);
         for col in vis_columns.iter() {
             let col_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
             col_box.set_size_request(100, -1);
@@ -1213,8 +1205,6 @@ impl SearchPage {
         // Data rows
         for row in processed.iter().skip(start).take(ps) {
             let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            row_box.set_margin_start(8);
-            row_box.set_margin_end(8);
             row_box.set_margin_top(1);
             row_box.set_margin_bottom(1);
 
@@ -1784,12 +1774,12 @@ impl SearchPage {
 
         // Build checkbox grid (3 columns like Windows)
         let grid = gtk::Grid::new();
-        grid.set_column_spacing(16);
-        grid.set_row_spacing(4);
-        grid.set_margin_start(16);
-        grid.set_margin_end(16);
-        grid.set_margin_top(16);
-        grid.set_margin_bottom(16);
+        grid.set_column_spacing(12);
+        grid.set_row_spacing(6);
+        grid.set_margin_start(12);
+        grid.set_margin_end(12);
+        grid.set_margin_top(12);
+        grid.set_margin_bottom(12);
         grid.set_column_homogeneous(true);
 
         let rows_per_col = columns.len().div_ceil(3);
@@ -1809,9 +1799,9 @@ impl SearchPage {
         scroll.set_child(Some(&grid));
 
         // Apply button
-        let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        btn_box.set_margin_start(16);
-        btn_box.set_margin_end(16);
+        let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        btn_box.set_margin_start(12);
+        btn_box.set_margin_end(12);
         btn_box.set_margin_bottom(12);
         btn_box.set_halign(gtk::Align::End);
 
@@ -2386,10 +2376,10 @@ async fn show_row_detail(
     scroll.set_hexpand(true);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
 
     // Preview Stack: loading / image / no-preview / error
     let preview_frame = gtk::Frame::new(None);
@@ -3137,7 +3127,7 @@ fn extract_filename(publisher_id: &str, url: &str) -> String {
 // =============================================================================
 
 fn labeled_entry(label_text: &str, placeholder: &str) -> (gtk::Box, gtk::Entry) {
-    let container = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let label = gtk::Label::new(Some(label_text));
     label.add_css_class("caption");
     label.set_halign(gtk::Align::Start);
@@ -3153,12 +3143,12 @@ fn labeled_entry_with_combo(
     placeholder: &str,
     items: &[&str],
 ) -> (gtk::Box, gtk::Entry, gtk::DropDown) {
-    let container = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let label = gtk::Label::new(Some(label_text));
     label.add_css_class("caption");
     label.set_halign(gtk::Align::Start);
     container.append(&label);
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let entry = gtk::Entry::new();
     entry.set_placeholder_text(Some(placeholder));
     entry.set_hexpand(true);
@@ -3182,7 +3172,7 @@ fn build_observation_column() -> (
     gtk::CheckButton,
     gtk::DropDown,
 ) {
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
 
     let heading = gtk::Label::new(Some(crate::tr_en!("Observation")));
     heading.add_css_class("heading");
@@ -3205,7 +3195,7 @@ fn build_observation_column() -> (
     let public_only = gtk::CheckButton::with_label(crate::tr_en!("Public only"));
     col.append(&public_only);
 
-    let intent_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let intent_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let intent_label = gtk::Label::new(Some(crate::tr_en!("Intent")));
     intent_label.add_css_class("caption");
     intent_label.set_halign(gtk::Align::Start);
@@ -3238,7 +3228,7 @@ fn build_spatial_column() -> (
     gtk::CheckButton,
     gtk::Label,
 ) {
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
 
     let heading = gtk::Label::new(Some(crate::tr_en!("Spatial")));
     heading.add_css_class("heading");
@@ -3248,7 +3238,7 @@ fn build_spatial_column() -> (
     let (w, target) = labeled_entry(crate::tr_en!("Target or Coordinates"), crate::tr_en!("e.g. M31, NGC 1234"));
     col.append(&w);
 
-    let resolver_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let resolver_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let resolver_label = gtk::Label::new(Some(crate::tr_en!("Resolver")));
     resolver_label.add_css_class("caption");
     resolver_label.set_halign(gtk::Align::Start);
@@ -3265,7 +3255,7 @@ fn build_spatial_column() -> (
     resolver_status.set_wrap(true);
     col.append(&resolver_status);
 
-    let radius_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let radius_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let radius_label = gtk::Label::new(Some(crate::tr_en!("Radius (deg)")));
     radius_label.add_css_class("caption");
     radius_label.set_halign(gtk::Align::Start);
@@ -3303,7 +3293,7 @@ fn build_temporal_column() -> (
     gtk::DropDown,
     gtk::Entry,
 ) {
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
 
     let heading = gtk::Label::new(Some(crate::tr_en!("Temporal")));
     heading.add_css_class("heading");
@@ -3344,7 +3334,7 @@ fn build_spectral_column() -> (
     gtk::Entry,
     gtk::CheckButton,
 ) {
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
 
     let heading = gtk::Label::new(Some(crate::tr_en!("Spectral")));
     heading.add_css_class("heading");
@@ -3384,9 +3374,12 @@ fn build_spectral_column() -> (
 
 fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
     let grid = gtk::Grid::new();
-    grid.set_column_spacing(8);
+    grid.set_column_spacing(12);
     grid.set_column_homogeneous(true);
-    grid.set_margin_top(8);
+    grid.set_margin_start(12);
+    grid.set_margin_end(12);
+    grid.set_margin_top(12);
+    grid.set_margin_bottom(12);
 
     let train_labels = [
         crate::tr_en!("Band"),
@@ -3401,7 +3394,7 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
     let mut lists: Vec<gtk::ListBox> = Vec::new();
 
     for (i, label_text) in train_labels.iter().enumerate() {
-        let col_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let col_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let label = gtk::Label::new(Some(label_text));
         label.add_css_class("caption");
         label.set_halign(gtk::Align::Start);

@@ -44,6 +44,8 @@ impl DashboardView {
         grid.set_row_homogeneous(false);
         grid.set_column_homogeneous(true);
         grid.set_vexpand(true);
+        grid.set_row_spacing(12);
+        grid.set_column_spacing(12);
 
         // Top-left: Sessions
         let session_list = SessionListView::new(services.clone());
@@ -55,7 +57,7 @@ impl DashboardView {
         let launch_form = LaunchFormView::new(services.clone(), session_list.sessions_ref());
 
         // Bottom-right: Batch Jobs + Recent Launches + Platform Load + Template Manager
-        let right_bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let right_bottom = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let batch_jobs = BatchJobsView::new(services.clone());
         let recent_launches = RecentLaunchesView::new(services.clone());
         let platform_load = PlatformLoadView::new(services.clone());
@@ -76,7 +78,11 @@ impl DashboardView {
 
         // Wrap the grid + images card in a scroller so the page never clips the
         // full-width card on a short window.
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
         content.append(&grid);
         content.append(canfar_images.widget());
 
