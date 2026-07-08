@@ -90,13 +90,25 @@ pub fn resolve_registry_image(image: &str, host: &str, repository: &str) -> Stri
     if img.is_empty() {
         return String::new();
     }
-    if img.contains('/') {
-        // Already host/project-qualified — leave it alone.
+    // Docker reference convention: the first path segment is a registry HOST only
+    // if it contains a '.' or ':' (or is "localhost"). "skaha/terminal:1.1.2" is
+    // project/name — NOT host-qualified — and must still get the host prefix,
+    // otherwise Skaha rejects the probe ("session image must come from one of
+    // [images.canfar.net]").
+    let first = img.split('/').next().unwrap_or("");
+    let host_qualified =
+        img.contains('/') && (first.contains('.') || first.contains(':') || first == "localhost");
+    if host_qualified {
         return img.to_string();
     }
     let h = host.trim().trim_end_matches('/');
     if h.is_empty() {
         return img.to_string(); // no host to prefix with
+    }
+    if img.contains('/') {
+        // Already project-qualified (e.g. "skaha/terminal:1.1.2") — add the host
+        // only; prepending the repository too would double the project segment.
+        return format!("{h}/{img}");
     }
     let repo = repository.trim().trim_matches('/');
     if repo.is_empty() {
@@ -195,10 +207,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_name_with_slash_is_left_unchanged() {
-        for image in ["skaha/terminal:1.1.2", "images.canfar.net/skaha/terminal:1.1.2"] {
-            assert_eq!(resolve_registry_image(image, "images.canfar.net", "skaha"), image);
-        }
+    fn resolve_project_qualified_gets_host_prefix_only() {
+        // "skaha/terminal:1.1.2" is project/name (first segment has no '.' / ':'),
+        // so it must be HOST-prefixed — Skaha rejects unprefixed images — but the
+        // repository must NOT be inserted (that would double the project segment).
+        assert_eq!(
+            resolve_registry_image("skaha/terminal:1.1.2", "images.canfar.net", "skaha"),
+            "images.canfar.net/skaha/terminal:1.1.2"
+        );
+        assert_eq!(
+            resolve_registry_image(
+                "private-test/verbinal-inspector:1.0.0",
+                "images.canfar.net",
+                "private-test"
+            ),
+            "images.canfar.net/private-test/verbinal-inspector:1.0.0"
+        );
+        // A genuinely host-qualified reference is left unchanged.
+        let full = "images.canfar.net/skaha/terminal:1.1.2";
+        assert_eq!(resolve_registry_image(full, "images.canfar.net", "skaha"), full);
+        assert_eq!(
+            resolve_registry_image("localhost/x:1", "images.canfar.net", ""),
+            "localhost/x:1"
+        );
     }
 
     #[test]
@@ -210,10 +241,13 @@ mod tests {
     }
 
     #[test]
-    fn default_inspector_image_resolves_via_short_name_rule() {
-        // The default already contains a "/", so it is returned unchanged
-        // (Skaha resolves the registry host from its Harbor context).
+    fn default_inspector_image_is_host_qualified() {
+        // The default "skaha/terminal:1.1.2" must resolve with the registry host
+        // prefix — Skaha requires fully-qualified session images.
         let s = ImageDiscoverySettings::default();
-        assert_eq!(s.resolve_inspector_image(), DEFAULT_INSPECTOR_IMAGE);
+        assert_eq!(
+            s.resolve_inspector_image(),
+            format!("{DEFAULT_REGISTRY_HOST}/{DEFAULT_INSPECTOR_IMAGE}")
+        );
     }
 }

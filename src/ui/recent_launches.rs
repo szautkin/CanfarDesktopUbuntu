@@ -56,7 +56,8 @@ impl RecentLaunchesView {
         let scrolled = gtk::ScrolledWindow::new();
         scrolled.set_vscrollbar_policy(gtk::PolicyType::Automatic);
         scrolled.set_min_content_height(150);
-        scrolled.set_vexpand(true);
+        scrolled.set_max_content_height(320);
+        scrolled.set_propagate_natural_height(true);
 
         let list_box = gtk::ListBox::new();
         list_box.add_css_class("boxed-list");

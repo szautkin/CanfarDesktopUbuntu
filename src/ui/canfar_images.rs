@@ -117,13 +117,18 @@ impl CanfarImagesView {
         filter_bar.set_halign(gtk::Align::Start);
         container.append(&filter_bar);
 
-        // ── Discovered X of Y subtitle ──
+        // ── Discovered X of Y subtitle + row list, grouped with a tight 6px
+        // gap so the caption reads as directly describing the list below it
+        // (the outer container's 12px spacing still separates this group
+        // from the filter bar above). ──
+        let list_section = gtk::Box::new(gtk::Orientation::Vertical, 6);
+
         let subtitle = gtk::Label::new(None);
         subtitle.add_css_class("dim-label");
         subtitle.set_halign(gtk::Align::Start);
         subtitle.set_margin_start(12);
         subtitle.set_margin_end(12);
-        container.append(&subtitle);
+        list_section.append(&subtitle);
 
         // ── Scrollable row list ──
         let scrolled = gtk::ScrolledWindow::new();
@@ -140,7 +145,8 @@ impl CanfarImagesView {
         list_box.set_margin_end(12);
         list_box.set_margin_bottom(12);
         scrolled.set_child(Some(&list_box));
-        container.append(&scrolled);
+        list_section.append(&scrolled);
+        container.append(&list_section);
 
         let view = Rc::new(CanfarImagesView {
             container,
@@ -302,8 +308,8 @@ impl CanfarImagesView {
         if rows.is_empty() {
             let empty = gtk::Label::new(Some(crate::tr_en!("No images available")));
             empty.add_css_class("dim-label");
-            empty.set_margin_top(16);
-            empty.set_margin_bottom(16);
+            empty.set_margin_top(12);
+            empty.set_margin_bottom(12);
             self.list_box.append(&empty);
         }
 
@@ -345,9 +351,11 @@ impl CanfarImagesView {
         }
         row.add_suffix(&inspect_btn);
 
-        // Use-this-image button.
+        // Use-this-image button. Deliberately a regular (non-suggested) button:
+        // "suggested-action" is reserved for a single primary call-to-action
+        // per view (the Launch button in the launch form), not repeated on
+        // every row here.
         let use_btn = gtk::Button::with_label(crate::tr_en!("Use this image"));
-        use_btn.add_css_class("suggested-action");
         use_btn.set_valign(gtk::Align::Center);
         {
             let on_use = self.on_use_image.clone();

@@ -61,6 +61,12 @@ impl LaunchFormView {
         container.set_margin_end(12);
         container.set_margin_top(12);
         container.set_margin_bottom(12);
+        // Hug natural content height instead of stretching to fill the grid
+        // row (which can be taller due to a sibling column), which was
+        // opening a dead gap between the last form group and the bottom
+        // Launch button row.
+        container.set_valign(gtk::Align::Start);
+        container.set_vexpand(false);
 
         // Header
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -75,6 +81,8 @@ impl LaunchFormView {
 
         // Tabs: Standard / Advanced
         let notebook = gtk::Notebook::new();
+        notebook.set_vexpand(false);
+        notebook.set_valign(gtk::Align::Start);
 
         // === Standard Tab ===
         let standard_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -82,6 +90,7 @@ impl LaunchFormView {
         standard_box.set_margin_end(12);
         standard_box.set_margin_top(12);
         standard_box.set_margin_bottom(12);
+        standard_box.set_valign(gtk::Align::Start);
 
         let form_group = adw::PreferencesGroup::new();
 
@@ -171,6 +180,7 @@ impl LaunchFormView {
         advanced_box.set_margin_end(12);
         advanced_box.set_margin_top(12);
         advanced_box.set_margin_bottom(12);
+        advanced_box.set_valign(gtk::Align::Start);
 
         let adv_group = adw::PreferencesGroup::builder()
             .title(crate::tr_en!("Custom Container Image"))
@@ -228,6 +238,7 @@ impl LaunchFormView {
         headless_box.set_margin_end(12);
         headless_box.set_margin_top(12);
         headless_box.set_margin_bottom(12);
+        headless_box.set_valign(gtk::Align::Start);
 
         let headless_group = adw::PreferencesGroup::new();
         headless_group.set_title(crate::tr_en!("Headless Batch Job"));

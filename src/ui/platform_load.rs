@@ -40,7 +40,7 @@ impl PlatformLoadView {
         status_label.set_visible(false);
         container.append(&status_label);
 
-        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
         content_box.set_margin_start(12);
         content_box.set_margin_end(12);
         content_box.set_margin_bottom(12);
