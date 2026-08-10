@@ -35,7 +35,15 @@ impl SearchResultRow {
 // Search Form State (all constraint fields)
 // ---------------------------------------------------------------------------
 
+/// The complete state of the search form.
+///
+/// `#[serde(default)]` at the container level is deliberate and load-bearing:
+/// this struct is PERSISTED inside every recent search, so a record written by
+/// an older build (or a newer one, missing a field this build expects) must
+/// still load. Without it, adding a single field silently made every previously
+/// saved search unreadable — they would vanish from the sidebar with no error.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SearchFormState {
     // Spatial
     pub target: String,
@@ -54,7 +62,6 @@ pub struct SearchFormState {
     pub pixel_scale_unit: String,
     /// Optional operator-aware pixel-scale text (RANGE syntax: `> 0.2`, `0.1..0.3`).
     /// When present it takes precedence over `pixel_scale_max`.
-    #[serde(default)]
     pub pixel_scale_raw: Option<String>,
     pub spatial_cutout: bool,
 
@@ -88,7 +95,6 @@ pub struct SearchFormState {
     /// Optional operator-aware spectral-sampling text (RANGE syntax: `> 0.2`,
     /// `0.1..0.3`, `<= 5`). When present it takes precedence over the legacy
     /// numeric `spectral_sampling` (mirrors `pixel_scale_raw`).
-    #[serde(default)]
     pub spectral_sampling_raw: Option<String>,
     pub spectral_sampling_unit: String,
     pub resolving_power_min: Option<f64>,
@@ -113,6 +119,20 @@ pub struct SearchFormState {
 
     // Options
     pub max_records: u32,
+
+    // ── Verbatim entry text, for restoring a saved search into the form ──────
+    //
+    // The numeric min/max fields above are LOSSY: `parse_range_minmax` maps both
+    // `>5` and `>=5` to `(Some(5), None)`, so the operator cannot be recovered
+    // from them. These keep what the user actually typed, mirroring the existing
+    // `pixel_scale_raw` / `spectral_sampling_raw` precedent. The container-level
+    // `#[serde(default)]` is what lets searches saved before these existed load.
+    pub integration_time_raw: String,
+    pub time_span_raw: String,
+    pub spectral_coverage_raw: String,
+    pub resolving_power_raw: String,
+    pub bandpass_width_raw: String,
+    pub rest_frame_energy_raw: String,
 }
 
 impl SearchFormState {
@@ -318,6 +338,20 @@ fn format_for_key(key: &str) -> ColumnFormat {
 
 /// Build column info list from actual CSV headers returned by TAP.
 /// This ensures keys match the real data.
+/// Resolve one column's visibility: an explicit user choice wins, otherwise the
+/// column's own default from [`DEFAULT_VISIBLE`].
+///
+/// Overrides are stored per column rather than as a hide-only set, because a
+/// hide-only set can never REVEAL a column that is not visible by default —
+/// which silently made most of the 41 TAP columns unreachable.
+pub fn column_is_visible(
+    overrides: &std::collections::HashMap<String, bool>,
+    key: &str,
+    default_visible: bool,
+) -> bool {
+    overrides.get(key).copied().unwrap_or(default_visible)
+}
+
 pub fn build_columns_from_headers(headers: &[String]) -> Vec<ResultColumnInfo> {
     headers
         .iter()
@@ -953,6 +987,52 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_range_text_survives_a_save_load_round_trip() {
+        // Restoring a saved search must reproduce what the user TYPED. The numeric
+        // min/max fields cannot: `parse_range_minmax` maps `>5` and `>=5` to the
+        // same `(Some(5), None)`, so the operator is only recoverable from the
+        // verbatim text.
+        let state = SearchFormState {
+            integration_time_raw: "> 300".to_string(),
+            time_span_raw: "1..7".to_string(),
+            spectral_coverage_raw: "<= 500".to_string(),
+            resolving_power_raw: ">= 1000".to_string(),
+            bandpass_width_raw: "10".to_string(),
+            rest_frame_energy_raw: "0.5..2.5".to_string(),
+            pixel_scale_raw: Some("0.1..1.0".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let back: SearchFormState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.integration_time_raw, "> 300");
+        assert_eq!(back.time_span_raw, "1..7");
+        assert_eq!(back.spectral_coverage_raw, "<= 500");
+        assert_eq!(back.resolving_power_raw, ">= 1000");
+        assert_eq!(back.bandpass_width_raw, "10");
+        assert_eq!(back.rest_frame_energy_raw, "0.5..2.5");
+        assert_eq!(back.pixel_scale_raw.as_deref(), Some("0.1..1.0"));
+    }
+
+    #[test]
+    fn a_search_saved_by_an_older_build_still_loads() {
+        // A recent search persists this whole struct, so a record written before a
+        // field existed must still deserialize — otherwise adding one field makes
+        // every previously saved search vanish from the sidebar with no error.
+        // The container-level `#[serde(default)]` is what guarantees it.
+        let legacy =
+            r#"{"target":"M31","resolver_service":"ALL","search_radius":0.5,"max_records":100}"#;
+        let back: SearchFormState = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back.target, "M31");
+        assert_eq!(back.max_records, 100);
+        // Absent fields fall back to their defaults rather than failing the parse.
+        assert_eq!(back.integration_time_raw, "");
+        assert!(back.pixel_scale_raw.is_none());
+        assert_eq!(back.wavelength_unit, "");
+    }
+
+    #[test]
     fn form_state_pixel_scale_raw_defaults_absent() {
         // New optional fields default to None and survive a JSON round-trip.
         let s = SearchFormState::new();
@@ -961,6 +1041,41 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: SearchFormState = serde_json::from_str(&json).unwrap();
         assert!(back.pixel_scale_raw.is_none());
+    }
+
+    #[test]
+    fn column_visibility_default_applies_without_an_override() {
+        let overrides = std::collections::HashMap::new();
+        assert!(column_is_visible(&overrides, "collection", true));
+        assert!(!column_is_visible(&overrides, "obsid", false));
+    }
+
+    #[test]
+    fn an_override_can_reveal_a_non_default_column() {
+        // The whole point: a hide-only model could never turn `obsid` on, so most
+        // of the 41 TAP columns were unreachable from the column dialog.
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("obsid".to_string(), true);
+        assert!(column_is_visible(&overrides, "obsid", false));
+    }
+
+    #[test]
+    fn an_override_can_hide_a_default_column() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("collection".to_string(), false);
+        assert!(!column_is_visible(&overrides, "collection", true));
+    }
+
+    #[test]
+    fn every_default_column_is_a_real_column_key() {
+        // A typo in DEFAULT_VISIBLE would silently hide a column forever.
+        let all = default_columns();
+        for key in DEFAULT_VISIBLE {
+            assert!(
+                all.iter().any(|c| c.key == *key),
+                "DEFAULT_VISIBLE names `{key}`, which is not a known column"
+            );
+        }
     }
 
     #[test]

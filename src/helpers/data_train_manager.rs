@@ -120,15 +120,8 @@ impl DataTrainManager {
     /// Toggle a value in a column's selection. Clears downstream selections.
     /// column_index: 0=bands, 1=collections, 2=instruments, 3=filters, 4=cal_levels, 5=data_types, 6=obs_types
     pub fn toggle(&mut self, column_index: usize, value: &str) {
-        let set = match column_index {
-            0 => &mut self.selected_bands,
-            1 => &mut self.selected_collections,
-            2 => &mut self.selected_instruments,
-            3 => &mut self.selected_filters,
-            4 => &mut self.selected_cal_levels,
-            5 => &mut self.selected_data_types,
-            6 => &mut self.selected_obs_types,
-            _ => return,
+        let Some(set) = self.selection_mut(column_index) else {
+            return;
         };
 
         if set.contains(value) {
@@ -220,6 +213,55 @@ impl DataTrainManager {
         self.available_obs_types = distinct(&filtered, |r| &r.observation_type);
         self.selected_obs_types
             .retain(|v| self.available_obs_types.contains(v));
+    }
+
+    /// The seven selection sets in column order, mutably.
+    ///
+    /// One place that knows the column ordering, so `toggle`, `set_selection`
+    /// and the callers below cannot drift apart on what index 4 means.
+    fn selection_mut(&mut self, column_index: usize) -> Option<&mut HashSet<String>> {
+        Some(match column_index {
+            0 => &mut self.selected_bands,
+            1 => &mut self.selected_collections,
+            2 => &mut self.selected_instruments,
+            3 => &mut self.selected_filters,
+            4 => &mut self.selected_cal_levels,
+            5 => &mut self.selected_data_types,
+            6 => &mut self.selected_obs_types,
+            _ => return None,
+        })
+    }
+
+    /// Replace every column's selection at once, then cascade ONCE.
+    ///
+    /// Unlike [`toggle`](Self::toggle) this does not clear downstream columns —
+    /// the caller is restoring or setting a complete, already-consistent
+    /// selection (a saved search, or an agent's `set_search_constraints`).
+    /// [`refresh`](Self::refresh) still prunes any value the cascade makes
+    /// unavailable, so an impossible combination cannot survive; compare the
+    /// sets before and after to report what was dropped.
+    pub fn set_all_selections(&mut self, per_column: [Vec<String>; 7]) {
+        for (idx, values) in per_column.into_iter().enumerate() {
+            if let Some(set) = self.selection_mut(idx) {
+                set.clear();
+                set.extend(values);
+            }
+        }
+        self.refresh();
+    }
+
+    /// The selection set for one column, in the same order as `set_all_selections`.
+    pub fn selection(&self, column_index: usize) -> Option<&HashSet<String>> {
+        Some(match column_index {
+            0 => &self.selected_bands,
+            1 => &self.selected_collections,
+            2 => &self.selected_instruments,
+            3 => &self.selected_filters,
+            4 => &self.selected_cal_levels,
+            5 => &self.selected_data_types,
+            6 => &self.selected_obs_types,
+            _ => return None,
+        })
     }
 
     /// Get comma-separated selection strings for ADQL builder.
@@ -326,6 +368,67 @@ mod tests {
         assert!(mgr.available_instruments.contains("ACS"));
         assert!(mgr.available_instruments.contains("WFC3"));
         assert!(!mgr.available_instruments.contains("NIRCAM"));
+    }
+
+    #[test]
+    fn set_all_selections_restores_every_column_without_clearing_downstream() {
+        // Restoring a saved search must NOT behave like seven toggles — a toggle
+        // clears everything downstream, so replaying one would wipe the very
+        // selections being restored.
+        let mut mgr = DataTrainManager::new();
+        mgr.load(sample_rows());
+
+        mgr.set_all_selections([
+            vec!["Optical".to_string()],
+            vec!["HST".to_string()],
+            vec!["ACS".to_string()],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ]);
+
+        assert!(mgr.selected_bands.contains("Optical"));
+        assert!(mgr.selected_collections.contains("HST"));
+        assert!(mgr.selected_instruments.contains("ACS"));
+    }
+
+    #[test]
+    fn set_all_selections_drops_values_the_cascade_makes_unavailable() {
+        // The cascade narrows DOWNSTREAM columns by UPSTREAM selections, so an
+        // impossible combination must not survive: with instrument ACS chosen,
+        // F110W (a WFC3 filter) is unavailable and gets pruned. Diffing the sets
+        // before and after is how `set_search_constraints` reports what it dropped.
+        let mut mgr = DataTrainManager::new();
+        mgr.load(sample_rows());
+
+        mgr.set_all_selections([
+            vec![],
+            vec!["HST".to_string()],
+            vec!["ACS".to_string()],
+            vec!["F606W".to_string(), "F110W".to_string()],
+            vec![],
+            vec![],
+            vec![],
+        ]);
+
+        assert!(mgr.selected_filters.contains("F606W"));
+        assert!(
+            !mgr.selected_filters.contains("F110W"),
+            "F110W belongs to WFC3 and is unavailable under instrument ACS"
+        );
+    }
+
+    #[test]
+    fn selection_accessor_matches_the_documented_column_order() {
+        let mut mgr = DataTrainManager::new();
+        mgr.load(sample_rows());
+        mgr.toggle(0, "Optical");
+        mgr.toggle(1, "HST");
+
+        assert!(mgr.selection(0).unwrap().contains("Optical"));
+        assert!(mgr.selection(1).unwrap().contains("HST"));
+        assert!(mgr.selection(7).is_none(), "only 7 columns exist");
     }
 
     #[test]

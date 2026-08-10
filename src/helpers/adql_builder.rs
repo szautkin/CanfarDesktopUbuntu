@@ -1216,6 +1216,44 @@ mod tests {
     }
 
     #[test]
+    fn pixel_scale_range_syntax_produces_a_between_clause() {
+        // The field's own placeholder is `0.1..1.0`; before `pixel_scale_raw` was
+        // populated from the form this produced NO clause at all, so the typed
+        // constraint was silently dropped.
+        let mut state = SearchFormState::new();
+        state.pixel_scale_raw = Some("0.1..1.0".to_string());
+        state.pixel_scale_unit = "arcsec".to_string();
+        let adql = build(&state);
+        let lo = 0.1 / 3600.0;
+        let hi = 1.0 / 3600.0;
+        assert!(
+            adql.contains(&format!(
+                "Plane.position_sampleSize >= {} AND Plane.position_sampleSize <= {}",
+                lo, hi
+            )),
+            "{}",
+            adql
+        );
+    }
+
+    #[test]
+    fn pixel_scale_bare_value_is_an_equality_matching_the_reference() {
+        // A bare value means `=` in the reference (ADQLBuilder.AddConvertedRangeClause,
+        // RangeOperand.Equals), NOT the `<= max` this port used to emit. Pinned so
+        // the divergence cannot quietly come back.
+        let mut state = SearchFormState::new();
+        state.pixel_scale_raw = Some("0.5".to_string());
+        state.pixel_scale_unit = "arcsec".to_string();
+        let adql = build(&state);
+        let deg = 0.5 / 3600.0;
+        assert!(
+            adql.contains(&format!("Plane.position_sampleSize = {}", deg)),
+            "{}",
+            adql
+        );
+    }
+
+    #[test]
     fn pixel_scale_raw_operator_overrides_max() {
         let mut state = SearchFormState::new();
         state.pixel_scale_raw = Some("> 0.2".to_string());

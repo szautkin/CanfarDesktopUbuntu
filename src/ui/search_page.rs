@@ -34,6 +34,33 @@ fn saved_query_badge(
     )
 }
 
+/// Dropdown index tables. These map a `gtk::DropDown` position to the value
+/// stored in [`SearchFormState`], and back again when a saved search is
+/// restored — so both directions MUST read the same table. Module-level rather
+/// than local for exactly that reason.
+const SPECTRAL_UNITS: [&str; 4] = ["nm", "Angstrom", "um", "mm"];
+const TIME_UNITS: [&str; 4] = ["s", "m", "h", "d"];
+const PIXEL_SCALE_UNITS: [&str; 3] = ["arcsec", "arcmin", "deg"];
+const DATE_PRESETS: [&str; 4] = ["", "Last 24 hours", "Last week", "Last month"];
+const INTENTS: [&str; 3] = ["", "science", "calibration"];
+const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
+
+/// Split a comma-joined facet selection back into values, dropping blanks.
+/// Inverse of `DataTrainManager::*_string()`.
+fn split_facet(joined: &str) -> Vec<String> {
+    joined
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Position of `value` in a dropdown table, or 0 (the first entry) when absent.
+fn dropdown_index(table: &[&str], value: &str) -> u32 {
+    table.iter().position(|v| *v == value).unwrap_or(0) as u32
+}
+
 pub struct SearchPage {
     widget: gtk::Box,
     services: Arc<AppServices>,
@@ -113,7 +140,17 @@ pub struct SearchPage {
     sort_column: Rc<RefCell<Option<String>>>,
     sort_ascending: Rc<RefCell<bool>>,
     column_filters: Rc<RefCell<std::collections::HashMap<String, String>>>,
-    hidden_columns: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// The "Additional Constraints" (data-train) expander, kept so restoring a
+    /// saved search — or an agent setting constraints — can reveal the panel it
+    /// just populated rather than leaving the change hidden behind a collapsed
+    /// header.
+    train_expander: gtk::Expander,
+    /// Explicit per-column visibility chosen by the user (cleaned key → shown).
+    /// A key is present only once the user has actually toggled that column; an
+    /// absent key means "use the column's default". Storing overrides rather than
+    /// a hide-only set is what lets a NON-default column be switched ON — the
+    /// reference writes `ResultColumns[i].Visible` in both directions.
+    column_visibility: Rc<RefCell<std::collections::HashMap<String, bool>>>,
     /// Per-column chosen display unit (cleaned column key → unit id). Only holds
     /// explicit non-default choices; an absent key means "column default" (RA/Dec
     /// → sexagesimal, others → their legacy readable format). Loaded on build and
@@ -548,7 +585,8 @@ impl SearchPage {
             sort_column: Rc::new(RefCell::new(None)),
             sort_ascending: Rc::new(RefCell::new(true)),
             column_filters: Rc::new(RefCell::new(std::collections::HashMap::new())),
-            hidden_columns: Rc::new(RefCell::new(std::collections::HashSet::new())),
+            train_expander,
+            column_visibility: Rc::new(RefCell::new(std::collections::HashMap::new())),
             column_units: Rc::new(RefCell::new(loaded_column_units)),
             resolve_generation: Rc::new(RefCell::new(0)),
         });
@@ -736,12 +774,12 @@ impl SearchPage {
     }
 
     fn build_form_state(&self) -> SearchFormState {
-        let spectral_units = ["nm", "Angstrom", "um", "mm"];
-        let time_units = ["s", "m", "h", "d"];
-        let pixel_scale_units = ["arcsec", "arcmin", "deg"];
-        let date_presets = ["", "Last 24 hours", "Last week", "Last month"];
-        let intents = ["", "science", "calibration"];
-        let resolver_services = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
+        let spectral_units = SPECTRAL_UNITS;
+        let time_units = TIME_UNITS;
+        let pixel_scale_units = PIXEL_SCALE_UNITS;
+        let date_presets = DATE_PRESETS;
+        let intents = INTENTS;
+        let resolver_services = RESOLVER_SERVICES;
 
         let spectral_unit = spectral_units
             .get(self.spectral_unit.selected() as usize)
@@ -790,8 +828,19 @@ impl SearchPage {
         let ts_min = ts_min_raw.and_then(|v| unit_converter::to_days(v, &time_unit));
         let ts_max = ts_max_raw.and_then(|v| unit_converter::to_days(v, &time_unit));
 
-        // Pixel scale — single max value, convert to degrees
+        // Pixel scale — keep the operator-aware raw text (so `>`, `<=`, `A..B`
+        // reach the ADQL builder) alongside the legacy single-max numeric parse.
+        // Without the raw text the builder's operator path was unreachable and a
+        // range like the field's own `0.1..1.0` placeholder produced NO clause.
         let ps_text = self.pixel_scale.text().to_string();
+        let ps_raw = {
+            let trimmed = ps_text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(ps_text.clone())
+            }
+        };
         let ps_max = ps_text.trim().parse::<f64>().ok();
 
         // Bandpass width
@@ -840,6 +889,7 @@ impl SearchPage {
             resolved_dec: *self.resolved_dec.borrow(),
             search_radius: self.radius.value(),
             pixel_scale_max: ps_max,
+            pixel_scale_raw: ps_raw,
             pixel_scale_unit: pixel_scale_units
                 .get(self.pixel_scale_unit.selected() as usize)
                 .unwrap_or(&"arcsec")
@@ -894,14 +944,23 @@ impl SearchPage {
             data_product_type: mgr.data_types_string(),
             obs_type: mgr.obs_types_string(),
             max_records: self.max_records.value() as u32,
-            // Optional provenance / operator-aware fields default to None; the
-            // form UI does not populate them (see search_result.rs). Kept via FRU
-            // so future field additions don't break this literal.
-            ..Default::default()
+            // Verbatim entry text, so a saved search restores exactly as typed —
+            // the numeric min/max above cannot distinguish `>5` from `>=5`.
+            integration_time_raw: self.integration_time.text().to_string(),
+            time_span_raw: self.time_span.text().to_string(),
+            spectral_coverage_raw: self.spectral_coverage.text().to_string(),
+            resolving_power_raw: self.resolving_power.text().to_string(),
+            bandpass_width_raw: self.bandpass_width.text().to_string(),
+            rest_frame_energy_raw: self.rest_frame_energy.text().to_string(),
+            // Every field is now listed explicitly, with no `..Default::default()`
+            // tail — so adding a field to SearchFormState fails to compile HERE,
+            // forcing a decision about whether the form populates it. A silent
+            // default would mean the field never round-trips through a saved
+            // search, which is exactly the class of bug this method just fixed.
         }
     }
 
-    fn clear_form(&self) {
+    fn clear_form(self: &Rc<Self>) {
         self.observation_id.set_text("");
         self.pi_name.set_text("");
         self.proposal_id.set_text("");
@@ -930,7 +989,111 @@ impl SearchPage {
         *self.resolved_ra.borrow_mut() = None;
         *self.resolved_dec.borrow_mut() = None;
         self.clear_resolver_provenance();
+        // Additional Constraints are part of the form: leaving the facet
+        // selections behind silently applied them to the next search.
+        self.train_manager.borrow_mut().clear_all();
+        self.refresh_train_ui();
         self.status_label.set_text(crate::tr_en!("Form cleared"));
+    }
+
+    /// Restore a saved [`SearchFormState`] into the form widgets — the inverse of
+    /// [`build_form_state`](Self::build_form_state).
+    ///
+    /// Two subtleties this has to respect:
+    ///  * Setting the target text synchronously fires the debounced resolver,
+    ///    which clears the stored coordinates. So the generation token is bumped
+    ///    afterwards to discard that pending resolve, and the saved coordinates
+    ///    are stamped back — the same dance `show_search_form` performs.
+    ///  * The facet selections are restored with `set_all_selections`, NOT by
+    ///    replaying toggles: a toggle clears everything downstream of it, which
+    ///    would wipe the very selections being restored.
+    ///
+    /// Returns true when the restored state carried any facet selection, so the
+    /// caller can expand the Additional Constraints panel (matching the reference).
+    fn load_from_form_state(self: &Rc<Self>, s: &SearchFormState) -> bool {
+        // ── Observation ──────────────────────────────────────────────────────
+        self.observation_id.set_text(&s.observation_id);
+        self.pi_name.set_text(&s.proposal_pi);
+        self.proposal_id.set_text(&s.proposal_id);
+        self.proposal_title.set_text(&s.proposal_title);
+        self.keywords.set_text(&s.proposal_keywords);
+        self.data_release.set_text(&s.data_release);
+        self.public_only.set_active(s.public_only);
+        self.intent
+            .set_selected(dropdown_index(&INTENTS, &s.intent));
+
+        // ── Spatial ──────────────────────────────────────────────────────────
+        self.radius.set_value(s.search_radius);
+        self.pixel_scale
+            .set_text(s.pixel_scale_raw.as_deref().unwrap_or(""));
+        self.pixel_scale_unit
+            .set_selected(dropdown_index(&PIXEL_SCALE_UNITS, &s.pixel_scale_unit));
+        self.spatial_cutout.set_active(s.spatial_cutout);
+
+        // ── Temporal ─────────────────────────────────────────────────────────
+        self.obs_date.set_text(&s.obs_date_raw);
+        self.date_preset
+            .set_selected(dropdown_index(&DATE_PRESETS, &s.date_preset));
+        self.integration_time.set_text(&s.integration_time_raw);
+        self.time_span.set_text(&s.time_span_raw);
+        self.time_unit
+            .set_selected(dropdown_index(&TIME_UNITS, &s.integration_time_unit));
+
+        // ── Spectral ─────────────────────────────────────────────────────────
+        self.spectral_coverage.set_text(&s.spectral_coverage_raw);
+        self.spectral_sampling
+            .set_text(s.spectral_sampling_raw.as_deref().unwrap_or(""));
+        self.resolving_power.set_text(&s.resolving_power_raw);
+        self.bandpass_width.set_text(&s.bandpass_width_raw);
+        self.rest_frame_energy.set_text(&s.rest_frame_energy_raw);
+        self.spectral_unit
+            .set_selected(dropdown_index(&SPECTRAL_UNITS, &s.wavelength_unit));
+        self.spectral_cutout.set_active(s.spectral_cutout);
+
+        self.max_records.set_value(s.max_records as f64);
+
+        // ── Target + resolved coordinates ────────────────────────────────────
+        // Resolver first, so the resolve this target edit schedules would use the
+        // saved service; then invalidate that pending resolve and stamp the saved
+        // coordinates, which are already authoritative.
+        self.resolver
+            .set_selected(dropdown_index(&RESOLVER_SERVICES, &s.resolver_service));
+        self.target.set_text(&s.target);
+        {
+            let mut g = self.resolve_generation.borrow_mut();
+            *g = g.wrapping_add(1);
+        }
+        *self.resolved_ra.borrow_mut() = s.resolved_ra;
+        *self.resolved_dec.borrow_mut() = s.resolved_dec;
+        *self.resolver_service_used.borrow_mut() = s.resolver_service_used.clone();
+        *self.resolution_epoch.borrow_mut() = s.resolution_epoch.clone();
+        let coord_readout = match (s.resolved_ra, s.resolved_dec) {
+            (Some(ra), Some(dec)) => format!("RA {:.5}  Dec {:.5}", ra, dec),
+            _ => String::new(),
+        };
+        self.resolver_status.set_text(&coord_readout);
+
+        // ── Additional Constraints (data train) ──────────────────────────────
+        let facets = [
+            split_facet(&s.band),
+            split_facet(&s.collection),
+            split_facet(&s.instrument),
+            split_facet(&s.filter_name),
+            split_facet(&s.calibration_level),
+            split_facet(&s.data_product_type),
+            split_facet(&s.obs_type),
+        ];
+        let had_facets = facets.iter().any(|v| !v.is_empty());
+        self.train_manager.borrow_mut().set_all_selections(facets);
+        self.refresh_train_ui();
+        if had_facets {
+            // Don't restore constraints into a collapsed panel — the user would
+            // see an unexplained narrowing of their results.
+            self.train_expander.set_expanded(true);
+        }
+
+        self.notebook.set_current_page(Some(0));
+        had_facets
     }
 
     async fn execute_search(self: &Rc<Self>) {
@@ -1070,8 +1233,15 @@ impl SearchPage {
         }
     }
 
+    /// Whether `col` is currently shown: the user's explicit choice if they have
+    /// made one, otherwise the column's default. The ONLY place visibility is
+    /// decided, so the grid, the export and the column dialog can never disagree.
     fn is_col_visible(&self, col: &crate::models::search_result::ResultColumnInfo) -> bool {
-        col.visible && !self.hidden_columns.borrow().contains(&col.key)
+        crate::models::search_result::column_is_visible(
+            &self.column_visibility.borrow(),
+            &col.key,
+            col.visible,
+        )
     }
 
     fn get_processed_rows(&self) -> Vec<SearchResultRow> {
@@ -1152,10 +1322,9 @@ impl SearchPage {
                 None => default_columns(),
             }
         };
-        let hidden = self.hidden_columns.borrow().clone();
         let vis_columns: Vec<_> = columns
             .iter()
-            .filter(|c| c.visible && !hidden.contains(&c.key))
+            .filter(|c| self.is_col_visible(c))
             .cloned()
             .collect();
         let sort_col = self.sort_column.borrow().clone();
@@ -1746,11 +1915,7 @@ impl SearchPage {
             Some(r) => build_columns_from_headers(&r.columns),
             None => default_columns(),
         };
-        let hidden = self.hidden_columns.borrow();
-        let visible: Vec<_> = columns
-            .iter()
-            .filter(|c| c.visible && !hidden.contains(&c.key))
-            .collect();
+        let visible: Vec<_> = columns.iter().filter(|c| self.is_col_visible(c)).collect();
 
         let mut out = String::new();
         // Header
@@ -1852,8 +2017,6 @@ impl SearchPage {
             }
         };
 
-        let hidden = self.hidden_columns.borrow().clone();
-
         // Build checkbox grid (3 columns like Windows)
         let grid = gtk::Grid::new();
         grid.set_column_spacing(12);
@@ -1873,7 +2036,7 @@ impl SearchPage {
             let grid_row = (i % rows_per_col) as i32;
 
             let check = gtk::CheckButton::with_label(&col.display_name);
-            check.set_active(col.visible && !hidden.contains(&col.key));
+            check.set_active(self.is_col_visible(col));
             grid.attach(&check, grid_col, grid_row, 1, 1);
             checks.borrow_mut().push((col.key.clone(), check));
         }
@@ -1889,18 +2052,19 @@ impl SearchPage {
 
         let apply_btn = gtk::Button::with_label(crate::tr_en!("Apply"));
         apply_btn.add_css_class("suggested-action");
-        let hidden_rc = self.hidden_columns.clone();
+        let visibility_rc = self.column_visibility.clone();
         let checks_clone = checks.clone();
         let dialog_clone = dialog.clone();
         let current_page = self.current_page.clone();
         apply_btn.connect_clicked(move |_| {
-            let mut new_hidden = std::collections::HashSet::new();
+            // Record every checkbox, not just the cleared ones: a ticked column
+            // that is not visible by default has to be recorded as an explicit
+            // `true`, or it can never be switched on.
+            let mut chosen = std::collections::HashMap::new();
             for (key, check) in checks_clone.borrow().iter() {
-                if !check.is_active() {
-                    new_hidden.insert(key.clone());
-                }
+                chosen.insert(key.clone(), check.is_active());
             }
-            *hidden_rc.borrow_mut() = new_hidden;
+            *visibility_rc.borrow_mut() = chosen;
             *current_page.borrow_mut() = 0;
             dialog_clone.close();
         });
@@ -2025,14 +2189,18 @@ impl SearchPage {
             }
             row.add_suffix(&remove_btn);
 
-            // Row activation → load into editor (lighter-weight than full dialog)
+            // Row activation → restore the SEARCH FORM (ref `LoadRecentSearchCore`).
+            // The pencil button beside it still loads the raw ADQL into the editor,
+            // so both paths remain available.
             {
-                let adql = recent.adql.clone();
-                let editor = self.adql_editor.clone();
-                let notebook = self.notebook.clone();
+                let page_rc = Rc::clone(self);
+                let state = recent.form_state.clone();
+                let summary_text = title.clone();
                 row.connect_activated(move |_| {
-                    editor.buffer().set_text(&adql);
-                    notebook.set_current_page(Some(2));
+                    page_rc.load_from_form_state(&state);
+                    page_rc
+                        .status_label
+                        .set_text(&format!("Loaded search: {}", summary_text));
                 });
             }
 
@@ -2198,7 +2366,7 @@ impl SearchPage {
         }
     }
 
-    async fn load_data_train(&self) {
+    async fn load_data_train(self: &Rc<Self>) {
         use crate::services::cache_service::{CacheKey, Freshness};
         use crate::services::health_tracker::{ServiceName, ServiceStatus};
 
@@ -2290,8 +2458,14 @@ impl SearchPage {
         }
     }
 
-    /// Rebuild all 7 data train ListBox UIs from the manager's available values.
-    fn refresh_train_ui(&self) {
+    /// Rebuild all 7 data-train ListBox UIs from the manager's current state.
+    ///
+    /// Note the ordering inside the loop: each checkbox is restored with
+    /// `set_active` BEFORE its `toggled` handler is connected. That is load-bearing
+    /// — connecting first would fire the handler during the rebuild, and the
+    /// handler takes `train_manager` mutably while this function holds it
+    /// immutably, which is an immediate panic.
+    fn refresh_train_ui(self: &Rc<Self>) {
         let mgr = self.train_manager.borrow();
         let all_lists: [(&gtk::ListBox, &[String], &std::collections::HashSet<String>); 7] = [
             (&self.train_lists[0], &mgr.all_bands, &mgr.available_bands),
@@ -2355,16 +2529,23 @@ impl SearchPage {
                     check.set_active(true);
                 }
 
-                // Wire toggle → cascade
-                let mgr_ref = self.train_manager.clone();
+                // Wire toggle → cascade. Toggling one facet narrows the others,
+                // so the whole panel has to be rebuilt: without it the grey-out
+                // never updates, and values the cascade just cleared stay visibly
+                // ticked while the model has dropped them.
                 let value_owned = value.clone();
                 let col_idx = idx;
-                let this_status = self.status_label.clone();
+                // Weak, so the closure a widget owns cannot keep the page alive.
+                let weak = Rc::downgrade(self);
                 check.connect_toggled(move |_btn| {
-                    mgr_ref.borrow_mut().toggle(col_idx, &value_owned);
-                    // Refresh all lists downstream — for simplicity, defer to next idle
-                    // We can't call self here, so just update status
-                    this_status.set_text(crate::tr_en!("Filter updated"));
+                    let Some(page) = weak.upgrade() else { return };
+                    page.train_manager
+                        .borrow_mut()
+                        .toggle(col_idx, &value_owned);
+                    page.status_label.set_text(crate::tr_en!("Filter updated"));
+                    // Deferred: this handler's own checkbox is a child of the list
+                    // we are about to tear down.
+                    glib::idle_add_local_once(move || page.refresh_train_ui());
                 });
 
                 list_box.append(&check);
