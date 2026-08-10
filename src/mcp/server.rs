@@ -37,7 +37,10 @@ pub trait ApprovalGate: Send + Sync {
 pub struct AllowAllGate;
 
 impl ApprovalGate for AllowAllGate {
-    fn permit<'a>(&'a self, _client_id: &'a str) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+    fn permit<'a>(
+        &'a self,
+        _client_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(async { true })
     }
 }
@@ -92,8 +95,8 @@ where
     loop {
         let frame = match framing::read_frame(&mut reader).await {
             Ok(Some(frame)) => frame,
-            Ok(None) => break,  // clean EOF
-            Err(_) => break,    // transport/decode error → end connection
+            Ok(None) => break, // clean EOF
+            Err(_) => break,   // transport/decode error → end connection
         };
         if frame.is_empty() {
             continue; // keep-alive
@@ -356,7 +359,11 @@ fn map_tool_result(result: ToolResult) -> Value {
                 "isError": false,
             })
         }
-        ToolResult::Image { data_base64, mime, caption } => {
+        ToolResult::Image {
+            data_base64,
+            mime,
+            caption,
+        } => {
             let mut content = vec![json!({
                 "type": "image",
                 "data": data_base64,
@@ -423,7 +430,10 @@ mod tests {
         let init_resp = read_line(&mut reader).await;
         assert_eq!(init_resp["id"], json!(1));
         assert_eq!(init_resp["result"]["protocolVersion"], json!("2024-11-05"));
-        assert_eq!(init_resp["result"]["serverInfo"]["name"], json!(SERVER_NAME));
+        assert_eq!(
+            init_resp["result"]["serverInfo"]["name"],
+            json!(SERVER_NAME)
+        );
 
         // tools/list — NullRouter exposes nothing, so the array is empty.
         send(
@@ -461,7 +471,10 @@ mod tests {
         )
         .await;
         let resp = read_line(&mut reader).await;
-        assert_eq!(resp["error"]["code"], json!(error_code::SERVER_NOT_INITIALIZED));
+        assert_eq!(
+            resp["error"]["code"],
+            json!(error_code::SERVER_NOT_INITIALIZED)
+        );
 
         drop(reader);
         drop(wr);
@@ -489,7 +502,11 @@ mod tests {
         .await;
         // ping is answerable pre-initialize; its reply is the next frame we see,
         // proving the notification above did not emit one.
-        send(&mut wr, &json!({ "jsonrpc": "2.0", "id": 5, "method": "ping" })).await;
+        send(
+            &mut wr,
+            &json!({ "jsonrpc": "2.0", "id": 5, "method": "ping" }),
+        )
+        .await;
 
         let resp = read_line(&mut reader).await;
         assert_eq!(resp["id"], json!(5));

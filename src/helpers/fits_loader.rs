@@ -155,9 +155,9 @@ unsafe fn load_fits_image_raw(
     target_hdu: Option<i32>,
 ) -> Result<FitsImageData, String> {
     // ── 1. Open the file ─────────────────────────────────────────────
-    let path_str = path.to_str().ok_or_else(|| {
-        format!("FITS path contains invalid UTF-8: {:?}", path)
-    })?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format!("FITS path contains invalid UTF-8: {:?}", path))?;
     let c_path = CString::new(path_str)
         .map_err(|e| format!("Cannot encode FITS path as C string: {}", e))?;
 
@@ -202,8 +202,7 @@ unsafe fn load_fits_image_raw(
         // Case B: tile-compressed image stored as a BINTABLE
         if hdu_type == sys::BINARY_TBL as i32 {
             let mut compressed_status = 0;
-            let is_compressed =
-                sys::fits_is_compressed_image(handle.fptr, &mut compressed_status);
+            let is_compressed = sys::fits_is_compressed_image(handle.fptr, &mut compressed_status);
             if compressed_status == 0 && is_compressed != 0 {
                 // fits_is_compressed_image returns non-zero for compressed
                 // image BINTABLEs.  CFITSIO will transparently treat this
@@ -248,20 +247,12 @@ unsafe fn load_fits_image_raw(
     sys::ffgidm(handle.fptr, &mut naxis, &mut status);
     check_status(status, "Cannot read image dimension count")?;
     if naxis < 2 {
-        return Err(format!(
-            "Image HDU has {} axes, need at least 2",
-            naxis
-        ));
+        return Err(format!("Image HDU has {} axes, need at least 2", naxis));
     }
 
     let mut naxes_long = vec![0i64; naxis as usize];
     status = 0;
-    sys::ffgisz(
-        handle.fptr,
-        naxis,
-        naxes_long.as_mut_ptr(),
-        &mut status,
-    );
+    sys::ffgisz(handle.fptr, naxis, naxes_long.as_mut_ptr(), &mut status);
     check_status(status, "Cannot read image axis sizes")?;
 
     // naxes is in FITS order: NAXIS1 (fast), NAXIS2, NAXIS3 ...
@@ -315,9 +306,7 @@ unsafe fn load_fits_image_raw(
 
 #[cfg(feature = "fits")]
 #[allow(dead_code)]
-unsafe fn list_hdus_raw(
-    path: &Path,
-) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
+unsafe fn list_hdus_raw(path: &Path) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
     use crate::models::fits_image::HduInfo;
 
     let path_str = path
@@ -327,7 +316,12 @@ unsafe fn list_hdus_raw(
         .map_err(|e| format!("Cannot encode FITS path as C string: {}", e))?;
     let mut fptr: *mut sys::fitsfile = std::ptr::null_mut();
     let mut status: i32 = 0;
-    sys::ffopen(&mut fptr, c_path.as_ptr(), sys::READONLY as i32, &mut status);
+    sys::ffopen(
+        &mut fptr,
+        c_path.as_ptr(),
+        sys::READONLY as i32,
+        &mut status,
+    );
     check_status(status, "Cannot open FITS file")?;
     let handle = FitsHandle { fptr };
 

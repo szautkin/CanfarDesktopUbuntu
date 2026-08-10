@@ -10,13 +10,13 @@
 //! dispatch) · [`listener`] (accept loop) · [`bridge`] (stdio relay) · [`tools`]
 //! (the tool abstractions + proposal pipeline).
 
-pub mod budget;
 pub mod agent_events;
 pub mod audit;
+pub mod budget;
 pub mod client_approval;
-pub mod diagnostics;
 pub mod config;
 pub mod constants;
+pub mod diagnostics;
 pub mod jsonrpc;
 pub mod preview;
 pub mod selftest;

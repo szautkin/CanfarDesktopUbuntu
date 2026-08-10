@@ -317,12 +317,7 @@ mod tests {
     use super::*;
 
     fn make_image(pixels: Vec<f64>) -> FitsImageData {
-        FitsImageData::new(
-            pixels.len(),
-            1,
-            pixels,
-            std::collections::HashMap::new(),
-        )
+        FitsImageData::new(pixels.len(), 1, pixels, std::collections::HashMap::new())
     }
 
     #[test]
@@ -335,7 +330,11 @@ mod tests {
     #[test]
     fn squared_stretch() {
         let v = normalize(5.0, 0.0, 10.0, Stretch::Squared, None);
-        assert!((v - 0.25).abs() < 1e-10, "squared(0.5) should be 0.25, got {}", v);
+        assert!(
+            (v - 0.25).abs() < 1e-10,
+            "squared(0.5) should be 0.25, got {}",
+            v
+        );
     }
 
     #[test]
@@ -406,14 +405,14 @@ mod tests {
                 pixels.push(0.5 + 116.2 * t);
             }
         }
-        let data = FitsImageData::new(
-            width,
-            height,
-            pixels,
-            std::collections::HashMap::new(),
-        );
+        let data = FitsImageData::new(width, height, pixels, std::collections::HashMap::new());
         let (vmin, vmax) = auto_cut(&data.pixels, 0.5, 99.5);
-        assert!(vmax > vmin, "auto_cut produced empty range: {} -> {}", vmin, vmax);
+        assert!(
+            vmax > vmin,
+            "auto_cut produced empty range: {} -> {}",
+            vmin,
+            vmax
+        );
         let rgba = render_to_rgba(&data, Stretch::Linear, ColorMap::Grayscale, vmin, vmax);
         // Every fourth byte is alpha (should be 255)
         assert!(rgba.iter().step_by(4).any(|&a| a == 255));

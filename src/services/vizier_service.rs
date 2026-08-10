@@ -252,15 +252,8 @@ mod tests {
 
     #[test]
     fn adql_is_canonical() {
-        let adql = VizierService::build_adql(
-            "V/97/catalog",
-            10.5,
-            41.2,
-            0.05,
-            "RAJ2000",
-            "DEJ2000",
-            500,
-        );
+        let adql =
+            VizierService::build_adql("V/97/catalog", 10.5, 41.2, 0.05, "RAJ2000", "DEJ2000", 500);
         assert!(adql.starts_with("SELECT TOP 500 *"));
         assert!(adql.contains("FROM \"V/97/catalog\""));
         assert!(adql.contains("POINT('ICRS', RAJ2000, DEJ2000)"));

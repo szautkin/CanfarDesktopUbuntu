@@ -111,8 +111,7 @@ impl AgentEventLog {
     /// `seq > cursor`, and the cursor jumps to the newest retained seq.
     pub fn since(&self, cursor: u64) -> (Vec<AgentEvent>, u64) {
         let g = self.inner.lock().unwrap();
-        let events: Vec<AgentEvent> =
-            g.ring.iter().filter(|e| e.seq > cursor).cloned().collect();
+        let events: Vec<AgentEvent> = g.ring.iter().filter(|e| e.seq > cursor).cloned().collect();
         let new_cursor = events.last().map(|e| e.seq).unwrap_or(cursor);
         (events, new_cursor)
     }
@@ -153,7 +152,13 @@ mod tests {
         assert_eq!(cursor2, 3);
 
         // A fresh emit is delivered incrementally.
-        log.emit(AgentEventKind::ProposalApplied, "prop-1", "save_query", "done", None);
+        log.emit(
+            AgentEventKind::ProposalApplied,
+            "prop-1",
+            "save_query",
+            "done",
+            None,
+        );
         let (events, cursor3) = log.since(cursor2);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, 4);

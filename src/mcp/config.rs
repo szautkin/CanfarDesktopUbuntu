@@ -59,7 +59,11 @@ pub fn claude_desktop_config_path() -> PathBuf {
 /// original bytes). Ensures an `mcpServers` object exists, then sets
 /// `mcpServers[SERVER_KEY] = { "command": command, "args": args }` while
 /// preserving every other server and every other top-level key.
-pub fn merged_config(existing: Option<&str>, command: &str, args: &[String]) -> Result<String, String> {
+pub fn merged_config(
+    existing: Option<&str>,
+    command: &str,
+    args: &[String],
+) -> Result<String, String> {
     // Parse the existing document, or start fresh. An unparseable or
     // non-object root collapses to `{}` (the original is kept via the .bak).
     let mut root: Value = match existing {
@@ -161,7 +165,10 @@ mod tests {
         let out = merged_config(None, "/opt/verbinal/verbinal", &mcp_args()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
 
-        assert_eq!(v["mcpServers"][SERVER_KEY]["command"], "/opt/verbinal/verbinal");
+        assert_eq!(
+            v["mcpServers"][SERVER_KEY]["command"],
+            "/opt/verbinal/verbinal"
+        );
         assert_eq!(v["mcpServers"][SERVER_KEY]["args"], json!(["mcp"]));
     }
 
@@ -189,7 +196,10 @@ mod tests {
         assert_eq!(v["theme"], "dark");
         // Sibling server and its args survive untouched.
         assert_eq!(v["mcpServers"]["other-server"]["command"], "foo");
-        assert_eq!(v["mcpServers"]["other-server"]["args"], json!(["bar", "baz"]));
+        assert_eq!(
+            v["mcpServers"]["other-server"]["args"],
+            json!(["bar", "baz"])
+        );
         // Our entry is added alongside it.
         assert_eq!(v["mcpServers"][SERVER_KEY]["command"], "/usr/bin/verbinal");
         assert_eq!(v["mcpServers"][SERVER_KEY]["args"], json!(["mcp"]));
@@ -231,7 +241,9 @@ mod tests {
             Some("claude_desktop_config.json")
         );
         assert_eq!(
-            path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str()),
             Some("Claude")
         );
     }
@@ -240,7 +252,10 @@ mod tests {
     fn claude_code_add_command_has_expected_shape() {
         let cmd = claude_code_add_command();
         assert!(cmd.starts_with(&format!("claude mcp add {SERVER_KEY} ")));
-        assert!(cmd.ends_with(" mcp"), "should pass the `mcp` subcommand: {cmd}");
+        assert!(
+            cmd.ends_with(" mcp"),
+            "should pass the `mcp` subcommand: {cmd}"
+        );
     }
 
     #[test]

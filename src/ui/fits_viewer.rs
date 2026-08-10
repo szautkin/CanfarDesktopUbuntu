@@ -164,12 +164,8 @@ impl FitsViewer {
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
         // Zoom cluster: preset dropdown + free-form % entry, visually linked.
-        let zoom_items = gtk::StringList::new(
-            &ZOOM_PRESETS
-                .iter()
-                .map(|(_, l)| *l)
-                .collect::<Vec<&str>>(),
-        );
+        let zoom_items =
+            gtk::StringList::new(&ZOOM_PRESETS.iter().map(|(_, l)| *l).collect::<Vec<&str>>());
         let zoom_combo = gtk::DropDown::new(Some(zoom_items), gtk::Expression::NONE);
         zoom_combo.set_selected(3); // 100%
         zoom_combo.set_tooltip_text(Some(crate::tr_en!("Zoom preset")));
@@ -289,8 +285,16 @@ impl FitsViewer {
         };
 
         let levels_list = boxed_list();
-        levels_list.append(&action_row(crate::tr_en!("Min cut"), None, min_scale.upcast_ref()));
-        levels_list.append(&action_row(crate::tr_en!("Max cut"), None, max_scale.upcast_ref()));
+        levels_list.append(&action_row(
+            crate::tr_en!("Min cut"),
+            None,
+            min_scale.upcast_ref(),
+        ));
+        levels_list.append(&action_row(
+            crate::tr_en!("Max cut"),
+            None,
+            max_scale.upcast_ref(),
+        ));
 
         let view_list = boxed_list();
         view_list.append(&action_row(
@@ -449,7 +453,10 @@ impl FitsViewer {
         empty_status.set_title(crate::tr_en!("No FITS File Open"));
         empty_status.set_description(Some(crate::tr_en!("Open a FITS file to get started")));
         empty_status.set_child(Some(&empty_open_btn));
-        notebook.append_page(&empty_status, Some(&gtk::Label::new(Some(crate::tr_en!("Welcome")))));
+        notebook.append_page(
+            &empty_status,
+            Some(&gtk::Label::new(Some(crate::tr_en!("Welcome")))),
+        );
 
         body.append(&notebook);
         body.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -844,21 +851,29 @@ impl FitsViewer {
     ) -> Result<serde_json::Value, String> {
         match op {
             "get_fits_view" => {
-                let tab = self.current_tab().ok_or_else(|| "no FITS open".to_string())?;
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
                 Ok(self.fits_view_state(&tab))
             }
             "set_fits_view" => {
-                let tab = self.current_tab().ok_or_else(|| "no FITS open".to_string())?;
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
 
                 if args.get("reset").and_then(|v| v.as_bool()).unwrap_or(false) {
                     tab.reset_stretch();
                     tab.reset_view();
                 }
                 if let Some(s) = args.get("stretch").and_then(|v| v.as_str()) {
-                    tab.set_stretch(stretch_from_str(s).ok_or_else(|| format!("unknown stretch '{s}'"))?);
+                    tab.set_stretch(
+                        stretch_from_str(s).ok_or_else(|| format!("unknown stretch '{s}'"))?,
+                    );
                 }
                 if let Some(c) = args.get("colormap").and_then(|v| v.as_str()) {
-                    tab.set_colormap(colormap_from_str(c).ok_or_else(|| format!("unknown colormap '{c}'"))?);
+                    tab.set_colormap(
+                        colormap_from_str(c).ok_or_else(|| format!("unknown colormap '{c}'"))?,
+                    );
                 }
                 if let Some(v) = args.get("min_cut").and_then(|v| v.as_f64()) {
                     tab.set_vmin(v);
@@ -883,16 +898,27 @@ impl FitsViewer {
                 Ok(self.fits_view_state(&tab))
             }
             "probe_fits_pixel" => {
-                let tab = self.current_tab().ok_or_else(|| "no FITS open".to_string())?;
-                let x = args.get("x").and_then(|v| v.as_i64()).ok_or_else(|| "x is required".to_string())?;
-                let y = args.get("y").and_then(|v| v.as_i64()).ok_or_else(|| "y is required".to_string())?;
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let x = args
+                    .get("x")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| "x is required".to_string())?;
+                let y = args
+                    .get("y")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| "y is required".to_string())?;
                 if x < 0 || y < 0 {
                     return Err("x and y must be >= 0".into());
                 }
                 let data = tab.data();
-                let value = data
-                    .pixel_at(x as usize, y as usize)
-                    .ok_or_else(|| format!("pixel ({x}, {y}) is out of range ({}×{})", data.width, data.height))?;
+                let value = data.pixel_at(x as usize, y as usize).ok_or_else(|| {
+                    format!(
+                        "pixel ({x}, {y}) is out of range ({}×{})",
+                        data.width, data.height
+                    )
+                })?;
                 let mut out = json!({ "x": x, "y": y, "value": value, "has_wcs": false });
                 if let Some(w) = data.wcs.as_ref() {
                     let (ra, dec) = w.pixel_to_sky(x as f64, y as f64);
@@ -906,11 +932,22 @@ impl FitsViewer {
                 Ok(out)
             }
             "fits_goto_coordinate" => {
-                let tab = self.current_tab().ok_or_else(|| "no FITS open".to_string())?;
-                let ra = args.get("ra").and_then(|v| v.as_f64()).ok_or_else(|| "ra is required".to_string())?;
-                let dec = args.get("dec").and_then(|v| v.as_f64()).ok_or_else(|| "dec is required".to_string())?;
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let ra = args
+                    .get("ra")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| "ra is required".to_string())?;
+                let dec = args
+                    .get("dec")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| "dec is required".to_string())?;
                 let data = tab.data();
-                let wcs = data.wcs.as_ref().ok_or_else(|| "the loaded FITS has no WCS".to_string())?;
+                let wcs = data
+                    .wcs
+                    .as_ref()
+                    .ok_or_else(|| "the loaded FITS has no WCS".to_string())?;
                 match wcs.world_to_pixel(ra, dec) {
                     Some((px, py)) => {
                         let in_bounds = px >= 0.0
@@ -973,7 +1010,12 @@ impl FitsViewer {
                     }
                 };
 
-                let bm = FitsBookmark { name: name.clone(), ra, dec, source_file };
+                let bm = FitsBookmark {
+                    name: name.clone(),
+                    ra,
+                    dec,
+                    source_file,
+                };
                 let mut items = self.bookmarks.borrow_mut();
                 // Upsert by name so re-saving a name updates in place.
                 if let Some(existing) = items.iter_mut().find(|b| b.name == name) {
@@ -1056,12 +1098,10 @@ impl FitsViewer {
         let data_min = tab.data_min();
         let data_max = tab.data_max();
         let step = ((data_max - data_min) / 200.0).max(1e-6);
-        self.min_scale
-            .set_range(data_min, data_max);
+        self.min_scale.set_range(data_min, data_max);
         self.min_scale.set_increments(step, step * 10.0);
         self.min_scale.set_value(tab.vmin());
-        self.max_scale
-            .set_range(data_min, data_max);
+        self.max_scale.set_range(data_min, data_max);
         self.max_scale.set_increments(step, step * 10.0);
         self.max_scale.set_value(tab.vmax());
 
@@ -1317,7 +1357,8 @@ impl FitsViewer {
             }
         };
 
-        self.status_label.set_text(&fits_loader::fits_summary(&data));
+        self.status_label
+            .set_text(&fits_loader::fits_summary(&data));
 
         let new_tab = FitsTab::new(data, self.shared.clone(), path_str.clone());
         new_tab.set_hdu_context(old_tab.hdus(), hdu_index);
@@ -1494,10 +1535,20 @@ impl FitsViewer {
 
         // Reference pixel in each image's own pixel space.
         let (a_ref_px, a_ref_py) = ref_sky
-            .and_then(|(ra, dec)| a.data().wcs.as_ref().and_then(|w| w.world_to_pixel(ra, dec)))
+            .and_then(|(ra, dec)| {
+                a.data()
+                    .wcs
+                    .as_ref()
+                    .and_then(|w| w.world_to_pixel(ra, dec))
+            })
             .unwrap_or((aw as f64 / 2.0, ah as f64 / 2.0));
         let (b_ref_px, b_ref_py) = ref_sky
-            .and_then(|(ra, dec)| b.data().wcs.as_ref().and_then(|w| w.world_to_pixel(ra, dec)))
+            .and_then(|(ra, dec)| {
+                b.data()
+                    .wcs
+                    .as_ref()
+                    .and_then(|w| w.world_to_pixel(ra, dec))
+            })
             .unwrap_or((bw as f64 / 2.0, bh as f64 / 2.0));
 
         // Where A currently draws that reference pixel on screen.
@@ -1564,13 +1615,17 @@ impl FitsViewer {
 
     /// Basename of the tab at `idx`, if any.
     fn tab_name(&self, idx: usize) -> Option<String> {
-        self.tabs.borrow().get(idx).map(|t| basename(t.source_file()))
+        self.tabs
+            .borrow()
+            .get(idx)
+            .map(|t| basename(t.source_file()))
     }
 
     /// Update the blink target MenuButton label to the current target tab.
     fn update_blink_target_label(&self) {
         if let Some(name) = self.tab_name(self.blink_target.get()) {
-            self.blink_target_btn.set_label(&crate::tr_fmt!("vs {}", name));
+            self.blink_target_btn
+                .set_label(&crate::tr_fmt!("vs {}", name));
         }
     }
 

@@ -210,27 +210,25 @@ impl FilePanel {
         // ----------------------------------------------------------------
         {
             let p = Rc::clone(&panel);
-            panel
-                .list_box
-                .connect_row_activated(move |_, row| {
-                    let idx = row.index() as usize;
-                    let entry = p.entries.borrow().get(idx).cloned();
-                    if let Some(entry) = entry {
-                        if entry.is_dir {
-                            *p.current_path.borrow_mut() = entry.path.clone();
-                            p.populate();
-                        } else {
-                            let file_type = FileType::from_path(&entry.path);
-                            if let FileType::Other = file_type {
-                                // No action for unknown types
-                                return;
-                            }
-                            if let Some(cb) = p.on_open_file.borrow().as_ref() {
-                                cb(entry.path.clone(), file_type);
-                            }
+            panel.list_box.connect_row_activated(move |_, row| {
+                let idx = row.index() as usize;
+                let entry = p.entries.borrow().get(idx).cloned();
+                if let Some(entry) = entry {
+                    if entry.is_dir {
+                        *p.current_path.borrow_mut() = entry.path.clone();
+                        p.populate();
+                    } else {
+                        let file_type = FileType::from_path(&entry.path);
+                        if let FileType::Other = file_type {
+                            // No action for unknown types
+                            return;
+                        }
+                        if let Some(cb) = p.on_open_file.borrow().as_ref() {
+                            cb(entry.path.clone(), file_type);
                         }
                     }
-                });
+                }
+            });
         }
 
         // Initial population
@@ -284,11 +282,7 @@ impl FilePanel {
 
                     let meta = entry_result.metadata().ok();
                     let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                    let size = if is_dir {
-                        None
-                    } else {
-                        meta.map(|m| m.len())
-                    };
+                    let size = if is_dir { None } else { meta.map(|m| m.len()) };
 
                     let de = DirEntry {
                         path: entry_path,

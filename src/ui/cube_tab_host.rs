@@ -221,7 +221,9 @@ impl CubeTabHost {
             }
             // Read the active cube's 3D view parameters + dims.
             "get_cube_view" => {
-                let v = self.active_viewer().ok_or_else(|| "no cube open".to_string())?;
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
                 Ok(view_json(&v))
             }
             // Mutate any subset of the active cube's view parameters. Mirrors the
@@ -234,12 +236,18 @@ impl CubeTabHost {
             // `CubeViewer` accessors this module cannot reach (see the parity note in
             // the returning summary).
             "set_cube_view" => {
-                let v = self.active_viewer().ok_or_else(|| "no cube open".to_string())?;
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
 
                 // Camera: reset first (as ApplyCubeView does), then apply any
                 // az/el/dist overrides on top. set_camera re-applies the interactive
                 // clamps (el ±1.4, dist 0.5–8) so an agent can't push an invalid pose.
-                if args.get("reset_camera").and_then(|x| x.as_bool()).unwrap_or(false) {
+                if args
+                    .get("reset_camera")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false)
+                {
                     v.gl().reset_view();
                 }
                 let (mut az, mut el, mut dist) = v.gl().camera();
@@ -269,8 +277,8 @@ impl CubeTabHost {
                 if let Some(on) = args.get("mip").and_then(|x| x.as_bool()) {
                     v.gl().set_mip(on);
                 } else if let Some(mode) = args.get("render_mode").and_then(|x| x.as_str()) {
-                    let on =
-                        mode.to_ascii_lowercase().contains("max") || mode.eq_ignore_ascii_case("mip");
+                    let on = mode.to_ascii_lowercase().contains("max")
+                        || mode.eq_ignore_ascii_case("mip");
                     v.gl().set_mip(on);
                 }
                 // Background preset (Dark / Black / Light) — the exact RGB the
@@ -293,7 +301,9 @@ impl CubeTabHost {
             }
             // Sample the spectrum through voxel column (x, y) across all channels.
             "probe_cube_spectrum" => {
-                let v = self.active_viewer().ok_or_else(|| "no cube open".to_string())?;
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
                 let x = args
                     .get("x")
                     .and_then(|x| x.as_u64())
@@ -334,16 +344,30 @@ impl CubeTabHost {
             // its inputs live behind private `CubeViewer` state, so a faithful themed
             // plate export needs the accessors listed in the returning summary.
             "export_cube_figure" => {
-                let v = self.active_viewer().ok_or_else(|| "no cube open".to_string())?;
-                let scale = args.get("scale").and_then(|x| x.as_u64()).unwrap_or(1).clamp(1, 4) as i32;
-                let base_w =
-                    args.get("width").and_then(|x| x.as_u64()).unwrap_or(1024).clamp(16, 4096) as i32;
-                let base_h =
-                    args.get("height").and_then(|x| x.as_u64()).unwrap_or(768).clamp(16, 4096) as i32;
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let scale = args
+                    .get("scale")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(1)
+                    .clamp(1, 4) as i32;
+                let base_w = args
+                    .get("width")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(1024)
+                    .clamp(16, 4096) as i32;
+                let base_h = args
+                    .get("height")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(768)
+                    .clamp(16, 4096) as i32;
                 let width = (base_w * scale).clamp(16, 8192);
                 let height = (base_h * scale).clamp(16, 8192);
-                let transparent =
-                    args.get("transparent").and_then(|x| x.as_bool()).unwrap_or(false);
+                let transparent = args
+                    .get("transparent")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
 
                 // ── File-path export (PNG / PDF) ──────────────────────────────────
                 if let Some(path_str) = args
@@ -393,9 +417,9 @@ impl CubeTabHost {
                 }
 
                 // ── Base64 export (no path) ───────────────────────────────────────
-                let rgba = v
-                    .render_figure(width, height, transparent)
-                    .ok_or_else(|| "cube figure could not be rendered (GL unavailable)".to_string())?;
+                let rgba = v.render_figure(width, height, transparent).ok_or_else(|| {
+                    "cube figure could not be rendered (GL unavailable)".to_string()
+                })?;
                 let png = encode_png_bytes(width, height, &rgba)?;
                 let image_base64 = base64::engine::general_purpose::STANDARD.encode(&png);
                 Ok(json!({
@@ -487,7 +511,10 @@ impl CubeTabHost {
                 }
                 Ok(Err(e)) => {
                     this.toast_overlay
-                        .add_toast(adw::Toast::new(&crate::tr_fmt!("Failed to load cube: {}", e)));
+                        .add_toast(adw::Toast::new(&crate::tr_fmt!(
+                            "Failed to load cube: {}",
+                            e
+                        )));
                 }
                 Err(_) => {}
             }
@@ -610,7 +637,11 @@ fn encode_png_bytes(width: i32, height: i32, rgba: &[u8]) -> Result<Vec<u8>, Str
             let d = row_dst + x * 4;
             let (r, g, b, a) = (rgba[s], rgba[s + 1], rgba[s + 2], rgba[s + 3]);
             let pm = |c: u8| ((c as u16 * a as u16 + 127) / 255) as u8;
-            let (pr, pg, pb) = if a == 255 { (r, g, b) } else { (pm(r), pm(g), pm(b)) };
+            let (pr, pg, pb) = if a == 255 {
+                (r, g, b)
+            } else {
+                (pm(r), pm(g), pm(b))
+            };
             // Little-endian ARgb32 (0xAARRGGBB) => bytes B, G, R, A.
             data[d] = pb;
             data[d + 1] = pg;

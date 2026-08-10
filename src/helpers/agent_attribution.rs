@@ -64,7 +64,12 @@ mod tests {
 
     fn proposal_with_origin(origin: Option<&str>) -> PendingProposal {
         let store = InMemoryProposalStore::new();
-        let p = store.enqueue("save_query", "Save query: M31", false, json!({"name": "M31"}));
+        let p = store.enqueue(
+            "save_query",
+            "Save query: M31",
+            false,
+            json!({"name": "M31"}),
+        );
         store.set_origin(&p.id, origin.map(|s| s.to_string()));
         store.get(&p.id).unwrap()
     }
@@ -86,7 +91,10 @@ mod tests {
         let fp = attr.fingerprint();
         assert_eq!(fp.len(), 6);
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(fp, crate::models::agent_attribution::fingerprint("Claude Desktop"));
+        assert_eq!(
+            fp,
+            crate::models::agent_attribution::fingerprint("Claude Desktop")
+        );
     }
 
     #[test]

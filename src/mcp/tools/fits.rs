@@ -170,9 +170,9 @@ pub async fn dispatch(
         | "fits_goto_coordinate"
         | "list_fits_bookmark"
         | "save_fits_bookmark"
-        | "delete_fits_bookmark" => {
-            Some(to_tool_result(viewer_command("fits", name, args.clone()).await))
-        }
+        | "delete_fits_bookmark" => Some(to_tool_result(
+            viewer_command("fits", name, args.clone()).await,
+        )),
         // Stateless ops — read the file directly, NOT through the bridge.
         "get_fits_header" => Some(to_tool_result(get_fits_header(args))),
         "get_fits_wcs" => Some(to_tool_result(get_fits_wcs(args))),
@@ -181,10 +181,7 @@ pub async fn dispatch(
 }
 
 /// FITS tools execute directly (agent-safe) — they never enqueue proposals.
-pub async fn apply(
-    _s: &AppServices,
-    _p: &PendingProposal,
-) -> Option<Result<String, String>> {
+pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<String, String>> {
     None
 }
 
@@ -295,11 +292,17 @@ mod tests {
     fn descriptors_unique_and_agent_safe() {
         let d = descriptors();
         assert!(!d.is_empty());
-        assert!(d.iter().all(|x| !x.name.is_empty()), "every tool name is non-empty");
+        assert!(
+            d.iter().all(|x| !x.name.is_empty()),
+            "every tool name is non-empty"
+        );
         let mut names: Vec<_> = d.iter().map(|x| x.name.clone()).collect();
         names.sort();
         names.dedup();
         assert_eq!(names.len(), d.len(), "tool names are unique");
-        assert!(d.iter().all(|x| x.agent_safe), "all FITS tools are agent-safe");
+        assert!(
+            d.iter().all(|x| x.agent_safe),
+            "all FITS tools are agent-safe"
+        );
     }
 }

@@ -155,7 +155,11 @@ fn rgba_to_surface(width: i32, height: i32, rgba: &[u8]) -> Option<ImageSurface>
             let d = dst_row + x * 4;
             let (r, g, b, a) = (rgba[s], rgba[s + 1], rgba[s + 2], rgba[s + 3]);
             let pm = |c: u8| ((c as u16 * a as u16 + 127) / 255) as u8;
-            let (pr, pg, pb) = if a == 255 { (r, g, b) } else { (pm(r), pm(g), pm(b)) };
+            let (pr, pg, pb) = if a == 255 {
+                (r, g, b)
+            } else {
+                (pm(r), pm(g), pm(b))
+            };
             // Little-endian ARgb32 => bytes B, G, R, A.
             data[d] = pb;
             data[d + 1] = pg;
@@ -788,7 +792,11 @@ pub fn show_cube_export(
 
     let scale_row = adw::ComboRow::new();
     scale_row.set_title(crate::tr_en!("Scale"));
-    scale_row.set_model(Some(&gtk::StringList::new(&["1\u{00D7}", "2\u{00D7}", "4\u{00D7}"])));
+    scale_row.set_model(Some(&gtk::StringList::new(&[
+        "1\u{00D7}",
+        "2\u{00D7}",
+        "4\u{00D7}",
+    ])));
     scale_row.set_selected(1); // default 2×
     group.add(&scale_row);
 

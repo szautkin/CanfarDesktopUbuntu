@@ -59,40 +59,109 @@ mod catalog {
     /// Ordered named categories — the order tiles render, top-to-bottom /
     /// left-to-right. Ported 1:1 from `AiGuideCatalog.Builtin`.
     pub static NAMED: [Category; 17] = [
-        Category { id: "foundational", title: "Foundational", icon: "emblem-system-symbolic",
-            summary: "App identity, auth, service health, platform load, and current view." },
-        Category { id: "search", title: "Search & Archive", icon: "system-search-symbolic",
-            summary: "Find observations in CADC, then fetch their metadata, links, and previews." },
-        Category { id: "queries", title: "Saved Queries", icon: "view-list-symbolic",
-            summary: "Save, recall, and edit reusable ADQL queries." },
-        Category { id: "research", title: "Research & Notes", icon: "emblem-documents-symbolic",
-            summary: "Inspect downloaded observations and notes; export a research bundle." },
-        Category { id: "downloads", title: "Downloads", icon: "folder-download-symbolic",
-            summary: "Pull observations into the local research archive." },
-        Category { id: "fits", title: "FITS Viewer", icon: "image-x-generic-symbolic",
-            summary: "Read FITS headers/WCS, open files, steer the 2D viewer, bookmark coordinates." },
-        Category { id: "cube", title: "Cube Viewer", icon: "view-paged-symbolic",
-            summary: "Open and steer the 3D spectral cube viewer; probe spectra; export figures." },
-        Category { id: "notebook", title: "Notebook", icon: "accessories-text-editor-symbolic",
-            summary: "Drive the native notebook editor: cells, kernel, and execution." },
-        Category { id: "storage", title: "Storage (VOSpace)", icon: "drive-harddisk-symbolic",
-            summary: "Browse, read, upload, download, and tidy files in VOSpace/ARC." },
-        Category { id: "sessions", title: "Sessions", icon: "computer-symbolic",
-            summary: "Launch and manage interactive compute sessions." },
-        Category { id: "headless", title: "Headless / Batch", icon: "system-run-symbolic",
-            summary: "Submit batch jobs and follow their logs and events." },
-        Category { id: "discovery", title: "Image Discovery", icon: "folder-saved-search-symbolic",
-            summary: "Find container images by the packages they contain." },
-        Category { id: "compute", title: "AI Compute", icon: "applications-science-symbolic",
-            summary: "Run agent-authored code on a warm remote session." },
-        Category { id: "workflows", title: "Workflows", icon: "checkbox-checked-symbolic",
-            summary: "Read, follow, author, and check off step-by-step research protocols." },
-        Category { id: "navigation", title: "View & Navigation", icon: "go-jump-symbolic",
-            summary: "Steer the app's views and focus the search field." },
-        Category { id: "control", title: "Agent Control", icon: "security-high-symbolic",
-            summary: "Inspect and withdraw the agent's pending proposals." },
-        Category { id: "guide", title: "AI Guide", icon: "dialog-information-symbolic",
-            summary: "Re-tune tool descriptions and add your own guide tools (agent-editable)." },
+        Category {
+            id: "foundational",
+            title: "Foundational",
+            icon: "emblem-system-symbolic",
+            summary: "App identity, auth, service health, platform load, and current view.",
+        },
+        Category {
+            id: "search",
+            title: "Search & Archive",
+            icon: "system-search-symbolic",
+            summary: "Find observations in CADC, then fetch their metadata, links, and previews.",
+        },
+        Category {
+            id: "queries",
+            title: "Saved Queries",
+            icon: "view-list-symbolic",
+            summary: "Save, recall, and edit reusable ADQL queries.",
+        },
+        Category {
+            id: "research",
+            title: "Research & Notes",
+            icon: "emblem-documents-symbolic",
+            summary: "Inspect downloaded observations and notes; export a research bundle.",
+        },
+        Category {
+            id: "downloads",
+            title: "Downloads",
+            icon: "folder-download-symbolic",
+            summary: "Pull observations into the local research archive.",
+        },
+        Category {
+            id: "fits",
+            title: "FITS Viewer",
+            icon: "image-x-generic-symbolic",
+            summary:
+                "Read FITS headers/WCS, open files, steer the 2D viewer, bookmark coordinates.",
+        },
+        Category {
+            id: "cube",
+            title: "Cube Viewer",
+            icon: "view-paged-symbolic",
+            summary: "Open and steer the 3D spectral cube viewer; probe spectra; export figures.",
+        },
+        Category {
+            id: "notebook",
+            title: "Notebook",
+            icon: "accessories-text-editor-symbolic",
+            summary: "Drive the native notebook editor: cells, kernel, and execution.",
+        },
+        Category {
+            id: "storage",
+            title: "Storage (VOSpace)",
+            icon: "drive-harddisk-symbolic",
+            summary: "Browse, read, upload, download, and tidy files in VOSpace/ARC.",
+        },
+        Category {
+            id: "sessions",
+            title: "Sessions",
+            icon: "computer-symbolic",
+            summary: "Launch and manage interactive compute sessions.",
+        },
+        Category {
+            id: "headless",
+            title: "Headless / Batch",
+            icon: "system-run-symbolic",
+            summary: "Submit batch jobs and follow their logs and events.",
+        },
+        Category {
+            id: "discovery",
+            title: "Image Discovery",
+            icon: "folder-saved-search-symbolic",
+            summary: "Find container images by the packages they contain.",
+        },
+        Category {
+            id: "compute",
+            title: "AI Compute",
+            icon: "applications-science-symbolic",
+            summary: "Run agent-authored code on a warm remote session.",
+        },
+        Category {
+            id: "workflows",
+            title: "Workflows",
+            icon: "checkbox-checked-symbolic",
+            summary: "Read, follow, author, and check off step-by-step research protocols.",
+        },
+        Category {
+            id: "navigation",
+            title: "View & Navigation",
+            icon: "go-jump-symbolic",
+            summary: "Steer the app's views and focus the search field.",
+        },
+        Category {
+            id: "control",
+            title: "Agent Control",
+            icon: "security-high-symbolic",
+            summary: "Inspect and withdraw the agent's pending proposals.",
+        },
+        Category {
+            id: "guide",
+            title: "AI Guide",
+            icon: "dialog-information-symbolic",
+            summary: "Re-tune tool descriptions and add your own guide tools (agent-editable).",
+        },
     ];
 
     /// Fallback bucket for any tool not explicitly categorized (renders last).
@@ -116,47 +185,111 @@ mod catalog {
             "describe_app" | "get_auth_state" | "get_current_view" | "get_service_health"
             | "get_platform_load" => "foundational",
             // Search & Archive
-            "search_observations" | "vizier_cone_search" | "resolve_target"
-            | "get_observation_caom2" | "get_data_links" | "get_preview_image"
+            "search_observations"
+            | "vizier_cone_search"
+            | "resolve_target"
+            | "get_observation_caom2"
+            | "get_data_links"
+            | "get_preview_image"
             | "list_recent_searches" => "search",
             // Saved Queries
             "list_saved_queries" | "get_saved_query" | "save_query" | "update_saved_query"
             | "delete_saved_query" => "queries",
             // Research & Notes
-            "list_downloaded_observations" | "list_observations" | "get_downloaded_observation"
-            | "get_observation_notes" | "update_observation_note" | "bulk_update_observation_notes"
+            "list_downloaded_observations"
+            | "list_observations"
+            | "get_downloaded_observation"
+            | "get_observation_notes"
+            | "update_observation_note"
+            | "bulk_update_observation_notes"
             | "export_research_bundle" => "research",
             // Downloads
-            "download_observation" | "download_observations_bulk" | "delete_downloaded_observation"
+            "download_observation"
+            | "download_observations_bulk"
+            | "delete_downloaded_observation"
             | "clear_research_archive" => "downloads",
             // FITS Viewer
-            "get_fits_header" | "get_fits_wcs" | "open_fits_file" | "set_fits_view" | "get_fits_view"
-            | "probe_fits_pixel" | "fits_goto_coordinate" | "list_fits_bookmarks"
-            | "list_fits_bookmark" | "save_fits_bookmark" | "delete_fits_bookmark" => "fits",
+            "get_fits_header"
+            | "get_fits_wcs"
+            | "open_fits_file"
+            | "set_fits_view"
+            | "get_fits_view"
+            | "probe_fits_pixel"
+            | "fits_goto_coordinate"
+            | "list_fits_bookmarks"
+            | "list_fits_bookmark"
+            | "save_fits_bookmark"
+            | "delete_fits_bookmark" => "fits",
             // Cube Viewer
-            "open_cube" | "set_cube_view" | "get_cube_view" | "probe_cube_spectrum"
+            "open_cube"
+            | "set_cube_view"
+            | "get_cube_view"
+            | "probe_cube_spectrum"
             | "export_cube_figure" => "cube",
             // Notebook
-            "list_notebooks" | "list_open_notebooks" | "get_notebook" | "get_cell_output"
-            | "get_kernel_state" | "open_notebook" | "create_notebook" | "save_notebook"
-            | "edit_cell" | "add_cell" | "delete_cell" | "change_cell_type" | "move_cell"
-            | "run_cell" | "run_all_cells" | "run_all" | "clear_cell_outputs" | "clear_outputs"
-            | "start_kernel" | "interrupt_kernel" | "restart_kernel"
+            "list_notebooks"
+            | "list_open_notebooks"
+            | "get_notebook"
+            | "get_cell_output"
+            | "get_kernel_state"
+            | "open_notebook"
+            | "create_notebook"
+            | "save_notebook"
+            | "edit_cell"
+            | "add_cell"
+            | "delete_cell"
+            | "change_cell_type"
+            | "move_cell"
+            | "run_cell"
+            | "run_all_cells"
+            | "run_all"
+            | "clear_cell_outputs"
+            | "clear_outputs"
+            | "start_kernel"
+            | "interrupt_kernel"
+            | "restart_kernel"
             | "create_analysis_notebook" => "notebook",
             // Storage (VOSpace) — Windows names + live Verbinal names
-            "list_vospace_path" | "get_vospace_node" | "read_vospace_file" | "upload_to_vospace"
-            | "upload_text_to_vospace" | "upload_file_to_vospace" | "download_from_vospace"
-            | "download_vospace_file" | "vospace_mkdir" | "create_vospace_folder"
-            | "set_vospace_acl" | "delete_vospace_node" | "get_storage_quota" | "clear_user_site"
-            | "list_storage" | "get_node" | "read_file" | "get_quota" | "upload_text"
-            | "create_folder" | "set_acl" | "delete_node" => "storage",
+            "list_vospace_path"
+            | "get_vospace_node"
+            | "read_vospace_file"
+            | "upload_to_vospace"
+            | "upload_text_to_vospace"
+            | "upload_file_to_vospace"
+            | "download_from_vospace"
+            | "download_vospace_file"
+            | "vospace_mkdir"
+            | "create_vospace_folder"
+            | "set_vospace_acl"
+            | "delete_vospace_node"
+            | "get_storage_quota"
+            | "clear_user_site"
+            | "list_storage"
+            | "get_node"
+            | "read_file"
+            | "get_quota"
+            | "upload_text"
+            | "create_folder"
+            | "set_acl"
+            | "delete_node" => "storage",
             // Sessions
-            "list_sessions" | "get_session" | "list_session_types" | "list_session_images"
-            | "list_recent_launches" | "launch_session" | "delete_session" | "delete_sessions_bulk"
-            | "renew_session" | "get_session_events" | "get_session_logs" => "sessions",
+            "list_sessions"
+            | "get_session"
+            | "list_session_types"
+            | "list_session_images"
+            | "list_recent_launches"
+            | "launch_session"
+            | "delete_session"
+            | "delete_sessions_bulk"
+            | "renew_session"
+            | "get_session_events"
+            | "get_session_logs" => "sessions",
             // Headless / Batch
-            "list_headless_jobs" | "get_headless_job" | "get_headless_job_logs"
-            | "get_headless_job_events" | "launch_headless_job" => "headless",
+            "list_headless_jobs"
+            | "get_headless_job"
+            | "get_headless_job_logs"
+            | "get_headless_job_events"
+            | "launch_headless_job" => "headless",
             // Image Discovery
             "find_images_with_packages" | "discover_image_packages" => "discovery",
             // AI Compute
@@ -165,13 +298,21 @@ mod catalog {
             "list_workflows" | "get_workflow" | "save_workflow" | "update_workflow"
             | "set_workflow_step" | "use_workflow" | "delete_workflow" => "workflows",
             // View & Navigation
-            "set_search_focus" | "navigate_to" | "close_active_tab" | "list_open_tabs" => "navigation",
+            "set_search_focus" | "navigate_to" | "close_active_tab" | "list_open_tabs" => {
+                "navigation"
+            }
             // Agent Control
-            "list_pending_proposals" | "get_proposal_state" | "withdraw_proposal"
+            "list_pending_proposals"
+            | "get_proposal_state"
+            | "withdraw_proposal"
             | "list_events" => "control",
             // AI Guide management
-            "list_guide_tools" | "set_tool_description" | "clear_tool_description"
-            | "add_guide_tool" | "update_guide_tool" | "delete_guide_tool" => "guide",
+            "list_guide_tools"
+            | "set_tool_description"
+            | "clear_tool_description"
+            | "add_guide_tool"
+            | "update_guide_tool"
+            | "delete_guide_tool" => "guide",
             _ => OTHER.id,
         }
     }
@@ -309,7 +450,8 @@ impl AiGuidePage {
 
         // Filter box (SearchEntry provides its own clear affordance).
         let search_entry = gtk::SearchEntry::new();
-        search_entry.set_placeholder_text(Some(crate::tr_en!("Filter tools by name or description…")));
+        search_entry
+            .set_placeholder_text(Some(crate::tr_en!("Filter tools by name or description…")));
         search_entry.set_hexpand(true);
         header_inner.append(&search_entry);
 
@@ -425,7 +567,8 @@ impl AiGuidePage {
             .filter(|d| snap.overrides.contains_key(&d.name))
             .count();
 
-        self.tools_chip.set_text(&format!("{} tools", self.total_tools));
+        self.tools_chip
+            .set_text(&format!("{} tools", self.total_tools));
         self.categories_chip
             .set_text(&format!("{} categories", self.categories.len()));
         self.overridden_chip
@@ -440,7 +583,10 @@ impl AiGuidePage {
         }
         let snap = self.guide.snapshot();
         for (i, cat) in self.categories.iter().enumerate() {
-            let has_override = cat.tools.iter().any(|d| snap.overrides.contains_key(&d.name));
+            let has_override = cat
+                .tools
+                .iter()
+                .any(|d| snap.overrides.contains_key(&d.name));
             let tile = self.build_tile(i, cat, has_override);
             self.launchpad_flow.append(&tile);
         }
@@ -622,7 +768,11 @@ impl AiGuidePage {
 
     /// Build one expandable editor for a built-in tool: header shows the tool name +
     /// the description the agent currently sees; the body edits the override.
-    fn build_tool_row(self: &Rc<Self>, snapshot: &AiGuideSnapshot, d: &ToolDescriptor) -> adw::ExpanderRow {
+    fn build_tool_row(
+        self: &Rc<Self>,
+        snapshot: &AiGuideSnapshot,
+        d: &ToolDescriptor,
+    ) -> adw::ExpanderRow {
         let effective = snapshot.description_for_tool(&d.name, &d.description);
         let override_text = snapshot.overrides.get(&d.name).cloned().unwrap_or_default();
         let is_overridden = snapshot.overrides.contains_key(&d.name);
@@ -947,7 +1097,9 @@ async fn show_guide_dialog(
     desc_counter.add_css_class("caption");
     content.append(&desc_counter);
 
-    let body_label = gtk::Label::new(Some(crate::tr_en!("Instructions returned to the agent (optional)")));
+    let body_label = gtk::Label::new(Some(crate::tr_en!(
+        "Instructions returned to the agent (optional)"
+    )));
     body_label.set_xalign(0.0);
     body_label.add_css_class("dim-label");
     body_label.add_css_class("caption");
@@ -1136,13 +1288,22 @@ mod tests {
     #[test]
     fn category_map_covers_live_tools_and_falls_back_to_other() {
         // Representative live names from each family map to their category.
-        assert_eq!(catalog::category_id_for_tool("describe_app"), "foundational");
+        assert_eq!(
+            catalog::category_id_for_tool("describe_app"),
+            "foundational"
+        );
         assert_eq!(catalog::category_id_for_tool("get_node"), "storage");
         assert_eq!(catalog::category_id_for_tool("read_file"), "storage");
         assert_eq!(catalog::category_id_for_tool("clear_outputs"), "notebook");
         assert_eq!(catalog::category_id_for_tool("run_all"), "notebook");
-        assert_eq!(catalog::category_id_for_tool("get_session_logs"), "sessions");
-        assert_eq!(catalog::category_id_for_tool("list_observations"), "research");
+        assert_eq!(
+            catalog::category_id_for_tool("get_session_logs"),
+            "sessions"
+        );
+        assert_eq!(
+            catalog::category_id_for_tool("list_observations"),
+            "research"
+        );
         assert_eq!(catalog::category_id_for_tool("open_fits_file"), "fits");
         assert_eq!(catalog::category_id_for_tool("list_guide_tools"), "guide");
         // Unknown → Other.
@@ -1160,7 +1321,7 @@ mod tests {
     #[test]
     fn categorize_groups_sorts_and_drops_empties() {
         let cats = categorize(vec![
-            td("get_node", VerbClass::Read),        // storage
+            td("get_node", VerbClass::Read),         // storage
             td("delete_node", VerbClass::Write),     // storage
             td("describe_app", VerbClass::Read),     // foundational
             td("totally_new_tool", VerbClass::Read), // other
@@ -1182,7 +1343,11 @@ mod tests {
         let known: std::collections::HashSet<&str> = catalog::all().map(|c| c.id).collect();
         for d in all_live_descriptors() {
             let id = catalog::category_id_for_tool(&d.name);
-            assert!(known.contains(id), "tool {} → unknown category {id}", d.name);
+            assert!(
+                known.contains(id),
+                "tool {} → unknown category {id}",
+                d.name
+            );
         }
     }
 

@@ -71,7 +71,11 @@ impl WcsInfo {
     /// projection (`RA---TAN-SIP` → `TAN`). Taking the last token misreads every
     /// SIP image as linear.
     fn projection_code(ctype: &str) -> &str {
-        ctype.split('-').filter(|s| !s.is_empty()).nth(1).unwrap_or("")
+        ctype
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .nth(1)
+            .unwrap_or("")
     }
 
     /// Resolved projection; both axes must agree or we fall back to Linear.
@@ -264,8 +268,7 @@ pub fn project(
     let dec0 = crval2.to_radians();
     let rad_to_deg = 180.0 / std::f64::consts::PI;
 
-    let cos_psi =
-        dec_rad.sin() * dec0.sin() + dec_rad.cos() * dec0.cos() * (ra_rad - ra0).cos();
+    let cos_psi = dec_rad.sin() * dec0.sin() + dec_rad.cos() * dec0.cos() * (ra_rad - ra0).cos();
     let x_num = dec_rad.cos() * (ra_rad - ra0).sin();
     let y_num = dec_rad.sin() * dec0.cos() - dec_rad.cos() * dec0.sin() * (ra_rad - ra0).cos();
 
@@ -282,7 +285,10 @@ pub fn project(
             if denom <= 1e-12 {
                 return None;
             }
-            Some((2.0 * x_num / denom * rad_to_deg, 2.0 * y_num / denom * rad_to_deg))
+            Some((
+                2.0 * x_num / denom * rad_to_deg,
+                2.0 * y_num / denom * rad_to_deg,
+            ))
         }
         Projection::Zea => {
             if cos_psi <= -1.0 + 1e-12 {
@@ -370,7 +376,8 @@ fn parse_ra_sexagesimal(s: &str) -> Option<f64> {
     if parts.is_empty() {
         return None;
     }
-    let hours = parts[0] + parts.get(1).copied().unwrap_or(0.0) / 60.0
+    let hours = parts[0]
+        + parts.get(1).copied().unwrap_or(0.0) / 60.0
         + parts.get(2).copied().unwrap_or(0.0) / 3600.0;
     Some(hours * 15.0)
 }
@@ -388,7 +395,8 @@ fn parse_dec_sexagesimal(s: &str) -> Option<f64> {
     if parts.is_empty() {
         return None;
     }
-    let deg = parts[0] + parts.get(1).copied().unwrap_or(0.0) / 60.0
+    let deg = parts[0]
+        + parts.get(1).copied().unwrap_or(0.0) / 60.0
         + parts.get(2).copied().unwrap_or(0.0) / 3600.0;
     Some(if neg { -deg } else { deg })
 }
@@ -689,8 +697,7 @@ impl FitsImageData {
                         format_fov(scale * self.height as f64)
                     ),
                 ));
-                let (ra, dec) =
-                    w.pixel_to_sky(self.width as f64 / 2.0, self.height as f64 / 2.0);
+                let (ra, dec) = w.pixel_to_sky(self.width as f64 / 2.0, self.height as f64 / 2.0);
                 let (ra_s, dec_s) = WcsInfo::format_coords(ra, dec);
                 rows.push(("Sky centre".into(), format!("{}  {}", ra_s, dec_s)));
                 let parity = if w.has_parity_flip() {

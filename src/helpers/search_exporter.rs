@@ -57,8 +57,7 @@ pub fn build_search_bundle(
     // caller opts in — mirrors `ExportOptions.IncludeSearchHistory`.
     let recent_for_render: &[RecentSearch] = if include_history { recent } else { &[] };
     if include_history {
-        let recent_json =
-            serde_json::to_string_pretty(recent).unwrap_or_else(|_| "[]".to_string());
+        let recent_json = serde_json::to_string_pretty(recent).unwrap_or_else(|_| "[]".to_string());
         files.push(("recent_searches.json".to_string(), recent_json));
     }
 
@@ -159,7 +158,12 @@ fn append_resolver_provenance(md: &mut String, recent: &RecentSearch) {
         .resolver_service_used
         .as_deref()
         .filter(|s| non_blank(s))
-        .or_else(|| recent.resolver_service_used.as_deref().filter(|s| non_blank(s)))
+        .or_else(|| {
+            recent
+                .resolver_service_used
+                .as_deref()
+                .filter(|s| non_blank(s))
+        })
         .unwrap_or_else(|| {
             if fs.resolver_service.trim().is_empty() {
                 "unknown resolver"
@@ -270,7 +274,10 @@ mod tests {
 
         // With history on, the recent file is present and markdown includes it.
         let on = build_search_bundle(&[], std::slice::from_ref(&r), true, fixed_now());
-        let recent_json = on.iter().find(|(n, _)| n == "recent_searches.json").unwrap();
+        let recent_json = on
+            .iter()
+            .find(|(n, _)| n == "recent_searches.json")
+            .unwrap();
         assert!(recent_json.1.contains("M31 cone"));
         let md_on = &on.iter().find(|(n, _)| n == "queries.md").unwrap().1;
         assert!(md_on.contains("- 1 recent search\n"));
@@ -295,7 +302,11 @@ mod tests {
         assert!(md.contains("Saved 2024-03-04T05:06:07Z"));
         assert!(md.contains("```sql\nSELECT TOP 10 * FROM x\n```"));
         // The saved JSON round-trips.
-        let saved_json = &files.iter().find(|(n, _)| n == "saved_queries.json").unwrap().1;
+        let saved_json = &files
+            .iter()
+            .find(|(n, _)| n == "saved_queries.json")
+            .unwrap()
+            .1;
         let _: serde_json::Value = serde_json::from_str(saved_json).unwrap();
         assert!(saved_json.contains("Bright stars"));
     }

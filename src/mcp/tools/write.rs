@@ -43,9 +43,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
             name: "save_query".to_string(),
-            description: "Propose saving a named ADQL query to the user's saved queries (overwrites \
+            description:
+                "Propose saving a named ADQL query to the user's saved queries (overwrites \
                 an existing query with the same name). Queues for the user to apply."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -172,7 +173,12 @@ fn propose_save_query(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> T
         return ToolResult::Failed("adql is required".to_string());
     }
     let payload = json!({ "name": name, "adql": adql });
-    let p = proposals.enqueue("save_query", &format!("Save query: {}", name), false, payload);
+    let p = proposals.enqueue(
+        "save_query",
+        &format!("Save query: {}", name),
+        false,
+        payload,
+    );
     ToolResult::Proposed(p)
 }
 
@@ -257,7 +263,12 @@ fn propose_renew_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
         return ToolResult::Failed("id is required".to_string());
     }
     let payload = json!({ "id": id });
-    let p = proposals.enqueue("renew_session", &format!("Renew session {}", id), false, payload);
+    let p = proposals.enqueue(
+        "renew_session",
+        &format!("Renew session {}", id),
+        false,
+        payload,
+    );
     ToolResult::Proposed(p)
 }
 

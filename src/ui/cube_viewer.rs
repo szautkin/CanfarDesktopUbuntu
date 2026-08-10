@@ -340,27 +340,32 @@ impl CubeViewer {
         {
             let this = self.clone();
             let ctl2 = ctl.clone();
-            ctl.window_lo.connect_value_changed(move |_| this.apply_window(&ctl2));
+            ctl.window_lo
+                .connect_value_changed(move |_| this.apply_window(&ctl2));
         }
         {
             let this = self.clone();
             let ctl2 = ctl.clone();
-            ctl.window_hi.connect_value_changed(move |_| this.apply_window(&ctl2));
+            ctl.window_hi
+                .connect_value_changed(move |_| this.apply_window(&ctl2));
         }
         // Density (volume only).
         {
             let this = self.clone();
-            ctl.density.connect_value_changed(move |s| this.gl.set_density(s.value() as f32));
+            ctl.density
+                .connect_value_changed(move |s| this.gl.set_density(s.value() as f32));
         }
         // Quality (steps, volume only).
         {
             let this = self.clone();
-            ctl.steps.connect_value_changed(move |s| this.gl.set_steps(s.value() as f32));
+            ctl.steps
+                .connect_value_changed(move |s| this.gl.set_steps(s.value() as f32));
         }
         // MIP (max-intensity projection).
         {
             let this = self.clone();
-            ctl.mip.connect_toggled(move |b| this.gl.set_mip(b.is_active()));
+            ctl.mip
+                .connect_toggled(move |b| this.gl.set_mip(b.is_active()));
         }
         // Idle auto-orbit.
         {
@@ -390,9 +395,9 @@ impl CubeViewer {
             let this = self.clone();
             ctl.background.connect_selected_notify(move |d| {
                 let rgb = match d.selected() {
-                    1 => [0.0, 0.0, 0.0],       // Black
-                    2 => [0.92, 0.92, 0.94],    // Light
-                    _ => [0.06, 0.06, 0.08],    // Dark
+                    1 => [0.0, 0.0, 0.0],    // Black
+                    2 => [0.92, 0.92, 0.94], // Light
+                    _ => [0.06, 0.06, 0.08], // Dark
                 };
                 this.gl.set_background(rgb);
             });
@@ -400,7 +405,8 @@ impl CubeViewer {
         // Reset view.
         {
             let this = self.clone();
-            ctl.reset_view.connect_clicked(move |_| this.gl.reset_view());
+            ctl.reset_view
+                .connect_clicked(move |_| this.gl.reset_view());
         }
         // Window 99%: snap the display cut to the 1..99% window.
         {
@@ -674,7 +680,8 @@ impl CubeViewer {
                 }
                 let mut order: Vec<usize> = (0..m.points.len()).collect();
                 order.sort_by(|&a, &b| m.points[a].0.total_cmp(&m.points[b].0));
-                let view = |i: usize| (m.points[i].0 as f64 * wf, hf * (1.0 - m.points[i].1 as f64));
+                let view =
+                    |i: usize| (m.points[i].0 as f64 * wf, hf * (1.0 - m.points[i].1 as f64));
 
                 // Filled area under the curve (translucent cyan).
                 cr.set_source_rgba(0.34, 0.78, 1.0, 0.19);
@@ -891,7 +898,9 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
     let window_99 = gtk::Button::with_label(crate::tr_en!("Window 99%"));
     window_99.add_css_class("flat");
     window_99.set_halign(gtk::Align::End);
-    window_99.set_tooltip_text(Some(crate::tr_en!("Set the display cut to the 1–99% window")));
+    window_99.set_tooltip_text(Some(crate::tr_en!(
+        "Set the display cut to the 1–99% window"
+    )));
     column.append(&window_99);
 
     let background = gtk::DropDown::from_strings(&[
@@ -959,7 +968,9 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
     transfer_area.add_css_class("card");
     volume_section.append(&transfer_area);
 
-    let tf_hint = gtk::Label::new(Some(crate::tr_en!("Drag points · click adds · right-click removes")));
+    let tf_hint = gtk::Label::new(Some(crate::tr_en!(
+        "Drag points · click adds · right-click removes"
+    )));
     tf_hint.add_css_class("caption");
     tf_hint.add_css_class("dim-label");
     tf_hint.set_halign(gtk::Align::Start);
@@ -1085,9 +1096,21 @@ fn fill_info(grid: &gtk::Grid, vol: &VolumeData, wcs: &CubeWcs, name: &str) {
     add(grid, crate::tr_en!("SPECTRAL"), &spectral);
 
     if let Some(m) = vol.meta.as_ref() {
-        add(grid, crate::tr_en!("OBJECT"), m.object.as_deref().unwrap_or(""));
-        add(grid, crate::tr_en!("INSTRUMENT"), m.instrument.as_deref().unwrap_or(""));
-        add(grid, crate::tr_en!("TELESCOPE"), m.telescope.as_deref().unwrap_or(""));
+        add(
+            grid,
+            crate::tr_en!("OBJECT"),
+            m.object.as_deref().unwrap_or(""),
+        );
+        add(
+            grid,
+            crate::tr_en!("INSTRUMENT"),
+            m.instrument.as_deref().unwrap_or(""),
+        );
+        add(
+            grid,
+            crate::tr_en!("TELESCOPE"),
+            m.telescope.as_deref().unwrap_or(""),
+        );
         let unit = m.bunit.as_deref().unwrap_or("");
         add(grid, crate::tr_en!("UNIT"), unit);
         // RANGE = the display cut (p0.5…p99.5); MIN/MAX = true full-cube extremes.
@@ -1099,15 +1122,28 @@ fn fill_info(grid: &gtk::Grid, vol: &VolumeData, wcs: &CubeWcs, name: &str) {
         add(
             grid,
             crate::tr_en!("RANGE"),
-            &format!("{} → {}{}", fmt_num(m.norm_lo), fmt_num(m.norm_hi), unit_suffix),
+            &format!(
+                "{} → {}{}",
+                fmt_num(m.norm_lo),
+                fmt_num(m.norm_hi),
+                unit_suffix
+            ),
         );
         add(
             grid,
             crate::tr_en!("MIN / MAX"),
             &format!("{} / {}", fmt_num(m.data_min), fmt_num(m.data_max)),
         );
-        add(grid, crate::tr_en!("MEDIAN"), &label_with_unit(m.median, unit));
-        add(grid, crate::tr_en!("NaN"), &format!("{:.2}%", m.nan_fraction * 100.0));
+        add(
+            grid,
+            crate::tr_en!("MEDIAN"),
+            &label_with_unit(m.median, unit),
+        );
+        add(
+            grid,
+            crate::tr_en!("NaN"),
+            &format!("{:.2}%", m.nan_fraction * 100.0),
+        );
         add(grid, crate::tr_en!("MODE"), &m.mode_text());
     }
 }

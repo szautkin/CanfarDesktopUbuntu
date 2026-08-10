@@ -267,7 +267,10 @@ fn is_workflow_file(path: &Path) -> bool {
 
 /// The slug of a `<slug>.workflow.md` path (the file name minus the extension).
 fn slug_of(path: &Path) -> String {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
     // The extension is ASCII, so `len - ext.len()` is always a valid char
     // boundary when the (case-insensitive) suffix matches.
     if name.to_ascii_lowercase().ends_with(FILE_EXTENSION) {
@@ -337,11 +340,8 @@ mod tests {
     /// name derives from the pid + a monotonic counter (no RNG).
     fn temp_store() -> (WorkflowStore, PathBuf) {
         let seq = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "verbinal-wf-test-{}-{}",
-            std::process::id(),
-            seq
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("verbinal-wf-test-{}-{}", std::process::id(), seq));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         (WorkflowStore::with_dir(dir.clone()), dir)
@@ -351,7 +351,10 @@ mod tests {
 
     #[test]
     fn slugify_basic_and_collapse() {
-        assert_eq!(slugify("Variable Star Photometry"), "variable-star-photometry");
+        assert_eq!(
+            slugify("Variable Star Photometry"),
+            "variable-star-photometry"
+        );
         // Punctuation and repeated separators collapse to single dashes.
         assert_eq!(slugify("Hello, World!"), "hello-world");
         assert_eq!(slugify("  Leading/trailing  --  "), "leading-trailing");
@@ -416,7 +419,11 @@ mod tests {
         // Uncheck it again — back to zero.
         let back = store.set_step_done(&info.id, 1, false).unwrap();
         assert_eq!(back.doc.done_count(), 0);
-        assert!(store.get(&info.id).unwrap().raw_text.contains("- [ ] **Second step**"));
+        assert!(store
+            .get(&info.id)
+            .unwrap()
+            .raw_text
+            .contains("- [ ] **Second step**"));
     }
 
     #[test]
@@ -429,8 +436,12 @@ mod tests {
     #[test]
     fn mutations_reject_builtin_ids() {
         let (store, _dir) = temp_store();
-        assert!(store.update_text("builtin:cfht-imaging-recon", SAMPLE).is_err());
-        assert!(store.set_step_done("builtin:cfht-imaging-recon", 0, true).is_err());
+        assert!(store
+            .update_text("builtin:cfht-imaging-recon", SAMPLE)
+            .is_err());
+        assert!(store
+            .set_step_done("builtin:cfht-imaging-recon", 0, true)
+            .is_err());
         assert!(store.delete("builtin:cfht-imaging-recon").is_err());
     }
 

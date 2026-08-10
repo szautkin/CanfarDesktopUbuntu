@@ -4,12 +4,10 @@ use regex::Regex;
 use std::path::Path;
 
 /// Matches `import <module>` at the start of a line.
-static RE_IMPORT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\s*import\s+([\w.]+)").unwrap());
+static RE_IMPORT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*import\s+([\w.]+)").unwrap());
 
 /// Matches `from <module> import ...` at the start of a line.
-static RE_FROM: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\s*from\s+([\w.]+)\s+import\s+").unwrap());
+static RE_FROM: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*from\s+([\w.]+)\s+import\s+").unwrap());
 
 // ---------------------------------------------------------------------------
 // Python stdlib module names (incomplete but covers the vast majority).
@@ -274,8 +272,8 @@ pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> 
             .map_err(|e| format!("cannot create directory {}: {}", parent.display(), e))?;
     }
 
-    let json = serde_json::to_string_pretty(doc)
-        .map_err(|e| format!("serialisation error: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(doc).map_err(|e| format!("serialisation error: {}", e))?;
 
     // Reindent: serde_json uses 2-space indent by default; Jupyter uses 1.
     // Rebuild the string with a 1-space indent rather than pulling in an
@@ -286,8 +284,14 @@ pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> 
     let tmp_path = path.with_extension("ipynb.tmp");
     std::fs::write(&tmp_path, &json)
         .map_err(|e| format!("cannot write {}: {}", tmp_path.display(), e))?;
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| format!("cannot rename {} to {}: {}", tmp_path.display(), path.display(), e))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        format!(
+            "cannot rename {} to {}: {}",
+            tmp_path.display(),
+            path.display(),
+            e
+        )
+    })?;
 
     Ok(())
 }
@@ -453,10 +457,7 @@ mod tests {
     #[test]
     fn load_notebook_caps_at_10000_cells() {
         let cell = r#"{"cell_type":"code","source":"x=1","outputs":[],"metadata":{}}"#;
-        let cells_json: String = (0..10_001)
-            .map(|_| cell)
-            .collect::<Vec<_>>()
-            .join(",");
+        let cells_json: String = (0..10_001).map(|_| cell).collect::<Vec<_>>().join(",");
         let json = format!(
             r#"{{"nbformat":4,"nbformat_minor":5,"metadata":{{}},"cells":[{}]}}"#,
             cells_json
@@ -633,9 +634,7 @@ mod tests {
     fn extract_imports_skips_comment_lines() {
         let cells = vec![NotebookCell {
             cell_type: "code".to_string(),
-            source: CellSource::Single(
-                "# import requests\nimport matplotlib".to_string(),
-            ),
+            source: CellSource::Single("# import requests\nimport matplotlib".to_string()),
             outputs: vec![],
             execution_count: None,
             id: None,
@@ -661,7 +660,10 @@ mod tests {
         let imports = extract_imports(&cells);
         let mut sorted = imports.clone();
         sorted.sort();
-        assert_eq!(imports, sorted, "extract_imports must return sorted results");
+        assert_eq!(
+            imports, sorted,
+            "extract_imports must return sorted results"
+        );
     }
 
     // ---------------------------------------------------------------------------

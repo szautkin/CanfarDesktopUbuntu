@@ -289,7 +289,10 @@ fn discovery_status(image_id: &str, outcome: &DiscoveryOutcome) -> Result<String
             message,
             job_id,
         } => {
-            let mut msg = format!("discovery failed for '{}' ({}): {}", image_id, category, message);
+            let mut msg = format!(
+                "discovery failed for '{}' ({}): {}",
+                image_id, category, message
+            );
             if let Some(j) = job_id {
                 msg.push_str(&format!(" [job {}]", j));
             }
@@ -455,9 +458,15 @@ mod tests {
             assert!(d.agent_safe, "{} must be agent_safe", d.name);
             assert!(seen.insert(d.name.clone()), "duplicate: {}", d.name);
         }
-        let find = ds.iter().find(|d| d.name == "find_images_with_packages").unwrap();
+        let find = ds
+            .iter()
+            .find(|d| d.name == "find_images_with_packages")
+            .unwrap();
         assert_eq!(find.verb, VerbClass::Read);
-        let disc = ds.iter().find(|d| d.name == "discover_image_packages").unwrap();
+        let disc = ds
+            .iter()
+            .find(|d| d.name == "discover_image_packages")
+            .unwrap();
         assert_eq!(disc.verb, VerbClass::Write);
         // The capability enum in the schema is built from the canonical list.
         let enum_len = find.input_schema["properties"]["capabilities"]["items"]["enum"]
@@ -522,8 +531,8 @@ mod tests {
         known.sort();
         let out = shape_find_output(
             &build_query(&json!({ "packages": ["numpy"] })),
-            s(&["a:1"]),      // matched
-            known.clone(),    // known
+            s(&["a:1"]),        // matched
+            known.clone(),      // known
             s(&["a:1", "d:1"]), // successful (a:1 matched, d:1 discovered but not matched)
             Vec::new(),
             0,
@@ -531,7 +540,10 @@ mod tests {
         let candidates = ids(&out, "candidatesToProbe");
         assert_eq!(candidates.len(), CANDIDATES_CAP);
         assert!(!candidates.contains(&"a:1".to_string()), "matched excluded");
-        assert!(!candidates.contains(&"d:1".to_string()), "discovered excluded");
+        assert!(
+            !candidates.contains(&"d:1".to_string()),
+            "discovered excluded"
+        );
         // Stable sorted order: first ten of img:01..img:15.
         assert_eq!(candidates[0], "img:01");
         assert_eq!(candidates[9], "img:10");

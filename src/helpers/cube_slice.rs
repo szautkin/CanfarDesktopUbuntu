@@ -254,7 +254,12 @@ mod tests {
         let px = render_plane_bgra(&vol, 0, (0.0, 1.0), StretchMode::Linear, "Grayscale");
         let last = (4 * 4 - 1) * 4;
         // B, G, R channels all track brightness for grayscale.
-        assert!(px[last + 2] >= px[2], "last R {} < first R {}", px[last + 2], px[2]);
+        assert!(
+            px[last + 2] >= px[2],
+            "last R {} < first R {}",
+            px[last + 2],
+            px[2]
+        );
         assert!(px[last] >= px[0], "last B {} < first B {}", px[last], px[0]);
     }
 
@@ -293,7 +298,13 @@ mod tests {
         let plane = ny * nx;
         for (z, &val) in spec.iter().enumerate() {
             let expected = vol.data[z * plane + y * nx + x];
-            assert!((val - expected).abs() < 1e-9, "z={}: {} != {}", z, val, expected);
+            assert!(
+                (val - expected).abs() < 1e-9,
+                "z={}: {} != {}",
+                z,
+                val,
+                expected
+            );
         }
     }
 

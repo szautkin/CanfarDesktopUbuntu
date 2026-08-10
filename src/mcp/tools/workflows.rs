@@ -57,11 +57,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "get_workflow".to_string(),
-            description: "Read one workflow: metadata plus every step (0-based index, title, body, \
+            description:
+                "Read one workflow: metadata plus every step (0-based index, title, body, \
                 the agent tools the step uses, the app view it belongs to, done flag) and its raw \
                 `.workflow.md` text. To follow a workflow, do the steps in order with the named \
                 tools and mark each with set_workflow_step. Ids come from list_workflows."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -114,9 +115,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "update_workflow".to_string(),
-            description: "Replace the full text of a LOCAL workflow (refine a protocol). Built-in \
+            description:
+                "Replace the full text of a LOCAL workflow (refine a protocol). Built-in \
                 templates are read-only — save_workflow a copy first. Queues for the user to apply."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -150,9 +152,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delete_workflow".to_string(),
-            description: "Delete a LOCAL workflow file, including its progress. Built-in templates \
+            description:
+                "Delete a LOCAL workflow file, including its progress. Built-in templates \
                 cannot be deleted. Queues for the user's approval (a destructive change)."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -228,7 +231,11 @@ fn get_workflow(args: &Value) -> ToolResult {
 fn propose_save_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
     let name = str_arg(args, "name");
     // Preserve the raw text verbatim — it IS the file content; only validate it.
-    let text = args.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if name.is_empty() {
         return ToolResult::Failed("name is required".to_string());
     }
@@ -279,7 +286,10 @@ fn propose_use_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>) ->
         name
     };
     let payload = json!({ "name": name, "text": info.raw_text });
-    let summary = format!("Use workflow \"{}\" → new local copy \"{}\"", info.doc.title, name);
+    let summary = format!(
+        "Use workflow \"{}\" → new local copy \"{}\"",
+        info.doc.title, name
+    );
     let p = proposals.enqueue("use_workflow", &summary, false, payload);
     ToolResult::Proposed(p)
 }
@@ -288,7 +298,11 @@ fn propose_use_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>) ->
 /// Rejects a non-local id up front (templates are read-only).
 fn propose_update_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
     let id = str_arg(args, "id");
-    let text = args.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if !id.starts_with(LOCAL_PREFIX) {
         return ToolResult::Failed(
             "id must be a local:… workflow (templates are read-only — save_workflow a copy first)"
@@ -344,7 +358,12 @@ fn propose_delete_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>)
         );
     }
     let payload = json!({ "id": id });
-    let p = proposals.enqueue("delete_workflow", &format!("Delete workflow {}", id), true, payload);
+    let p = proposals.enqueue(
+        "delete_workflow",
+        &format!("Delete workflow {}", id),
+        true,
+        payload,
+    );
     ToolResult::Proposed(p)
 }
 
@@ -364,7 +383,11 @@ pub async fn apply(
     let result = match proposal.kind.as_str() {
         "save_workflow" => {
             let name = str_arg(payload, "name");
-            let text = payload.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if name.is_empty() {
                 return Some(Err("save_workflow payload missing name".to_string()));
             }
@@ -374,7 +397,11 @@ pub async fn apply(
         }
         "use_workflow" => {
             let name = str_arg(payload, "name");
-            let text = payload.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if name.is_empty() {
                 return Some(Err("use_workflow payload missing name".to_string()));
             }
@@ -384,7 +411,11 @@ pub async fn apply(
         }
         "update_workflow" => {
             let id = str_arg(payload, "id");
-            let text = payload.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if id.is_empty() {
                 return Some(Err("update_workflow payload missing id".to_string()));
             }
@@ -399,16 +430,18 @@ pub async fn apply(
             }
             let step = payload.get("step").and_then(Value::as_u64).unwrap_or(0) as usize;
             let done = payload.get("done").and_then(Value::as_bool).unwrap_or(true);
-            WorkflowStore::new().set_step_done(&id, step, done).map(|info| {
-                format!(
-                    "Marked workflow {} step {} {} ({} / {} steps done)",
-                    id,
-                    step + 1,
-                    if done { "done" } else { "not done" },
-                    info.doc.done_count(),
-                    info.doc.steps.len()
-                )
-            })
+            WorkflowStore::new()
+                .set_step_done(&id, step, done)
+                .map(|info| {
+                    format!(
+                        "Marked workflow {} step {} {} ({} / {} steps done)",
+                        id,
+                        step + 1,
+                        if done { "done" } else { "not done" },
+                        info.doc.done_count(),
+                        info.doc.steps.len()
+                    )
+                })
         }
         "delete_workflow" => {
             let id = str_arg(payload, "id");

@@ -176,7 +176,10 @@ impl ImageDiscoveryCoordinator {
             let fresh = ImageDiscoverySettingsService::new();
             let mut cached = self.settings.lock().unwrap_or_else(|e| e.into_inner());
             *cached = fresh;
-            (cached.resolve_inspector_image(), cached.current_auth_header())
+            (
+                cached.resolve_inspector_image(),
+                cached.current_auth_header(),
+            )
         };
         let (registry_username, registry_secret) = match auth_header.as_deref() {
             Some(h) => match decode_auth_header(h) {
@@ -205,7 +208,11 @@ impl ImageDiscoveryCoordinator {
             "export {env_name}={}\n{script_body}",
             shell_single_quote(image_id)
         );
-        let prefix = if strategy == ProbeStrategy::InTarget { "vp" } else { "vi" };
+        let prefix = if strategy == ProbeStrategy::InTarget {
+            "vp"
+        } else {
+            "vi"
+        };
         let params = SessionLaunchParams {
             name: make_job_name(prefix, image_id, &new_job_suffix()),
             image: launch_image,
@@ -281,7 +288,8 @@ impl ImageDiscoveryCoordinator {
         // + a probeNotes reason). Refuse to cache it — surface the reason instead.
         if is_stub_manifest(&manifest, probe_notes_of(&json).as_deref()) {
             self.best_effort_delete(services, &token, &job_id).await;
-            let reason = probe_notes_of(&json).unwrap_or_else(|| "no software detected".to_string());
+            let reason =
+                probe_notes_of(&json).unwrap_or_else(|| "no software detected".to_string());
             return self.fail(
                 image_id,
                 category::MANIFEST_FETCH_FAILED,
@@ -692,7 +700,9 @@ mod tests {
             "Error from server (NotFound): jobs.batch not found"
         ));
         // Other faults must not trigger a retry.
-        assert!(!is_skaha_job_not_found_race("403 Forbidden: quota exceeded"));
+        assert!(!is_skaha_job_not_found_race(
+            "403 Forbidden: quota exceeded"
+        ));
         assert!(!is_skaha_job_not_found_race("pods not found"));
         assert!(!is_skaha_job_not_found_race("jobs.batch already exists"));
     }
@@ -710,7 +720,10 @@ mod tests {
         // No packages + a note → stub.
         assert!(is_stub_manifest(&manifest_with(&[]), Some("syft failed")));
         // A note but real packages → not a stub.
-        assert!(!is_stub_manifest(&manifest_with(&["numpy"]), Some("syft failed")));
+        assert!(!is_stub_manifest(
+            &manifest_with(&["numpy"]),
+            Some("syft failed")
+        ));
         // No packages, no note → not a stub (a legitimately-empty image).
         assert!(!is_stub_manifest(&manifest_with(&[]), None));
         assert!(!is_stub_manifest(&manifest_with(&[]), Some("   ")));
@@ -762,7 +775,9 @@ mod tests {
     fn new_job_suffix_is_8_lowercase_hex() {
         let s = new_job_suffix();
         assert_eq!(s.len(), 8);
-        assert!(s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(s
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
@@ -781,7 +796,10 @@ mod tests {
         );
         // Empty secret is preserved.
         let h3 = base64::engine::general_purpose::STANDARD.encode("u:");
-        assert_eq!(decode_auth_header(&h3), Some(("u".to_string(), String::new())));
+        assert_eq!(
+            decode_auth_header(&h3),
+            Some(("u".to_string(), String::new()))
+        );
         // Garbage / colonless input rejected.
         assert_eq!(decode_auth_header("!!!not base64!!!"), None);
         let no_colon = base64::engine::general_purpose::STANDARD.encode("nocolon");
@@ -790,7 +808,10 @@ mod tests {
 
     #[test]
     fn shell_single_quote_escapes_embedded_quotes() {
-        assert_eq!(shell_single_quote("images.canfar.net/x:1"), "'images.canfar.net/x:1'");
+        assert_eq!(
+            shell_single_quote("images.canfar.net/x:1"),
+            "'images.canfar.net/x:1'"
+        );
         assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
     }
 
@@ -857,7 +878,13 @@ mod tests {
         assert_eq!(coord.store().count(), 1);
 
         // A failure outcome is not a cached success.
-        store.set_failure("img:2", category::UNKNOWN, "boom", None, "2026-07-07T00:00:00Z".to_string());
+        store.set_failure(
+            "img:2",
+            category::UNKNOWN,
+            "boom",
+            None,
+            "2026-07-07T00:00:00Z".to_string(),
+        );
         assert!(coord.cached_success("img:2").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);

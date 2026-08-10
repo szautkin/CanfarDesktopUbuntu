@@ -574,7 +574,10 @@ mod tests {
         assert_eq!(m.os_version, None);
         assert_eq!(m.dpkg, vec!["gcc".to_string(), "zlib".to_string()]);
         assert_eq!(m.capabilities, vec!["gpu".to_string()]);
-        assert_eq!(m.python_by_env.get("base"), Some(&vec!["numpy".to_string()]));
+        assert_eq!(
+            m.python_by_env.get("base"),
+            Some(&vec!["numpy".to_string()])
+        );
 
         // Idempotent.
         let mut again = m.clone();

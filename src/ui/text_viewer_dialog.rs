@@ -84,7 +84,10 @@ pub async fn show_tabbed_text_dialog(
 
     let notebook = gtk::Notebook::new();
     for (label, content) in tabs {
-        notebook.append_page(&make_text_panel(content), Some(&gtk::Label::new(Some(label))));
+        notebook.append_page(
+            &make_text_panel(content),
+            Some(&gtk::Label::new(Some(label))),
+        );
     }
 
     window.set_child(Some(&notebook));

@@ -327,7 +327,10 @@ mod tests {
 
     #[test]
     fn tr_falls_back_to_key_when_missing() {
-        assert_eq!(tr("__definitely_missing_key__"), "__definitely_missing_key__");
+        assert_eq!(
+            tr("__definitely_missing_key__"),
+            "__definitely_missing_key__"
+        );
     }
 
     #[test]
@@ -357,14 +360,20 @@ mod tests {
         // Escaped braces survive; a placeholder with no arg is left verbatim.
         assert_eq!(tr_fmt_apply("{{x}} {}", &[]), "{x} {}");
         // Surplus args are ignored, no panic.
-        assert_eq!(tr_fmt_apply("a {}", &[&1i32 as &dyn std::fmt::Display, &2i32]), "a 1");
+        assert_eq!(
+            tr_fmt_apply("a {}", &[&1i32 as &dyn std::fmt::Display, &2i32]),
+            "a 1"
+        );
     }
 
     #[test]
     fn tr_fmt_french_template_substitutes() {
         // The FR reverse-lookup + substitution path a `tr_fmt!` in French mode takes.
         let fr = FMT_EN_TO_FR.get("Error: {}").copied().unwrap();
-        assert_eq!(tr_fmt_apply(fr, &[&"boom" as &dyn std::fmt::Display]), "Erreur : boom");
+        assert_eq!(
+            tr_fmt_apply(fr, &[&"boom" as &dyn std::fmt::Display]),
+            "Erreur : boom"
+        );
     }
 
     #[test]
@@ -375,7 +384,11 @@ mod tests {
             s.match_indices("{}").count()
         }
         for (en, fr) in FMT_PAIRS {
-            assert_eq!(slots(en), slots(fr), "placeholder mismatch: {en:?} vs {fr:?}");
+            assert_eq!(
+                slots(en),
+                slots(fr),
+                "placeholder mismatch: {en:?} vs {fr:?}"
+            );
         }
     }
 

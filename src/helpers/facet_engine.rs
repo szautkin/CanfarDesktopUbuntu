@@ -106,11 +106,9 @@ impl Category {
             Category::OsFamily => s.os_family = None,
             Category::OsVersion => s.os_version = None,
             Category::Capabilities => s.capabilities.clear(),
-            Category::Python
-            | Category::R
-            | Category::Dpkg
-            | Category::Rpm
-            | Category::Apk => s.packages.clear(),
+            Category::Python | Category::R | Category::Dpkg | Category::Rpm | Category::Apk => {
+                s.packages.clear()
+            }
         }
         s
     }
@@ -121,14 +119,10 @@ impl Category {
         match self {
             Category::OsFamily => opt_eq(&q.os_family, value),
             Category::OsVersion => opt_eq(&q.os_version, value),
-            Category::Capabilities => {
-                q.capabilities.iter().any(|c| c.eq_ignore_ascii_case(value))
+            Category::Capabilities => q.capabilities.iter().any(|c| c.eq_ignore_ascii_case(value)),
+            Category::Python | Category::R | Category::Dpkg | Category::Rpm | Category::Apk => {
+                q.packages.iter().any(|p| p.eq_ignore_ascii_case(value))
             }
-            Category::Python
-            | Category::R
-            | Category::Dpkg
-            | Category::Rpm
-            | Category::Apk => q.packages.iter().any(|p| p.eq_ignore_ascii_case(value)),
         }
     }
 }
@@ -196,7 +190,10 @@ fn facets_from(manifests: &[ImageManifest], query: Option<&PackageQuery>) -> Vec
         for value in universe.into_keys() {
             let count = reachable_counts.get(&value).copied().unwrap_or(0);
             let enabled = if has_query {
-                count > 0 || query.map(|q| category.is_selected(q, &value)).unwrap_or(false)
+                count > 0
+                    || query
+                        .map(|q| category.is_selected(q, &value))
+                        .unwrap_or(false)
             } else {
                 true
             };
@@ -362,7 +359,10 @@ mod tests {
         // Python: numpy in both, astropy in one; sorted ascending.
         let py = facet(&facets, "Python");
         assert_eq!(
-            py.values.iter().map(|v| v.value.clone()).collect::<Vec<_>>(),
+            py.values
+                .iter()
+                .map(|v| v.value.clone())
+                .collect::<Vec<_>>(),
             vec!["astropy".to_string(), "numpy".to_string()]
         );
         assert_eq!(value(py, "numpy").count, 2);
@@ -377,8 +377,7 @@ mod tests {
         let tmp = TempStore::new();
         let store = tmp.store();
         let mut m = manifest("a:1", "ubuntu", "22.04", &["numpy"]);
-        m.python_by_env =
-            BTreeMap::from([("ml".to_string(), vec!["torch".to_string()])]);
+        m.python_by_env = BTreeMap::from([("ml".to_string(), vec!["torch".to_string()])]);
         m.capabilities = vec!["gpu".to_string()];
         store.set_manifest("a:1", m, AT.into());
 

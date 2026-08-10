@@ -306,8 +306,13 @@ mod tests {
             .contains("aperture_photometry"));
         // None / "" / "auto" all fall back to the image quick-look.
         for tmpl in [None, Some(""), Some("auto"), Some("IMAGE")] {
-            let stub = build_analysis_notebook(&obs(), tmpl).cells[2].source.joined();
-            assert!(stub.contains("ZScaleInterval"), "template {tmpl:?} should be image");
+            let stub = build_analysis_notebook(&obs(), tmpl).cells[2]
+                .source
+                .joined();
+            assert!(
+                stub.contains("ZScaleInterval"),
+                "template {tmpl:?} should be image"
+            );
         }
     }
 

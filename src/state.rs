@@ -33,7 +33,8 @@ pub struct AppServices {
     /// Per-image container-manifest discovery cache (shared with the coordinator).
     pub image_manifests: Arc<crate::services::manifest_store::JsonManifestStore>,
     /// Container-image probe orchestrator (schedules Skaha probe jobs).
-    pub image_discovery: Arc<crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator>,
+    pub image_discovery:
+        Arc<crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator>,
     /// Live MCP auto-apply policy flag (mirrors the persisted McpSettings toggle):
     /// when false, even non-destructive agent writes queue for review instead of
     /// auto-applying. Read by the router, updated by the Settings toggle.
@@ -51,14 +52,16 @@ pub struct AppServices {
 impl AppServices {
     pub fn new(
         rt: tokio::runtime::Handle,
-    ) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<notification_service::ToastMessage>) {
+    ) -> (
+        Arc<Self>,
+        tokio::sync::mpsc::UnboundedReceiver<notification_service::ToastMessage>,
+    ) {
         let settings = SettingsService::new();
         let config = settings.load();
         let endpoints = Arc::new(ApiEndpoints::new(config));
         let client = Client::new();
         let (toast, toast_rx) = ToastNotifier::new();
-        let image_manifests =
-            Arc::new(crate::services::manifest_store::JsonManifestStore::new());
+        let image_manifests = Arc::new(crate::services::manifest_store::JsonManifestStore::new());
 
         let services = Arc::new(AppServices {
             auth: AuthService::new(client.clone(), endpoints.clone()),
@@ -88,7 +91,8 @@ impl AppServices {
                 ),
             ),
             mcp_auto_apply: Arc::new(std::sync::atomic::AtomicBool::new(
-                crate::services::mcp_settings_service::McpSettingsService::new().auto_apply_enabled(),
+                crate::services::mcp_settings_service::McpSettingsService::new()
+                    .auto_apply_enabled(),
             )),
             mcp_follow_activity: Arc::new(std::sync::atomic::AtomicBool::new(
                 crate::services::mcp_settings_service::McpSettingsService::new()

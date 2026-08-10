@@ -190,7 +190,10 @@ mod tests {
             r#"Bearer realm="https://images.canfar.net/service/token",service="harbor-registry""#,
         )
         .expect("bearer");
-        assert_eq!(c.realm.as_deref(), Some("https://images.canfar.net/service/token"));
+        assert_eq!(
+            c.realm.as_deref(),
+            Some("https://images.canfar.net/service/token")
+        );
         assert_eq!(c.service.as_deref(), Some("harbor-registry"));
     }
 

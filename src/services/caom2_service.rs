@@ -189,9 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_publisher_id_maps_to_invalid_id() {
-        let result = service()
-            .get_by_publisher_id(None, "not-a-valid-uri")
-            .await;
+        let result = service().get_by_publisher_id(None, "not-a-valid-uri").await;
         assert_eq!(result.status, Caom2Status::InvalidId);
         assert!(result.observation.is_none());
     }

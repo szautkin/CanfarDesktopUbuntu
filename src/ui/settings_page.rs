@@ -163,9 +163,9 @@ impl SettingsPage {
             };
             config.borrow_mut().language = lang.to_string();
             let _ = services.settings.save(&config.borrow());
-            services
-                .toast
-                .toast(crate::tr_en!("Language change will take effect after restart"));
+            services.toast.toast(crate::tr_en!(
+                "Language change will take effect after restart"
+            ));
         });
         group.add(&lang_row);
 
@@ -175,7 +175,9 @@ impl SettingsPage {
     fn build_defaults_group(&self) {
         let group = adw::PreferencesGroup::new();
         group.set_title(crate::tr_en!("Session Defaults"));
-        group.set_description(Some(crate::tr_en!("Default values for new session launches")));
+        group.set_description(Some(crate::tr_en!(
+            "Default values for new session launches"
+        )));
 
         // Session type / cores / RAM persist in AppConfig; the resource preset and
         // GPU count are not AppConfig fields (grepped), so they live in a sibling
@@ -329,7 +331,9 @@ impl SettingsPage {
         // Clear all defaults — restore the built-in session-launch defaults.
         let clear_row = adw::ActionRow::new();
         clear_row.set_title(crate::tr_en!("Clear all defaults"));
-        clear_row.set_subtitle(crate::tr_en!("Restore the built-in session-launch defaults"));
+        clear_row.set_subtitle(crate::tr_en!(
+            "Restore the built-in session-launch defaults"
+        ));
         let clear_btn = gtk::Button::with_label(crate::tr_en!("Clear"));
         clear_btn.add_css_class("destructive-action");
         clear_btn.set_valign(gtk::Align::Center);
@@ -665,7 +669,9 @@ impl SettingsPage {
         // Collapsible "Service endpoints" editor with one row per base.
         let expander = adw::ExpanderRow::new();
         expander.set_title(crate::tr_en!("Service endpoints"));
-        expander.set_subtitle(crate::tr_en!("Advanced — repoint the app at another deployment"));
+        expander.set_subtitle(crate::tr_en!(
+            "Advanced — repoint the app at another deployment"
+        ));
 
         let rows: Rc<RefCell<Vec<adw::EntryRow>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -722,7 +728,10 @@ impl SettingsPage {
                 // (set_text re-fires connect_changed, which borrows config).
                 let values: Vec<String> = {
                     let c = config.borrow();
-                    ENDPOINT_FIELDS.iter().map(|(_, _, g, _)| g(&c).clone()).collect()
+                    ENDPOINT_FIELDS
+                        .iter()
+                        .map(|(_, _, g, _)| g(&c).clone())
+                        .collect()
                 };
                 for (row, value) in rows.borrow().iter().zip(values.iter()) {
                     row.set_text(value);
@@ -944,7 +953,9 @@ impl SettingsPage {
                 service.borrow().clear_secret();
                 secret_row.set_text("");
                 refresh_status();
-                services.toast.toast(crate::tr_en!("Registry secret removed"));
+                services
+                    .toast
+                    .toast(crate::tr_en!("Registry secret removed"));
             });
         }
         group.add(&secret_row);
@@ -1018,11 +1029,12 @@ impl SettingsPage {
                 let result_icon = result_icon.clone();
                 glib::spawn_future_local(async move {
                     // reqwest needs the tokio runtime — bridge via AppServices::spawn.
-                    let result = services
-                        .spawn(async move {
-                            test_registry_credentials(&host, &username, &secret).await
-                        })
-                        .await;
+                    let result =
+                        services
+                            .spawn(async move {
+                                test_registry_credentials(&host, &username, &secret).await
+                            })
+                            .await;
 
                     let (icon, css, title, message): (&str, &str, &str, String) = match &result {
                         CredTestResult::Success => (
@@ -1131,7 +1143,14 @@ impl SettingsPage {
 
         // Cores (1–64; the setter clamps).
         let cores_row = adw::SpinRow::new(
-            Some(&gtk::Adjustment::new(cores0 as f64, 1.0, 64.0, 1.0, 1.0, 0.0)),
+            Some(&gtk::Adjustment::new(
+                cores0 as f64,
+                1.0,
+                64.0,
+                1.0,
+                1.0,
+                0.0,
+            )),
             1.0,
             0,
         );
@@ -1146,7 +1165,14 @@ impl SettingsPage {
 
         // RAM in GB (1–256; the setter clamps).
         let ram_row = adw::SpinRow::new(
-            Some(&gtk::Adjustment::new(ram0 as f64, 1.0, 256.0, 1.0, 4.0, 0.0)),
+            Some(&gtk::Adjustment::new(
+                ram0 as f64,
+                1.0,
+                256.0,
+                1.0,
+                4.0,
+                0.0,
+            )),
             1.0,
             0,
         );
@@ -1340,11 +1366,12 @@ impl SettingsPage {
                 let result_icon = result_icon.clone();
                 glib::spawn_future_local(async move {
                     // reqwest needs the tokio runtime — bridge via AppServices::spawn.
-                    let result = services
-                        .spawn(async move {
-                            test_registry_credentials(&host, &username, &secret).await
-                        })
-                        .await;
+                    let result =
+                        services
+                            .spawn(async move {
+                                test_registry_credentials(&host, &username, &secret).await
+                            })
+                            .await;
 
                     let (icon, css, title, message): (&str, &str, &str, String) = match &result {
                         CredTestResult::Success => (

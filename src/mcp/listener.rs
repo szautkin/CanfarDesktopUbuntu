@@ -35,10 +35,7 @@ use crate::mcp::tools::ToolRouter;
 /// Returns only when [`UnixListener::accept`] itself errors (the loop is
 /// otherwise infinite); per-connection errors are swallowed inside the spawned
 /// task and never propagate here.
-pub async fn run(
-    router: Arc<dyn ToolRouter>,
-    gate: Arc<dyn ApprovalGate>,
-) -> io::Result<()> {
+pub async fn run(router: Arc<dyn ToolRouter>, gate: Arc<dyn ApprovalGate>) -> io::Result<()> {
     run_on_path(socket_path(), router, gate).await
 }
 

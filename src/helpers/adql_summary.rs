@@ -63,10 +63,7 @@ pub fn parse(adql: &str) -> AdqlSummary {
                 None => where_clause.trim().to_string(),
             };
             // Collapse whitespace for display
-            let compact = first
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
+            let compact = first.split_whitespace().collect::<Vec<_>>().join(" ");
             if !compact.is_empty() {
                 summary.first_filter = Some(compact);
             }
@@ -128,8 +125,7 @@ fn find_keyword(lower: &str, keyword: &str) -> Option<usize> {
         let abs = search_start + idx;
         let before_ok = abs == 0 || is_word_boundary(&lower[..abs], true);
         let after_idx = abs + kw_len;
-        let after_ok =
-            after_idx == lower.len() || is_word_boundary(&lower[after_idx..], false);
+        let after_ok = after_idx == lower.len() || is_word_boundary(&lower[after_idx..], false);
         if before_ok && after_ok {
             return Some(after_idx);
         }
@@ -158,8 +154,7 @@ fn count_word_occurrences(lower: &str, word: &str) -> usize {
         let abs = start + idx;
         let before_ok = abs == 0 || is_word_boundary(&lower[..abs], true);
         let after_idx = abs + word.len();
-        let after_ok =
-            after_idx == lower.len() || is_word_boundary(&lower[after_idx..], false);
+        let after_ok = after_idx == lower.len() || is_word_boundary(&lower[after_idx..], false);
         if before_ok && after_ok {
             count += 1;
         }
@@ -180,8 +175,7 @@ mod tests {
 
     #[test]
     fn counts_multiple_filters() {
-        let s =
-            parse("SELECT * FROM t WHERE a = 1 AND b = 2 AND c = 3 ORDER BY a");
+        let s = parse("SELECT * FROM t WHERE a = 1 AND b = 2 AND c = 3 ORDER BY a");
         assert_eq!(s.filter_count, 3);
         assert!(s.has_order_by);
     }

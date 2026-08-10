@@ -184,10 +184,21 @@ pub fn module_for_tool(name: &str) -> Option<&'static str> {
         n if n.contains("notebook") || n.contains("cell") || n.contains("kernel") => "notebook",
         n if n.contains("cube") => "cube",
         n if n.contains("fits") => "fits",
-        n if n.contains("storage") || n.contains("vospace") || n.contains("node")
-            || n.contains("folder") || n.contains("upload") => "storage",
-        n if n.contains("observation") || n.contains("research") || n.contains("caom2")
-            || n.contains("preview") => "research",
+        n if n.contains("storage")
+            || n.contains("vospace")
+            || n.contains("node")
+            || n.contains("folder")
+            || n.contains("upload") =>
+        {
+            "storage"
+        }
+        n if n.contains("observation")
+            || n.contains("research")
+            || n.contains("caom2")
+            || n.contains("preview") =>
+        {
+            "research"
+        }
         n if n.contains("session") || n.contains("headless") || n.contains("image") => "portal",
         n if n.contains("workflow") => "workflows",
         n if n.contains("search") || n.contains("vizier") => "search",

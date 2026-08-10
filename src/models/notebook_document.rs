@@ -155,10 +155,7 @@ impl CellSource {
                 if s.is_empty() {
                     return Vec::new();
                 }
-                let mut result: Vec<String> = s
-                    .split('\n')
-                    .map(|part| part.to_string())
-                    .collect();
+                let mut result: Vec<String> = s.split('\n').map(|part| part.to_string()).collect();
                 // Re-attach newlines to all lines except the last.
                 let last = result.len().saturating_sub(1);
                 for (i, line) in result.iter_mut().enumerate() {
@@ -385,7 +382,9 @@ mod tests {
 
     #[test]
     fn generate_cell_id_unique() {
-        let ids: Vec<String> = (0..20).map(|_| NotebookDocument::generate_cell_id()).collect();
+        let ids: Vec<String> = (0..20)
+            .map(|_| NotebookDocument::generate_cell_id())
+            .collect();
         let unique: std::collections::HashSet<&String> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len(), "IDs must all be unique");
     }

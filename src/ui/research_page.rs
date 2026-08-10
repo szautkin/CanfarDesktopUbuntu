@@ -115,7 +115,9 @@ impl ResearchPage {
         toolbar.add_css_class("toolbar");
 
         let filter_entry = gtk::SearchEntry::new();
-        filter_entry.set_placeholder_text(Some(crate::tr_en!("Search by collection, target, instrument…")));
+        filter_entry.set_placeholder_text(Some(crate::tr_en!(
+            "Search by collection, target, instrument…"
+        )));
         filter_entry.set_hexpand(true);
         toolbar.append(&filter_entry);
 
@@ -159,10 +161,10 @@ impl ResearchPage {
         let empty_status = adw::StatusPage::new();
         empty_status.set_icon_name(Some("document-open-recent-symbolic"));
         empty_status.set_title(crate::tr_en!("No Saved Observations"));
-        empty_status.set_description(Some(
-            crate::tr_en!("Search the CADC archive, then save or download observations \
-             to see them here."),
-        ));
+        empty_status.set_description(Some(crate::tr_en!(
+            "Search the CADC archive, then save or download observations \
+             to see them here."
+        )));
 
         // CTA button → jumps to the Search page
         let go_to_search_btn = gtk::Button::with_label(crate::tr_en!("Go to Search"));
@@ -223,9 +225,9 @@ impl ResearchPage {
         let detail_empty = adw::StatusPage::new();
         detail_empty.set_icon_name(Some("document-open-symbolic"));
         detail_empty.set_title(crate::tr_en!("Select an observation"));
-        detail_empty.set_description(Some(
-            crate::tr_en!("Saved observations from CADC archive searches appear on the left."),
-        ));
+        detail_empty.set_description(Some(crate::tr_en!(
+            "Saved observations from CADC archive searches appear on the left."
+        )));
         detail_stack.add_named(&detail_empty, Some("empty"));
 
         // Scrollable detail view — `detail_container` is cleared and
@@ -304,8 +306,8 @@ impl ResearchPage {
         // Row-selection → populate the detail pane on the right
         {
             let p = Rc::clone(&page);
-            page.list_box.connect_row_selected(move |_, row_opt| {
-                match row_opt {
+            page.list_box
+                .connect_row_selected(move |_, row_opt| match row_opt {
                     None => p.clear_detail(),
                     Some(row) => {
                         let idx = row.index() as usize;
@@ -315,8 +317,7 @@ impl ResearchPage {
                             p.show_detail(&obs);
                         }
                     }
-                }
-            });
+                });
         }
         // Redundant row-activated handler for activatable rows (clicks)
         {
@@ -569,9 +570,9 @@ impl ResearchPage {
         } else if !obs.thumbnail_url.is_empty() || !obs.preview_url.is_empty() {
             // Legacy record saved before managed storage was introduced.
             // Show a subtle banner telling the user to re-save for offline access.
-            let banner = gtk::Label::new(Some(
-                crate::tr_en!("Legacy record — re-save from the Search page to cache the preview locally."),
-            ));
+            let banner = gtk::Label::new(Some(crate::tr_en!(
+                "Legacy record — re-save from the Search page to cache the preview locally."
+            )));
             banner.add_css_class("dim-label");
             banner.add_css_class("caption");
             banner.set_wrap(true);
@@ -628,8 +629,7 @@ impl ResearchPage {
         action_row.set_margin_top(6);
         action_row.set_margin_bottom(6);
 
-        let file_exists = !obs.is_bookmarked()
-            && std::path::Path::new(&obs.local_path).exists();
+        let file_exists = !obs.is_bookmarked() && std::path::Path::new(&obs.local_path).exists();
 
         // Open File (shown when file exists)
         if file_exists {
@@ -644,8 +644,9 @@ impl ResearchPage {
             let svc = self.services.clone();
             open_btn.connect_clicked(move |_| {
                 if !std::path::Path::new(&local_path).exists() {
-                    svc.toast
-                        .toast(crate::tr_en!("File not found — it may have been moved or deleted"));
+                    svc.toast.toast(crate::tr_en!(
+                        "File not found — it may have been moved or deleted"
+                    ));
                     return;
                 }
                 if let Some(app) = app_ref.borrow().as_ref() {
@@ -744,7 +745,8 @@ impl ResearchPage {
                             .toast(&format!("Could not open file manager: {}", e));
                     }
                 } else {
-                    svc.toast.toast(crate::tr_en!("Unable to locate parent directory"));
+                    svc.toast
+                        .toast(crate::tr_en!("Unable to locate parent directory"));
                 }
             });
             action_row.append(&show_btn);
@@ -897,15 +899,39 @@ impl ResearchPage {
             }
         };
 
-        add_row(&metadata_group, crate::tr_en!("Collection"), &obs.collection);
-        add_row(&metadata_group, crate::tr_en!("Observation ID"), &obs.observation_id);
-        add_row(&metadata_group, crate::tr_en!("Target Name"), &obs.target_name);
-        add_row(&metadata_group, crate::tr_en!("Instrument"), &obs.instrument);
+        add_row(
+            &metadata_group,
+            crate::tr_en!("Collection"),
+            &obs.collection,
+        );
+        add_row(
+            &metadata_group,
+            crate::tr_en!("Observation ID"),
+            &obs.observation_id,
+        );
+        add_row(
+            &metadata_group,
+            crate::tr_en!("Target Name"),
+            &obs.target_name,
+        );
+        add_row(
+            &metadata_group,
+            crate::tr_en!("Instrument"),
+            &obs.instrument,
+        );
         add_row(&metadata_group, crate::tr_en!("Filter"), &obs.filter);
         add_row(&metadata_group, crate::tr_en!("RA (J2000)"), &obs.ra);
         add_row(&metadata_group, crate::tr_en!("Dec (J2000)"), &obs.dec);
-        add_row(&metadata_group, crate::tr_en!("Start Date"), &obs.start_date);
-        add_row(&metadata_group, crate::tr_en!("Calibration Level"), &obs.cal_level);
+        add_row(
+            &metadata_group,
+            crate::tr_en!("Start Date"),
+            &obs.start_date,
+        );
+        add_row(
+            &metadata_group,
+            crate::tr_en!("Calibration Level"),
+            &obs.cal_level,
+        );
         self.detail_container.append(&metadata_group);
 
         // ── File Info group ────────────────────────────────────────────
@@ -916,7 +942,9 @@ impl ResearchPage {
         if obs.is_bookmarked() {
             let row = adw::ActionRow::builder()
                 .title(crate::tr_en!("Status"))
-                .subtitle(crate::tr_en!("Bookmarked (metadata only — no file downloaded)"))
+                .subtitle(crate::tr_en!(
+                    "Bookmarked (metadata only — no file downloaded)"
+                ))
                 .build();
             file_group.add(&row);
         } else {
@@ -932,8 +960,16 @@ impl ResearchPage {
             };
             add_row(&file_group, crate::tr_en!("File exists"), exists_str);
         }
-        add_row(&file_group, crate::tr_en!("Saved at"), &format_rfc3339(&obs.downloaded_at));
-        add_row(&file_group, crate::tr_en!("Publisher ID"), &obs.publisher_id);
+        add_row(
+            &file_group,
+            crate::tr_en!("Saved at"),
+            &format_rfc3339(&obs.downloaded_at),
+        );
+        add_row(
+            &file_group,
+            crate::tr_en!("Publisher ID"),
+            &obs.publisher_id,
+        );
         self.detail_container.append(&file_group);
 
         // ── Research Notes editor (rating + note + tags, debounced autosave) ─
@@ -1006,7 +1042,11 @@ impl ResearchPage {
                 let clicked = i + 1;
                 // Clicking the current top star clears the rating (matches the
                 // reference RatingControl's IsClearEnabled behavior).
-                let new = if this.note_rating.get() == clicked { 0 } else { clicked };
+                let new = if this.note_rating.get() == clicked {
+                    0
+                } else {
+                    clicked
+                };
                 this.set_rating(new);
                 this.schedule_note_save();
             });
@@ -1186,7 +1226,9 @@ impl ResearchPage {
         drop(list);
 
         self.rebuild_rows(&remaining);
-        self.services.toast.toast(crate::tr_en!("Removed from Research"));
+        self.services
+            .toast
+            .toast(crate::tr_en!("Removed from Research"));
     }
 
     // -----------------------------------------------------------------------
@@ -1204,15 +1246,17 @@ impl ResearchPage {
 
         let publisher_id = obs.publisher_id.clone();
         if publisher_id.is_empty() {
-            self.services
-                .toast
-                .toast(crate::tr_en!("No publisher ID — cannot download this observation"));
+            self.services.toast.toast(crate::tr_en!(
+                "No publisher ID — cannot download this observation"
+            ));
             self.show_detail(obs);
             return;
         }
 
         // ── Resolve DataLink for the #this science URL (off-thread) ────────
-        self.services.toast.toast(crate::tr_en!("Resolving download link…"));
+        self.services
+            .toast
+            .toast(crate::tr_en!("Resolving download link…"));
         let svc = self.services.clone();
         let pid = publisher_id.clone();
         let dl_result = self
@@ -1264,7 +1308,9 @@ impl ResearchPage {
         } else {
             publisher_id.clone()
         };
-        self.services.toast.toast(&format!("Downloading {}…", label));
+        self.services
+            .toast
+            .toast(&format!("Downloading {}…", label));
 
         let svc = self.services.clone();
         let url_clone = science_url.clone();
@@ -1289,7 +1335,9 @@ impl ResearchPage {
         let file_size = match dl {
             Ok(n) => n,
             Err(e) => {
-                self.services.toast.toast(&format!("Download failed: {}", e));
+                self.services
+                    .toast
+                    .toast(&format!("Download failed: {}", e));
                 self.show_detail(obs);
                 return;
             }
@@ -1348,11 +1396,9 @@ impl ResearchPage {
 
         let include_notes = gtk::CheckButton::with_label(crate::tr_en!("Include research notes"));
         include_notes.set_active(true);
-        let include_history =
-            gtk::CheckButton::with_label(crate::tr_en!("Include search history"));
+        let include_history = gtk::CheckButton::with_label(crate::tr_en!("Include search history"));
         include_history.set_active(true);
-        let upload_vospace =
-            gtk::CheckButton::with_label(crate::tr_en!("Upload to VOSpace"));
+        let upload_vospace = gtk::CheckButton::with_label(crate::tr_en!("Upload to VOSpace"));
         upload_vospace.set_active(false);
         content.append(&include_notes);
         content.append(&include_history);
@@ -1393,9 +1439,9 @@ impl ResearchPage {
         let recent = self.services.search_store.load_recent();
 
         if observations.is_empty() && notes.is_empty() && saved.is_empty() && recent.is_empty() {
-            self.services
-                .toast
-                .toast(crate::tr_en!("Nothing to export yet — save an observation first"));
+            self.services.toast.toast(crate::tr_en!(
+                "Nothing to export yet — save an observation first"
+            ));
             return;
         }
 
@@ -1411,8 +1457,10 @@ impl ResearchPage {
         zip_filter.add_pattern("*.zip");
         filters.append(&zip_filter);
 
-        let default_name =
-            format!("{}.zip", crate::helpers::research_exporter::bundle_name(now));
+        let default_name = format!(
+            "{}.zip",
+            crate::helpers::research_exporter::bundle_name(now)
+        );
         let dialog = gtk::FileDialog::builder()
             .title(crate::tr_en!("Export Research Bundle"))
             .modal(true)
@@ -1475,7 +1523,11 @@ impl ResearchPage {
             "Exported {} ({} observation{}, {} note{}, {} quer{}, {} recent) to {}",
             summary.bundle_name,
             summary.observation_count,
-            if summary.observation_count == 1 { "" } else { "s" },
+            if summary.observation_count == 1 {
+                ""
+            } else {
+                "s"
+            },
             summary.note_count,
             if summary.note_count == 1 { "" } else { "s" },
             summary.saved_count,
@@ -1538,7 +1590,10 @@ impl ResearchPage {
                     .toast
                     .toast(format!("Uploaded to vos:{user}/{remote_path}"));
             }
-            Err(e) => self.services.toast.toast(format!("VOSpace upload failed: {e}")),
+            Err(e) => self
+                .services
+                .toast
+                .toast(format!("VOSpace upload failed: {e}")),
         }
     }
 }
@@ -1708,7 +1763,8 @@ mod tests {
     #[test]
     fn attribution_from_full_json_round_trip() {
         let mut obs = blank_obs();
-        let original = AgentAttribution::new("Claude Code", "save_observation", "2026-01-02T03:04:05Z");
+        let original =
+            AgentAttribution::new("Claude Code", "save_observation", "2026-01-02T03:04:05Z");
         obs.agent_attribution = Some(serde_json::to_string(&original).unwrap());
         let attr = agent_attribution_from(&obs).expect("some attribution");
         assert_eq!(attr, original);

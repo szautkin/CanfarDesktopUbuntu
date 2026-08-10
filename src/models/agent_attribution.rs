@@ -19,7 +19,11 @@ pub struct AgentAttribution {
 }
 
 impl AgentAttribution {
-    pub fn new(client: impl Into<String>, tool: impl Into<String>, timestamp: impl Into<String>) -> Self {
+    pub fn new(
+        client: impl Into<String>,
+        tool: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
         let client = client.into();
         let fingerprint = fingerprint(&client);
         AgentAttribution {

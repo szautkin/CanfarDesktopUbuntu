@@ -87,14 +87,21 @@ async fn handshake_client(path: &Path) -> Vec<String> {
             "clientInfo": { "name": "e2e-client", "version": "1" }
         }
     });
-    write_frame(&mut wr, &serde_json::to_vec(&init).unwrap()).await.unwrap();
+    write_frame(&mut wr, &serde_json::to_vec(&init).unwrap())
+        .await
+        .unwrap();
     let init_reply = read_json(&mut reader).await;
     // The server must echo the client's protocol version, never pin its own.
     assert_eq!(init_reply["result"]["protocolVersion"], json!("2024-11-05"));
-    assert_eq!(init_reply["result"]["serverInfo"]["name"], json!(SERVER_NAME));
+    assert_eq!(
+        init_reply["result"]["serverInfo"]["name"],
+        json!(SERVER_NAME)
+    );
 
     let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
-    write_frame(&mut wr, &serde_json::to_vec(&list).unwrap()).await.unwrap();
+    write_frame(&mut wr, &serde_json::to_vec(&list).unwrap())
+        .await
+        .unwrap();
     let list_reply = read_json(&mut reader).await;
     list_reply["result"]["tools"]
         .as_array()

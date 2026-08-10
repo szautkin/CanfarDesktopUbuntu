@@ -233,7 +233,8 @@ impl CanfarImagesView {
                 self.rebuild_rows();
             }
             Err(e) => {
-                self.subtitle.set_text(&format!("Failed to load images: {e}"));
+                self.subtitle
+                    .set_text(&format!("Failed to load images: {e}"));
             }
         }
     }
@@ -545,7 +546,11 @@ mod tests {
     fn status_of_maps_three_states() {
         assert_eq!(status_of(None), DiscoveryStatus::Unknown);
         assert_eq!(
-            status_of(Some(&discovered_outcome(Some("ubuntu"), Some("22.04"), &["numpy"]))),
+            status_of(Some(&discovered_outcome(
+                Some("ubuntu"),
+                Some("22.04"),
+                &["numpy"]
+            ))),
             DiscoveryStatus::Discovered
         );
         let failed = LastOutcome::failure("img:1", "JobTimedOut", "timed out", None, AT);
@@ -598,7 +603,8 @@ mod tests {
 
     #[test]
     fn meta_line_failed_uses_message_then_category() {
-        let with_msg = LastOutcome::failure("img:1", "JobTimedOut", "the probe timed out", None, AT);
+        let with_msg =
+            LastOutcome::failure("img:1", "JobTimedOut", "the probe timed out", None, AT);
         assert_eq!(meta_line(Some(&with_msg), "img:1"), "the probe timed out");
 
         let blank_msg = LastOutcome::failure("img:1", "JobTimedOut", "  ", None, AT);
@@ -607,7 +613,10 @@ mod tests {
 
     #[test]
     fn meta_line_never_shows_image_id() {
-        assert_eq!(meta_line(None, "images.canfar.net/skaha/base:1.0"), "images.canfar.net/skaha/base:1.0");
+        assert_eq!(
+            meta_line(None, "images.canfar.net/skaha/base:1.0"),
+            "images.canfar.net/skaha/base:1.0"
+        );
     }
 
     #[test]
@@ -620,11 +629,26 @@ mod tests {
 
     #[test]
     fn status_icon_and_css_track_state() {
-        assert_eq!(status_icon(DiscoveryStatus::Discovered, false), "emblem-ok-symbolic");
-        assert_eq!(status_icon(DiscoveryStatus::Failed, false), "dialog-warning-symbolic");
-        assert_eq!(status_icon(DiscoveryStatus::Discovered, true), "content-loading-symbolic");
-        assert_eq!(status_icon_css(DiscoveryStatus::Discovered, false), Some("success"));
-        assert_eq!(status_icon_css(DiscoveryStatus::Failed, false), Some("warning"));
+        assert_eq!(
+            status_icon(DiscoveryStatus::Discovered, false),
+            "emblem-ok-symbolic"
+        );
+        assert_eq!(
+            status_icon(DiscoveryStatus::Failed, false),
+            "dialog-warning-symbolic"
+        );
+        assert_eq!(
+            status_icon(DiscoveryStatus::Discovered, true),
+            "content-loading-symbolic"
+        );
+        assert_eq!(
+            status_icon_css(DiscoveryStatus::Discovered, false),
+            Some("success")
+        );
+        assert_eq!(
+            status_icon_css(DiscoveryStatus::Failed, false),
+            Some("warning")
+        );
         assert_eq!(status_icon_css(DiscoveryStatus::Discovered, true), None);
     }
 }

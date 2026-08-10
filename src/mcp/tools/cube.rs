@@ -150,10 +150,7 @@ pub async fn dispatch(
 }
 
 /// Cube tools never enqueue write proposals — they act directly on the live viewer.
-pub async fn apply(
-    _s: &AppServices,
-    _p: &PendingProposal,
-) -> Option<Result<String, String>> {
+pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<String, String>> {
     None
 }
 
@@ -179,7 +176,10 @@ mod tests {
     fn tool_names_match_op_table() {
         let names: Vec<String> = descriptors().iter().map(|d| d.name.clone()).collect();
         for op in TOOLS {
-            assert!(names.contains(&op.to_string()), "missing descriptor for op {op}");
+            assert!(
+                names.contains(&op.to_string()),
+                "missing descriptor for op {op}"
+            );
         }
         assert_eq!(names.len(), TOOLS.len());
     }

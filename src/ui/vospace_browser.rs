@@ -337,11 +337,8 @@ impl VoSpaceBrowser {
             );
             drop_target.connect_drop(move |_, value, _, _| {
                 if let Ok(file_list) = value.get::<gtk::gdk::FileList>() {
-                    let paths: Vec<std::path::PathBuf> = file_list
-                        .files()
-                        .iter()
-                        .filter_map(|f| f.path())
-                        .collect();
+                    let paths: Vec<std::path::PathBuf> =
+                        file_list.files().iter().filter_map(|f| f.path()).collect();
                     if !paths.is_empty() {
                         let b = b.clone();
                         glib::spawn_future_local(async move {
@@ -511,7 +508,8 @@ impl VoSpaceBrowser {
 
         let path = self.current_path.borrow().clone();
         self.breadcrumb_label.set_text(&format!("/{}", path));
-        self.status_label.set_text(&crate::tr_fmt!("{} items", count));
+        self.status_label
+            .set_text(&crate::tr_fmt!("{} items", count));
 
         // Store sorted order so row index callbacks stay consistent
         *self.nodes.borrow_mut() = nodes;
@@ -593,9 +591,7 @@ impl VoSpaceBrowser {
             del_btn.connect_clicked(move |_| {
                 let b = b.clone();
                 let del_btn2 = del_btn2.clone();
-                glib::spawn_future_local(
-                    async move { b.action_delete(idx, &del_btn2).await },
-                );
+                glib::spawn_future_local(async move { b.action_delete(idx, &del_btn2).await });
             });
             row_box.append(&del_btn);
         }
@@ -745,9 +741,7 @@ impl VoSpaceBrowser {
             .await;
 
         match result {
-            Ok(bytes) => {
-                self.show_toast(&crate::tr_fmt!("Downloaded {} ({} bytes)", fname, bytes))
-            }
+            Ok(bytes) => self.show_toast(&crate::tr_fmt!("Downloaded {} ({} bytes)", fname, bytes)),
             Err(e) => self.show_toast(&crate::tr_fmt!("Download failed: {}", e)),
         }
     }
@@ -1205,7 +1199,9 @@ impl VoSpaceBrowser {
     async fn upload_files_dialog(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>) {
         let root = parent.root().and_downcast::<gtk::Window>();
 
-        let dialog = gtk::FileDialog::builder().title(crate::tr_en!("Upload Files")).build();
+        let dialog = gtk::FileDialog::builder()
+            .title(crate::tr_en!("Upload Files"))
+            .build();
 
         let files = match dialog.open_multiple_future(root.as_ref()).await {
             Ok(f) => f,
@@ -1375,11 +1371,20 @@ fn build_context_menu(
 ) {
     let menu = gtk::gio::Menu::new();
     if node_is_fits {
-        menu.append(Some(crate::tr_en!("Open in FITS Viewer")), Some("row.open-fits"));
-        menu.append(Some(crate::tr_en!("Open in Cube Viewer")), Some("row.open-cube"));
+        menu.append(
+            Some(crate::tr_en!("Open in FITS Viewer")),
+            Some("row.open-fits"),
+        );
+        menu.append(
+            Some(crate::tr_en!("Open in Cube Viewer")),
+            Some("row.open-cube"),
+        );
     }
     if node_is_notebook {
-        menu.append(Some(crate::tr_en!("Open in Notebook")), Some("row.open-notebook"));
+        menu.append(
+            Some(crate::tr_en!("Open in Notebook")),
+            Some("row.open-notebook"),
+        );
     }
     if !node_is_container {
         menu.append(Some(crate::tr_en!("Download")), Some("row.download"));

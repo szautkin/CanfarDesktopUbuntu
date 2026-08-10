@@ -31,8 +31,8 @@ pub async fn fetch_observation_preview(
         .map_err(|e| e.to_string())?;
 
     // 2. Pick an image `#preview` row (HTTPS only); never a science frame.
-    let preview = pick_preview(&links.files)
-        .ok_or_else(|| format!("no preview image for {publisher_id}"))?;
+    let preview =
+        pick_preview(&links.files).ok_or_else(|| format!("no preview image for {publisher_id}"))?;
     let url = preview.url.clone();
     let declared_type = preview.content_type.clone();
 

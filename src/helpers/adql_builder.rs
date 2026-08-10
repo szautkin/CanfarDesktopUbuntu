@@ -141,7 +141,12 @@ fn add_spatial_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
                 &range,
                 &state.pixel_scale_unit,
                 clauses,
-                |v, u| v.trim().parse::<f64>().ok().and_then(|n| unit_converter::to_degrees(n, u)),
+                |v, u| {
+                    v.trim()
+                        .parse::<f64>()
+                        .ok()
+                        .and_then(|n| unit_converter::to_degrees(n, u))
+                },
             );
         }
     } else if let Some(ps) = state.pixel_scale_max {
@@ -441,7 +446,11 @@ fn date_to_mjd_flexible(s: &str) -> Option<f64> {
 fn expand_date_to_mjd_range(s: &str) -> Option<(f64, f64)> {
     let (start, end) = expand_single_date(s.trim());
     let lo = date_to_mjd(&start)?;
-    let hi = if end.is_empty() { lo } else { date_to_mjd(&end)? };
+    let hi = if end.is_empty() {
+        lo
+    } else {
+        date_to_mjd(&end)?
+    };
     Some((lo, hi))
 }
 
@@ -486,10 +495,7 @@ fn expand_single_date(input: &str) -> (String, String) {
 
     // Year only: "2020"
     if input.len() == 4 && input.chars().all(|c| c.is_ascii_digit()) {
-        return (
-            format!("{}-01-01", input),
-            format!("{}-12-31", input),
-        );
+        return (format!("{}-01-01", input), format!("{}-12-31", input));
     }
 
     // Year-month: "2020-06"
@@ -534,7 +540,11 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         let hi = convert_spectral_to_metres(wmax, &state.wavelength_unit);
         if let (Some(lo_m), Some(hi_m)) = (lo, hi) {
             // Swap if frequency/energy units cause inversion
-            let (lo_m, hi_m) = if lo_m > hi_m { (hi_m, lo_m) } else { (lo_m, hi_m) };
+            let (lo_m, hi_m) = if lo_m > hi_m {
+                (hi_m, lo_m)
+            } else {
+                (lo_m, hi_m)
+            };
             // Overlap: obs_lower <= query_hi AND query_lo <= obs_upper
             clauses.push(format!(
                 "Plane.energy_bounds_lower <= {} AND {} <= Plane.energy_bounds_upper",
@@ -591,7 +601,12 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
                 &range,
                 &state.spectral_sampling_unit,
                 clauses,
-                |v, u| v.trim().parse::<f64>().ok().and_then(|n| convert_spectral_to_metres(n, u)),
+                |v, u| {
+                    v.trim()
+                        .parse::<f64>()
+                        .ok()
+                        .and_then(|n| convert_spectral_to_metres(n, u))
+                },
             );
         }
     } else if let Some(ss) = state.spectral_sampling {
@@ -987,7 +1002,11 @@ mod tests {
         state.target = "10.68 41.27".to_string();
         state.search_radius = 0.1;
         let adql = build(&state);
-        assert!(adql.contains("CIRCLE('ICRS', 10.68, 41.27, 0.1)"), "{}", adql);
+        assert!(
+            adql.contains("CIRCLE('ICRS', 10.68, 41.27, 0.1)"),
+            "{}",
+            adql
+        );
         assert!(adql.contains(", Plane.position_bounds ) = 1"));
         // Not treated as a target-name LIKE (the SELECT still lists target_name).
         assert!(!adql.contains("lower(Observation.target_name)"));
@@ -1009,7 +1028,11 @@ mod tests {
         let adql = build(&state);
         // 5 arcmin == 5/60 deg.
         let deg = 5.0 / 60.0;
-        assert!(adql.contains(&format!("CIRCLE('ICRS', 10, 20, {})", deg)), "{}", adql);
+        assert!(
+            adql.contains(&format!("CIRCLE('ICRS', 10, 20, {})", deg)),
+            "{}",
+            adql
+        );
     }
 
     #[test]
@@ -1027,7 +1050,11 @@ mod tests {
         let mut state = SearchFormState::new();
         state.target = "M31".to_string();
         let adql = build(&state);
-        assert!(adql.contains("lower(Observation.target_name) LIKE"), "{}", adql);
+        assert!(
+            adql.contains("lower(Observation.target_name) LIKE"),
+            "{}",
+            adql
+        );
         assert!(adql.contains("%m31%") || adql.contains("%M31%"));
 
         // Plain name, resolved coords present → CIRCLE from resolved coords.
@@ -1065,12 +1092,20 @@ mod tests {
         eq.data_release = "2020".to_string();
         let a = build(&eq);
         // Equals on a bare year expands to a >= .. AND <= .. range.
-        assert!(a.contains("Plane.dataRelease >=") && a.contains("Plane.dataRelease <="), "{}", a);
+        assert!(
+            a.contains("Plane.dataRelease >=") && a.contains("Plane.dataRelease <="),
+            "{}",
+            a
+        );
 
         let mut bt = SearchFormState::new();
         bt.data_release = "2019-01-01..2021-01-01".to_string();
         let b = build(&bt);
-        assert!(b.contains("Plane.dataRelease >=") && b.contains("Plane.dataRelease <="), "{}", b);
+        assert!(
+            b.contains("Plane.dataRelease >=") && b.contains("Plane.dataRelease <="),
+            "{}",
+            b
+        );
     }
 
     #[test]
@@ -1110,14 +1145,22 @@ mod tests {
         gt.spectral_sampling_unit = "nm".to_string();
         let a = build(&gt);
         let m = 0.5e-9;
-        assert!(a.contains(&format!("Plane.energy_sampleSize > {}", m)), "{}", a);
+        assert!(
+            a.contains(&format!("Plane.energy_sampleSize > {}", m)),
+            "{}",
+            a
+        );
 
         // `<=` operator.
         let mut le = SearchFormState::new();
         le.spectral_sampling_raw = Some("<= 2".to_string());
         le.spectral_sampling_unit = "nm".to_string();
         let b = build(&le);
-        assert!(b.contains(&format!("Plane.energy_sampleSize <= {}", 2e-9)), "{}", b);
+        assert!(
+            b.contains(&format!("Plane.energy_sampleSize <= {}", 2e-9)),
+            "{}",
+            b
+        );
 
         // `A..B` between range, normalised low→high.
         let mut bt = SearchFormState::new();
@@ -1138,7 +1181,11 @@ mod tests {
         eq.spectral_sampling_raw = Some("5".to_string());
         eq.spectral_sampling_unit = "nm".to_string();
         let d = build(&eq);
-        assert!(d.contains(&format!("Plane.energy_sampleSize = {}", 5e-9)), "{}", d);
+        assert!(
+            d.contains(&format!("Plane.energy_sampleSize = {}", 5e-9)),
+            "{}",
+            d
+        );
     }
 
     #[test]
@@ -1149,7 +1196,11 @@ mod tests {
         state.spectral_sampling_raw = Some(">= 1".to_string());
         state.spectral_sampling_unit = "nm".to_string();
         let adql = build(&state);
-        assert!(adql.contains(&format!("Plane.energy_sampleSize >= {}", 1e-9)), "{}", adql);
+        assert!(
+            adql.contains(&format!("Plane.energy_sampleSize >= {}", 1e-9)),
+            "{}",
+            adql
+        );
         assert!(!adql.contains("Plane.energy_sampleSize <="), "{}", adql);
 
         // With no raw text, the legacy numeric field still emits `<=`.
@@ -1157,7 +1208,11 @@ mod tests {
         legacy.spectral_sampling = Some(4.0);
         legacy.spectral_sampling_unit = "nm".to_string();
         let l = build(&legacy);
-        assert!(l.contains(&format!("Plane.energy_sampleSize <= {}", 4e-9)), "{}", l);
+        assert!(
+            l.contains(&format!("Plane.energy_sampleSize <= {}", 4e-9)),
+            "{}",
+            l
+        );
     }
 
     #[test]
@@ -1168,7 +1223,11 @@ mod tests {
         let adql = build(&state);
         // 0.2 arcsec == 0.2/3600 deg.
         let deg = 0.2 / 3600.0;
-        assert!(adql.contains(&format!("Plane.position_sampleSize > {}", deg)), "{}", adql);
+        assert!(
+            adql.contains(&format!("Plane.position_sampleSize > {}", deg)),
+            "{}",
+            adql
+        );
     }
 
     #[test]
@@ -1176,19 +1235,43 @@ mod tests {
         let ident = |v: &str, _u: &str| v.trim().parse::<f64>().ok();
 
         let mut c = Vec::new();
-        add_converted_range_clause("X", &range_parser::parse_range("5..1").unwrap(), "", &mut c, ident);
+        add_converted_range_clause(
+            "X",
+            &range_parser::parse_range("5..1").unwrap(),
+            "",
+            &mut c,
+            ident,
+        );
         assert_eq!(c[0], "X >= 1 AND X <= 5"); // normalised low→high
 
         let mut c = Vec::new();
-        add_converted_range_clause("X", &range_parser::parse_range(">= 3").unwrap(), "", &mut c, ident);
+        add_converted_range_clause(
+            "X",
+            &range_parser::parse_range(">= 3").unwrap(),
+            "",
+            &mut c,
+            ident,
+        );
         assert_eq!(c[0], "X >= 3");
 
         let mut c = Vec::new();
-        add_converted_range_clause("X", &range_parser::parse_range("< 7").unwrap(), "", &mut c, ident);
+        add_converted_range_clause(
+            "X",
+            &range_parser::parse_range("< 7").unwrap(),
+            "",
+            &mut c,
+            ident,
+        );
         assert_eq!(c[0], "X < 7");
 
         let mut c = Vec::new();
-        add_converted_range_clause("X", &range_parser::parse_range("42").unwrap(), "", &mut c, ident);
+        add_converted_range_clause(
+            "X",
+            &range_parser::parse_range("42").unwrap(),
+            "",
+            &mut c,
+            ident,
+        );
         assert_eq!(c[0], "X = 42");
     }
 }

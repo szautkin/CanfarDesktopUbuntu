@@ -141,7 +141,10 @@ mod tests {
     #[test]
     fn time_ago_unparseable_echoes_raw() {
         assert_eq!(time_ago("not-a-date", "2026-06-23T12:00:00Z"), "not-a-date");
-        assert_eq!(time_ago("2026-06-23T12:00:00Z", "garbage"), "2026-06-23T12:00:00Z");
+        assert_eq!(
+            time_ago("2026-06-23T12:00:00Z", "garbage"),
+            "2026-06-23T12:00:00Z"
+        );
     }
 
     #[test]

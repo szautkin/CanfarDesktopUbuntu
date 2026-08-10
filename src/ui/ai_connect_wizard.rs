@@ -302,13 +302,13 @@ picks this up the next time it launches.",
         let services = services.clone();
         let status_label = status_label.clone();
         move |btn| {
-            let gate: Arc<dyn crate::mcp::server::ApprovalGate> =
-                Arc::new(crate::mcp::client_approval::ApprovalStoreGate::new(
-                    services.mcp_clients.clone(),
-                ));
+            let gate: Arc<dyn crate::mcp::server::ApprovalGate> = Arc::new(
+                crate::mcp::client_approval::ApprovalStoreGate::new(services.mcp_clients.clone()),
+            );
             services.mcp_host.start(services.clone(), gate);
             // Remember it's on so it auto-starts on the next launch.
-            crate::services::mcp_settings_service::McpSettingsService::new().set_server_enabled(true);
+            crate::services::mcp_settings_service::McpSettingsService::new()
+                .set_server_enabled(true);
             status_label.remove_css_class("error");
             status_label.set_text("MCP server is running.");
             btn.set_sensitive(false);

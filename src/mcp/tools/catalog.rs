@@ -93,7 +93,10 @@ mod tests {
             let r = router
                 .dispatch("delete_node", serde_json::json!({ "path": "/a/x" }), &ctx_a)
                 .await;
-            assert!(matches!(r, ToolResult::Proposed(_)), "expected a queued proposal");
+            assert!(
+                matches!(r, ToolResult::Proposed(_)),
+                "expected a queued proposal"
+            );
 
             // Agent B (a different external client) sees NONE of A's proposals.
             let ctx_b = ToolContext::for_external("agent-B".into(), "req-2".into());
@@ -101,7 +104,11 @@ mod tests {
                 .dispatch("list_pending_proposals", serde_json::json!({}), &ctx_b)
                 .await;
             if let ToolResult::Data(v) = list_b {
-                assert_eq!(v["proposals"].as_array().unwrap().len(), 0, "agent B leaked A's proposals");
+                assert_eq!(
+                    v["proposals"].as_array().unwrap().len(),
+                    0,
+                    "agent B leaked A's proposals"
+                );
             } else {
                 panic!("list_pending_proposals should return Data");
             }
@@ -111,7 +118,11 @@ mod tests {
                 .dispatch("list_pending_proposals", serde_json::json!({}), &ctx_a)
                 .await;
             if let ToolResult::Data(v) = list_a {
-                assert_eq!(v["proposals"].as_array().unwrap().len(), 1, "agent A should see its own proposal");
+                assert_eq!(
+                    v["proposals"].as_array().unwrap().len(),
+                    1,
+                    "agent A should see its own proposal"
+                );
             } else {
                 panic!("list_pending_proposals should return Data");
             }

@@ -218,7 +218,10 @@ fn read_list_guide_tools(services: &AppServices) -> ToolResult {
         .collect();
     // Stable ordering for agents that diff the output.
     overrides.sort_by(|a, b| {
-        a["tool"].as_str().unwrap_or("").cmp(b["tool"].as_str().unwrap_or(""))
+        a["tool"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["tool"].as_str().unwrap_or(""))
     });
 
     let guides: Vec<Value> = snap
@@ -247,9 +250,7 @@ async fn read_platform_load(services: &AppServices) -> ToolResult {
     let token = match services.get_token().await {
         Some(t) => t,
         None => {
-            return ToolResult::Failed(
-                "not signed in (sign in to CADC/CANFAR first)".to_string(),
-            )
+            return ToolResult::Failed("not signed in (sign in to CADC/CANFAR first)".to_string())
         }
     };
 
@@ -292,9 +293,7 @@ async fn read_session_images(services: &AppServices) -> ToolResult {
     let token = match services.get_token().await {
         Some(t) => t,
         None => {
-            return ToolResult::Failed(
-                "not signed in (sign in to CADC/CANFAR first)".to_string(),
-            )
+            return ToolResult::Failed("not signed in (sign in to CADC/CANFAR first)".to_string())
         }
     };
 
@@ -313,7 +312,10 @@ async fn read_session_images(services: &AppServices) -> ToolResult {
 
 // ── Writes (propose only — the real mutation happens in `apply`) ──────────────
 
-fn propose_set_tool_description(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+fn propose_set_tool_description(
+    args: &Value,
+    proposals: &Arc<InMemoryProposalStore>,
+) -> ToolResult {
     let tool = str_arg(args, "tool");
     let description = str_arg(args, "description");
     if tool.is_empty() {
@@ -552,9 +554,17 @@ mod tests {
         let mut seen = HashSet::new();
         for d in &ds {
             assert!(!d.name.is_empty(), "a descriptor has an empty name");
-            assert!(!d.description.is_empty(), "{} has an empty description", d.name);
+            assert!(
+                !d.description.is_empty(),
+                "{} has an empty description",
+                d.name
+            );
             assert!(d.agent_safe, "{} must be agent_safe", d.name);
-            assert!(seen.insert(d.name.clone()), "duplicate tool name: {}", d.name);
+            assert!(
+                seen.insert(d.name.clone()),
+                "duplicate tool name: {}",
+                d.name
+            );
         }
     }
 

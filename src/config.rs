@@ -22,7 +22,8 @@ pub mod api_endpoint_defaults {
     /// CAOM2 operations (DataLink + package download).
     pub const CAOM2OPS_BASE: &str = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops";
     /// CADC target-name resolver.
-    pub const RESOLVER_BASE: &str = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/cadc-target-resolver";
+    pub const RESOLVER_BASE: &str =
+        "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/cadc-target-resolver";
 }
 
 // ---- per-field serde defaults (so old settings.json keeps loading) ----------
@@ -467,7 +468,10 @@ mod tests {
 
     #[test]
     fn login_and_whoami_derive_from_login_base() {
-        assert_eq!(endpoints().login_url(), "https://ws-cadc.canfar.net/ac/login");
+        assert_eq!(
+            endpoints().login_url(),
+            "https://ws-cadc.canfar.net/ac/login"
+        );
         assert_eq!(
             endpoints().whoami_url(),
             "https://ws-cadc.canfar.net/ac/whoami"

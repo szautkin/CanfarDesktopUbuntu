@@ -79,8 +79,7 @@ pub fn filters_to_where(filters: &HashMap<String, String>, columns: &[String]) -
     }
 
     // Cleaned keys of the columns actually present in the current results.
-    let present: std::collections::HashSet<String> =
-        columns.iter().map(|c| clean_key(c)).collect();
+    let present: std::collections::HashSet<String> = columns.iter().map(|c| clean_key(c)).collect();
 
     // Deterministic clause ordering (HashMap iteration order is unspecified).
     let mut entries: Vec<(&String, &String)> = filters.iter().collect();

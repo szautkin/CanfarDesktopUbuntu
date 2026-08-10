@@ -88,7 +88,12 @@ impl NativeSliceSource {
 
         let mut fptr: *mut sys::fitsfile = std::ptr::null_mut();
         let mut status: i32 = 0;
-        sys::ffopen(&mut fptr, c_path.as_ptr(), sys::READONLY as i32, &mut status);
+        sys::ffopen(
+            &mut fptr,
+            c_path.as_ptr(),
+            sys::READONLY as i32,
+            &mut status,
+        );
         if status != 0 || fptr.is_null() {
             return None;
         }

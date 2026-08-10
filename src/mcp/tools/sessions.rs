@@ -24,7 +24,14 @@ use std::sync::Arc;
 
 /// The session types Skaha can launch (interactive + headless), mirroring the C#
 /// `ListSessionTypesTool.Types`.
-const SESSION_TYPES: &[&str] = &["notebook", "desktop", "carta", "contributed", "firefly", "headless"];
+const SESSION_TYPES: &[&str] = &[
+    "notebook",
+    "desktop",
+    "carta",
+    "contributed",
+    "firefly",
+    "headless",
+];
 
 /// Interactive (non-headless) types, surfaced so a caller can tell them apart.
 const INTERACTIVE_TYPES: &[&str] = &["notebook", "desktop", "carta", "contributed", "firefly"];
@@ -314,14 +321,15 @@ fn propose_launch_headless_job(args: &Value, proposals: &Arc<InMemoryProposalSto
     ToolResult::Proposed(p)
 }
 
-fn propose_delete_sessions_bulk(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+fn propose_delete_sessions_bulk(
+    args: &Value,
+    proposals: &Arc<InMemoryProposalStore>,
+) -> ToolResult {
     // Trim, drop blanks, and dedup — whitespace-only ids are never valid Skaha ids and
     // would 404 on delete, so catching them here beats a network call per blank.
     let ids = dedup_ids(args.get("ids"));
     if ids.is_empty() {
-        return ToolResult::Failed(
-            "ids is empty after dropping blanks / duplicates".to_string(),
-        );
+        return ToolResult::Failed("ids is empty after dropping blanks / duplicates".to_string());
     }
     if ids.len() > MAX_BATCH_SIZE {
         return ToolResult::Failed(format!(
@@ -335,7 +343,12 @@ fn propose_delete_sessions_bulk(args: &Value, proposals: &Arc<InMemoryProposalSt
         ids.len(),
         if ids.len() == 1 { "" } else { "s" }
     );
-    let p = proposals.enqueue("delete_sessions_bulk", &summary, true, json!({ "ids": ids }));
+    let p = proposals.enqueue(
+        "delete_sessions_bulk",
+        &summary,
+        true,
+        json!({ "ids": ids }),
+    );
     ToolResult::Proposed(p)
 }
 
@@ -346,15 +359,23 @@ fn propose_delete_sessions_bulk(args: &Value, proposals: &Arc<InMemoryProposalSt
 /// Execute one of this family's approved proposals. Returns `Some(Ok/Err)` when the
 /// proposal's `kind` belongs to this family, `None` otherwise so the router can try
 /// another family. Never runs unless the host has approved the proposal.
-pub async fn apply(services: &AppServices, proposal: &PendingProposal) -> Option<Result<String, String>> {
+pub async fn apply(
+    services: &AppServices,
+    proposal: &PendingProposal,
+) -> Option<Result<String, String>> {
     match proposal.kind.as_str() {
         "launch_headless_job" => Some(apply_launch_headless_job(services, &proposal.payload).await),
-        "delete_sessions_bulk" => Some(apply_delete_sessions_bulk(services, &proposal.payload).await),
+        "delete_sessions_bulk" => {
+            Some(apply_delete_sessions_bulk(services, &proposal.payload).await)
+        }
         _ => None,
     }
 }
 
-async fn apply_launch_headless_job(services: &AppServices, payload: &Value) -> Result<String, String> {
+async fn apply_launch_headless_job(
+    services: &AppServices,
+    payload: &Value,
+) -> Result<String, String> {
     let token = services
         .get_token()
         .await
@@ -402,7 +423,10 @@ async fn apply_launch_headless_job(services: &AppServices, payload: &Value) -> R
     Ok(format!("Launched headless job (id {id})"))
 }
 
-async fn apply_delete_sessions_bulk(services: &AppServices, payload: &Value) -> Result<String, String> {
+async fn apply_delete_sessions_bulk(
+    services: &AppServices,
+    payload: &Value,
+) -> Result<String, String> {
     let token = services
         .get_token()
         .await
@@ -436,7 +460,10 @@ async fn apply_delete_sessions_bulk(services: &AppServices, payload: &Value) -> 
         ));
     }
     if failed == 0 {
-        Ok(format!("Terminated {ok} session{}", if ok == 1 { "" } else { "s" }))
+        Ok(format!(
+            "Terminated {ok} session{}",
+            if ok == 1 { "" } else { "s" }
+        ))
     } else {
         Ok(format!(
             "Terminated {ok} of {total} sessions ({failed} failed; first error: {})",
@@ -520,8 +547,16 @@ mod tests {
     fn reads_are_agent_safe_writes_are_destructive_kinds() {
         for d in descriptors() {
             assert!(d.agent_safe, "{} must be agent-safe", d.name);
-            assert!(d.input_schema.is_object(), "{} needs an object schema", d.name);
-            assert!(!d.description.trim().is_empty(), "{} needs a description", d.name);
+            assert!(
+                d.input_schema.is_object(),
+                "{} needs an object schema",
+                d.name
+            );
+            assert!(
+                !d.description.trim().is_empty(),
+                "{} needs a description",
+                d.name
+            );
         }
     }
 
@@ -590,7 +625,13 @@ mod tests {
         };
         assert_eq!(combine("", ""), None);
         assert_eq!(combine("python", ""), Some("python".to_string()));
-        assert_eq!(combine("", "-c 'print(1)'"), Some("-c 'print(1)'".to_string()));
-        assert_eq!(combine("python", "job.py"), Some("python job.py".to_string()));
+        assert_eq!(
+            combine("", "-c 'print(1)'"),
+            Some("-c 'print(1)'".to_string())
+        );
+        assert_eq!(
+            combine("python", "job.py"),
+            Some("python job.py".to_string())
+        );
     }
 }

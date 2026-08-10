@@ -79,8 +79,8 @@ fn is_fits_member_name(name: &str) -> bool {
 
 /// Open a tar archive and extract its first FITS member into a temp dir.
 fn extract_first_fits_member(path: &Path, is_gzip: bool) -> Result<ResolvedFits, String> {
-    let file = File::open(path)
-        .map_err(|e| format!("Cannot open archive '{}': {}", path.display(), e))?;
+    let file =
+        File::open(path).map_err(|e| format!("Cannot open archive '{}': {}", path.display(), e))?;
     if is_gzip {
         extract_from_reader(flate2::read::GzDecoder::new(file), path)
     } else {
@@ -96,13 +96,21 @@ fn extract_from_reader<R: std::io::Read>(
 ) -> Result<ResolvedFits, String> {
     let mut archive = tar::Archive::new(reader);
     let entries = archive.entries().map_err(|e| {
-        format!("Cannot read tar archive '{}': {}", archive_path.display(), e)
+        format!(
+            "Cannot read tar archive '{}': {}",
+            archive_path.display(),
+            e
+        )
     })?;
 
     let mut member_count = 0usize;
     for entry in entries {
         let mut entry = entry.map_err(|e| {
-            format!("Cannot read tar entry in '{}': {}", archive_path.display(), e)
+            format!(
+                "Cannot read tar entry in '{}': {}",
+                archive_path.display(),
+                e
+            )
         })?;
 
         // Regular files only (matches TarEntryType.RegularFile / V7RegularFile).
@@ -114,7 +122,11 @@ fn extract_from_reader<R: std::io::Read>(
         let name = entry
             .path()
             .map_err(|e| {
-                format!("Cannot read tar entry name in '{}': {}", archive_path.display(), e)
+                format!(
+                    "Cannot read tar entry name in '{}': {}",
+                    archive_path.display(),
+                    e
+                )
             })?
             .to_string_lossy()
             .into_owned();
@@ -125,9 +137,8 @@ fn extract_from_reader<R: std::io::Read>(
         // Extract into a fresh temp dir.  Use only the member's base file name
         // (never a `..`-bearing archive path) so the extension survives — some
         // CFITSIO behaviour keys off `.fz` / `.gz` — without any traversal risk.
-        let temp_dir = tempfile::tempdir().map_err(|e| {
-            format!("Cannot create temp dir for FITS extraction: {}", e)
-        })?;
+        let temp_dir = tempfile::tempdir()
+            .map_err(|e| format!("Cannot create temp dir for FITS extraction: {}", e))?;
         let out_name = Path::new(&name)
             .file_name()
             .map(|n| n.to_owned())
@@ -135,7 +146,11 @@ fn extract_from_reader<R: std::io::Read>(
         let out_path = temp_dir.path().join(&out_name);
 
         let mut out_file = File::create(&out_path).map_err(|e| {
-            format!("Cannot create extracted FITS file '{}': {}", out_path.display(), e)
+            format!(
+                "Cannot create extracted FITS file '{}': {}",
+                out_path.display(),
+                e
+            )
         })?;
         std::io::copy(&mut entry, &mut out_file)
             .map_err(|e| format!("Cannot extract FITS member '{}': {}", name, e))?;
@@ -231,7 +246,10 @@ mod tests {
         // A leading non-FITS member verifies we skip past it to the first FITS.
         write_tar_gz(
             &archive,
-            &[("HST/readme.txt", b"not fits"), ("HST/product/x_flt.fits", fits_bytes)],
+            &[
+                ("HST/readme.txt", b"not fits"),
+                ("HST/product/x_flt.fits", fits_bytes),
+            ],
         );
 
         let resolved = resolve_fits_path(&archive).expect("should unwrap");
@@ -247,7 +265,10 @@ mod tests {
         // Dropping the ResolvedFits deletes the temp dir with the file.
         let extracted = resolved.path.clone();
         drop(resolved);
-        assert!(!extracted.exists(), "temp file should be cleaned up on drop");
+        assert!(
+            !extracted.exists(),
+            "temp file should be cleaned up on drop"
+        );
     }
 
     #[test]

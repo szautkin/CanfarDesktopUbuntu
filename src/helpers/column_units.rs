@@ -41,20 +41,90 @@ struct SpectralUnit {
 }
 
 const SPECTRAL: &[SpectralUnit] = &[
-    SpectralUnit { id: "m", label: "m", dim: SpectralDim::Wavelength, factor: 1.0 },
-    SpectralUnit { id: "cm", label: "cm", dim: SpectralDim::Wavelength, factor: 1e-2 },
-    SpectralUnit { id: "mm", label: "mm", dim: SpectralDim::Wavelength, factor: 1e-3 },
-    SpectralUnit { id: "um", label: "µm", dim: SpectralDim::Wavelength, factor: 1e-6 },
-    SpectralUnit { id: "nm", label: "nm", dim: SpectralDim::Wavelength, factor: 1e-9 },
-    SpectralUnit { id: "a", label: "Å", dim: SpectralDim::Wavelength, factor: 1e-10 },
-    SpectralUnit { id: "hz", label: "Hz", dim: SpectralDim::Frequency, factor: 1.0 },
-    SpectralUnit { id: "khz", label: "kHz", dim: SpectralDim::Frequency, factor: 1e3 },
-    SpectralUnit { id: "mhz", label: "MHz", dim: SpectralDim::Frequency, factor: 1e6 },
-    SpectralUnit { id: "ghz", label: "GHz", dim: SpectralDim::Frequency, factor: 1e9 },
-    SpectralUnit { id: "ev", label: "eV", dim: SpectralDim::Energy, factor: 1.0 },
-    SpectralUnit { id: "kev", label: "keV", dim: SpectralDim::Energy, factor: 1e3 },
-    SpectralUnit { id: "mev", label: "MeV", dim: SpectralDim::Energy, factor: 1e6 },
-    SpectralUnit { id: "gev", label: "GeV", dim: SpectralDim::Energy, factor: 1e9 },
+    SpectralUnit {
+        id: "m",
+        label: "m",
+        dim: SpectralDim::Wavelength,
+        factor: 1.0,
+    },
+    SpectralUnit {
+        id: "cm",
+        label: "cm",
+        dim: SpectralDim::Wavelength,
+        factor: 1e-2,
+    },
+    SpectralUnit {
+        id: "mm",
+        label: "mm",
+        dim: SpectralDim::Wavelength,
+        factor: 1e-3,
+    },
+    SpectralUnit {
+        id: "um",
+        label: "µm",
+        dim: SpectralDim::Wavelength,
+        factor: 1e-6,
+    },
+    SpectralUnit {
+        id: "nm",
+        label: "nm",
+        dim: SpectralDim::Wavelength,
+        factor: 1e-9,
+    },
+    SpectralUnit {
+        id: "a",
+        label: "Å",
+        dim: SpectralDim::Wavelength,
+        factor: 1e-10,
+    },
+    SpectralUnit {
+        id: "hz",
+        label: "Hz",
+        dim: SpectralDim::Frequency,
+        factor: 1.0,
+    },
+    SpectralUnit {
+        id: "khz",
+        label: "kHz",
+        dim: SpectralDim::Frequency,
+        factor: 1e3,
+    },
+    SpectralUnit {
+        id: "mhz",
+        label: "MHz",
+        dim: SpectralDim::Frequency,
+        factor: 1e6,
+    },
+    SpectralUnit {
+        id: "ghz",
+        label: "GHz",
+        dim: SpectralDim::Frequency,
+        factor: 1e9,
+    },
+    SpectralUnit {
+        id: "ev",
+        label: "eV",
+        dim: SpectralDim::Energy,
+        factor: 1.0,
+    },
+    SpectralUnit {
+        id: "kev",
+        label: "keV",
+        dim: SpectralDim::Energy,
+        factor: 1e3,
+    },
+    SpectralUnit {
+        id: "mev",
+        label: "MeV",
+        dim: SpectralDim::Energy,
+        factor: 1e6,
+    },
+    SpectralUnit {
+        id: "gev",
+        label: "GeV",
+        dim: SpectralDim::Energy,
+        factor: 1e9,
+    },
 ];
 
 /// The ordered spectral unit choices for a spectral column's unit menu.
@@ -122,7 +192,10 @@ fn menu_for(column_key: &str) -> Option<(Vec<UnitChoice>, &'static str)> {
             ],
             "sq_deg",
         ),
-        "startdate" | "enddate" => (vec![uc("calendar", "Calendar"), uc("mjd", "MJD")], "calendar"),
+        "startdate" | "enddate" => (
+            vec![uc("calendar", "Calendar"), uc("mjd", "MJD")],
+            "calendar",
+        ),
         _ => return None,
     };
     Some(choices)

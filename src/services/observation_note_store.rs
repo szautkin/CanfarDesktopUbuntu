@@ -131,8 +131,12 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir()
-                .join(format!("verbinal_notes_test_{}_{}_{}.json", std::process::id(), nanos, n));
+            let path = std::env::temp_dir().join(format!(
+                "verbinal_notes_test_{}_{}_{}.json",
+                std::process::id(),
+                nanos,
+                n
+            ));
             TempStore { path }
         }
 
@@ -166,7 +170,12 @@ mod tests {
         assert!(store.get("ivo://cadc/CFHT?1").is_none());
 
         store
-            .save(note("ivo://cadc/CFHT?1", 4, "Nice galaxy", &["galaxy", "deep"]))
+            .save(note(
+                "ivo://cadc/CFHT?1",
+                4,
+                "Nice galaxy",
+                &["galaxy", "deep"],
+            ))
             .unwrap();
 
         let got = store.get("ivo://cadc/CFHT?1").expect("note should exist");

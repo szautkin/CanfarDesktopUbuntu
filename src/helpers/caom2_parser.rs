@@ -121,7 +121,9 @@ fn parse_plane(el: Node) -> Caom2Plane {
         quality: child(el, "quality").and_then(|q| text_child(q, "flag")),
         provenance: child(el, "provenance").map(parse_provenance),
         position_bounds: position.map(parse_position_bounds).unwrap_or_default(),
-        position_dimension: position.and_then(|p| child(p, "dimension")).and_then(parse_dimension),
+        position_dimension: position
+            .and_then(|p| child(p, "dimension"))
+            .and_then(parse_dimension),
         position_resolution: position.and_then(|p| double_child(p, "resolution")),
         position_sample_size: position.and_then(|p| double_child(p, "sampleSize")),
         energy_lower,
@@ -469,7 +471,10 @@ mod tests {
             Some((-5464279.0, -2493018.0, 2150636.0))
         );
 
-        assert_eq!(obs.instrument.and_then(|i| i.name).as_deref(), Some("MegaPrime"));
+        assert_eq!(
+            obs.instrument.and_then(|i| i.name).as_deref(),
+            Some("MegaPrime")
+        );
         assert_eq!(obs.environment.and_then(|e| e.seeing), Some(0.7));
 
         assert_eq!(obs.planes.len(), 1);

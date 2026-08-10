@@ -439,10 +439,7 @@ impl NotebookPage {
         };
 
         let insert_at = index.min(self.document.borrow().cells.len());
-        self.document
-            .borrow_mut()
-            .cells
-            .insert(insert_at, new_cell);
+        self.document.borrow_mut().cells.insert(insert_at, new_cell);
         self.mark_modified();
         self.rebuild_cell_list();
         self.set_active_cell(insert_at);
@@ -537,8 +534,7 @@ impl NotebookPage {
                 .await;
             match result {
                 Ok(()) => page.update_kernel_status_label("Kernel: idle"),
-                Err(e) => page
-                    .update_kernel_status_label(&format!("Kernel: error — {}", e)),
+                Err(e) => page.update_kernel_status_label(&format!("Kernel: error — {}", e)),
             }
         });
     }
@@ -776,8 +772,7 @@ impl NotebookPage {
 
         match result {
             Ok(()) => self.update_kernel_status_label("Kernel: idle"),
-            Err(e) => self
-                .update_kernel_status_label(&format!("Kernel: failed — {}", e)),
+            Err(e) => self.update_kernel_status_label(&format!("Kernel: failed — {}", e)),
         }
     }
 

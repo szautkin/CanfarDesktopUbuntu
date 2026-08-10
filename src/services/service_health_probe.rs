@@ -124,10 +124,7 @@ pub async fn probe_core(client: &Client, endpoints: &ApiEndpoints) -> Vec<Servic
 }
 
 /// Probe every target in parallel, preserving the caller's ordering.
-async fn probe_targets(
-    client: &Client,
-    targets: Vec<(&str, String)>,
-) -> Vec<ServiceProbeResult> {
+async fn probe_targets(client: &Client, targets: Vec<(&str, String)>) -> Vec<ServiceProbeResult> {
     let mut set: JoinSet<(usize, ServiceProbeResult)> = JoinSet::new();
     for (idx, (name, url)) in targets.into_iter().enumerate() {
         let client = client.clone();

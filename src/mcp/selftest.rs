@@ -134,7 +134,9 @@ async fn handshake(path: PathBuf) -> SelfTestResult {
     // 2) notifications/initialized (no reply expected)
     let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
     if let Err(err) = send(&mut write_half, &initialized).await {
-        return SelfTestResult::failed(format!("Sending the initialized notification failed: {err}"));
+        return SelfTestResult::failed(format!(
+            "Sending the initialized notification failed: {err}"
+        ));
     }
 
     // 3) tools/list — the count is a bonus; a missing/short reply doesn't fail
@@ -197,7 +199,11 @@ fn parse_server_name(reply: &Value) -> Option<String> {
 
 /// `result.tools.len()` from a `tools/list` reply, or `None` if the shape differs.
 fn parse_tool_count(reply: &Value) -> Option<usize> {
-    reply.get("result")?.get("tools")?.as_array().map(|a| a.len())
+    reply
+        .get("result")?
+        .get("tools")?
+        .as_array()
+        .map(|a| a.len())
 }
 
 #[cfg(test)]
@@ -231,7 +237,10 @@ mod tests {
 
     #[test]
     fn tool_count_is_none_for_wrong_shape() {
-        assert_eq!(parse_tool_count(&json!({ "result": { "tools": {} } })), None);
+        assert_eq!(
+            parse_tool_count(&json!({ "result": { "tools": {} } })),
+            None
+        );
         assert_eq!(parse_tool_count(&json!({ "result": {} })), None);
         assert_eq!(parse_tool_count(&json!({})), None);
     }
@@ -281,8 +290,10 @@ mod tests {
         // A socket path with nothing bound: connect fails fast and we still get a
         // well-formed failure result. The path is injected, so no XDG mutation is
         // needed (and no race with other env-sensitive tests).
-        let path = std::env::temp_dir()
-            .join(format!("verbinal-selftest-absent-{}.sock", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "verbinal-selftest-absent-{}.sock",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
 
         let result = run_self_test_at(path).await;

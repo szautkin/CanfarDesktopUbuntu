@@ -48,10 +48,7 @@ pub async fn show_batch_jobs_dialog(
         notebook.append_page(&tab, Some(&gtk::Label::new(Some(state.label()))));
     }
 
-    let initial_idx = states
-        .iter()
-        .position(|s| *s == initial_state)
-        .unwrap_or(0);
+    let initial_idx = states.iter().position(|s| *s == initial_state).unwrap_or(0);
     notebook.set_current_page(Some(initial_idx as u32));
 
     window.set_child(Some(&notebook));

@@ -230,7 +230,9 @@ pub async fn dispatch(
         let recents = crate::services::notebook_store::NotebookStore::new().load();
         let notebooks: Vec<Value> = recents
             .iter()
-            .map(|r| json!({ "path": r.path, "name": r.name, "openedAt": r.opened_at.to_rfc3339() }))
+            .map(
+                |r| json!({ "path": r.path, "name": r.name, "openedAt": r.opened_at.to_rfc3339() }),
+            )
             .collect();
         return Some(ToolResult::Data(json!({
             "count": notebooks.len(),
@@ -363,10 +365,7 @@ fn str_arg(args: &Value, key: &str) -> String {
 }
 
 /// Notebook tools apply live through the bridge — they never enqueue proposals.
-pub async fn apply(
-    _s: &AppServices,
-    _p: &PendingProposal,
-) -> Option<Result<String, String>> {
+pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<String, String>> {
     None
 }
 
@@ -378,12 +377,18 @@ mod tests {
     fn descriptors_unique_nonempty_and_agent_safe() {
         let d = descriptors();
         assert!(!d.is_empty());
-        assert!(d.iter().all(|x| !x.name.is_empty()), "names must be non-empty");
+        assert!(
+            d.iter().all(|x| !x.name.is_empty()),
+            "names must be non-empty"
+        );
         let mut names: Vec<_> = d.iter().map(|x| x.name.clone()).collect();
         names.sort();
         names.dedup();
         assert_eq!(names.len(), d.len(), "tool names must be unique");
-        assert!(d.iter().all(|x| x.agent_safe), "all notebook tools are agent-safe");
+        assert!(
+            d.iter().all(|x| x.agent_safe),
+            "all notebook tools are agent-safe"
+        );
     }
 
     #[test]

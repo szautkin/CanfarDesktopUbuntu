@@ -10,9 +10,7 @@
 //! `<data_dir>` is `ProjectDirs::from("net","canfar","Verbinal").data_dir()`
 //! (e.g. `~/.local/share/net.canfar/Verbinal`).
 
-use crate::models::image_manifest::{
-    DiscoveryOutcome, ImageManifest, LastOutcome, PackageQuery,
-};
+use crate::models::image_manifest::{DiscoveryOutcome, ImageManifest, LastOutcome, PackageQuery};
 use directories::ProjectDirs;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -254,7 +252,8 @@ impl JsonManifestStore {
     }
 
     fn file_path(&self, image_id: &str) -> PathBuf {
-        self.directory.join(format!("{}.json", sanitize_image_id(image_id)))
+        self.directory
+            .join(format!("{}.json", sanitize_image_id(image_id)))
     }
 }
 
@@ -346,7 +345,11 @@ mod tests {
         let store = tmp.store();
         assert!(store.get("img:1").is_none());
 
-        store.set_manifest("img:1", manifest("img:1", "ubuntu", &["astropy"]), AT.into());
+        store.set_manifest(
+            "img:1",
+            manifest("img:1", "ubuntu", &["astropy"]),
+            AT.into(),
+        );
 
         let outcome = store.get("img:1").expect("outcome should exist");
         assert!(outcome.is_success());
@@ -362,12 +365,22 @@ mod tests {
     fn set_failure_then_get_is_failure() {
         let tmp = TempDir::new();
         let store = tmp.store();
-        store.set_failure("img:2", "JobTimedOut", "timed out", Some("job-9".into()), AT.into());
+        store.set_failure(
+            "img:2",
+            "JobTimedOut",
+            "timed out",
+            Some("job-9".into()),
+            AT.into(),
+        );
 
         let outcome = store.get("img:2").expect("outcome should exist");
         assert!(!outcome.is_success());
         match outcome.outcome {
-            DiscoveryOutcome::Failure { category, message, job_id } => {
+            DiscoveryOutcome::Failure {
+                category,
+                message,
+                job_id,
+            } => {
                 assert_eq!(category, "JobTimedOut");
                 assert_eq!(message, "timed out");
                 assert_eq!(job_id.as_deref(), Some("job-9"));
@@ -379,12 +392,17 @@ mod tests {
     #[test]
     fn persists_across_reload() {
         let tmp = TempDir::new();
-        tmp.store()
-            .set_manifest("keep:1", manifest("keep:1", "ubuntu", &["numpy"]), AT.into());
+        tmp.store().set_manifest(
+            "keep:1",
+            manifest("keep:1", "ubuntu", &["numpy"]),
+            AT.into(),
+        );
 
         // A fresh store over the same directory hydrates from disk.
         let reopened = tmp.store();
-        let outcome = reopened.get("keep:1").expect("outcome should survive reload");
+        let outcome = reopened
+            .get("keep:1")
+            .expect("outcome should survive reload");
         assert!(outcome.is_success());
         assert!(outcome
             .manifest()
@@ -416,12 +434,19 @@ mod tests {
     fn search_intersection_and_ranking() {
         let tmp = TempDir::new();
         let store = tmp.store();
-        store.set_manifest("a:1", manifest("a:1", "ubuntu", &["astropy", "numpy"]), AT.into());
+        store.set_manifest(
+            "a:1",
+            manifest("a:1", "ubuntu", &["astropy", "numpy"]),
+            AT.into(),
+        );
         store.set_manifest("b:1", manifest("b:1", "ubuntu", &["astropy"]), AT.into());
         store.set_failure("c:1", "Unknown", "x", None, AT.into());
 
         // Only a:1 has both astropy AND numpy.
-        assert_eq!(store.search(&py_query(&["astropy", "numpy"])), vec!["a:1".to_string()]);
+        assert_eq!(
+            store.search(&py_query(&["astropy", "numpy"])),
+            vec!["a:1".to_string()]
+        );
 
         // Partial: both a:1 and b:1 have astropy; a:1 outscores b:1.
         let partial = store.search_partial(&py_query(&["astropy", "numpy"]));

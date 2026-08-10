@@ -140,17 +140,53 @@ pub fn build(
     let z_hi = nz.saturating_sub(1);
 
     // X axis (longitude): name below-front; endpoints at ±0.5 in X.
-    add_caption(&mut out.captions, proj(0.0, -0.62, -0.62), lon_name.to_string());
-    add_caption(&mut out.captions, proj(-0.5, -0.62, -0.62), lon_text(wcs, galactic, 0, ny));
-    add_caption(&mut out.captions, proj(0.5, -0.62, -0.62), lon_text(wcs, galactic, x_hi, ny));
+    add_caption(
+        &mut out.captions,
+        proj(0.0, -0.62, -0.62),
+        lon_name.to_string(),
+    );
+    add_caption(
+        &mut out.captions,
+        proj(-0.5, -0.62, -0.62),
+        lon_text(wcs, galactic, 0, ny),
+    );
+    add_caption(
+        &mut out.captions,
+        proj(0.5, -0.62, -0.62),
+        lon_text(wcs, galactic, x_hi, ny),
+    );
     // Y axis (latitude).
-    add_caption(&mut out.captions, proj(-0.62, 0.0, -0.62), lat_name.to_string());
-    add_caption(&mut out.captions, proj(-0.62, -0.5, -0.62), lat_text(wcs, galactic, 0, nx));
-    add_caption(&mut out.captions, proj(-0.62, 0.5, -0.62), lat_text(wcs, galactic, y_hi, nx));
+    add_caption(
+        &mut out.captions,
+        proj(-0.62, 0.0, -0.62),
+        lat_name.to_string(),
+    );
+    add_caption(
+        &mut out.captions,
+        proj(-0.62, -0.5, -0.62),
+        lat_text(wcs, galactic, 0, nx),
+    );
+    add_caption(
+        &mut out.captions,
+        proj(-0.62, 0.5, -0.62),
+        lat_text(wcs, galactic, y_hi, nx),
+    );
     // Z axis (spectral).
-    add_caption(&mut out.captions, proj(-0.62, -0.62, 0.0), spectral_name(wcs, nz));
-    add_caption(&mut out.captions, proj(-0.62, -0.62, -0.5), spec_text(wcs, 0));
-    add_caption(&mut out.captions, proj(-0.62, -0.62, 0.5), spec_text(wcs, z_hi));
+    add_caption(
+        &mut out.captions,
+        proj(-0.62, -0.62, 0.0),
+        spectral_name(wcs, nz),
+    );
+    add_caption(
+        &mut out.captions,
+        proj(-0.62, -0.62, -0.5),
+        spec_text(wcs, 0),
+    );
+    add_caption(
+        &mut out.captions,
+        proj(-0.62, -0.62, 0.5),
+        spec_text(wcs, z_hi),
+    );
 
     out
 }
@@ -355,7 +391,10 @@ mod tests {
     #[test]
     fn project_center_and_offset() {
         // With identity view_proj, w == 1 so NDC == the input xy.
-        assert_eq!(project(&IDENTITY, [0.0, 0.0, 0.0], 100.0, 100.0), Some((50.0, 50.0)));
+        assert_eq!(
+            project(&IDENTITY, [0.0, 0.0, 0.0], 100.0, 100.0),
+            Some((50.0, 50.0))
+        );
         // +x,+y → right and (y-down) up.
         let p = project(&IDENTITY, [0.5, 0.5, 0.0], 100.0, 100.0).unwrap();
         assert!((p.0 - 75.0).abs() < 1e-4, "px={}", p.0);

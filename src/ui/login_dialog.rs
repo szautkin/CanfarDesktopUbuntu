@@ -37,9 +37,13 @@ pub async fn show_login_dialog(
     title.add_css_class("title-4");
     content.append(&title);
 
-    let username_row = adw::EntryRow::builder().title(crate::tr_en!("Username")).build();
+    let username_row = adw::EntryRow::builder()
+        .title(crate::tr_en!("Username"))
+        .build();
 
-    let password_row = adw::PasswordEntryRow::builder().title(crate::tr_en!("Password")).build();
+    let password_row = adw::PasswordEntryRow::builder()
+        .title(crate::tr_en!("Password"))
+        .build();
 
     let prefs_group = adw::PreferencesGroup::new();
     prefs_group.add(&username_row);

@@ -61,7 +61,10 @@ mod tests {
 
     #[test]
     fn default_uses_default_cap() {
-        assert_eq!(ProposalBudget::default().cap(), ProposalBudget::default_cap());
+        assert_eq!(
+            ProposalBudget::default().cap(),
+            ProposalBudget::default_cap()
+        );
         assert_eq!(ProposalBudget::default_cap(), 32);
     }
 

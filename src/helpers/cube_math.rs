@@ -72,10 +72,22 @@ pub fn look_at(eye: [f32; 3], center: [f32; 3], up: [f32; 3]) -> Mat4 {
     //   col0=(x.x,y.x,z.x,0) col1=(x.y,y.y,z.y,0)
     //   col2=(x.z,y.z,z.z,0)  col3=(-dot(x,eye),-dot(y,eye),-dot(z,eye),1)
     [
-        x[0], y[0], z[0], 0.0, // col 0
-        x[1], y[1], z[1], 0.0, // col 1
-        x[2], y[2], z[2], 0.0, // col 2
-        -dot(x, eye), -dot(y, eye), -dot(z, eye), 1.0, // col 3
+        x[0],
+        y[0],
+        z[0],
+        0.0, // col 0
+        x[1],
+        y[1],
+        z[1],
+        0.0, // col 1
+        x[2],
+        y[2],
+        z[2],
+        0.0, // col 2
+        -dot(x, eye),
+        -dot(y, eye),
+        -dot(z, eye),
+        1.0, // col 3
     ]
 }
 
@@ -332,7 +344,11 @@ mod tests {
         let p = perspective(60.0_f32.to_radians(), 1.0, near, far);
         let at_near = transform_point(&p, [0.0, 0.0, -near]);
         let at_far = transform_point(&p, [0.0, 0.0, -far]);
-        assert!(approx(at_near[2], -1.0, 1e-4), "near z -> -1: {}", at_near[2]);
+        assert!(
+            approx(at_near[2], -1.0, 1e-4),
+            "near z -> -1: {}",
+            at_near[2]
+        );
         assert!(approx(at_far[2], 1.0, 1e-4), "far z -> +1: {}", at_far[2]);
     }
 

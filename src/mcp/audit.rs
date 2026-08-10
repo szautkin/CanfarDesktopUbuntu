@@ -138,11 +138,7 @@ mod tests {
         }
         assert_eq!(sink.len(), 3);
         // Oldest two ("0","1") evicted; "2","3","4" remain oldest-first.
-        let ids: Vec<_> = sink
-            .recent(10)
-            .into_iter()
-            .map(|r| r.request_id)
-            .collect();
+        let ids: Vec<_> = sink.recent(10).into_iter().map(|r| r.request_id).collect();
         assert_eq!(ids, vec!["2", "3", "4"]);
     }
 
@@ -152,11 +148,7 @@ mod tests {
         for i in 0..5 {
             sink.record(rec(&i.to_string()));
         }
-        let ids: Vec<_> = sink
-            .recent(2)
-            .into_iter()
-            .map(|r| r.request_id)
-            .collect();
+        let ids: Vec<_> = sink.recent(2).into_iter().map(|r| r.request_id).collect();
         assert_eq!(ids, vec!["3", "4"]);
     }
 

@@ -263,7 +263,10 @@ mod tests {
         assert!(node.is_public);
         assert_eq!(node.group_read.len(), 2);
         assert_eq!(node.group_read[0], "ivo://cadc.nrc.ca/gms?A");
-        assert_eq!(node.group_write, vec!["ivo://cadc.nrc.ca/gms?W".to_string()]);
+        assert_eq!(
+            node.group_write,
+            vec!["ivo://cadc.nrc.ca/gms?W".to_string()]
+        );
     }
 
     #[test]

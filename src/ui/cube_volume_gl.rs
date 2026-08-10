@@ -339,8 +339,7 @@ impl CubeVolumeGl {
         self.area.add_controller(drag);
 
         // Scroll to zoom (dolly): dist *= exp(delta), clamp [0.5, 8].
-        let scroll =
-            gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         {
             let this = self.clone();
             scroll.connect_scroll(move |_, _dx, dy| {
@@ -523,7 +522,12 @@ unsafe fn compile_shader(kind: u32, src: &str) -> Result<u32, String> {
         let mut len = 0i32;
         gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
         let mut buf = vec![0u8; len.max(1) as usize];
-        gl::GetShaderInfoLog(shader, len, std::ptr::null_mut(), buf.as_mut_ptr() as *mut _);
+        gl::GetShaderInfoLog(
+            shader,
+            len,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut _,
+        );
         gl::DeleteShader(shader);
         return Err(String::from_utf8_lossy(&buf).into_owned());
     }
@@ -560,7 +564,12 @@ unsafe fn realize_gl(s: &mut GlState) {
         let mut len = 0i32;
         gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut len);
         let mut buf = vec![0u8; len.max(1) as usize];
-        gl::GetProgramInfoLog(program, len, std::ptr::null_mut(), buf.as_mut_ptr() as *mut _);
+        gl::GetProgramInfoLog(
+            program,
+            len,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut _,
+        );
         eprintln!(
             "[cube-gl] program link failed (slice fallback): {}",
             String::from_utf8_lossy(&buf)
@@ -650,11 +659,7 @@ fn view_proj_of(s: &GlState, aspect: f32) -> Mat4 {
 /// X/Y, user-controlled spectral stretch in Z (matches CubeVolumeRenderer).
 fn model_of(s: &GlState) -> Mat4 {
     let m = s.vol_nx.max(s.vol_ny).max(1) as f32;
-    cube_math::scale(
-        s.vol_nx as f32 / m,
-        s.vol_ny as f32 / m,
-        s.spectral_scale,
-    )
+    cube_math::scale(s.vol_nx as f32 / m, s.vol_ny as f32 / m, s.spectral_scale)
 }
 
 unsafe fn ensure_uploads(s: &mut GlState) {
@@ -760,7 +765,11 @@ unsafe fn render_gl(s: &mut GlState, w: i32, h: i32) {
     ensure_uploads(s);
     // Drop steps while orbiting for fluid motion; animate jitter so banding
     // dissolves across frames.
-    let steps = if s.interacting { s.steps.min(160.0) } else { s.steps };
+    let steps = if s.interacting {
+        s.steps.min(160.0)
+    } else {
+        s.steps
+    };
     s.jitter = (s.jitter + 17.13) % 1024.0;
     let aspect = if h > 0 { w as f32 / h as f32 } else { 1.0 };
     let jitter = s.jitter;

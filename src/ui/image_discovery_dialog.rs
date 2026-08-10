@@ -270,7 +270,8 @@ impl DiscoveryUi {
             self.facet_container.append(&header);
 
             for value in visible {
-                let check = gtk::CheckButton::with_label(&format!("{}  ·  {}", value.value, value.count));
+                let check =
+                    gtk::CheckButton::with_label(&format!("{}  ·  {}", value.value, value.count));
                 let selected = is_selected(&self.query.borrow(), &facet.category, &value.value);
                 check.set_active(selected);
                 // A greyed value is unreachable; keep already-ticked values usable.
@@ -313,7 +314,10 @@ impl DiscoveryUi {
         }
         if let Some(ver) = &q.os_version {
             let v = ver.clone();
-            chips.push((format!("OS version: {v}"), Box::new(|q| q.os_version = None)));
+            chips.push((
+                format!("OS version: {v}"),
+                Box::new(|q| q.os_version = None),
+            ));
         }
         for pkg in &q.packages {
             let p = pkg.clone();
@@ -388,7 +392,10 @@ impl DiscoveryUi {
             {
                 continue;
             }
-            groups.entry(img.project.clone()).or_default().push(img.clone());
+            groups
+                .entry(img.project.clone())
+                .or_default()
+                .push(img.clone());
         }
 
         if groups.is_empty() {
@@ -406,7 +413,11 @@ impl DiscoveryUi {
         for (project, mut images) in groups {
             images.sort_by(|a, b| b.version.cmp(&a.version));
             let group = adw::PreferencesGroup::new();
-            group.set_title(if project.is_empty() { "(no project)" } else { &project });
+            group.set_title(if project.is_empty() {
+                "(no project)"
+            } else {
+                &project
+            });
             for img in &images {
                 group.add(&self.build_image_row(img, running.contains(&img.id)));
             }
@@ -433,11 +444,8 @@ impl DiscoveryUi {
 
         // Suffix: Discover/Rediscover + Use this image.
         let discovered = outcome.as_ref().map(|o| o.is_success()).unwrap_or(false);
-        let discover_btn = gtk::Button::with_label(if discovered {
-            "Rediscover"
-        } else {
-            "Discover"
-        });
+        let discover_btn =
+            gtk::Button::with_label(if discovered { "Rediscover" } else { "Discover" });
         discover_btn.add_css_class("flat");
         discover_btn.set_valign(gtk::Align::Center);
         discover_btn.set_sensitive(!is_running);
@@ -584,7 +592,11 @@ fn status_subtitle(outcome: Option<&LastOutcome>, running: bool, now: &str) -> S
         }
         Some(o) => match &o.outcome {
             crate::models::image_manifest::DiscoveryOutcome::Failure { category, .. } => {
-                format!("{} · {}", category_label(category), time_ago(&o.discovered_at, now))
+                format!(
+                    "{} · {}",
+                    category_label(category),
+                    time_ago(&o.discovered_at, now)
+                )
             }
             _ => "Failed".to_string(),
         },

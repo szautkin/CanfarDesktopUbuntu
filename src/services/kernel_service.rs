@@ -120,7 +120,12 @@ impl LocalKernelService {
             .stderr(std::process::Stdio::null()) // harness writes errors as JSON, not to stderr
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| format!("Failed to spawn Python kernel at {:?}: {e}", self.python_path))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to spawn Python kernel at {:?}: {e}",
+                    self.python_path
+                )
+            })?;
 
         let stdin = child
             .stdin
@@ -156,10 +161,7 @@ impl LocalKernelService {
     ///
     /// Transitions state: `Idle → Busy → Idle` on success, or
     /// `Idle → Busy → Error(…)` on genuine I/O failure / unexpected EOF.
-    pub async fn execute(
-        &mut self,
-        code: &str,
-    ) -> Result<(Vec<serde_json::Value>, u32), String> {
+    pub async fn execute(&mut self, code: &str) -> Result<(Vec<serde_json::Value>, u32), String> {
         if self.state != KernelState::Idle {
             return Err(format!(
                 "Kernel is not idle (current state: {:?})",
@@ -523,7 +525,10 @@ mod tests {
             .find(|v| v["output_type"] == "error")
             .expect("expected an error output");
         assert_eq!(error_output["ename"], "ValueError");
-        assert!(error_output["evalue"].as_str().unwrap().contains("test error"));
+        assert!(error_output["evalue"]
+            .as_str()
+            .unwrap()
+            .contains("test error"));
 
         // The kernel must be Idle again — ready for the next cell.
         assert_eq!(*svc.state(), KernelState::Idle);

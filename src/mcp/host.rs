@@ -94,11 +94,7 @@ impl McpHost {
     /// Apply a user-approved pending proposal: run its applier against the live
     /// services and mark it Applied (or Rejected on a failed apply). Returns the
     /// applier's success message.
-    pub async fn apply_proposal(
-        &self,
-        services: &AppServices,
-        id: &str,
-    ) -> Result<String, String> {
+    pub async fn apply_proposal(&self, services: &AppServices, id: &str) -> Result<String, String> {
         let store = self.proposals().ok_or("MCP server is not running")?;
         // Atomically claim the proposal (Pending → Applying) so the applier runs at
         // most once and can't race a concurrent apply or reject. `None` means it was

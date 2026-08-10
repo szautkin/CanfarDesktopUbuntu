@@ -54,7 +54,11 @@ impl ImageDiscoverySettings {
     /// reference from the configured host + repository (see
     /// [`resolve_registry_image`]).
     pub fn resolve_inspector_image(&self) -> String {
-        resolve_registry_image(&self.inspector_image, &self.registry_host, &self.registry_repository)
+        resolve_registry_image(
+            &self.inspector_image,
+            &self.registry_host,
+            &self.registry_repository,
+        )
     }
 
     /// True when nothing user-configured is meaningfully set (the settings UI
@@ -181,13 +185,10 @@ mod tests {
             "dXNlcjpwYXNz"
         );
         // Empty secret still encodes the "user:" prefix.
-        assert_eq!(
-            ImageDiscoverySettings::build_auth_header("u", ""),
-            {
-                use base64::Engine as _;
-                base64::engine::general_purpose::STANDARD.encode("u:")
-            }
-        );
+        assert_eq!(ImageDiscoverySettings::build_auth_header("u", ""), {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode("u:")
+        });
     }
 
     #[test]
@@ -225,7 +226,10 @@ mod tests {
         );
         // A genuinely host-qualified reference is left unchanged.
         let full = "images.canfar.net/skaha/terminal:1.1.2";
-        assert_eq!(resolve_registry_image(full, "images.canfar.net", "skaha"), full);
+        assert_eq!(
+            resolve_registry_image(full, "images.canfar.net", "skaha"),
+            full
+        );
         assert_eq!(
             resolve_registry_image("localhost/x:1", "images.canfar.net", ""),
             "localhost/x:1"

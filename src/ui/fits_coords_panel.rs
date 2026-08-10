@@ -69,7 +69,8 @@ impl FitsCoordsPanel {
         // "Search Here" — take the crosshair sky position to the Search form.
         let search_here_btn = gtk::Button::with_label(crate::tr_en!("Search Here"));
         search_here_btn.set_icon_name("system-search-symbolic");
-        search_here_btn.set_tooltip_text(Some(crate::tr_en!("Search the archive at this position")));
+        search_here_btn
+            .set_tooltip_text(Some(crate::tr_en!("Search the archive at this position")));
         search_here_btn.set_sensitive(false);
         section1.append(&search_here_btn);
 
@@ -158,7 +159,9 @@ impl FitsCoordsPanel {
             go_btn.connect_clicked(move |_| {
                 let ra_txt = p.ra_entry.text().to_string();
                 let dec_txt = p.dec_entry.text().to_string();
-                if let (Ok(ra), Ok(dec)) = (ra_txt.trim().parse::<f64>(), dec_txt.trim().parse::<f64>()) {
+                if let (Ok(ra), Ok(dec)) =
+                    (ra_txt.trim().parse::<f64>(), dec_txt.trim().parse::<f64>())
+                {
                     if let Some(cb) = p.on_go_to.borrow().as_ref() {
                         cb(ra, dec);
                     }
@@ -223,7 +226,8 @@ impl FitsCoordsPanel {
                 }
             }
             None => {
-                self.crosshair_label.set_text(crate::tr_en!("(right-click on image)"));
+                self.crosshair_label
+                    .set_text(crate::tr_en!("(right-click on image)"));
                 *self.current_radec.borrow_mut() = None;
                 self.search_here_btn.set_sensitive(false);
             }
@@ -242,10 +246,7 @@ impl FitsCoordsPanel {
 
     /// Register a callback that returns `(ra, dec, source_filename)` for the
     /// currently-active crosshair position, or `None` if no crosshair is placed.
-    pub fn set_on_save_bookmark(
-        &self,
-        cb: impl Fn() -> Option<(f64, f64, String)> + 'static,
-    ) {
+    pub fn set_on_save_bookmark(&self, cb: impl Fn() -> Option<(f64, f64, String)> + 'static) {
         *self.on_save_bookmark.borrow_mut() = Some(Box::new(cb));
     }
 

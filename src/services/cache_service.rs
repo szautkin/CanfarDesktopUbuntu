@@ -47,7 +47,11 @@ impl CacheKey {
             CacheKey::SessionContext => PathBuf::from("context.json"),
             CacheKey::VoSpaceNodes { path } => {
                 let safe = sanitize_filename(path);
-                let safe = if safe.is_empty() { "_root_".to_string() } else { safe };
+                let safe = if safe.is_empty() {
+                    "_root_".to_string()
+                } else {
+                    safe
+                };
                 PathBuf::from("vospace").join(format!("{}.json", safe))
             }
             CacheKey::Sessions => PathBuf::from("sessions.json"),
@@ -61,32 +65,32 @@ impl CacheKey {
     fn ttl(&self) -> (Duration, Option<Duration>) {
         match self {
             CacheKey::DataTrainRows => (
-                Duration::from_secs(24 * 3600),      // 24h fresh
+                Duration::from_secs(24 * 3600),            // 24h fresh
                 Some(Duration::from_secs(30 * 24 * 3600)), // 30 days max stale
             ),
             CacheKey::ResolverResult { .. } => (
-                Duration::from_secs(7 * 24 * 3600),  // 7 days fresh
-                None,                                  // never expire
+                Duration::from_secs(7 * 24 * 3600), // 7 days fresh
+                None,                               // never expire
             ),
             CacheKey::ContainerImages => (
-                Duration::from_secs(3600),            // 1h fresh
+                Duration::from_secs(3600),                // 1h fresh
                 Some(Duration::from_secs(7 * 24 * 3600)), // 7 days max stale
             ),
             CacheKey::SessionContext => (
-                Duration::from_secs(6 * 3600),        // 6h fresh
+                Duration::from_secs(6 * 3600),            // 6h fresh
                 Some(Duration::from_secs(7 * 24 * 3600)), // 7 days max stale
             ),
             CacheKey::VoSpaceNodes { .. } => (
-                Duration::from_secs(300),             // 5 min fresh
-                Some(Duration::from_secs(3600)),      // 1h max stale
+                Duration::from_secs(300),        // 5 min fresh
+                Some(Duration::from_secs(3600)), // 1h max stale
             ),
             CacheKey::Sessions => (
-                Duration::from_secs(30),              // 30s fresh
-                Some(Duration::from_secs(600)),       // 10min max stale
+                Duration::from_secs(30),        // 30s fresh
+                Some(Duration::from_secs(600)), // 10min max stale
             ),
             CacheKey::StorageQuotaCached { .. } => (
-                Duration::from_secs(900),             // 15min fresh
-                Some(Duration::from_secs(6 * 3600)),  // 6h max stale
+                Duration::from_secs(900),            // 15min fresh
+                Some(Duration::from_secs(6 * 3600)), // 6h max stale
             ),
         }
     }
@@ -206,8 +210,7 @@ mod tests {
         let svc = CacheService {
             cache_dir: std::env::temp_dir().join("verbinal_test_cache_miss"),
         };
-        let result: Option<CacheEntry<Vec<String>>> =
-            svc.read(&CacheKey::ContainerImages);
+        let result: Option<CacheEntry<Vec<String>>> = svc.read(&CacheKey::ContainerImages);
         assert!(result.is_none());
     }
 

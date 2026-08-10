@@ -188,9 +188,15 @@ mod tests {
     #[test]
     fn add_moves_existing_to_top() {
         let (store, dir) = make_store();
-        store.add("/home/user/first.ipynb", "first.ipynb").expect("add");
-        store.add("/home/user/second.ipynb", "second.ipynb").expect("add");
-        store.add("/home/user/first.ipynb", "first.ipynb").expect("add");
+        store
+            .add("/home/user/first.ipynb", "first.ipynb")
+            .expect("add");
+        store
+            .add("/home/user/second.ipynb", "second.ipynb")
+            .expect("add");
+        store
+            .add("/home/user/first.ipynb", "first.ipynb")
+            .expect("add");
         let entries = store.load();
         assert_eq!(entries[0].path, "/home/user/first.ipynb");
         assert_eq!(entries[1].path, "/home/user/second.ipynb");

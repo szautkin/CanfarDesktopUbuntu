@@ -29,7 +29,8 @@ pub const KNOWN_VIEWS: &[&str] = &[
 static STEP_START: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*-\s*\[( |x|X)\]\s*(.*)$").unwrap());
 static BOLD_LEAD: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\*\*(.+?)\*\*\s*(?:[—–-]\s*)?(.*)$").unwrap());
-static META_LINE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Za-z][A-Za-z ]{0,30}):\s*(.+)$").unwrap());
+static META_LINE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^([A-Za-z][A-Za-z ]{0,30}):\s*(.+)$").unwrap());
 
 fn normalize(text: &str) -> Vec<String> {
     text.replace("\r\n", "\n")
@@ -42,9 +43,7 @@ fn normalize(text: &str) -> Vec<String> {
 /// Try to read an indented `Key: value` attachment line (case-insensitive key).
 fn try_attachment<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
     let prefix = format!("{}:", key);
-    if trimmed.len() >= prefix.len()
-        && trimmed[..prefix.len()].eq_ignore_ascii_case(&prefix)
-    {
+    if trimmed.len() >= prefix.len() && trimmed[..prefix.len()].eq_ignore_ascii_case(&prefix) {
         Some(&trimmed[prefix.len()..])
     } else {
         None
@@ -167,7 +166,10 @@ pub fn parse(text: &str) -> WorkflowDoc {
             let key = caps[1].trim().to_string();
             let val = caps[2].trim().to_string();
             // Last write wins on duplicate keys (case-insensitive).
-            if let Some(entry) = metadata.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&key)) {
+            if let Some(entry) = metadata
+                .iter_mut()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+            {
                 entry.1 = val;
             } else {
                 metadata.push((key, val));
@@ -184,8 +186,9 @@ pub fn parse(text: &str) -> WorkflowDoc {
         }
     };
     if steps.is_empty() {
-        warnings
-            .push("No steps found — add lines like `- [ ] **Step title** — what to do`.".to_string());
+        warnings.push(
+            "No steps found — add lines like `- [ ] **Step title** — what to do`.".to_string(),
+        );
     }
 
     WorkflowDoc {

@@ -258,16 +258,19 @@ impl WorkflowsPage {
         }
 
         // Built-in section
-        self.list_box.append(&section_header(crate::tr_en!("Built-in")));
+        self.list_box
+            .append(&section_header(crate::tr_en!("Built-in")));
         for info in self.store.list_built_in() {
             self.list_box.append(&workflow_row(&info));
         }
 
         // Local section
-        self.list_box.append(&section_header(crate::tr_en!("Local")));
+        self.list_box
+            .append(&section_header(crate::tr_en!("Local")));
         let locals = self.store.list_local();
         if locals.is_empty() {
-            self.list_box.append(&hint_row(crate::tr_en!("No local workflows yet")));
+            self.list_box
+                .append(&hint_row(crate::tr_en!("No local workflows yet")));
         } else {
             for info in &locals {
                 self.list_box.append(&workflow_row(info));
@@ -370,7 +373,11 @@ impl WorkflowsPage {
         };
         meta.append(&chip(
             source_text,
-            if local { "badge-fits" } else { "badge-bookmarked" },
+            if local {
+                "badge-fits"
+            } else {
+                "badge-bookmarked"
+            },
         ));
 
         if let Some(t) = info.doc.metadata_get("Time") {
@@ -422,7 +429,9 @@ impl WorkflowsPage {
                     Ok(new_info) => {
                         *page.selected_id.borrow_mut() = Some(new_info.id.clone());
                         *page.editing.borrow_mut() = false;
-                        page.services.toast.toast(crate::tr_en!("Duplicated to a local copy"));
+                        page.services
+                            .toast
+                            .toast(crate::tr_en!("Duplicated to a local copy"));
                         page.reload_and_render();
                     }
                     Err(e) => page
@@ -476,9 +485,7 @@ impl WorkflowsPage {
                             return;
                         }
                         if let Err(e) = page.store.delete(&id) {
-                            page.services
-                                .toast
-                                .toast(&format!("Delete failed: {}", e));
+                            page.services.toast.toast(&format!("Delete failed: {}", e));
                             return;
                         }
                         *page.selected_id.borrow_mut() = None;
@@ -650,21 +657,21 @@ impl WorkflowsPage {
                 }
                 self.reload_and_render();
             }
-            WorkflowSource::BuiltIn => {
-                match self.store.save_new(&info.doc.title, &info.raw_text) {
-                    Ok(local) => {
-                        self.services.toast.toast(crate::tr_en!("Saved a local copy to edit"));
-                        let _ = self.store.set_step_done(&local.id, index, done);
-                        *self.selected_id.borrow_mut() = Some(local.id.clone());
-                        *self.editing.borrow_mut() = false;
-                        self.reload_and_render();
-                    }
-                    Err(e) => self
-                        .services
+            WorkflowSource::BuiltIn => match self.store.save_new(&info.doc.title, &info.raw_text) {
+                Ok(local) => {
+                    self.services
                         .toast
-                        .toast(&format!("Could not create local copy: {}", e)),
+                        .toast(crate::tr_en!("Saved a local copy to edit"));
+                    let _ = self.store.set_step_done(&local.id, index, done);
+                    *self.selected_id.borrow_mut() = Some(local.id.clone());
+                    *self.editing.borrow_mut() = false;
+                    self.reload_and_render();
                 }
-            }
+                Err(e) => self
+                    .services
+                    .toast
+                    .toast(&format!("Could not create local copy: {}", e)),
+            },
             WorkflowSource::VoSpace => { /* read-only source — ignore */ }
         }
     }
@@ -810,13 +817,12 @@ impl WorkflowsPage {
                             Ok(info) => {
                                 *self.selected_id.borrow_mut() = Some(info.id.clone());
                                 *self.editing.borrow_mut() = false;
-                                self.services.toast.toast(crate::tr_en!("Imported workflow"));
+                                self.services
+                                    .toast
+                                    .toast(crate::tr_en!("Imported workflow"));
                                 self.reload_and_render();
                             }
-                            Err(e) => self
-                                .services
-                                .toast
-                                .toast(&format!("Import failed: {}", e)),
+                            Err(e) => self.services.toast.toast(&format!("Import failed: {}", e)),
                         }
                     }
                     Err(e) => self
@@ -955,7 +961,8 @@ async fn confirm_delete(widget: &impl IsA<gtk::Widget>, title: &str) -> bool {
     };
 
     let body = if title.is_empty() {
-        crate::tr_en!("This will permanently delete this local workflow.\n\nThis cannot be undone.").to_string()
+        crate::tr_en!("This will permanently delete this local workflow.\n\nThis cannot be undone.")
+            .to_string()
     } else {
         format!(
             "This will permanently delete “{}”.\n\nThis cannot be undone.",
@@ -963,7 +970,11 @@ async fn confirm_delete(widget: &impl IsA<gtk::Widget>, title: &str) -> bool {
         )
     };
 
-    let dialog = adw::MessageDialog::new(Some(&root), Some(crate::tr_en!("Delete workflow?")), Some(&body));
+    let dialog = adw::MessageDialog::new(
+        Some(&root),
+        Some(crate::tr_en!("Delete workflow?")),
+        Some(&body),
+    );
     dialog.add_response("cancel", crate::tr_en!("Cancel"));
     dialog.add_response("delete", crate::tr_en!("Delete"));
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);

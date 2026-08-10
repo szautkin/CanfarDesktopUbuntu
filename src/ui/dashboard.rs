@@ -165,10 +165,8 @@ impl DashboardView {
                         let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
                         let spinner = gtk::Spinner::new();
                         spinner.start();
-                        let status = gtk::Label::new(Some(&crate::tr_fmt!(
-                            "Renewing session '{}'…",
-                            name
-                        )));
+                        let status =
+                            gtk::Label::new(Some(&crate::tr_fmt!("Renewing session '{}'…", name)));
                         status.set_wrap(true);
                         status.set_xalign(0.0);
                         content.append(&spinner);
@@ -412,14 +410,13 @@ impl DashboardView {
         {
             let services = self.services.clone();
             let batch_jobs = self.batch_jobs.clone();
-            self.batch_jobs
-                .set_on_state_click(move |state, jobs| {
-                    let services = services.clone();
-                    let parent = batch_jobs.widget().clone();
-                    glib::spawn_future_local(async move {
-                        show_batch_jobs_dialog(&parent, services, jobs, state).await;
-                    });
+            self.batch_jobs.set_on_state_click(move |state, jobs| {
+                let services = services.clone();
+                let parent = batch_jobs.widget().clone();
+                glib::spawn_future_local(async move {
+                    show_batch_jobs_dialog(&parent, services, jobs, state).await;
                 });
+            });
         }
 
         // Canfar Images — "Use this image" fires the use-launch-image app action

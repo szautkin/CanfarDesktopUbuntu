@@ -150,7 +150,8 @@ fn propose_run_code(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Too
         );
     }
 
-    let language = RunCodeContract::normalize_language(args.get("language").and_then(Value::as_str));
+    let language =
+        RunCodeContract::normalize_language(args.get("language").and_then(Value::as_str));
     let timeout = RunCodeContract::clamp_timeout(
         args.get("timeoutSeconds")
             .and_then(Value::as_i64)
@@ -179,7 +180,8 @@ fn propose_start_compute(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
     let svc = AIComputeService::new();
     if !svc.settings().is_enabled() {
         return ToolResult::Failed(
-            "start_compute is disabled: set an AI compute image in Settings ▸ AI compute first.".to_string(),
+            "start_compute is disabled: set an AI compute image in Settings ▸ AI compute first."
+                .to_string(),
         );
     }
     let (cores, ram) = svc.resolve_resources();
@@ -194,7 +196,10 @@ fn propose_start_compute(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
 
 /// `stop_compute` (DESTRUCTIVE write) — always queues for explicit approval.
 fn propose_stop_compute(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
-    let summary = format!("Stop {} (frees platform compute).", RunCodeContract::SESSION_NAME);
+    let summary = format!(
+        "Stop {} (frees platform compute).",
+        RunCodeContract::SESSION_NAME
+    );
     let p = proposals.enqueue("stop_compute", &summary, true, json!({}));
     ToolResult::Proposed(p)
 }
@@ -222,7 +227,10 @@ async fn run_code_output(services: &AppServices, args: &Value) -> ToolResult {
 // Apply — perform the real service call for an approved proposal
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub async fn apply(services: &AppServices, proposal: &PendingProposal) -> Option<Result<String, String>> {
+pub async fn apply(
+    services: &AppServices,
+    proposal: &PendingProposal,
+) -> Option<Result<String, String>> {
     match proposal.kind.as_str() {
         "run_code" => Some(apply_run_code(services, &proposal.payload).await),
         "start_compute" => Some(apply_start_compute(services).await),
@@ -269,7 +277,10 @@ async fn apply_run_code(services: &AppServices, payload: &Value) -> Result<Strin
 async fn apply_start_compute(services: &AppServices) -> Result<String, String> {
     let svc = AIComputeService::new();
     svc.ensure_session(services).await?;
-    Ok(format!("Compute session {} is warming (or already live).", RunCodeContract::SESSION_NAME))
+    Ok(format!(
+        "Compute session {} is warming (or already live).",
+        RunCodeContract::SESSION_NAME
+    ))
 }
 
 async fn apply_stop_compute(services: &AppServices) -> Result<String, String> {
@@ -288,7 +299,11 @@ async fn apply_stop_compute(services: &AppServices) -> Result<String, String> {
 
 /// Trimmed string argument (empty string if missing / not a string).
 fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    args.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// The `ready=true` JSON view for `run_code_output` (decoded stdout/stderr).
@@ -311,7 +326,10 @@ fn result_json(id: &str, r: &RunCodeResult) -> Value {
 /// One-line-ish human summary used by `run_code`'s inline apply result.
 fn format_result(id: &str, r: &RunCodeResult) -> String {
     let status = r.status.as_deref().unwrap_or("unknown");
-    let exit = r.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".to_string());
+    let exit = r
+        .exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "?".to_string());
     let stdout = r.decoded_stdout().unwrap_or_default();
     let stderr = r.decoded_stderr().unwrap_or_default();
     format!(
@@ -337,8 +355,16 @@ mod tests {
         assert_eq!(unique.len(), names.len(), "tool names must be unique");
         for d in &ds {
             assert!(d.agent_safe, "{} must be agent-safe", d.name);
-            assert!(d.input_schema.is_object(), "{} needs an object schema", d.name);
-            assert!(!d.description.trim().is_empty(), "{} needs a description", d.name);
+            assert!(
+                d.input_schema.is_object(),
+                "{} needs an object schema",
+                d.name
+            );
+            assert!(
+                !d.description.trim().is_empty(),
+                "{} needs a description",
+                d.name
+            );
         }
     }
 
@@ -354,7 +380,10 @@ mod tests {
     #[test]
     fn run_code_requires_code() {
         let store = Arc::new(InMemoryProposalStore::new());
-        assert!(matches!(propose_run_code(&json!({}), &store), ToolResult::Failed(_)));
+        assert!(matches!(
+            propose_run_code(&json!({}), &store),
+            ToolResult::Failed(_)
+        ));
         assert!(matches!(
             propose_run_code(&json!({ "code": "   " }), &store),
             ToolResult::Failed(_)
@@ -385,7 +414,10 @@ mod tests {
         match propose_stop_compute(&store) {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.kind, "stop_compute");
-                assert!(p.destructive, "stop_compute must be destructive (stays pending)");
+                assert!(
+                    p.destructive,
+                    "stop_compute must be destructive (stays pending)"
+                );
             }
             _ => panic!("expected a Proposed result"),
         }

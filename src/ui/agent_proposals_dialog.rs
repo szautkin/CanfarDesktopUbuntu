@@ -135,7 +135,10 @@ impl ProposalsContent {
                         let result = this
                             .services
                             .spawn(async move {
-                                services.mcp_host.apply_proposal(services.as_ref(), &id2).await
+                                services
+                                    .mcp_host
+                                    .apply_proposal(services.as_ref(), &id2)
+                                    .await
                             })
                             .await;
                         match result {

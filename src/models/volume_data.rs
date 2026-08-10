@@ -179,10 +179,8 @@ impl VolumeData {
         }
 
         // Two extra emission clumps to break radial symmetry: (cx, cy, cz, r, w).
-        let clumps: [(f32, f32, f32, f32, f32); 2] = [
-            (0.33, 0.40, 0.55, 0.16, 0.9),
-            (0.66, 0.62, 0.42, 0.12, 0.7),
-        ];
+        let clumps: [(f32, f32, f32, f32, f32); 2] =
+            [(0.33, 0.40, 0.55, 0.16, 0.9), (0.66, 0.62, 0.42, 0.12, 0.7)];
 
         // Guard against a 1-voxel edge (division by nz-1 etc.).
         let denom = |n: usize| if n > 1 { (n - 1) as f32 } else { 1.0 };
@@ -267,7 +265,11 @@ impl Xorshift64 {
         let mixed = seed
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             .wrapping_add(0xD1B5_4A32_D192_ED03);
-        Xorshift64(if mixed == 0 { 0x1234_5678_9ABC_DEF0 } else { mixed })
+        Xorshift64(if mixed == 0 {
+            0x1234_5678_9ABC_DEF0
+        } else {
+            mixed
+        })
     }
 
     fn next_u64(&mut self) -> u64 {

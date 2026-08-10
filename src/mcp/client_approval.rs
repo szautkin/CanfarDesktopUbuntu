@@ -42,8 +42,7 @@ const SELF_TEST_CLIENT_ID: &str = "verbinal-selftest";
 /// `verbinal-selftest/<version>` form (the C# `IsInternalClient` also matched the
 /// `name/version` shape).
 fn is_internal_client(client_id: &str) -> bool {
-    client_id == SELF_TEST_CLIENT_ID
-        || client_id.starts_with(&format!("{SELF_TEST_CLIENT_ID}/"))
+    client_id == SELF_TEST_CLIENT_ID || client_id.starts_with(&format!("{SELF_TEST_CLIENT_ID}/"))
 }
 
 /// The persisted document. `Default` gives the allow-all, empty-lists baseline,

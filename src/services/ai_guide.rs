@@ -365,11 +365,8 @@ mod tests {
 
     fn temp_file() -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "verbinal_ai_guide_{}_{}",
-            std::process::id(),
-            n
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("verbinal_ai_guide_{}_{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("ai_guide.json")
     }
@@ -381,8 +378,7 @@ mod tests {
 
         svc.set_override("read_file", "Reads a VOSpace file for the agent.");
         assert_eq!(
-            svc.snapshot()
-                .description_for_tool("read_file", "DEFAULT"),
+            svc.snapshot().description_for_tool("read_file", "DEFAULT"),
             "Reads a VOSpace file for the agent."
         );
         assert_eq!(
@@ -456,7 +452,10 @@ mod tests {
         svc.add_guide("no_body", "the one liner answer", "   ")
             .unwrap();
         let snap = svc.snapshot();
-        assert_eq!(snap.guide_body("with_body").as_deref(), Some("the full body"));
+        assert_eq!(
+            snap.guide_body("with_body").as_deref(),
+            Some("the full body")
+        );
         assert_eq!(
             snap.guide_body("no_body").as_deref(),
             Some("the one liner answer")
@@ -469,7 +468,8 @@ mod tests {
         let path = temp_file();
         let svc = AiGuideService::with_file(path.clone());
 
-        svc.add_guide("My Guide", "How to observe", "Step 1.").unwrap();
+        svc.add_guide("My Guide", "How to observe", "Step 1.")
+            .unwrap();
         svc.add_guide("Other Guide", "Second", "Body.").unwrap();
 
         // Description/body-only edit keeps the same slug.
@@ -494,7 +494,9 @@ mod tests {
 
         // Empty name / empty description are rejected.
         assert!(svc.update_guide("survey_plan", "!!!", "d", "").is_err());
-        assert!(svc.update_guide("survey_plan", "Survey Plan", "  ", "b").is_err());
+        assert!(svc
+            .update_guide("survey_plan", "Survey Plan", "  ", "b")
+            .is_err());
 
         // Unknown target errors out.
         assert!(svc.update_guide("nope", "Whatever", "d", "").is_err());

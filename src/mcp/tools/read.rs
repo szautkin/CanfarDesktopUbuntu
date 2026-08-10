@@ -178,7 +178,10 @@ pub async fn dispatch(
 // ---------------------------------------------------------------------------
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 fn arg_f64(args: &Value, key: &str) -> Option<f64> {
@@ -246,7 +249,11 @@ async fn search_observations(services: &crate::state::AppServices, args: &Value)
             (Some(ra), Some(dec)) => (ra, dec),
             _ => match arg_str(args, "target") {
                 Some(target) => {
-                    match services.tap.resolve_target(target, "ALL", token.as_deref()).await {
+                    match services
+                        .tap
+                        .resolve_target(target, "ALL", token.as_deref())
+                        .await
+                    {
                         Ok(r) => (r.ra, r.dec),
                         Err(e) => {
                             return ToolResult::Failed(format!(
@@ -282,7 +289,11 @@ async fn search_observations(services: &crate::state::AppServices, args: &Value)
         crate::helpers::adql_builder::build(&state)
     };
 
-    match services.tap.execute_query(&adql, probe, token.as_deref()).await {
+    match services
+        .tap
+        .execute_query(&adql, probe, token.as_deref())
+        .await
+    {
         Ok(results) => {
             let truncated = results.rows.len() as u32 > max_rows;
             let cols = &results.columns;
@@ -313,7 +324,11 @@ async fn resolve_target(services: &crate::state::AppServices, args: &Value) -> T
     let service = arg_str(args, "service").unwrap_or("ALL");
     let token = services.get_token().await;
 
-    match services.tap.resolve_target(target, service, token.as_deref()).await {
+    match services
+        .tap
+        .resolve_target(target, service, token.as_deref())
+        .await
+    {
         Ok(r) => ToolResult::Data(json!({
             "target": r.target,
             "ra": r.ra,
@@ -345,7 +360,12 @@ fn get_saved_query(services: &crate::state::AppServices, args: &Value) -> ToolRe
         Some(n) => n,
         None => return ToolResult::Failed("name is required".to_string()),
     };
-    match services.search_store.load_saved().into_iter().find(|q| q.name == name) {
+    match services
+        .search_store
+        .load_saved()
+        .into_iter()
+        .find(|q| q.name == name)
+    {
         Some(q) => ToolResult::Data(json!({
             "name": q.name, "adql": q.adql, "created_at": q.created_at
         })),
@@ -379,7 +399,9 @@ fn list_recent_searches(services: &crate::state::AppServices, args: &Value) -> T
 async fn list_sessions(services: &crate::state::AppServices) -> ToolResult {
     let token = match services.get_token().await {
         Some(t) => t,
-        None => return ToolResult::Failed("not signed in (sign in to CADC/CANFAR first)".to_string()),
+        None => {
+            return ToolResult::Failed("not signed in (sign in to CADC/CANFAR first)".to_string())
+        }
     };
     match services.sessions.get_sessions(&token).await {
         Ok(sessions) => {
@@ -410,7 +432,9 @@ async fn list_sessions(services: &crate::state::AppServices) -> ToolResult {
 async fn list_storage(services: &crate::state::AppServices, args: &Value) -> ToolResult {
     let token = match services.get_token().await {
         Some(t) => t,
-        None => return ToolResult::Failed("not signed in (sign in to CADC/CANFAR first)".to_string()),
+        None => {
+            return ToolResult::Failed("not signed in (sign in to CADC/CANFAR first)".to_string())
+        }
     };
     let username = match services.get_username().await {
         Some(u) => u,
@@ -526,8 +550,16 @@ mod tests {
         for d in descriptors() {
             assert_eq!(d.verb, VerbClass::Read, "{} must be a Read tool", d.name);
             assert!(d.agent_safe, "{} must be agent-safe", d.name);
-            assert!(!d.description.trim().is_empty(), "{} needs a description", d.name);
-            assert!(d.input_schema.is_object(), "{} needs an object schema", d.name);
+            assert!(
+                !d.description.trim().is_empty(),
+                "{} needs a description",
+                d.name
+            );
+            assert!(
+                d.input_schema.is_object(),
+                "{} needs an object schema",
+                d.name
+            );
         }
     }
 

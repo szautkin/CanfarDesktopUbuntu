@@ -273,8 +273,16 @@ impl FitsCanvas {
     fn viewport_size(&self) -> (f64, f64) {
         let w = self.drawing_area.width();
         let h = self.drawing_area.height();
-        let w = if w > 0 { w } else { self.drawing_area.content_width() };
-        let h = if h > 0 { h } else { self.drawing_area.content_height() };
+        let w = if w > 0 {
+            w
+        } else {
+            self.drawing_area.content_width()
+        };
+        let h = if h > 0 {
+            h
+        } else {
+            self.drawing_area.content_height()
+        };
         (w as f64, h as f64)
     }
 
@@ -535,18 +543,15 @@ impl FitsCanvas {
                     (true, Some((ra, dec)), Some(w_ref)) => w_ref.world_to_pixel(ra, dec),
                     _ => None,
                 };
-                let hover_pixel = choose_hover_pixel(
-                    linked,
-                    wcs.is_some(),
-                    mapped_hover,
-                    *local_hover.borrow(),
-                )
-                .filter(|&(cx, cy)| on_image(cx, cy, w, h));
+                let hover_pixel =
+                    choose_hover_pixel(linked, wcs.is_some(), mapped_hover, *local_hover.borrow())
+                        .filter(|&(cx, cy)| on_image(cx, cy, w, h));
 
                 // Draw hover crosshair (green dashed) — locked to its image pixel
                 // through the same rotation as the image.
                 if let Some((cx, cy)) = hover_pixel {
-                    let (sx, sy) = image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
+                    let (sx, sy) =
+                        image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
 
                     cr.set_source_rgba(0.0, 1.0, 0.0, 0.7);
                     cr.set_line_width(1.0);
@@ -565,10 +570,11 @@ impl FitsCanvas {
 
                 // Draw placed crosshair (solid red) with optional RA/Dec label.
                 // Hidden when it falls outside the image (e.g. an off-image Go To).
-                if let Some((cx, cy)) = (*crosshair_placed.borrow())
-                    .filter(|&(cx, cy)| on_image(cx, cy, w, h))
+                if let Some((cx, cy)) =
+                    (*crosshair_placed.borrow()).filter(|&(cx, cy)| on_image(cx, cy, w, h))
                 {
-                    let (sx, sy) = image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
+                    let (sx, sy) =
+                        image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
 
                     cr.set_source_rgba(1.0, 0.15, 0.15, 0.9);
                     cr.set_line_width(1.5);

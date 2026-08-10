@@ -130,14 +130,18 @@ impl StorageQuotaView {
         }
         self.content_box.append(&progress);
 
-        let used_label =
-            gtk::Label::new(Some(&crate::tr_fmt!("Used: {} GB", format!("{:.1}", used_gb))));
+        let used_label = gtk::Label::new(Some(&crate::tr_fmt!(
+            "Used: {} GB",
+            format!("{:.1}", used_gb)
+        )));
         used_label.set_halign(gtk::Align::Start);
         used_label.add_css_class("caption");
         self.content_box.append(&used_label);
 
-        let quota_label =
-            gtk::Label::new(Some(&crate::tr_fmt!("Quota: {} GB", format!("{:.1}", quota_gb))));
+        let quota_label = gtk::Label::new(Some(&crate::tr_fmt!(
+            "Quota: {} GB",
+            format!("{:.1}", quota_gb)
+        )));
         quota_label.set_halign(gtk::Align::Start);
         quota_label.add_css_class("caption");
         self.content_box.append(&quota_label);

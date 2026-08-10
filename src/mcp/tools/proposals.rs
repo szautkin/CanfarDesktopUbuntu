@@ -128,7 +128,10 @@ impl InMemoryProposalStore {
     /// All proposals in FIFO order.
     pub fn list(&self) -> Vec<PendingProposal> {
         let g = self.inner.lock().unwrap();
-        g.order.iter().filter_map(|id| g.by_id.get(id).cloned()).collect()
+        g.order
+            .iter()
+            .filter_map(|id| g.by_id.get(id).cloned())
+            .collect()
     }
 
     /// The pending (unresolved) proposals.

@@ -97,14 +97,17 @@ mod tests {
 
     #[test]
     fn parses_request_and_notification() {
-        let req = JsonRpcRequest::parse(&json!({"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}))
-            .unwrap();
+        let req = JsonRpcRequest::parse(
+            &json!({"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}),
+        )
+        .unwrap();
         assert_eq!(req.method, "tools/list");
         assert_eq!(req.id, Some(JsonRpcId::Num(7)));
         assert!(!req.is_notification());
 
-        let note = JsonRpcRequest::parse(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
-            .unwrap();
+        let note =
+            JsonRpcRequest::parse(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+                .unwrap();
         assert!(note.is_notification());
     }
 
@@ -118,7 +121,11 @@ mod tests {
         let s = success(&Some(JsonRpcId::Num(1)), json!({"ok":true}));
         assert_eq!(s["id"], json!(1));
         assert_eq!(s["result"]["ok"], json!(true));
-        let f = failure(&Some(JsonRpcId::Str("x".into())), error_code::METHOD_NOT_FOUND, "nope");
+        let f = failure(
+            &Some(JsonRpcId::Str("x".into())),
+            error_code::METHOD_NOT_FOUND,
+            "nope",
+        );
         assert_eq!(f["error"]["code"], json!(-32601));
         assert_eq!(f["id"], json!("x"));
     }

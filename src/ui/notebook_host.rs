@@ -14,9 +14,9 @@ use crate::state::AppServices;
 use crate::ui::notebook_page::NotebookPage;
 use gtk4::glib;
 use gtk4::prelude::*;
-use libadwaita::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
+use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -167,18 +167,9 @@ impl NotebookTabHost {
         toolbar.append(&interrupt_btn);
 
         // ── "Cell" menu: structural operations ───────────────────────────────
-        let move_up_btn = menu_item(
-            crate::tr_en!("Move up"),
-            crate::tr_en!("Move Cell Up"),
-        );
-        let move_down_btn = menu_item(
-            crate::tr_en!("Move down"),
-            crate::tr_en!("Move Cell Down"),
-        );
-        let delete_cell_btn = menu_item(
-            crate::tr_en!("Delete cell"),
-            crate::tr_en!("Delete Cell"),
-        );
+        let move_up_btn = menu_item(crate::tr_en!("Move up"), crate::tr_en!("Move Cell Up"));
+        let move_down_btn = menu_item(crate::tr_en!("Move down"), crate::tr_en!("Move Cell Down"));
+        let delete_cell_btn = menu_item(crate::tr_en!("Delete cell"), crate::tr_en!("Delete Cell"));
         let split_btn = menu_item(
             crate::tr_en!("Split at cursor"),
             crate::tr_en!("Split Cell at Cursor (Ctrl+Shift+Minus)"),
@@ -236,9 +227,7 @@ impl NotebookTabHost {
         let kernel_menu_btn = gtk::MenuButton::new();
         kernel_menu_btn.set_label(crate::tr_en!("Kernel"));
         kernel_menu_btn.add_css_class("flat");
-        kernel_menu_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Kernel — restart, clear outputs"
-        )));
+        kernel_menu_btn.set_tooltip_text(Some(crate::tr_en!("Kernel — restart, clear outputs")));
         kernel_menu_btn.set_popover(Some(&kernel_pop));
         toolbar.append(&kernel_menu_btn);
 
@@ -637,8 +626,7 @@ impl NotebookTabHost {
 
             "add_cell" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
-                let cell_type =
-                    norm_cell_type(args.get("cell_type").or_else(|| args.get("type")));
+                let cell_type = norm_cell_type(args.get("cell_type").or_else(|| args.get("type")));
                 let count = page.cell_count();
                 let idx = arg_index(args, "index").unwrap_or(count).min(count);
                 page.insert_cell(idx, &cell_type);
@@ -854,11 +842,7 @@ impl NotebookTabHost {
         if let Some(p) = page.file_path.borrow().as_ref() {
             return p.display().to_string();
         }
-        let idx = self
-            .pages
-            .borrow()
-            .iter()
-            .position(|p| Rc::ptr_eq(p, page));
+        let idx = self.pages.borrow().iter().position(|p| Rc::ptr_eq(p, page));
         match idx {
             Some(i) => format!("notebook-{i}"),
             None => "notebook-?".to_string(),
@@ -1071,11 +1055,7 @@ impl NotebookTabHost {
 
     /// Remove a page's tab + tracking entries, and delete its autosave checkpoint.
     fn remove_page_for(&self, page: &Rc<NotebookPage>) {
-        let idx = self
-            .pages
-            .borrow()
-            .iter()
-            .position(|p| Rc::ptr_eq(p, page));
+        let idx = self.pages.borrow().iter().position(|p| Rc::ptr_eq(p, page));
         let Some(idx) = idx else { return };
         if (idx as u32) < self.tab_view.n_pages() {
             self.tab_view.remove_page(Some(idx as u32));
@@ -1169,8 +1149,9 @@ impl NotebookTabHost {
         if let Some(page) = self.current_page() {
             if page.file_path.borrow().is_none() {
                 // No path set — show toast and do nothing; user should use Save As
-                self.toast_overlay
-                    .add_toast(adw::Toast::new(crate::tr_en!("Use Save As to choose a file path")));
+                self.toast_overlay.add_toast(adw::Toast::new(crate::tr_en!(
+                    "Use Save As to choose a file path"
+                )));
                 return;
             }
             if let Err(e) = page.save() {
@@ -1179,12 +1160,18 @@ impl NotebookTabHost {
             } else {
                 // Clean save → clear the `*` marker and drop the autosave checkpoint.
                 self.refresh_tab_title(&page);
-                if let Some(idx) = self.pages.borrow().iter().position(|p| Rc::ptr_eq(p, &page)) {
+                if let Some(idx) = self
+                    .pages
+                    .borrow()
+                    .iter()
+                    .position(|p| Rc::ptr_eq(p, &page))
+                {
                     if let Some(path) = self.autosave_paths.borrow().get(idx) {
                         crate::helpers::notebook_autosave::delete_autosave(path);
                     }
                 }
-                self.toast_overlay.add_toast(adw::Toast::new(crate::tr_en!("Saved")));
+                self.toast_overlay
+                    .add_toast(adw::Toast::new(crate::tr_en!("Saved")));
             }
         }
     }
@@ -1200,12 +1187,7 @@ impl NotebookTabHost {
             .clone()
             .unwrap_or_else(|| PathBuf::from("/usr/bin/python3"));
 
-        let page = NotebookPage::load_from_document(
-            self.services.clone(),
-            python_path,
-            doc,
-            None,
-        );
+        let page = NotebookPage::load_from_document(self.services.clone(), python_path, doc, None);
         self.add_tab(page, crate::tr_en!("Untitled"));
     }
 
@@ -1256,7 +1238,8 @@ impl NotebookTabHost {
             if let Some(path) = file.path() {
                 match page.save_as(path) {
                     Ok(()) => {
-                        self.toast_overlay.add_toast(adw::Toast::new(crate::tr_en!("Saved")));
+                        self.toast_overlay
+                            .add_toast(adw::Toast::new(crate::tr_en!("Saved")));
                     }
                     Err(e) => {
                         self.toast_overlay
@@ -1612,7 +1595,10 @@ impl NotebookTabHost {
 
         if let Err(e) = self.settings_service.save(&new) {
             self.toast_overlay
-                .add_toast(adw::Toast::new(&crate::tr_fmt!("Settings save failed: {}", e)));
+                .add_toast(adw::Toast::new(&crate::tr_fmt!(
+                    "Settings save failed: {}",
+                    e
+                )));
         }
 
         // Font size → global provider (restyles every open notebook's cells).
@@ -1713,7 +1699,11 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
                 "has_image": false, "has_html": false,
             })
         }
-        CellOutput::ExecuteResult { execution_count, data, .. } => {
+        CellOutput::ExecuteResult {
+            execution_count,
+            data,
+            ..
+        } => {
             let (t, tr) = cap(&data.plain_text().unwrap_or_default(), TEXT_CAP);
             json!({
                 "output_type": "execute_result", "execution_count": execution_count,
@@ -1730,7 +1720,11 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
                 "has_image": data.has_image(), "has_html": data.text_html.is_some(),
             })
         }
-        CellOutput::Error { ename, evalue, traceback } => {
+        CellOutput::Error {
+            ename,
+            evalue,
+            traceback,
+        } => {
             let (t, tr) = cap(evalue, TEXT_CAP);
             let (tb, tbtr) = cap(&traceback.join("\n"), TEXT_CAP);
             json!({
@@ -1803,9 +1797,9 @@ fn build_empty_state() -> gtk::Box {
     title.add_css_class("title-2");
     page.append(&title);
 
-    let subtitle = gtk::Label::new(Some(
-        crate::tr_en!("Open a Jupyter notebook (.ipynb) or Python (.py) file"),
-    ));
+    let subtitle = gtk::Label::new(Some(crate::tr_en!(
+        "Open a Jupyter notebook (.ipynb) or Python (.py) file"
+    )));
     subtitle.add_css_class("dim-label");
     subtitle.set_justify(gtk::Justification::Center);
     page.append(&subtitle);

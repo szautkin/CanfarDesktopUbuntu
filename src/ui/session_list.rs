@@ -52,8 +52,14 @@ impl SessionListView {
         // Insert after countdown
         header.insert_child_after(&count_label, Some(&countdown_label));
 
-        let filter_types =
-            gtk::StringList::new(&["All", "notebook", "desktop", "carta", "contributed", "firefly"]);
+        let filter_types = gtk::StringList::new(&[
+            "All",
+            "notebook",
+            "desktop",
+            "carta",
+            "contributed",
+            "firefly",
+        ]);
         let filter_dropdown = gtk::DropDown::new(Some(filter_types), gtk::Expression::NONE);
         filter_dropdown.set_valign(gtk::Align::Center);
         header.insert_child_after(&filter_dropdown, Some(&count_label));
@@ -196,7 +202,14 @@ impl SessionListView {
     }
 
     fn active_filter(&self) -> Option<String> {
-        let types = ["All", "notebook", "desktop", "carta", "contributed", "firefly"];
+        let types = [
+            "All",
+            "notebook",
+            "desktop",
+            "carta",
+            "contributed",
+            "firefly",
+        ];
         let idx = self.filter_dropdown.selected() as usize;
         match types.get(idx) {
             Some(&"All") | None => None,
@@ -222,7 +235,11 @@ impl SessionListView {
             .collect();
 
         let count = sessions.iter().filter(|s| !s.is_headless()).count();
-        let count_tmpl = if count == 1 { "{} session" } else { "{} sessions" };
+        let count_tmpl = if count == 1 {
+            "{} session"
+        } else {
+            "{} sessions"
+        };
         self.count_label
             .set_text(&crate::tr_fmt!(count_tmpl, count));
         self.empty_label.set_visible(visible.is_empty());
@@ -263,8 +280,14 @@ impl SessionListView {
             countdown_label.set_visible(true);
 
             glib::spawn_future_local(async move {
-                let filter_types =
-                    ["All", "notebook", "desktop", "carta", "contributed", "firefly"];
+                let filter_types = [
+                    "All",
+                    "notebook",
+                    "desktop",
+                    "carta",
+                    "contributed",
+                    "firefly",
+                ];
 
                 loop {
                     // Countdown from 15 to 1
@@ -291,7 +314,8 @@ impl SessionListView {
                         break;
                     };
 
-                    let active_filter = match filter_types.get(filter_dropdown.selected() as usize) {
+                    let active_filter = match filter_types.get(filter_dropdown.selected() as usize)
+                    {
                         Some(&"All") | None => None,
                         Some(t) => Some(*t),
                     };
@@ -302,7 +326,11 @@ impl SessionListView {
                     // Headless (batch) jobs never render as cards nor count toward
                     // the interactive cap (matches update_sessions above).
                     let count = new_sessions.iter().filter(|s| !s.is_headless()).count();
-                    let count_tmpl = if count == 1 { "{} session" } else { "{} sessions" };
+                    let count_tmpl = if count == 1 {
+                        "{} session"
+                    } else {
+                        "{} sessions"
+                    };
                     count_label.set_text(&crate::tr_fmt!(count_tmpl, count));
                     let visible: Vec<&Session> = new_sessions
                         .iter()

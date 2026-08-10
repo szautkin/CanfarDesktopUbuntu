@@ -134,7 +134,13 @@ pub fn delete_managed_dir(obs_id: &str) {
 /// Best-effort sanitization of an observation id into a filesystem-safe name.
 fn sanitize_obs_id(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -288,9 +294,7 @@ impl ObservationStore {
 
     /// Returns `true` if an observation with the given CADC publisher ID already exists.
     pub fn contains_publisher_id(&self, publisher_id: &str) -> bool {
-        self.load()
-            .iter()
-            .any(|o| o.publisher_id == publisher_id)
+        self.load().iter().any(|o| o.publisher_id == publisher_id)
     }
 
     /// Return observations whose collection, observation_id, target, or instrument
@@ -498,7 +502,10 @@ mod tests {
 
         // The bad bytes were moved aside, not deleted — the original path is gone
         // and a `.corrupt-<n>` sibling holds the quarantined content.
-        assert!(!tmp.path.exists(), "corrupt file should have been renamed away");
+        assert!(
+            !tmp.path.exists(),
+            "corrupt file should have been renamed away"
+        );
         let base = tmp.path.as_os_str().to_string_lossy().into_owned();
         let quarantined = PathBuf::from(format!("{base}.corrupt-0"));
         assert!(quarantined.exists(), "quarantine sibling should exist");

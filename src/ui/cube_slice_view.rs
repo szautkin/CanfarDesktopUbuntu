@@ -177,8 +177,12 @@ impl CubeSliceView {
         waveform_area.set_content_height(20);
         waveform_area.set_hexpand(true);
         scrub_box.append(&waveform_area);
-        let channel_scale =
-            gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, (nz.max(1) - 1) as f64, 1.0);
+        let channel_scale = gtk::Scale::with_range(
+            gtk::Orientation::Horizontal,
+            0.0,
+            (nz.max(1) - 1) as f64,
+            1.0,
+        );
         channel_scale.set_hexpand(true);
         channel_scale.set_draw_value(false);
         channel_scale.set_value(mid as f64);
@@ -416,8 +420,12 @@ impl CubeSliceView {
     fn update_channel_label(&self) {
         let z = self.state.borrow().z;
         let nz = self.vol.nz.max(1);
-        self.channel_label
-            .set_text(&format!("{} / {} · {}", z, nz - 1, self.wcs.channel_label(z)));
+        self.channel_label.set_text(&format!(
+            "{} / {} · {}",
+            z,
+            nz - 1,
+            self.wcs.channel_label(z)
+        ));
     }
 
     // ── Coordinate mapping (viewport ⇄ voxel) ───────────────────────────────
@@ -598,8 +606,7 @@ impl CubeSliceView {
             return;
         }
         self.state.borrow_mut().playing = true;
-        self.play_btn
-            .set_icon_name("media-playback-pause-symbolic");
+        self.play_btn.set_icon_name("media-playback-pause-symbolic");
         let gen = self.play_gen.get().wrapping_add(1);
         self.play_gen.set(gen);
         let this = self.clone();
@@ -619,8 +626,7 @@ impl CubeSliceView {
 
     fn stop_play(&self) {
         self.state.borrow_mut().playing = false;
-        self.play_btn
-            .set_icon_name("media-playback-start-symbolic");
+        self.play_btn.set_icon_name("media-playback-start-symbolic");
     }
 
     /// Step the current channel by `delta`, clamped to `[0, nz-1]` (mirrors
@@ -1061,7 +1067,11 @@ fn channel_profile(vol: &VolumeData) -> Vec<f32> {
                 cnt += 1;
             }
         }
-        means.push(if cnt > 0 { (sum / cnt as f64) as f32 } else { 0.0 });
+        means.push(if cnt > 0 {
+            (sum / cnt as f64) as f32
+        } else {
+            0.0
+        });
     }
     let mn = means.iter().copied().fold(f32::INFINITY, f32::min);
     let mx = means.iter().copied().fold(f32::NEG_INFINITY, f32::max);

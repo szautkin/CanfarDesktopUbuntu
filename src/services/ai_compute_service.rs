@@ -56,7 +56,8 @@ impl AIComputeService {
     /// still lives in the OS keychain.
     pub fn with_path(path: PathBuf) -> Self {
         let mut settings = Self::load_from(&path);
-        settings.has_secret = Self::read_secret(&settings.registry_host, &settings.registry_username).is_some();
+        settings.has_secret =
+            Self::read_secret(&settings.registry_host, &settings.registry_username).is_some();
         Self { path, settings }
     }
 
@@ -80,8 +81,11 @@ impl AIComputeService {
     /// The (username, secret) for the contributed-session registry auth, or empty
     /// strings when none.
     pub fn registry_credentials(&self) -> (String, String) {
-        let secret = Self::read_secret(&self.settings.registry_host, &self.settings.registry_username)
-            .unwrap_or_default();
+        let secret = Self::read_secret(
+            &self.settings.registry_host,
+            &self.settings.registry_username,
+        )
+        .unwrap_or_default();
         (self.settings.registry_username.clone(), secret)
     }
 
@@ -109,8 +113,11 @@ impl AIComputeService {
         } else {
             v.to_string()
         };
-        self.settings.has_secret =
-            Self::read_secret(&self.settings.registry_host, &self.settings.registry_username).is_some();
+        self.settings.has_secret = Self::read_secret(
+            &self.settings.registry_host,
+            &self.settings.registry_username,
+        )
+        .is_some();
         let _ = self.save();
     }
 
@@ -121,8 +128,11 @@ impl AIComputeService {
 
     pub fn set_username(&mut self, value: &str) {
         self.settings.registry_username = value.trim().to_string();
-        self.settings.has_secret =
-            Self::read_secret(&self.settings.registry_host, &self.settings.registry_username).is_some();
+        self.settings.has_secret = Self::read_secret(
+            &self.settings.registry_host,
+            &self.settings.registry_username,
+        )
+        .is_some();
         let _ = self.save();
     }
 
@@ -170,7 +180,9 @@ impl AIComputeService {
     pub async fn ensure_session(&self, services: &AppServices) -> Result<(), String> {
         let image = self.resolve_image();
         if image.is_empty() {
-            return Err("No AI compute image configured. Set one in Settings ▸ AI compute.".to_string());
+            return Err(
+                "No AI compute image configured. Set one in Settings ▸ AI compute.".to_string(),
+            );
         }
         let token = services.get_token().await.ok_or_else(sign_in_msg)?;
 
@@ -195,13 +207,21 @@ impl AIComputeService {
             args: None,
             replicas: None,
         };
-        services.sessions.launch_session(&token, &params).await.map(|_| ())
+        services
+            .sessions
+            .launch_session(&token, &params)
+            .await
+            .map(|_| ())
     }
 
     /// Ensure the compute session, then drop the request file in the inbox.
     /// Returns the `job_ref` (execution id) without waiting for a result — the
     /// caller polls [`fetch_out`](Self::fetch_out).
-    pub async fn submit(&self, services: &AppServices, request: &RunCodeRequest) -> Result<String, String> {
+    pub async fn submit(
+        &self,
+        services: &AppServices,
+        request: &RunCodeRequest,
+    ) -> Result<String, String> {
         let token = services.get_token().await.ok_or_else(sign_in_msg)?;
         let user = services.get_username().await.ok_or_else(sign_in_msg)?;
 
@@ -221,7 +241,11 @@ impl AIComputeService {
     /// Read + parse the result file for an execution id; `Ok(None)` when it isn't
     /// ready yet (absent, 404, or a transient error — the caller polls again).
     /// Only an auth failure surfaces as `Err`.
-    pub async fn fetch_out(&self, services: &AppServices, id: &str) -> Result<Option<RunCodeResult>, String> {
+    pub async fn fetch_out(
+        &self,
+        services: &AppServices,
+        id: &str,
+    ) -> Result<Option<RunCodeResult>, String> {
         let token = services.get_token().await.ok_or_else(sign_in_msg)?;
         let user = services.get_username().await.ok_or_else(sign_in_msg)?;
         let path = RunCodeContract::out_path(&user, id);
@@ -242,7 +266,11 @@ impl AIComputeService {
     pub async fn stop(&self, services: &AppServices) -> Result<bool, String> {
         let token = services.get_token().await.ok_or_else(sign_in_msg)?;
         match self.find_warm_session(services, &token).await? {
-            Some(s) => services.sessions.delete_session(&token, &s.id).await.map(|_| true),
+            Some(s) => services
+                .sessions
+                .delete_session(&token, &s.id)
+                .await
+                .map(|_| true),
             None => Ok(false),
         }
     }
@@ -256,9 +284,14 @@ impl AIComputeService {
         services: &AppServices,
         token: &str,
     ) -> Result<Option<Session>, String> {
-        let sessions = services.sessions.get_sessions(token).await.map_err(|e| e.to_string())?;
+        let sessions = services
+            .sessions
+            .get_sessions(token)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(sessions.into_iter().find(|s| {
-            s.session_type.eq_ignore_ascii_case(RunCodeContract::SESSION_TYPE)
+            s.session_type
+                .eq_ignore_ascii_case(RunCodeContract::SESSION_TYPE)
                 && s.name == RunCodeContract::SESSION_NAME
                 && is_live(&s.status)
         }))
@@ -382,7 +415,10 @@ mod tests {
         assert_eq!(s.registry_repository, "project");
         assert_eq!(s.registry_username, "alice");
         assert!(s.is_enabled());
-        assert_eq!(svc2.resolve_image(), "images.canfar.net/project/verbinal-compute:1.0");
+        assert_eq!(
+            svc2.resolve_image(),
+            "images.canfar.net/project/verbinal-compute:1.0"
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -400,7 +436,10 @@ mod tests {
         let p = temp_path("host");
         let mut svc = AIComputeService::with_path(p.clone());
         svc.set_registry_host("   ");
-        assert_eq!(svc.settings().registry_host, crate::models::ai_compute::DEFAULT_REGISTRY_HOST);
+        assert_eq!(
+            svc.settings().registry_host,
+            crate::models::ai_compute::DEFAULT_REGISTRY_HOST
+        );
         let _ = std::fs::remove_file(&p);
     }
 

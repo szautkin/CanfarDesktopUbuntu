@@ -273,7 +273,10 @@ impl SearchPage {
         form_tab.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         form_tab.append(&action_bar);
 
-        notebook.append_page(&form_tab, Some(&gtk::Label::new(Some(crate::tr_en!("Search Form")))));
+        notebook.append_page(
+            &form_tab,
+            Some(&gtk::Label::new(Some(crate::tr_en!("Search Form")))),
+        );
 
         // ====== TAB 2: RESULTS ======
         let results_tab = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -311,9 +314,9 @@ impl SearchPage {
         // "Apply filters to ADQL" — only visible while column filters are active.
         let apply_filters_btn = gtk::Button::with_label(crate::tr_en!("Apply filters to ADQL"));
         apply_filters_btn.add_css_class("flat");
-        apply_filters_btn.set_tooltip_text(Some(
-            crate::tr_en!("Append the active column filters as an ADQL WHERE clause"),
-        ));
+        apply_filters_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Append the active column filters as an ADQL WHERE clause"
+        )));
         apply_filters_btn.set_visible(false);
         results_toolbar.append(&apply_filters_btn);
 
@@ -362,7 +365,10 @@ impl SearchPage {
 
         results_tab.append(&page_bar);
 
-        notebook.append_page(&results_tab, Some(&gtk::Label::new(Some(crate::tr_en!("Results")))));
+        notebook.append_page(
+            &results_tab,
+            Some(&gtk::Label::new(Some(crate::tr_en!("Results")))),
+        );
 
         // ====== TAB 3: ADQL EDITOR ======
         let adql_tab = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -395,7 +401,10 @@ impl SearchPage {
         adql_action.append(&exec_btn);
         adql_tab.append(&adql_action);
 
-        notebook.append_page(&adql_tab, Some(&gtk::Label::new(Some(crate::tr_en!("ADQL Editor")))));
+        notebook.append_page(
+            &adql_tab,
+            Some(&gtk::Label::new(Some(crate::tr_en!("ADQL Editor")))),
+        );
 
         main_box.append(&notebook);
         widget.append(&main_box);
@@ -631,7 +640,8 @@ impl SearchPage {
             let p = p.clone();
             let btn = btn.clone();
             glib::spawn_future_local(async move {
-                p.export_to_file(&btn, ",", "csv", crate::tr_en!("CSV Files")).await;
+                p.export_to_file(&btn, ",", "csv", crate::tr_en!("CSV Files"))
+                    .await;
             });
         });
 
@@ -641,7 +651,8 @@ impl SearchPage {
             let p = p.clone();
             let btn = btn.clone();
             glib::spawn_future_local(async move {
-                p.export_to_file(&btn, "\t", "tsv", crate::tr_en!("TSV Files")).await;
+                p.export_to_file(&btn, "\t", "tsv", crate::tr_en!("TSV Files"))
+                    .await;
             });
         });
 
@@ -672,9 +683,11 @@ impl SearchPage {
         // resolver service) invalidates any resolved coords and schedules a fresh
         // resolve 500 ms later (ref `OnTargetChanged` / `ResolveTargetDebouncedAsync`).
         let p = page.clone();
-        page.target.connect_changed(move |_| p.schedule_target_resolve());
+        page.target
+            .connect_changed(move |_| p.schedule_target_resolve());
         let p = page.clone();
-        page.resolver.connect_selected_notify(move |_| p.schedule_target_resolve());
+        page.resolver
+            .connect_selected_notify(move |_| p.schedule_target_resolve());
 
         // Keyboard shortcut: Ctrl+Enter to search
         let p = page.clone();
@@ -714,16 +727,18 @@ impl SearchPage {
         // which clears the coords and schedules a resolve. We then bump the
         // generation token to invalidate that pending resolve, and finally stamp
         // the crosshair coords so they survive (no network round-trip needed).
-        self.target.set_text(&crate::models::fits_image::WcsInfo::format_for_resolver(
-            ra, dec,
-        ));
+        self.target
+            .set_text(&crate::models::fits_image::WcsInfo::format_for_resolver(
+                ra, dec,
+            ));
         {
             let mut g = self.resolve_generation.borrow_mut();
             *g = g.wrapping_add(1);
         }
         *self.resolved_ra.borrow_mut() = Some(ra);
         *self.resolved_dec.borrow_mut() = Some(dec);
-        self.resolver_status.set_text(crate::tr_en!("From FITS crosshair"));
+        self.resolver_status
+            .set_text(crate::tr_en!("From FITS crosshair"));
     }
 
     fn build_form_state(&self) -> SearchFormState {
@@ -744,31 +759,26 @@ impl SearchPage {
             .to_string();
 
         // Parse range fields using range_parser
-        let parse_range_minmax =
-            |entry: &gtk::Entry| -> (Option<f64>, Option<f64>) {
-                let text = entry.text().to_string();
-                match range_parser::parse_range(&text) {
-                    Some(r) => match r.op {
-                        range_parser::RangeOp::Between => (
-                            r.value1.parse().ok(),
-                            r.value2.and_then(|v| v.parse().ok()),
-                        ),
-                        range_parser::RangeOp::GreaterThan
-                        | range_parser::RangeOp::GreaterThanOrEqual => {
-                            (r.value1.parse().ok(), None)
-                        }
-                        range_parser::RangeOp::LessThan
-                        | range_parser::RangeOp::LessThanOrEqual => {
-                            (None, r.value1.parse().ok())
-                        }
-                        range_parser::RangeOp::Equals => {
-                            let v: Option<f64> = r.value1.parse().ok();
-                            (v, v)
-                        }
-                    },
-                    None => (None, None),
-                }
-            };
+        let parse_range_minmax = |entry: &gtk::Entry| -> (Option<f64>, Option<f64>) {
+            let text = entry.text().to_string();
+            match range_parser::parse_range(&text) {
+                Some(r) => match r.op {
+                    range_parser::RangeOp::Between => {
+                        (r.value1.parse().ok(), r.value2.and_then(|v| v.parse().ok()))
+                    }
+                    range_parser::RangeOp::GreaterThan
+                    | range_parser::RangeOp::GreaterThanOrEqual => (r.value1.parse().ok(), None),
+                    range_parser::RangeOp::LessThan | range_parser::RangeOp::LessThanOrEqual => {
+                        (None, r.value1.parse().ok())
+                    }
+                    range_parser::RangeOp::Equals => {
+                        let v: Option<f64> = r.value1.parse().ok();
+                        (v, v)
+                    }
+                },
+                None => (None, None),
+            }
+        };
 
         // Spectral coverage
         let (wl_min, wl_max) = parse_range_minmax(&self.spectral_coverage);
@@ -812,10 +822,9 @@ impl SearchPage {
         // Observation date — parse range for start/end
         let obs_date_text = self.obs_date.text().to_string();
         let (obs_start, obs_end) = match range_parser::parse_range(&obs_date_text) {
-            Some(r) if r.op == range_parser::RangeOp::Between => (
-                r.value1,
-                r.value2.unwrap_or_default(),
-            ),
+            Some(r) if r.op == range_parser::RangeOp::Between => {
+                (r.value1, r.value2.unwrap_or_default())
+            }
             Some(r) => (r.value1, String::new()),
             None => (String::new(), String::new()),
         };
@@ -939,7 +948,8 @@ impl SearchPage {
             && state.resolved_ra.is_none()
             && state.resolver_service != "NONE"
         {
-            self.status_label.set_text(crate::tr_en!("Resolving target..."));
+            self.status_label
+                .set_text(crate::tr_en!("Resolving target..."));
             self.search_spinner.set_visible(true);
             self.search_spinner.start();
 
@@ -993,14 +1003,20 @@ impl SearchPage {
             .text(&buffer.start_iter(), &buffer.end_iter(), false)
             .to_string();
         if adql.trim().is_empty() {
-            self.status_label.set_text(crate::tr_en!("Enter an ADQL query"));
+            self.status_label
+                .set_text(crate::tr_en!("Enter an ADQL query"));
             return;
         }
         self.run_query(&adql, self.max_records.value() as u32, None)
             .await;
     }
 
-    async fn run_query(self: &Rc<Self>, adql: &str, max_records: u32, form_state: Option<&SearchFormState>) {
+    async fn run_query(
+        self: &Rc<Self>,
+        adql: &str,
+        max_records: u32,
+        form_state: Option<&SearchFormState>,
+    ) {
         self.status_label.set_text(crate::tr_en!("Searching..."));
         self.search_spinner.set_visible(true);
         self.search_spinner.start();
@@ -1038,8 +1054,7 @@ impl SearchPage {
                     adql: adql.to_string(),
                     // Denormalised resolver-provenance copies (the primary source
                     // is `form_state`; these are the exporter's fallback).
-                    resolver_service_used: form_state
-                        .and_then(|s| s.resolver_service_used.clone()),
+                    resolver_service_used: form_state.and_then(|s| s.resolver_service_used.clone()),
                     resolution_epoch: form_state.and_then(|s| s.resolution_epoch.clone()),
                     form_state: form_state.cloned().unwrap_or_default(),
                     result_count: count,
@@ -1302,9 +1317,9 @@ impl SearchPage {
             if !publisher_id.is_empty() {
                 let save_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
                 save_btn.add_css_class("flat");
-                save_btn.set_tooltip_text(Some(
-                    crate::tr_en!("Save to Research (downloads preview + FITS file)"),
-                ));
+                save_btn.set_tooltip_text(Some(crate::tr_en!(
+                    "Save to Research (downloads preview + FITS file)"
+                )));
                 save_btn.set_valign(gtk::Align::Center);
                 let services = self.services.clone();
                 let pub_id = publisher_id.clone();
@@ -1324,9 +1339,9 @@ impl SearchPage {
                 // "Details" → full CAOM2 observation detail page.
                 let details_btn = gtk::Button::from_icon_name("view-more-symbolic");
                 details_btn.add_css_class("flat");
-                details_btn.set_tooltip_text(Some(
-                    crate::tr_en!("View the full CAOM2 observation metadata"),
-                ));
+                details_btn.set_tooltip_text(Some(crate::tr_en!(
+                    "View the full CAOM2 observation metadata"
+                )));
                 details_btn.set_valign(gtk::Align::Center);
                 let pub_id_detail = publisher_id.clone();
                 details_btn.connect_clicked(move |btn| {
@@ -1380,15 +1395,7 @@ impl SearchPage {
                 let raw_row = raw_row_for_detail.clone();
                 let main_window = main_window_for_detail.clone();
                 glib::spawn_future_local(async move {
-                    show_row_detail(
-                        &name,
-                        &data,
-                        &pub_id,
-                        &raw_row,
-                        &services,
-                        &main_window,
-                    )
-                    .await;
+                    show_row_detail(&name, &data, &pub_id, &raw_row, &services, &main_window).await;
                 });
             });
 
@@ -1787,7 +1794,8 @@ impl SearchPage {
     ) {
         let content = self.export_delimited(delimiter);
         if content.is_empty() {
-            self.status_label.set_text(crate::tr_en!("No results to export"));
+            self.status_label
+                .set_text(crate::tr_en!("No results to export"));
             return;
         }
 
@@ -1979,8 +1987,7 @@ impl SearchPage {
                     let p = page_rc.clone();
                     glib::spawn_future_local(async move {
                         p.adql_editor.buffer().set_text(&adql);
-                        p.run_query(&adql, p.max_records.value() as u32, None)
-                            .await;
+                        p.run_query(&adql, p.max_records.value() as u32, None).await;
                         p.notebook.set_current_page(Some(1));
                         p.render_results_page();
                     });
@@ -2091,8 +2098,7 @@ impl SearchPage {
                     let p = page_rc.clone();
                     glib::spawn_future_local(async move {
                         p.adql_editor.buffer().set_text(&adql);
-                        p.run_query(&adql, p.max_records.value() as u32, None)
-                            .await;
+                        p.run_query(&adql, p.max_records.value() as u32, None).await;
                         p.notebook.set_current_page(Some(1));
                         p.render_results_page();
                     });
@@ -2127,7 +2133,9 @@ impl SearchPage {
                 del_btn.connect_clicked(move |_| {
                     let _ = page_rc.services.search_store.delete_saved(&name_for_del);
                     page_rc.refresh_saved();
-                    page_rc.status_label.set_text(crate::tr_en!("Query deleted"));
+                    page_rc
+                        .status_label
+                        .set_text(crate::tr_en!("Query deleted"));
                 });
             }
             row.add_suffix(&del_btn);
@@ -2157,13 +2165,9 @@ impl SearchPage {
         use crate::models::search_result::SavedQuery;
         use crate::ui::saved_query_dialog::{show_saved_query_dialog, SavedQueryAction};
 
-        let action = show_saved_query_dialog(
-            &self.widget,
-            &saved.name,
-            &saved.adql,
-            &saved.created_at,
-        )
-        .await;
+        let action =
+            show_saved_query_dialog(&self.widget, &saved.name, &saved.adql, &saved.created_at)
+                .await;
 
         match action {
             SavedQueryAction::None => {}
@@ -2227,7 +2231,8 @@ impl SearchPage {
         }
 
         // Cache is stale or missing — try network
-        self.status_label.set_text(crate::tr_en!("Loading data train..."));
+        self.status_label
+            .set_text(crate::tr_en!("Loading data train..."));
 
         let svc = self.services.clone();
         let result = self
@@ -2276,9 +2281,9 @@ impl SearchPage {
                 } else {
                     self.status_label
                         .set_text(&format!("Data train failed: {}", e));
-                    self.services
-                        .toast
-                        .toast_persistent(crate::tr_en!("Search filters unavailable — archive unreachable"));
+                    self.services.toast.toast_persistent(crate::tr_en!(
+                        "Search filters unavailable — archive unreachable"
+                    ));
                 }
                 self.services.health.set(
                     ServiceName::Tap,
@@ -2619,11 +2624,13 @@ async fn show_row_detail(
     save_btn.add_css_class("suggested-action");
     if publisher_id.is_empty() {
         save_btn.set_sensitive(false);
-        save_btn.set_tooltip_text(Some(crate::tr_en!("No publisher ID — observation cannot be saved")));
+        save_btn.set_tooltip_text(Some(crate::tr_en!(
+            "No publisher ID — observation cannot be saved"
+        )));
     } else {
-        save_btn.set_tooltip_text(Some(
-            crate::tr_en!("Download the preview and FITS file to the Research library"),
-        ));
+        save_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Download the preview and FITS file to the Research library"
+        )));
     }
     {
         let svc = services.clone();
@@ -2755,11 +2762,7 @@ async fn save_to_research(
             // If the user cancelled the multi-file picker, abort the whole save
             let (url, name) = match picked_science {
                 Some(f) => (Some(f.url.clone()), Some(f.filename())),
-                None if dl
-                    .files
-                    .iter()
-                    .any(|f| f.is_science_data()) =>
-                {
+                None if dl.files.iter().any(|f| f.is_science_data()) => {
                     // User cancelled the picker
                     return;
                 }
@@ -2798,7 +2801,9 @@ async fn save_to_research(
     let science_url = match science_url {
         Some(u) => u,
         None => {
-            services.toast.toast(crate::tr_en!("No science file found for this observation"));
+            services
+                .toast
+                .toast(crate::tr_en!("No science file found for this observation"));
             return;
         }
     };
@@ -2816,7 +2821,9 @@ async fn save_to_research(
     // ── Download the preview image (best effort, non-fatal) ──────────
     let mut local_preview_path = String::new();
     if let Some((url, content_type)) = &preview_url {
-        services.toast.toast(crate::tr_en!("Downloading preview image…"));
+        services
+            .toast
+            .toast(crate::tr_en!("Downloading preview image…"));
         let svc = services.clone();
         let url_clone = url.clone();
         let preview_bytes = services
@@ -3259,7 +3266,10 @@ fn build_observation_column() -> (
     heading.set_halign(gtk::Align::Start);
     col.append(&heading);
 
-    let (w, observation_id) = labeled_entry(crate::tr_en!("Observation ID"), crate::tr_en!("e.g. jw01345*"));
+    let (w, observation_id) = labeled_entry(
+        crate::tr_en!("Observation ID"),
+        crate::tr_en!("e.g. jw01345*"),
+    );
     col.append(&w);
     let (w, pi_name) = labeled_entry(crate::tr_en!("PI Name"), crate::tr_en!("e.g. Smith"));
     col.append(&w);
@@ -3269,7 +3279,10 @@ fn build_observation_column() -> (
     col.append(&w);
     let (w, keywords) = labeled_entry(crate::tr_en!("Keywords"), "");
     col.append(&w);
-    let (w, data_release) = labeled_entry(crate::tr_en!("Data Release"), crate::tr_en!("e.g. > 2023-01-01"));
+    let (w, data_release) = labeled_entry(
+        crate::tr_en!("Data Release"),
+        crate::tr_en!("e.g. > 2023-01-01"),
+    );
     col.append(&w);
 
     let public_only = gtk::CheckButton::with_label(crate::tr_en!("Public only"));
@@ -3315,7 +3328,10 @@ fn build_spatial_column() -> (
     heading.set_halign(gtk::Align::Start);
     col.append(&heading);
 
-    let (w, target) = labeled_entry(crate::tr_en!("Target or Coordinates"), crate::tr_en!("e.g. M31, NGC 1234"));
+    let (w, target) = labeled_entry(
+        crate::tr_en!("Target or Coordinates"),
+        crate::tr_en!("e.g. M31, NGC 1234"),
+    );
     col.append(&w);
 
     let resolver_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -3346,8 +3362,11 @@ fn build_spatial_column() -> (
     radius_box.append(&radius);
     col.append(&radius_box);
 
-    let (w, pixel_scale, pixel_scale_unit) =
-        labeled_entry_with_combo(crate::tr_en!("Pixel Scale"), crate::tr_en!("e.g. 0.1..1.0"), &["arcsec", "arcmin", "deg"]);
+    let (w, pixel_scale, pixel_scale_unit) = labeled_entry_with_combo(
+        crate::tr_en!("Pixel Scale"),
+        crate::tr_en!("e.g. 0.1..1.0"),
+        &["arcsec", "arcmin", "deg"],
+    );
     col.append(&w);
 
     let spatial_cutout = gtk::CheckButton::with_label(crate::tr_en!("Spatial cutout"));
@@ -3387,8 +3406,11 @@ fn build_temporal_column() -> (
     );
     col.append(&w);
 
-    let (w, integration_time, time_unit) =
-        labeled_entry_with_combo(crate::tr_en!("Integration Time"), crate::tr_en!("e.g. 100..3600"), &["s", "m", "h", "d"]);
+    let (w, integration_time, time_unit) = labeled_entry_with_combo(
+        crate::tr_en!("Integration Time"),
+        crate::tr_en!("e.g. 100..3600"),
+        &["s", "m", "h", "d"],
+    );
     col.append(&w);
 
     let (w, time_span) = labeled_entry(crate::tr_en!("Time Span"), crate::tr_en!("e.g. 1..10 d"));
@@ -3430,7 +3452,10 @@ fn build_spectral_column() -> (
 
     let (w, spectral_sampling) = labeled_entry(crate::tr_en!("Spectral Sampling"), "");
     col.append(&w);
-    let (w, resolving_power) = labeled_entry(crate::tr_en!("Resolving Power"), crate::tr_en!("e.g. 1000..5000"));
+    let (w, resolving_power) = labeled_entry(
+        crate::tr_en!("Resolving Power"),
+        crate::tr_en!("e.g. 1000..5000"),
+    );
     col.append(&w);
     let (w, bandpass_width) = labeled_entry(crate::tr_en!("Bandpass Width"), "");
     col.append(&w);

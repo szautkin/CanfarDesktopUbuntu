@@ -201,9 +201,9 @@ impl ObservationDetailPage {
                 self.stack.set_visible_child_name("notfound");
             }
             Caom2Status::Parse | Caom2Status::ServerError => {
-                let msg = result
-                    .error
-                    .unwrap_or_else(|| crate::tr_en!("The metadata service is unreachable.").to_string());
+                let msg = result.error.unwrap_or_else(|| {
+                    crate::tr_en!("The metadata service is unreachable.").to_string()
+                });
                 self.error_page.set_description(Some(&msg));
                 self.stack.set_visible_child_name("error");
             }
@@ -280,12 +280,23 @@ fn build_header(obs: &CAOM2Observation) -> gtk::Box {
     let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     chips.set_halign(gtk::Align::Start);
     chips.set_margin_top(4);
-    if let Some(t) = obs.observation_type.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(t) = obs
+        .observation_type
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         chips.append(&chip(t, "badge-bookmarked"));
     }
     if let Some(i) = obs.intent.as_deref().filter(|s| !s.trim().is_empty()) {
         let science = i.eq_ignore_ascii_case("science");
-        chips.append(&chip(i, if science { "badge-fits" } else { "badge-bookmarked" }));
+        chips.append(&chip(
+            i,
+            if science {
+                "badge-fits"
+            } else {
+                "badge-bookmarked"
+            },
+        ));
     }
     if chips.first_child().is_some() {
         hb.append(&chips);
@@ -305,11 +316,26 @@ fn build_overview(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
         &content,
         crate::tr_en!("Identity"),
         &[
-            (crate::tr_en!("Algorithm").into(), f_text(obs.algorithm.as_deref())),
-            (crate::tr_en!("Sequence Number").into(), f_text(obs.sequence_number.as_deref())),
-            (crate::tr_en!("Meta Release").into(), f_date(obs.meta_release.as_deref())),
-            (crate::tr_en!("Type").into(), f_text(obs.observation_type.as_deref())),
-            (crate::tr_en!("Intent").into(), f_text(obs.intent.as_deref())),
+            (
+                crate::tr_en!("Algorithm").into(),
+                f_text(obs.algorithm.as_deref()),
+            ),
+            (
+                crate::tr_en!("Sequence Number").into(),
+                f_text(obs.sequence_number.as_deref()),
+            ),
+            (
+                crate::tr_en!("Meta Release").into(),
+                f_date(obs.meta_release.as_deref()),
+            ),
+            (
+                crate::tr_en!("Type").into(),
+                f_text(obs.observation_type.as_deref()),
+            ),
+            (
+                crate::tr_en!("Intent").into(),
+                f_text(obs.intent.as_deref()),
+            ),
         ],
     );
 
@@ -335,7 +361,10 @@ fn build_overview(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             &[
                 (crate::tr_en!("ID").into(), f_text(p.id.as_deref())),
                 (crate::tr_en!("PI").into(), f_text(p.pi.as_deref())),
-                (crate::tr_en!("Project").into(), f_text(p.project.as_deref())),
+                (
+                    crate::tr_en!("Project").into(),
+                    f_text(p.project.as_deref()),
+                ),
                 (crate::tr_en!("Title").into(), f_text(p.title.as_deref())),
                 (crate::tr_en!("Keywords").into(), join_keywords(&p.keywords)),
             ],
@@ -347,7 +376,14 @@ fn build_overview(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             .telescope
             .as_ref()
             .and_then(|t| t.geo_location)
-            .map(|(x, y, z)| format!("({}, {}, {}) m", trim_float(x, 4), trim_float(y, 4), trim_float(z, 4)))
+            .map(|(x, y, z)| {
+                format!(
+                    "({}, {}, {}) m",
+                    trim_float(x, 4),
+                    trim_float(y, 4),
+                    trim_float(z, 4)
+                )
+            })
             .unwrap_or_else(|| DASH.to_string());
         add_card(
             &content,
@@ -375,14 +411,19 @@ fn build_overview(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
                 (crate::tr_en!("Humidity").into(), f_number(e.humidity)),
                 (crate::tr_en!("Elevation").into(), f_degrees(e.elevation)),
                 (crate::tr_en!("Tau").into(), f_number(e.tau)),
-                (crate::tr_en!("Ambient Temp").into(), f_number(e.ambient_temp)),
+                (
+                    crate::tr_en!("Ambient Temp").into(),
+                    f_number(e.ambient_temp),
+                ),
                 (crate::tr_en!("Photometric").into(), f_bool(e.photometric)),
             ],
         );
     }
 
     if content.first_child().is_none() {
-        content.append(&dim_label(crate::tr_en!("No overview information available.")));
+        content.append(&dim_label(crate::tr_en!(
+            "No overview information available."
+        )));
     }
 
     scrolled(&content)
@@ -396,7 +437,9 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
     let content = section_box();
 
     if obs.planes.is_empty() {
-        content.append(&dim_label(crate::tr_en!("No coverage information available.")));
+        content.append(&dim_label(crate::tr_en!(
+            "No coverage information available."
+        )));
         return scrolled(&content);
     }
 
@@ -418,18 +461,34 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
                 ));
                 rows.push((
                     crate::tr_en!("Dec range").into(),
-                    format!("{} – {}", f_degrees(Some(min_dec)), f_degrees(Some(max_dec))),
+                    format!(
+                        "{} – {}",
+                        f_degrees(Some(min_dec)),
+                        f_degrees(Some(max_dec))
+                    ),
                 ));
-                rows.push((crate::tr_en!("Vertices").into(), plane.position_bounds.len().to_string()));
+                rows.push((
+                    crate::tr_en!("Vertices").into(),
+                    plane.position_bounds.len().to_string(),
+                ));
             }
             if let Some((a, b)) = plane.position_dimension {
-                rows.push((crate::tr_en!("Dimensions").into(), format!("{} × {} px", a, b)));
+                rows.push((
+                    crate::tr_en!("Dimensions").into(),
+                    format!("{} × {} px", a, b),
+                ));
             }
             if let Some(r) = plane.position_resolution {
-                rows.push((crate::tr_en!("Resolution").into(), format!("{}″", trim_float(r, 4))));
+                rows.push((
+                    crate::tr_en!("Resolution").into(),
+                    format!("{}″", trim_float(r, 4)),
+                ));
             }
             if let Some(s) = plane.position_sample_size {
-                rows.push((crate::tr_en!("Sample Size").into(), format!("{}″", trim_float(s, 4))));
+                rows.push((
+                    crate::tr_en!("Sample Size").into(),
+                    format!("{}″", trim_float(s, 4)),
+                ));
             }
             add_card(&plane_box, crate::tr_en!("Spatial Footprint"), &rows);
         }
@@ -439,14 +498,26 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             &plane_box,
             crate::tr_en!("Spectral"),
             &[
-                (crate::tr_en!("Bandpass").into(), f_text(plane.energy_bandpass.as_deref())),
-                (crate::tr_en!("Band").into(), f_text(plane.energy_em_band.as_deref())),
+                (
+                    crate::tr_en!("Bandpass").into(),
+                    f_text(plane.energy_bandpass.as_deref()),
+                ),
+                (
+                    crate::tr_en!("Band").into(),
+                    f_text(plane.energy_em_band.as_deref()),
+                ),
                 (
                     crate::tr_en!("Wavelength").into(),
                     f_wavelength_range(plane.energy_lower, plane.energy_upper),
                 ),
-                (crate::tr_en!("Resolving Power").into(), f_number(plane.energy_resolving_power)),
-                (crate::tr_en!("Rest Wavelength").into(), f_wavelength(plane.energy_rest_wav)),
+                (
+                    crate::tr_en!("Resolving Power").into(),
+                    f_number(plane.energy_resolving_power),
+                ),
+                (
+                    crate::tr_en!("Rest Wavelength").into(),
+                    f_wavelength(plane.energy_rest_wav),
+                ),
             ],
         );
 
@@ -455,7 +526,10 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             &plane_box,
             crate::tr_en!("Temporal"),
             &[
-                (crate::tr_en!("Start").into(), f_mjd_to_date(plane.time_lower)),
+                (
+                    crate::tr_en!("Start").into(),
+                    f_mjd_to_date(plane.time_lower),
+                ),
                 (crate::tr_en!("End").into(), f_mjd_to_date(plane.time_upper)),
                 (
                     crate::tr_en!("Exposure").into(),
@@ -481,17 +555,35 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             &plane_box,
             crate::tr_en!("Plane"),
             &[
-                (crate::tr_en!("Product ID").into(), f_text(Some(&plane.product_id))),
-                (crate::tr_en!("Data Product Type").into(), f_text(plane.data_product_type.as_deref())),
+                (
+                    crate::tr_en!("Product ID").into(),
+                    f_text(Some(&plane.product_id)),
+                ),
+                (
+                    crate::tr_en!("Data Product Type").into(),
+                    f_text(plane.data_product_type.as_deref()),
+                ),
                 (
                     crate::tr_en!("Calibration Level").into(),
-                    plane.calibration_level.map(|c| c.to_string()).unwrap_or_else(|| DASH.to_string()),
+                    plane
+                        .calibration_level
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| DASH.to_string()),
                 ),
-                (crate::tr_en!("Quality").into(), f_text(plane.quality.as_deref())),
+                (
+                    crate::tr_en!("Quality").into(),
+                    f_text(plane.quality.as_deref()),
+                ),
             ],
         );
 
-        append_plane(&content, plane_box, plane_expander_title(plane), multi, i == 0);
+        append_plane(
+            &content,
+            plane_box,
+            plane_expander_title(plane),
+            multi,
+            i == 0,
+        );
     }
 
     scrolled(&content)
@@ -719,7 +811,10 @@ async fn download_artifact(
     let obs_id = uuid_from_publisher_id(&meta.publisher_id);
     let managed_dir = crate::services::managed_dir_for(&obs_id);
     if let Err(e) = std::fs::create_dir_all(&managed_dir) {
-        status_error(&status_box, &format!("Cannot create storage directory: {}", e));
+        status_error(
+            &status_box,
+            &format!("Cannot create storage directory: {}", e),
+        );
         return;
     }
     let mut name = filename.clone();
@@ -776,8 +871,8 @@ async fn download_artifact(
         Some(shape) if shape.kind != crate::helpers::fits_sniff::FitsKind::NotFits => {
             // Only the SCIENCE file is registered — a calibration/aux FITS would
             // clobber the science record (the store replaces by id/publisher DID).
-            let is_science = !is_preview
-                && matches!(pt_lower.as_deref(), None | Some("") | Some("science"));
+            let is_science =
+                !is_preview && matches!(pt_lower.as_deref(), None | Some("") | Some("science"));
             let registered = if is_science {
                 register_in_research(&services, &meta, &dl, &path_str, file_size).await
             } else {
@@ -840,21 +935,36 @@ async fn register_in_research(
         observation_id: meta.observation_id.clone(),
         target_name: meta.target_name.clone(),
         instrument: meta.instrument.clone(),
-        filter: existing.as_ref().map(|o| o.filter.clone()).unwrap_or_default(),
+        filter: existing
+            .as_ref()
+            .map(|o| o.filter.clone())
+            .unwrap_or_default(),
         ra: existing.as_ref().map(|o| o.ra.clone()).unwrap_or_default(),
         dec: existing.as_ref().map(|o| o.dec.clone()).unwrap_or_default(),
-        start_date: existing.as_ref().map(|o| o.start_date.clone()).unwrap_or_default(),
-        cal_level: existing.as_ref().map(|o| o.cal_level.clone()).unwrap_or_default(),
+        start_date: existing
+            .as_ref()
+            .map(|o| o.start_date.clone())
+            .unwrap_or_default(),
+        cal_level: existing
+            .as_ref()
+            .map(|o| o.cal_level.clone())
+            .unwrap_or_default(),
         local_path: local_path.to_string(),
         file_size,
         downloaded_at: chrono::Utc::now().to_rfc3339(),
         thumbnail_url: if thumbnail_url.is_empty() {
-            existing.as_ref().map(|o| o.thumbnail_url.clone()).unwrap_or_default()
+            existing
+                .as_ref()
+                .map(|o| o.thumbnail_url.clone())
+                .unwrap_or_default()
         } else {
             thumbnail_url
         },
         preview_url: if preview_url.is_empty() {
-            existing.as_ref().map(|o| o.preview_url.clone()).unwrap_or_default()
+            existing
+                .as_ref()
+                .map(|o| o.preview_url.clone())
+                .unwrap_or_default()
         } else {
             preview_url
         },
@@ -904,7 +1014,9 @@ fn build_provenance(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
     let content = section_box();
 
     if obs.planes.is_empty() {
-        content.append(&dim_label(crate::tr_en!("No provenance information available.")));
+        content.append(&dim_label(crate::tr_en!(
+            "No provenance information available."
+        )));
         return scrolled(&content);
     }
 
@@ -922,12 +1034,27 @@ fn build_provenance(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
                     crate::tr_en!("Pipeline"),
                     &[
                         (crate::tr_en!("Name").into(), f_text(pv.name.as_deref())),
-                        (crate::tr_en!("Version").into(), f_text(pv.version.as_deref())),
-                        (crate::tr_en!("Project").into(), f_text(pv.project.as_deref())),
-                        (crate::tr_en!("Producer").into(), f_text(pv.producer.as_deref())),
+                        (
+                            crate::tr_en!("Version").into(),
+                            f_text(pv.version.as_deref()),
+                        ),
+                        (
+                            crate::tr_en!("Project").into(),
+                            f_text(pv.project.as_deref()),
+                        ),
+                        (
+                            crate::tr_en!("Producer").into(),
+                            f_text(pv.producer.as_deref()),
+                        ),
                         (crate::tr_en!("Run ID").into(), f_text(pv.run_id.as_deref())),
-                        (crate::tr_en!("Reference").into(), f_text(pv.reference.as_deref())),
-                        (crate::tr_en!("Last Executed").into(), f_date(pv.last_executed.as_deref())),
+                        (
+                            crate::tr_en!("Reference").into(),
+                            f_text(pv.reference.as_deref()),
+                        ),
+                        (
+                            crate::tr_en!("Last Executed").into(),
+                            f_date(pv.last_executed.as_deref()),
+                        ),
                     ],
                 );
                 if !pv.inputs.is_empty() {
@@ -936,7 +1063,13 @@ fn build_provenance(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             }
         }
 
-        append_plane(&content, plane_box, plane_expander_title(plane), multi, i == 0);
+        append_plane(
+            &content,
+            plane_box,
+            plane_expander_title(plane),
+            multi,
+            i == 0,
+        );
     }
 
     scrolled(&content)
@@ -964,47 +1097,141 @@ fn build_raw(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
     let mut lines: Vec<String> = Vec::new();
 
     push_raw(&mut lines, "collection", f_text(Some(&obs.collection)));
-    push_raw(&mut lines, "observationID", f_text(Some(&obs.observation_id)));
+    push_raw(
+        &mut lines,
+        "observationID",
+        f_text(Some(&obs.observation_id)),
+    );
     push_raw(&mut lines, "type", f_text(obs.observation_type.as_deref()));
     push_raw(&mut lines, "intent", f_text(obs.intent.as_deref()));
-    push_raw(&mut lines, "sequenceNumber", f_text(obs.sequence_number.as_deref()));
-    push_raw(&mut lines, "metaRelease", f_date(obs.meta_release.as_deref()));
+    push_raw(
+        &mut lines,
+        "sequenceNumber",
+        f_text(obs.sequence_number.as_deref()),
+    );
+    push_raw(
+        &mut lines,
+        "metaRelease",
+        f_date(obs.meta_release.as_deref()),
+    );
     push_raw(&mut lines, "algorithm", f_text(obs.algorithm.as_deref()));
-    push_raw(&mut lines, "target.name", f_text(obs.target.as_ref().and_then(|t| t.name.as_deref())));
-    push_raw(&mut lines, "target.type", f_text(obs.target.as_ref().and_then(|t| t.kind.as_deref())));
-    push_raw(&mut lines, "target.redshift", f_number(obs.target.as_ref().and_then(|t| t.redshift)));
-    push_raw(&mut lines, "proposal.id", f_text(obs.proposal.as_ref().and_then(|p| p.id.as_deref())));
-    push_raw(&mut lines, "proposal.pi", f_text(obs.proposal.as_ref().and_then(|p| p.pi.as_deref())));
-    push_raw(&mut lines, "proposal.project", f_text(obs.proposal.as_ref().and_then(|p| p.project.as_deref())));
-    push_raw(&mut lines, "proposal.title", f_text(obs.proposal.as_ref().and_then(|p| p.title.as_deref())));
-    push_raw(&mut lines, "telescope.name", f_text(obs.telescope.as_ref().and_then(|t| t.name.as_deref())));
-    push_raw(&mut lines, "instrument.name", f_text(obs.instrument.as_ref().and_then(|i| i.name.as_deref())));
+    push_raw(
+        &mut lines,
+        "target.name",
+        f_text(obs.target.as_ref().and_then(|t| t.name.as_deref())),
+    );
+    push_raw(
+        &mut lines,
+        "target.type",
+        f_text(obs.target.as_ref().and_then(|t| t.kind.as_deref())),
+    );
+    push_raw(
+        &mut lines,
+        "target.redshift",
+        f_number(obs.target.as_ref().and_then(|t| t.redshift)),
+    );
+    push_raw(
+        &mut lines,
+        "proposal.id",
+        f_text(obs.proposal.as_ref().and_then(|p| p.id.as_deref())),
+    );
+    push_raw(
+        &mut lines,
+        "proposal.pi",
+        f_text(obs.proposal.as_ref().and_then(|p| p.pi.as_deref())),
+    );
+    push_raw(
+        &mut lines,
+        "proposal.project",
+        f_text(obs.proposal.as_ref().and_then(|p| p.project.as_deref())),
+    );
+    push_raw(
+        &mut lines,
+        "proposal.title",
+        f_text(obs.proposal.as_ref().and_then(|p| p.title.as_deref())),
+    );
+    push_raw(
+        &mut lines,
+        "telescope.name",
+        f_text(obs.telescope.as_ref().and_then(|t| t.name.as_deref())),
+    );
+    push_raw(
+        &mut lines,
+        "instrument.name",
+        f_text(obs.instrument.as_ref().and_then(|i| i.name.as_deref())),
+    );
     if let Some(e) = &obs.environment {
         push_raw(&mut lines, "environment.seeing", f_number(e.seeing));
         push_raw(&mut lines, "environment.humidity", f_number(e.humidity));
         push_raw(&mut lines, "environment.elevation", f_degrees(e.elevation));
         push_raw(&mut lines, "environment.tau", f_number(e.tau));
-        push_raw(&mut lines, "environment.ambientTemp", f_number(e.ambient_temp));
+        push_raw(
+            &mut lines,
+            "environment.ambientTemp",
+            f_number(e.ambient_temp),
+        );
         push_raw(&mut lines, "environment.photometric", f_bool(e.photometric));
     }
 
     for (i, p) in obs.planes.iter().enumerate() {
         let prefix = format!("plane[{}].", i);
-        push_raw(&mut lines, &format!("{}productID", prefix), f_text(Some(&p.product_id)));
-        push_raw(&mut lines, &format!("{}dataProductType", prefix), f_text(p.data_product_type.as_deref()));
+        push_raw(
+            &mut lines,
+            &format!("{}productID", prefix),
+            f_text(Some(&p.product_id)),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}dataProductType", prefix),
+            f_text(p.data_product_type.as_deref()),
+        );
         push_raw(
             &mut lines,
             &format!("{}calibrationLevel", prefix),
-            p.calibration_level.map(|c| c.to_string()).unwrap_or_else(|| DASH.to_string()),
+            p.calibration_level
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| DASH.to_string()),
         );
-        push_raw(&mut lines, &format!("{}quality", prefix), f_text(p.quality.as_deref()));
-        push_raw(&mut lines, &format!("{}energy.bandpass", prefix), f_text(p.energy_bandpass.as_deref()));
-        push_raw(&mut lines, &format!("{}energy.lower", prefix), f_wavelength(p.energy_lower));
-        push_raw(&mut lines, &format!("{}energy.upper", prefix), f_wavelength(p.energy_upper));
-        push_raw(&mut lines, &format!("{}time.lower", prefix), f_mjd_to_date(p.time_lower));
-        push_raw(&mut lines, &format!("{}time.upper", prefix), f_mjd_to_date(p.time_upper));
-        push_raw(&mut lines, &format!("{}time.exposure", prefix), crate::helpers::caom2_format::seconds(p.time_exposure));
-        push_raw(&mut lines, &format!("{}artifacts", prefix), p.artifacts.len().to_string());
+        push_raw(
+            &mut lines,
+            &format!("{}quality", prefix),
+            f_text(p.quality.as_deref()),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}energy.bandpass", prefix),
+            f_text(p.energy_bandpass.as_deref()),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}energy.lower", prefix),
+            f_wavelength(p.energy_lower),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}energy.upper", prefix),
+            f_wavelength(p.energy_upper),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}time.lower", prefix),
+            f_mjd_to_date(p.time_lower),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}time.upper", prefix),
+            f_mjd_to_date(p.time_upper),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}time.exposure", prefix),
+            crate::helpers::caom2_format::seconds(p.time_exposure),
+        );
+        push_raw(
+            &mut lines,
+            &format!("{}artifacts", prefix),
+            p.artifacts.len().to_string(),
+        );
     }
 
     let content = section_box();
@@ -1138,7 +1365,13 @@ fn pill_button(label: &str) -> gtk::Button {
 
 /// Append a plane's content to a tab: bare when single, wrapped in an `Expander`
 /// (first one expanded) when multiple planes exist.
-fn append_plane(container: &gtk::Box, plane_box: gtk::Box, title: String, multi: bool, expanded: bool) {
+fn append_plane(
+    container: &gtk::Box,
+    plane_box: gtk::Box,
+    title: String,
+    multi: bool,
+    expanded: bool,
+) {
     if multi {
         let exp = gtk::Expander::new(Some(&title));
         exp.set_hexpand(true);
@@ -1155,7 +1388,10 @@ fn plane_expander_title(plane: &crate::models::caom2::Caom2Plane) -> String {
         "{} · {} · L{}",
         plane.product_id,
         f_text(plane.data_product_type.as_deref()),
-        plane.calibration_level.map(|c| c.to_string()).unwrap_or_else(|| "?".to_string())
+        plane
+            .calibration_level
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "?".to_string())
     )
 }
 
@@ -1288,7 +1524,11 @@ fn status_downloaded_fits(
         let root = root.clone();
         let path = path.to_string();
         fits_btn.connect_clicked(move |_| {
-            activate_app_action(&root, "open-fits-file", Some(&glib::Variant::from(path.as_str())));
+            activate_app_action(
+                &root,
+                "open-fits-file",
+                Some(&glib::Variant::from(path.as_str())),
+            );
         });
     }
 
@@ -1298,7 +1538,11 @@ fn status_downloaded_fits(
             let root = root.clone();
             let path = path.to_string();
             cube_btn.connect_clicked(move |_| {
-                activate_app_action(&root, "open-cube-file", Some(&glib::Variant::from(path.as_str())));
+                activate_app_action(
+                    &root,
+                    "open-cube-file",
+                    Some(&glib::Variant::from(path.as_str())),
+                );
             });
         }
         if shape.recommend_cube() {
@@ -1487,8 +1731,7 @@ fn f_mjd_to_date(mjd: Option<f64>) -> String {
         Some(v) if v.is_finite() => v,
         _ => return DASH.to_string(),
     };
-    let epoch = chrono::NaiveDate::from_ymd_opt(1858, 11, 17)
-        .and_then(|d| d.and_hms_opt(0, 0, 0));
+    let epoch = chrono::NaiveDate::from_ymd_opt(1858, 11, 17).and_then(|d| d.and_hms_opt(0, 0, 0));
     match epoch {
         Some(e) => {
             let dt = e + chrono::Duration::milliseconds((v * 86_400_000.0) as i64);

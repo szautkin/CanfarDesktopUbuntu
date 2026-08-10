@@ -255,7 +255,11 @@ async fn read_file(services: &AppServices, args: &Value) -> ToolResult {
         None => DEFAULT_READ_BYTES,
     };
 
-    let bytes = match services.vospace.download_bytes(&token, &username, &path).await {
+    let bytes = match services
+        .vospace
+        .download_bytes(&token, &username, &path)
+        .await
+    {
         Ok(b) => b,
         Err(e) => return ToolResult::Failed(format!("could not read file {}: {}", path, e)),
     };
@@ -403,7 +407,12 @@ fn propose_create_folder(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
         return ToolResult::Failed("path is required".to_string());
     }
     let payload = json!({ "path": path });
-    let p = proposals.enqueue("create_folder", &format!("Create folder {}", path), false, payload);
+    let p = proposals.enqueue(
+        "create_folder",
+        &format!("Create folder {}", path),
+        false,
+        payload,
+    );
     ToolResult::Proposed(p)
 }
 
@@ -434,7 +443,10 @@ fn propose_set_acl(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Tool
         });
     }
     if let Some(p) = is_public {
-        parts.push(format!("public: {}", if p { "yes (world-readable)" } else { "no" }));
+        parts.push(format!(
+            "public: {}",
+            if p { "yes (world-readable)" } else { "no" }
+        ));
     }
     if parts.is_empty() {
         return ToolResult::Failed(
@@ -528,7 +540,11 @@ pub async fn apply(
             if path.is_empty() {
                 return Some(Err("create_folder payload missing path".to_string()));
             }
-            match services.vospace.create_folder(&token, &username, &path).await {
+            match services
+                .vospace
+                .create_folder(&token, &username, &path)
+                .await
+            {
                 Ok(()) => Ok(format!("Created folder {}", path)),
                 Err(e) => Err(format!("create folder failed: {}", e)),
             }
@@ -637,7 +653,11 @@ pub async fn apply(
             }
             let local = str_arg(payload, "local_path");
             let dest = if local.is_empty() {
-                let base = path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("download");
+                let base = path
+                    .rsplit('/')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("download");
                 default_downloads_dir().join(base)
             } else {
                 std::path::PathBuf::from(local)
@@ -781,7 +801,11 @@ mod tests {
                 "descriptor {} has an empty description",
                 d.name
             );
-            assert!(seen.insert(d.name.clone()), "duplicate descriptor name: {}", d.name);
+            assert!(
+                seen.insert(d.name.clone()),
+                "duplicate descriptor name: {}",
+                d.name
+            );
         }
     }
 
@@ -860,7 +884,10 @@ mod tests {
     fn guess_content_type_maps_common_extensions() {
         assert_eq!(guess_content_type("a/b.fits"), "application/fits");
         assert_eq!(guess_content_type("x.json"), "application/json");
-        assert_eq!(guess_content_type("x.unknownext"), "application/octet-stream");
+        assert_eq!(
+            guess_content_type("x.unknownext"),
+            "application/octet-stream"
+        );
         assert_eq!(guess_content_type("noext"), "application/octet-stream");
     }
 

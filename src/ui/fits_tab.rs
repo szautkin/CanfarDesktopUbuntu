@@ -42,11 +42,7 @@ pub struct FitsTab {
 }
 
 impl FitsTab {
-    pub fn new(
-        data: FitsImageData,
-        shared: SharedSkyRef,
-        source_file: String,
-    ) -> Rc<Self> {
+    pub fn new(data: FitsImageData, shared: SharedSkyRef, source_file: String) -> Rc<Self> {
         let widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         widget.set_vexpand(true);
         widget.set_hexpand(true);
@@ -57,13 +53,8 @@ impl FitsTab {
         let (vmin, vmax) = fits_renderer::auto_cut(&data.pixels, 0.5, 99.5);
 
         // Initial render with auto-cut values
-        let rgba = fits_renderer::render_to_rgba(
-            &data,
-            Stretch::Linear,
-            ColorMap::Grayscale,
-            vmin,
-            vmax,
-        );
+        let rgba =
+            fits_renderer::render_to_rgba(&data, Stretch::Linear, ColorMap::Grayscale, vmin, vmax);
 
         let canvas = FitsCanvas::new(
             data.width,
@@ -247,10 +238,7 @@ impl FitsTab {
         if z <= 0.0 {
             return None;
         }
-        self.data
-            .wcs
-            .as_ref()
-            .map(|w| w.pixel_scale_arcsec() / z)
+        self.data.wcs.as_ref().map(|w| w.pixel_scale_arcsec() / z)
     }
 
     /// Set zoom so this tab shows `target_arcsec` per screen pixel (same angular
@@ -269,7 +257,12 @@ impl FitsTab {
     /// Pan so sky coordinate `(ra, dec)` sits at the viewport centre (maps through
     /// this tab's own WCS). Returns `false` if it has no WCS / maps out of frame.
     pub fn center_on_world(&self, ra: f64, dec: f64) -> bool {
-        match self.data.wcs.as_ref().and_then(|w| w.world_to_pixel(ra, dec)) {
+        match self
+            .data
+            .wcs
+            .as_ref()
+            .and_then(|w| w.world_to_pixel(ra, dec))
+        {
             Some((px, py)) => {
                 self.set_viewport_center(px, py);
                 true
@@ -344,4 +337,3 @@ impl FitsTab {
         self.canvas.update_image(rgba);
     }
 }
-

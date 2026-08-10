@@ -175,7 +175,10 @@ mod tests {
         assert!(meta.len() > 0);
         // PNG magic bytes.
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
+        );
         let _ = std::fs::remove_file(&path);
     }
 

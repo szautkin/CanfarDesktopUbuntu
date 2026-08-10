@@ -73,7 +73,10 @@ impl ImageDiscoverySettingsService {
             return None;
         }
         let secret = self.read_secret()?;
-        Some(ImageDiscoverySettings::build_auth_header(&self.settings.username, &secret))
+        Some(ImageDiscoverySettings::build_auth_header(
+            &self.settings.username,
+            &secret,
+        ))
     }
 
     /// True when a non-empty secret is stored for the current host+username.
@@ -151,8 +154,12 @@ impl ImageDiscoverySettingsService {
     /// (Docker V2 token-auth). Uses a plain client — never the CADC token.
     pub async fn test_registry_credentials(&self) -> CredTestResult {
         let secret = self.read_secret().unwrap_or_default();
-        test_registry_credentials(&self.settings.registry_host, &self.settings.username, &secret)
-            .await
+        test_registry_credentials(
+            &self.settings.registry_host,
+            &self.settings.username,
+            &secret,
+        )
+        .await
     }
 
     // -- internals ----------------------------------------------------------

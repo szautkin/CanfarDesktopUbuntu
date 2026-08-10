@@ -16,10 +16,10 @@ use std::rc::Rc;
 // ---------------------------------------------------------------------------
 
 static PYTHON_KEYWORDS: &[&str] = &[
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break",
-    "class", "continue", "def", "del", "elif", "else", "except", "finally",
-    "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
-    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
 ];
 
 // ---------------------------------------------------------------------------
@@ -177,8 +177,7 @@ impl CodeCellWidget {
                     self.output_box.append(&label);
                 }
 
-                CellOutput::ExecuteResult { data, .. }
-                | CellOutput::DisplayData { data, .. } => {
+                CellOutput::ExecuteResult { data, .. } | CellOutput::DisplayData { data, .. } => {
                     self.render_output_data(data);
                 }
 
@@ -239,8 +238,7 @@ impl CodeCellWidget {
         } else {
             self.widget.remove_css_class("notebook-cell-active");
         }
-        self.text_view
-            .set_cursor_visible(active);
+        self.text_view.set_cursor_visible(active);
     }
 
     /// Expose the run button so [`NotebookPage`] can connect a callback.
@@ -352,8 +350,7 @@ impl MarkdownCellWidget {
     /// Replace the source text and re-render the preview.
     pub fn set_source(&self, text: &str) {
         self.text_view.buffer().set_text(text);
-        self.preview_label
-            .set_markup(&markdown_to_pango(text));
+        self.preview_label.set_markup(&markdown_to_pango(text));
     }
 
     /// Read current source text from the buffer.
@@ -373,8 +370,7 @@ impl MarkdownCellWidget {
     /// Commit edits and switch to preview mode.
     pub fn enter_preview_mode(&self) {
         let text = self.get_source();
-        self.preview_label
-            .set_markup(&markdown_to_pango(&text));
+        self.preview_label.set_markup(&markdown_to_pango(&text));
         self.edit_mode.set(false);
         self.stack.set_visible_child_name("preview");
     }
@@ -477,9 +473,7 @@ fn apply_syntax_highlighting(buffer: &gtk::TextBuffer, _tv: &gtk::TextView) {
     let (start, end) = buffer.bounds();
     buffer.remove_all_tags(&start, &end);
 
-    let text = buffer
-        .text(&start, &end, true)
-        .to_string();
+    let text = buffer.text(&start, &end, true).to_string();
 
     let mut offset = 0usize; // byte offset into `text`
 
@@ -525,13 +519,7 @@ fn apply_syntax_highlighting(buffer: &gtk::TextBuffer, _tv: &gtk::TextView) {
                     || !line.as_bytes()[after].is_ascii_alphanumeric()
                         && line.as_bytes()[after] != b'_';
                 if before_ok && after_ok {
-                    tag_range(
-                        buffer,
-                        "kw",
-                        &text,
-                        line_start + abs,
-                        line_start + after,
-                    );
+                    tag_range(buffer, "kw", &text, line_start + abs, line_start + after);
                 }
                 search_from = abs + 1;
                 if search_from >= line.len() {
@@ -570,12 +558,7 @@ fn tag_range(
 }
 
 /// Highlight quoted string literals on a single `line`.
-fn highlight_strings(
-    buffer: &gtk::TextBuffer,
-    full_text: &str,
-    line: &str,
-    line_start: usize,
-) {
+fn highlight_strings(buffer: &gtk::TextBuffer, full_text: &str, line: &str, line_start: usize) {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -604,28 +587,19 @@ fn highlight_strings(
 }
 
 /// Highlight numeric literals on a single `line`.
-fn highlight_numbers(
-    buffer: &gtk::TextBuffer,
-    full_text: &str,
-    line: &str,
-    line_start: usize,
-) {
+fn highlight_numbers(buffer: &gtk::TextBuffer, full_text: &str, line: &str, line_start: usize) {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i].is_ascii_digit() {
             // Check it's not part of an identifier
-            if i > 0
-                && (bytes[i - 1].is_ascii_alphabetic() || bytes[i - 1] == b'_')
-            {
+            if i > 0 && (bytes[i - 1].is_ascii_alphabetic() || bytes[i - 1] == b'_') {
                 i += 1;
                 continue;
             }
             let start = i;
             while i < bytes.len()
-                && (bytes[i].is_ascii_alphanumeric()
-                    || bytes[i] == b'.'
-                    || bytes[i] == b'_')
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_')
             {
                 i += 1;
             }
@@ -720,7 +694,13 @@ fn apply_inline_markdown(line: &str) -> String {
 }
 
 /// Replace `open_delim … close_delim` with `open_tag … close_tag` in `s`.
-fn apply_span(s: &str, open_delim: &str, close_delim: &str, open_tag: &str, close_tag: &str) -> String {
+fn apply_span(
+    s: &str,
+    open_delim: &str,
+    close_delim: &str,
+    open_tag: &str,
+    close_tag: &str,
+) -> String {
     let mut result = String::new();
     let mut rest = s;
     while let Some(start) = rest.find(open_delim) {

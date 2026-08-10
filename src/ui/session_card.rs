@@ -178,8 +178,7 @@ impl SessionCard {
                     usage_box.append(&lbl);
                 }
                 if has_ram {
-                    let lbl =
-                        gtk::Label::new(Some(&crate::tr_fmt!("RAM: {}", session.ram_in_use)));
+                    let lbl = gtk::Label::new(Some(&crate::tr_fmt!("RAM: {}", session.ram_in_use)));
                     lbl.add_css_class("caption");
                     usage_box.append(&lbl);
                 }

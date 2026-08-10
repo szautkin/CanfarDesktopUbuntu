@@ -132,7 +132,12 @@ unsafe fn open_readonly(path: &Path) -> Result<FitsHandle, String> {
 
     let mut fptr: *mut sys::fitsfile = std::ptr::null_mut();
     let mut status: i32 = 0;
-    sys::ffopen(&mut fptr, c_path.as_ptr(), sys::READONLY as i32, &mut status);
+    sys::ffopen(
+        &mut fptr,
+        c_path.as_ptr(),
+        sys::READONLY as i32,
+        &mut status,
+    );
     check_status(status, "Cannot open FITS file")?;
     Ok(FitsHandle { fptr })
 }

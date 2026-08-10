@@ -288,7 +288,11 @@ async fn get_observation_notes(services: &AppServices, args: &Value) -> ToolResu
         None
     } else {
         let list = services.observation_store.load_async().await;
-        Some(find_observation(&list, &id).map(|o| o.publisher_id.clone()).unwrap_or(id))
+        Some(
+            find_observation(&list, &id)
+                .map(|o| o.publisher_id.clone())
+                .unwrap_or(id),
+        )
     };
 
     let notes: Vec<Value> = ObservationNoteStore::new()
@@ -834,7 +838,10 @@ mod tests {
     fn update_note_enqueues_non_destructive_with_only_given_fields() {
         let store = Arc::new(InMemoryProposalStore::new());
         // `note` is omitted, so it must NOT appear in the payload (apply merges).
-        match propose_update_note(&json!({ "id": "ivo://x?1", "rating": 4, "tags": ["a"] }), &store) {
+        match propose_update_note(
+            &json!({ "id": "ivo://x?1", "rating": 4, "tags": ["a"] }),
+            &store,
+        ) {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.kind, "update_observation_note");
                 assert!(!p.destructive, "a note edit is reversible");

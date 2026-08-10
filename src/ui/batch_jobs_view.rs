@@ -201,11 +201,16 @@ impl BatchJobsView {
 
                 // Diff transitions against the previous poll (headless jobs only)
                 // and record the new state map for the next comparison.
-                let jobs: Vec<Session> =
-                    sessions.iter().filter(|s| s.is_headless()).cloned().collect();
+                let jobs: Vec<Session> = sessions
+                    .iter()
+                    .filter(|s| s.is_headless())
+                    .cloned()
+                    .collect();
                 let events = detect_transitions(&old_states, &jobs);
-                *self.prev_states.borrow_mut() =
-                    jobs.iter().map(|s| (s.id.clone(), s.status.clone())).collect();
+                *self.prev_states.borrow_mut() = jobs
+                    .iter()
+                    .map(|s| (s.id.clone(), s.status.clone()))
+                    .collect();
 
                 *self.sessions.borrow_mut() = sessions;
                 self.update_counts(counts);
@@ -244,9 +249,9 @@ impl BatchJobsView {
         for ev in events {
             match ev.kind {
                 JobTransition::Completed => {
-                    self.services.notifications.notify_job_completed(
-                        gio_app, &ev.id, &ev.name, &ev.image,
-                    );
+                    self.services
+                        .notifications
+                        .notify_job_completed(gio_app, &ev.id, &ev.name, &ev.image);
                 }
                 JobTransition::Failed => {
                     self.services

@@ -357,7 +357,11 @@ fn render_readme(m: &ExportManifest, now: DateTime<Utc>) -> String {
             "- **{}** (`{}/`) — {}\n",
             module.display_name,
             module.id,
-            if counts.is_empty() { "no items".to_string() } else { counts }
+            if counts.is_empty() {
+                "no items".to_string()
+            } else {
+                counts
+            }
         ));
     }
     sb.push('\n');
@@ -365,9 +369,13 @@ fn render_readme(m: &ExportManifest, now: DateTime<Utc>) -> String {
     sb.push_str("## For Claude / LLM ingestion\n\n");
     if let Some(primary) = &m.claude_hints.primary_context {
         sb.push_str("1. Start with `manifest.json` to understand the bundle shape.\n");
-        sb.push_str(&format!("2. Read `{primary}` for human-readable per-item content.\n"));
+        sb.push_str(&format!(
+            "2. Read `{primary}` for human-readable per-item content.\n"
+        ));
         if let Some(schema) = &m.claude_hints.metadata_schema {
-            sb.push_str(&format!("3. Cross-reference with `{schema}` for full metadata.\n\n"));
+            sb.push_str(&format!(
+                "3. Cross-reference with `{schema}` for full metadata.\n\n"
+            ));
         } else {
             sb.push('\n');
         }
@@ -383,22 +391,46 @@ fn render_readme(m: &ExportManifest, now: DateTime<Utc>) -> String {
         "- **Retrieved:** {date} — from CADC/CANFAR via Verbinal v{}.\n",
         m.app_version
     ));
-    sb.push_str("- **How to cite:** acknowledge the Canadian Astronomy Data Centre (CADC) and the ");
-    sb.push_str("originating collection/telescope of each observation. Each downloaded observation in the ");
-    sb.push_str("research module records its collection, instrument, calibration level, and data-release ");
-    sb.push_str("date — cite the collection's standard reference and include the retrieval date above.\n");
-    sb.push_str("- **No per-observation DOI:** CADC's CAOM2 metadata does not assign a DOI or bibcode to ");
-    sb.push_str("individual observations. The closest citable handle is the originating **proposal** ");
+    sb.push_str(
+        "- **How to cite:** acknowledge the Canadian Astronomy Data Centre (CADC) and the ",
+    );
+    sb.push_str(
+        "originating collection/telescope of each observation. Each downloaded observation in the ",
+    );
+    sb.push_str(
+        "research module records its collection, instrument, calibration level, and data-release ",
+    );
+    sb.push_str(
+        "date — cite the collection's standard reference and include the retrieval date above.\n",
+    );
+    sb.push_str(
+        "- **No per-observation DOI:** CADC's CAOM2 metadata does not assign a DOI or bibcode to ",
+    );
+    sb.push_str(
+        "individual observations. The closest citable handle is the originating **proposal** ",
+    );
     sb.push_str("(id / PI / title), recorded per observation in `notes.md` where available. DOIs, when they ");
-    sb.push_str("exist, are assigned at the collection level — see the CADC collection page below.\n");
-    sb.push_str("- **Reproducibility:** saved/recent searches keep the exact ADQL; re-running it against ");
-    sb.push_str("CADC's TAP service reproduces the selection (name-resolver coordinates can drift between ");
-    sb.push_str("services/epochs — `queries.md` freezes which resolver and epoch produced them).\n");
+    sb.push_str(
+        "exist, are assigned at the collection level — see the CADC collection page below.\n",
+    );
+    sb.push_str(
+        "- **Reproducibility:** saved/recent searches keep the exact ADQL; re-running it against ",
+    );
+    sb.push_str(
+        "CADC's TAP service reproduces the selection (name-resolver coordinates can drift between ",
+    );
+    sb.push_str(
+        "services/epochs — `queries.md` freezes which resolver and epoch produced them).\n",
+    );
     sb.push_str("- See https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/ for collection documentation and DOIs.\n\n");
 
     sb.push_str("## Privacy note\n\n");
-    sb.push_str("This bundle excludes all authentication tokens, Keychain entries, session state, ");
-    sb.push_str("and cached credentials. Only user-authored data and public CADC metadata are exported.\n");
+    sb.push_str(
+        "This bundle excludes all authentication tokens, Keychain entries, session state, ",
+    );
+    sb.push_str(
+        "and cached credentials. Only user-authored data and public CADC metadata are exported.\n",
+    );
 
     sb
 }
@@ -483,7 +515,10 @@ fn render_observation_section(obs: &DownloadedObservation, note: &ObservationNot
         md.push_str(&format!("- **Instrument:** {}\n", instrument));
     }
     if !obs.ra.is_empty() || !obs.dec.is_empty() {
-        md.push_str(&format!("- **Coordinates:** RA {}, Dec {}\n", obs.ra, obs.dec));
+        md.push_str(&format!(
+            "- **Coordinates:** RA {}, Dec {}\n",
+            obs.ra, obs.dec
+        ));
     }
     if !obs.start_date.is_empty() {
         md.push_str(&format!("- **Start date:** {}\n", obs.start_date));
@@ -492,7 +527,10 @@ fn render_observation_section(obs: &DownloadedObservation, note: &ObservationNot
         md.push_str(&format!("- **Calibration level:** {}\n", obs.cal_level));
     }
     if !obs.downloaded_at.is_empty() {
-        md.push_str(&format!("- **Downloaded:** {}\n", iso_or_raw(&obs.downloaded_at)));
+        md.push_str(&format!(
+            "- **Downloaded:** {}\n",
+            iso_or_raw(&obs.downloaded_at)
+        ));
     }
     if note.rating > 0 {
         md.push_str(&format!(
@@ -511,7 +549,10 @@ fn render_observation_section(obs: &DownloadedObservation, note: &ObservationNot
         md.push_str(&format!("- **Tags:** {}\n", tags));
     }
     if !note.updated.is_empty() {
-        md.push_str(&format!("- **Note modified:** {}\n", iso_or_raw(&note.updated)));
+        md.push_str(&format!(
+            "- **Note modified:** {}\n",
+            iso_or_raw(&note.updated)
+        ));
     }
 
     let trimmed = note.note.trim();
@@ -675,7 +716,11 @@ fn crc32(data: &[u8]) -> u32 {
 fn dos_datetime_now() -> (u16, u16) {
     let now = chrono::Local::now();
     let year = now.year();
-    let dos_year = if year < 1980 { 0u16 } else { (year - 1980) as u16 };
+    let dos_year = if year < 1980 {
+        0u16
+    } else {
+        (year - 1980) as u16
+    };
     let date = (dos_year << 9) | ((now.month() as u16) << 5) | (now.day() as u16);
     let time =
         ((now.hour() as u16) << 11) | ((now.minute() as u16) << 5) | ((now.second() as u16) / 2);
@@ -864,7 +909,10 @@ mod tests {
         // Base folder name is timestamped, and every entry nests under it.
         let base = bundle_name(fixed_now());
         assert_eq!(base, "Verbinal-Export-2026-07-07_083000");
-        assert!(b.entries.iter().all(|(name, _)| name.starts_with(&format!("{base}/"))));
+        assert!(b
+            .entries
+            .iter()
+            .all(|(name, _)| name.starts_with(&format!("{base}/"))));
 
         // Top-level wrapper files exist.
         assert!(entry(&b, "/manifest.json").is_some());
@@ -894,9 +942,15 @@ mod tests {
         assert_eq!(manifest["hostName"], "test-host");
         assert_eq!(manifest["claudeHints"]["readMeFirst"], "README.md");
         // First .md across modules is research/notes.md (research module first).
-        assert_eq!(manifest["claudeHints"]["primaryContext"], "research/notes.md");
+        assert_eq!(
+            manifest["claudeHints"]["primaryContext"],
+            "research/notes.md"
+        );
         // First .json in ordinal-sorted order is research/notes.json (< observations.json).
-        assert_eq!(manifest["claudeHints"]["metadataSchema"], "research/notes.json");
+        assert_eq!(
+            manifest["claudeHints"]["metadataSchema"],
+            "research/notes.json"
+        );
 
         let modules = manifest["modules"].as_array().unwrap();
         assert_eq!(modules.len(), 2);
@@ -944,7 +998,10 @@ mod tests {
         let research = &manifest["modules"][0];
         assert!(research["itemCounts"].get("notes").is_none());
         // Primary context falls back to the search module's markdown.
-        assert_eq!(manifest["claudeHints"]["primaryContext"], "search/queries.md");
+        assert_eq!(
+            manifest["claudeHints"]["primaryContext"],
+            "search/queries.md"
+        );
     }
 
     #[test]

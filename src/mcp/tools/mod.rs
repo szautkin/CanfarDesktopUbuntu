@@ -9,14 +9,14 @@ use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 
-pub mod aiguide_ext;
-pub mod notebook;
-pub mod imagediscovery;
-pub mod caom2_vizier;
 pub mod ai_compute;
+pub mod aiguide_ext;
+pub mod caom2_vizier;
 pub mod catalog;
 pub mod cube;
 pub mod fits;
+pub mod imagediscovery;
+pub mod notebook;
 pub mod proposals;
 pub mod read;
 pub mod research;
@@ -193,7 +193,11 @@ pub enum ToolResult {
     /// A queued write proposal awaiting user approval.
     Proposed(proposals::PendingProposal),
     /// A base64 image with an optional caption.
-    Image { data_base64: String, mime: String, caption: Option<String> },
+    Image {
+        data_base64: String,
+        mime: String,
+        caption: Option<String>,
+    },
     /// The call failed; `reason` is a human-readable message (maps to isError).
     Failed(String),
 }

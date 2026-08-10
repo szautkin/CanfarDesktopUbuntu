@@ -112,7 +112,9 @@ fn control_socket_row(socket_path: &Path, parent_writable: bool) -> DiagRow {
     } else {
         DiagRow::fail(
             "Control socket",
-            format!("Can't create the socket at {shown} — its directory is missing or not writable."),
+            format!(
+                "Can't create the socket at {shown} — its directory is missing or not writable."
+            ),
             "Ensure $XDG_RUNTIME_DIR (or /tmp) exists and is writable by your user.",
         )
     }
@@ -179,9 +181,7 @@ fn claude_code_row(on_path: bool, home_dir_exists: bool) -> DiagRow {
 /// resolved we report "not found" — the safe, actionable verdict.
 fn probe_bridge() -> (String, bool) {
     let (command, args) = crate::mcp::config::verbinal_command();
-    let exe_exists = std::env::current_exe()
-        .map(|p| p.exists())
-        .unwrap_or(false);
+    let exe_exists = std::env::current_exe().map(|p| p.exists()).unwrap_or(false);
     let command_line = if args.is_empty() {
         command
     } else {

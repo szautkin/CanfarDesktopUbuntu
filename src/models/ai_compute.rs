@@ -124,12 +124,20 @@ impl RunCodeContract {
     const UNSAFE_ID_CHARS: [char; 9] = ['/', ':', '\\', '?', '*', '<', '>', '|', '"'];
 
     pub fn clamp_timeout(seconds: i64) -> i64 {
-        let base = if seconds <= 0 { Self::DEFAULT_TIMEOUT_SECONDS } else { seconds };
+        let base = if seconds <= 0 {
+            Self::DEFAULT_TIMEOUT_SECONDS
+        } else {
+            seconds
+        };
         base.clamp(1, Self::MAX_TIMEOUT_SECONDS)
     }
 
     pub fn clamp_cores(cores: u32) -> u32 {
-        let base = if cores == 0 { Self::DEFAULT_CORES } else { cores };
+        let base = if cores == 0 {
+            Self::DEFAULT_CORES
+        } else {
+            cores
+        };
         base.clamp(1, Self::MAX_CORES)
     }
 
@@ -152,20 +160,36 @@ impl RunCodeContract {
     /// file name.
     pub fn sanitize_id(id: &str) -> String {
         id.chars()
-            .map(|c| if Self::UNSAFE_ID_CHARS.contains(&c) { '_' } else { c })
+            .map(|c| {
+                if Self::UNSAFE_ID_CHARS.contains(&c) {
+                    '_'
+                } else {
+                    c
+                }
+            })
             .collect()
     }
 
     /// VOSpace path of the request file:
     /// `<username>/.verbinal/exec/inbox/<id>.json`.
     pub fn inbox_path(username: &str, id: &str) -> String {
-        format!("{}/{}/{}.json", username, Self::INBOX_DIR, Self::sanitize_id(id))
+        format!(
+            "{}/{}/{}.json",
+            username,
+            Self::INBOX_DIR,
+            Self::sanitize_id(id)
+        )
     }
 
     /// VOSpace path of the result file:
     /// `<username>/.verbinal/exec/out/<id>.json`.
     pub fn out_path(username: &str, id: &str) -> String {
-        format!("{}/{}/{}.json", username, Self::OUT_DIR, Self::sanitize_id(id))
+        format!(
+            "{}/{}/{}.json",
+            username,
+            Self::OUT_DIR,
+            Self::sanitize_id(id)
+        )
     }
 
     /// The inbox folder tree to create one level at a time (create_folder rejects
@@ -193,8 +217,18 @@ pub struct RunCodeRequest {
 }
 
 impl RunCodeRequest {
-    pub fn new(id: impl Into<String>, language: impl Into<String>, code: impl Into<String>, timeout_seconds: i64) -> Self {
-        Self { id: id.into(), language: language.into(), code: code.into(), timeout_seconds }
+    pub fn new(
+        id: impl Into<String>,
+        language: impl Into<String>,
+        code: impl Into<String>,
+        timeout_seconds: i64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            language: language.into(),
+            code: code.into(),
+            timeout_seconds,
+        }
     }
 }
 
@@ -231,7 +265,10 @@ impl RunCodeResult {
     /// malformed base64 payload falls back to the raw value (never panics).
     fn decode(value: Option<&str>, encoding: Option<&str>) -> Option<String> {
         let value = value?;
-        if encoding.map(|e| e.eq_ignore_ascii_case("base64")).unwrap_or(false) {
+        if encoding
+            .map(|e| e.eq_ignore_ascii_case("base64"))
+            .unwrap_or(false)
+        {
             use base64::Engine as _;
             match base64::engine::general_purpose::STANDARD.decode(value) {
                 Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
@@ -290,12 +327,19 @@ mod tests {
         };
         assert!(s.is_enabled());
         assert!(!s.is_all_defaults());
-        assert_eq!(s.resolve_image(), "images.canfar.net/project/verbinal-compute:1.0");
+        assert_eq!(
+            s.resolve_image(),
+            "images.canfar.net/project/verbinal-compute:1.0"
+        );
     }
 
     #[test]
     fn resolve_resources_clamps() {
-        let s = AIComputeSettings { cores: 0, ram: 9999, ..Default::default() };
+        let s = AIComputeSettings {
+            cores: 0,
+            ram: 9999,
+            ..Default::default()
+        };
         // cores 0 → default 1; ram over max → clamped to 256.
         assert_eq!(s.resolve_resources(), (1, 256));
     }
@@ -332,7 +376,10 @@ mod tests {
     #[test]
     fn normalize_language_defaults_to_python() {
         assert_eq!(RunCodeContract::normalize_language(Some("  BASH ")), "bash");
-        assert_eq!(RunCodeContract::normalize_language(Some("python")), "python");
+        assert_eq!(
+            RunCodeContract::normalize_language(Some("python")),
+            "python"
+        );
         assert_eq!(RunCodeContract::normalize_language(Some("ruby")), "python");
         assert_eq!(RunCodeContract::normalize_language(None), "python");
     }
@@ -374,7 +421,8 @@ mod tests {
         assert!(RunCodeJson::try_parse_result("   ").is_none());
         assert!(RunCodeJson::try_parse_result("{ not json").is_none());
         // A partial result parses; missing fields become None.
-        let r = RunCodeJson::try_parse_result(r#"{"status":"ok","exit_code":0,"stdout":"hi"}"#).unwrap();
+        let r = RunCodeJson::try_parse_result(r#"{"status":"ok","exit_code":0,"stdout":"hi"}"#)
+            .unwrap();
         assert_eq!(r.status.as_deref(), Some("ok"));
         assert_eq!(r.exit_code, Some(0));
         assert_eq!(r.stdout.as_deref(), Some("hi"));

@@ -1,17 +1,17 @@
 use crate::models::UserInfo;
 use crate::services::TokenStorage;
 use crate::state::AppServices;
+use crate::ui::cube_tab_host::CubeTabHost;
 use crate::ui::dashboard::DashboardView;
 use crate::ui::file_panel::{FilePanel, FileType};
 use crate::ui::fits_viewer::FitsViewer;
 use crate::ui::login_dialog::show_login_dialog;
 use crate::ui::notebook_host::NotebookTabHost;
 use crate::ui::research_page::ResearchPage;
-use crate::ui::cube_tab_host::CubeTabHost;
 use crate::ui::search_page::SearchPage;
-use crate::ui::workflows_page::WorkflowsPage;
 use crate::ui::settings_page::{self, SettingsPage};
 use crate::ui::vospace_browser::VoSpaceBrowser;
+use crate::ui::workflows_page::WorkflowsPage;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -24,7 +24,9 @@ use std::sync::Arc;
 pub fn build_main_window(
     app: &adw::Application,
     services: Arc<AppServices>,
-    toast_rx: tokio::sync::mpsc::UnboundedReceiver<crate::services::notification_service::ToastMessage>,
+    toast_rx: tokio::sync::mpsc::UnboundedReceiver<
+        crate::services::notification_service::ToastMessage,
+    >,
 ) {
     // Apply saved theme on startup
     let config = services.settings.load();
@@ -221,9 +223,7 @@ pub fn build_main_window(
                         use gtk4::prelude::ActionGroupExt;
                         // Strip "app." prefix if present; gio::ActionGroup
                         // activate_action expects the bare action name.
-                        let bare = action_name
-                            .strip_prefix("app.")
-                            .unwrap_or(&action_name);
+                        let bare = action_name.strip_prefix("app.").unwrap_or(&action_name);
                         app_ref.activate_action(bare, None);
                     });
                 }
@@ -245,12 +245,16 @@ pub fn build_main_window(
     paned.set_resize_end_child(true);
 
     // --- Degraded mode banner (hidden by default) ---
-    let banner = adw::Banner::new(crate::tr_en!("Some services unreachable — working with cached data"));
+    let banner = adw::Banner::new(crate::tr_en!(
+        "Some services unreachable — working with cached data"
+    ));
     banner.set_button_label(Some(crate::tr_en!("Details")));
     banner.set_revealed(false);
 
     // --- Session-expired banner (hidden by default) ---
-    let session_banner = adw::Banner::new(crate::tr_en!("Your session has expired — please sign in again"));
+    let session_banner = adw::Banner::new(crate::tr_en!(
+        "Your session has expired — please sign in again"
+    ));
     session_banner.set_button_label(Some(crate::tr_en!("Sign In")));
     session_banner.set_revealed(false);
 
@@ -285,17 +289,40 @@ pub fn build_main_window(
 
     let nav_items: Vec<(&str, &str, &str)> = vec![
         ("home", crate::tr_en!("Home"), "go-home-symbolic"),
-        ("storage", crate::tr_en!("Storage"), "drive-multidisk-symbolic"),
+        (
+            "storage",
+            crate::tr_en!("Storage"),
+            "drive-multidisk-symbolic",
+        ),
         ("search", crate::tr_en!("Search"), "system-search-symbolic"),
-        ("research", crate::tr_en!("Research"), "document-open-recent-symbolic"),
-        ("fits", crate::tr_en!("FITS Viewer"), "image-x-generic-symbolic"),
+        (
+            "research",
+            crate::tr_en!("Research"),
+            "document-open-recent-symbolic",
+        ),
+        (
+            "fits",
+            crate::tr_en!("FITS Viewer"),
+            "image-x-generic-symbolic",
+        ),
         ("cube", crate::tr_en!("Cube Viewer"), "view-paged-symbolic"),
-        ("notebook", crate::tr_en!("Notebook"), "accessories-text-editor-symbolic"),
-        ("workflows", crate::tr_en!("Workflows"), "view-list-symbolic"),
-        ("aiguide", crate::tr_en!("AI Guide"), "applications-science-symbolic"),
+        (
+            "notebook",
+            crate::tr_en!("Notebook"),
+            "accessories-text-editor-symbolic",
+        ),
+        (
+            "workflows",
+            crate::tr_en!("Workflows"),
+            "view-list-symbolic",
+        ),
+        (
+            "aiguide",
+            crate::tr_en!("AI Guide"),
+            "applications-science-symbolic",
+        ),
     ];
-    let nav_keys: Rc<Vec<&'static str>> =
-        Rc::new(nav_items.iter().map(|(k, _, _)| *k).collect());
+    let nav_keys: Rc<Vec<&'static str>> = Rc::new(nav_items.iter().map(|(k, _, _)| *k).collect());
     for (key, title, icon) in &nav_items {
         let row = adw::ActionRow::new();
         row.set_title(title);
@@ -507,7 +534,8 @@ pub fn build_main_window(
     let research_page = ResearchPage::new(services.clone());
 
     // CAOM2 Observation Detail page (opened from Search / Research)
-    let obs_detail = crate::ui::observation_detail_page::ObservationDetailPage::new(services.clone());
+    let obs_detail =
+        crate::ui::observation_detail_page::ObservationDetailPage::new(services.clone());
     research_page.set_application(app);
 
     // Notebook module (real implementation)
@@ -783,7 +811,9 @@ pub fn build_main_window(
                     let result = match cmd.target.as_str() {
                         "cube" => cube_host.handle_viewer_command(&cmd.op, &cmd.args).await,
                         "notebook" => {
-                            notebook_host.handle_viewer_command(&cmd.op, &cmd.args).await
+                            notebook_host
+                                .handle_viewer_command(&cmd.op, &cmd.args)
+                                .await
                         }
                         "fits" => fits_viewer.handle_viewer_command(&cmd.op, &cmd.args).await,
                         other => Err(format!("unknown viewer target: {other}")),
@@ -896,7 +926,9 @@ pub fn build_main_window(
                 view_stack.set_visible_child_name("home");
                 *dashboard.borrow_mut() = None;
 
-                services.toast.toast(crate::tr_en!("Logged out successfully"));
+                services
+                    .toast
+                    .toast(crate::tr_en!("Logged out successfully"));
             });
         });
         app.add_action(&logout_action);
@@ -943,7 +975,9 @@ pub fn build_main_window(
                     navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                     vospace.refresh().await;
 
-                    services.toast.toast(&crate::tr_fmt!("Welcome back, {}!", &display));
+                    services
+                        .toast
+                        .toast(&crate::tr_fmt!("Welcome back, {}!", &display));
                 }
             });
         });
@@ -1014,7 +1048,9 @@ pub fn build_main_window(
                         navigate_to_dashboard(&view_stack, &services, &dashboard).await;
                         vospace.refresh().await;
 
-                        services.toast.toast(&crate::tr_fmt!("Welcome back, {}!", &display));
+                        services
+                            .toast
+                            .toast(&crate::tr_fmt!("Welcome back, {}!", &display));
                     }
                     Err(_) => {
                         TokenStorage::clear();
@@ -1731,7 +1767,9 @@ fn build_welcome_page(
     content.append(&grid);
 
     // Login prompt
-    let login_prompt = gtk::Label::new(Some(crate::tr_en!("Log in with your CADC credentials to get started")));
+    let login_prompt = gtk::Label::new(Some(crate::tr_en!(
+        "Log in with your CADC credentials to get started"
+    )));
     login_prompt.add_css_class("dim-label");
     login_prompt.set_halign(gtk::Align::Center);
     login_prompt.set_margin_top(8);

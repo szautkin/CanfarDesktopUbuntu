@@ -166,7 +166,9 @@ async fn get_observation_caom2(services: &AppServices, args: &Value) -> ToolResu
     match result.status {
         Caom2Status::Success => match result.observation {
             Some(obs) => ToolResult::Data(observation_to_json(&obs)),
-            None => ToolResult::Failed("CAOM2 fetch reported success but returned no document.".to_string()),
+            None => ToolResult::Failed(
+                "CAOM2 fetch reported success but returned no document.".to_string(),
+            ),
         },
         Caom2Status::AuthRequired => ToolResult::Failed(
             result
@@ -226,16 +228,22 @@ async fn get_data_links(services: &AppServices, args: &Value) -> ToolResult {
 }
 
 async fn vizier_cone_search(args: &Value) -> ToolResult {
-    let (ra, dec, radius_deg) =
-        match (num_arg(args, "ra"), num_arg(args, "dec"), num_arg(args, "radius_deg")) {
-            (Some(ra), Some(dec), Some(r)) => (ra, dec, r),
-            _ => return ToolResult::Failed("ra, dec and radius_deg are required numbers".to_string()),
-        };
+    let (ra, dec, radius_deg) = match (
+        num_arg(args, "ra"),
+        num_arg(args, "dec"),
+        num_arg(args, "radius_deg"),
+    ) {
+        (Some(ra), Some(dec), Some(r)) => (ra, dec, r),
+        _ => return ToolResult::Failed("ra, dec and radius_deg are required numbers".to_string()),
+    };
     if radius_deg < 0.0 {
         return ToolResult::Failed("radius_deg must be >= 0".to_string());
     }
 
-    let max_rec = args.get("max_rec").and_then(Value::as_i64).unwrap_or(DEFAULT_MAX_REC);
+    let max_rec = args
+        .get("max_rec")
+        .and_then(Value::as_i64)
+        .unwrap_or(DEFAULT_MAX_REC);
     if !(1..=MAX_REC_CAP).contains(&max_rec) {
         return ToolResult::Failed(format!("max_rec must be between 1 and {MAX_REC_CAP}"));
     }
@@ -320,9 +328,10 @@ fn observation_to_json(o: &CAOM2Observation) -> Value {
             "keywords": t.keywords,
         })
     });
-    let instrument = o.instrument.as_ref().map(|i| {
-        json!({ "name": i.name, "keywords": i.keywords })
-    });
+    let instrument = o
+        .instrument
+        .as_ref()
+        .map(|i| json!({ "name": i.name, "keywords": i.keywords }));
     let environment = o.environment.as_ref().map(|e| {
         json!({
             "seeing": e.seeing,
@@ -408,7 +417,8 @@ fn opt_str_arg(args: &Value, key: &str) -> Option<String> {
 /// Extract a numeric argument (accepts JSON number, or a numeric string).
 fn num_arg(args: &Value, key: &str) -> Option<f64> {
     let v = args.get(key)?;
-    v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -457,7 +467,10 @@ mod tests {
 
     #[test]
     fn opt_str_arg_blanks_to_none() {
-        assert_eq!(opt_str_arg(&json!({ "c": "  V/97  " }), "c"), Some("V/97".to_string()));
+        assert_eq!(
+            opt_str_arg(&json!({ "c": "  V/97  " }), "c"),
+            Some("V/97".to_string())
+        );
         assert_eq!(opt_str_arg(&json!({ "c": "   " }), "c"), None);
         assert_eq!(opt_str_arg(&json!({}), "c"), None);
     }

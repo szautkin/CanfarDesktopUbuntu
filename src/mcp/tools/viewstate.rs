@@ -81,7 +81,9 @@ pub async fn dispatch(
     match name {
         "get_current_view" => {
             let snap = view_state::capture();
-            Some(ToolResult::Data(serde_json::to_value(&snap).unwrap_or(json!({}))))
+            Some(ToolResult::Data(
+                serde_json::to_value(&snap).unwrap_or(json!({})),
+            ))
         }
         "list_open_tabs" => {
             let snap = view_state::capture();
@@ -111,7 +113,9 @@ pub async fn dispatch(
             match (ra, dec) {
                 (Some(ra), Some(dec)) => {
                     let ok = view_state::set_search_focus_action(ra, dec).await;
-                    Some(ToolResult::Data(json!({ "focused": ok, "ra": ra, "dec": dec })))
+                    Some(ToolResult::Data(
+                        json!({ "focused": ok, "ra": ra, "dec": dec }),
+                    ))
                 }
                 _ => Some(ToolResult::Failed("ra and dec are required".into())),
             }
@@ -121,7 +125,10 @@ pub async fn dispatch(
 }
 
 /// View-state tools never enqueue proposals — they execute directly.
-pub async fn apply(_services: &AppServices, _proposal: &PendingProposal) -> Option<Result<String, String>> {
+pub async fn apply(
+    _services: &AppServices,
+    _proposal: &PendingProposal,
+) -> Option<Result<String, String>> {
     None
 }
 

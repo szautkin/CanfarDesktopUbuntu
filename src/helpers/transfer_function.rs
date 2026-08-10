@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn drag_endpoint_pins_x_moves_alpha() {
         let mut m = TransferFunctionModel::new(); // (0,0),(1,1)
-        // Try to drag the left endpoint's X to 0.5 -> X stays 0, alpha updates.
+                                                  // Try to drag the left endpoint's X to 0.5 -> X stays 0, alpha updates.
         m.drag(0, 0.5, 0.8);
         assert_eq!(m.points[0], (0.0, 0.8));
         // Right endpoint pinned at X=1.
@@ -237,7 +237,7 @@ mod tests {
     fn hit_test_finds_nearest_within_radius() {
         let mut m = TransferFunctionModel::new();
         m.add(0.5, 0.5); // idx 2
-        // Close to the interior point.
+                         // Close to the interior point.
         assert_eq!(m.hit_test(0.51, 0.49, 0.05), Some(2));
         // Nothing within a tiny radius near an empty region.
         assert_eq!(m.hit_test(0.2, 0.8, 0.01), None);

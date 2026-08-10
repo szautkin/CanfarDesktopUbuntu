@@ -171,12 +171,22 @@ mod tests {
         for &deg in &[0.0_f64, 10.5, 83.63321, 160.25, 299.9, 359.5] {
             let s = format_ra(deg);
             let parsed = parse_ra(&s).unwrap();
-            assert!((parsed - deg).abs() < 0.01, "RA round-trip {} -> {}", deg, s);
+            assert!(
+                (parsed - deg).abs() < 0.01,
+                "RA round-trip {} -> {}",
+                deg,
+                s
+            );
         }
         for &deg in &[-89.5_f64, -41.267, 0.0, 22.014, 41.267, 89.9] {
             let s = format_dec(deg);
             let parsed = parse_dec(&s).unwrap();
-            assert!((parsed - deg).abs() < 0.01, "Dec round-trip {} -> {}", deg, s);
+            assert!(
+                (parsed - deg).abs() < 0.01,
+                "Dec round-trip {} -> {}",
+                deg,
+                s
+            );
         }
     }
 

@@ -84,8 +84,9 @@ mod tests {
 
     #[test]
     fn parses_minimal_valid_manifest() {
-        let m = parse_manifest(r#"{"schemaVersion":3,"imageID":"images.canfar.net/skaha/base:1.0"}"#)
-            .unwrap();
+        let m =
+            parse_manifest(r#"{"schemaVersion":3,"imageID":"images.canfar.net/skaha/base:1.0"}"#)
+                .unwrap();
         assert_eq!(m.image_id, "images.canfar.net/skaha/base:1.0");
         assert_eq!(m.schema_version, 3);
     }
@@ -148,9 +149,8 @@ mod tests {
 
     #[test]
     fn max_supported_schema_is_accepted() {
-        let json = format!(
-            r#"{{"schemaVersion":{MAX_SUPPORTED_SCHEMA_VERSION},"imageID":"img:1"}}"#
-        );
+        let json =
+            format!(r#"{{"schemaVersion":{MAX_SUPPORTED_SCHEMA_VERSION},"imageID":"img:1"}}"#);
         assert!(parse_manifest(&json).is_ok());
     }
 

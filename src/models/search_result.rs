@@ -283,10 +283,7 @@ pub struct ResultColumnInfo {
 /// Clean a CSV header into a normalized key (matches Windows CellFormatter.CleanKey).
 /// Removes quotes, spaces, dots, lowercases.
 pub fn clean_key(header: &str) -> String {
-    header
-        .replace(['"', ' ', '.'], "")
-        .trim()
-        .to_lowercase()
+    header.replace(['"', ' ', '.'], "").trim().to_lowercase()
 }
 
 /// Default visible keys (cleaned form) matching the Windows app.
@@ -934,13 +931,17 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let back: RecentSearch = serde_json::from_str(&json).unwrap();
         assert_eq!(back.resolver_service_used.as_deref(), Some("SIMBAD"));
-        assert_eq!(back.resolution_epoch.as_deref(), Some("2026-07-08T00:00:00Z"));
+        assert_eq!(
+            back.resolution_epoch.as_deref(),
+            Some("2026-07-08T00:00:00Z")
+        );
 
         // Legacy payloads that predate the provenance fields still deserialize
         // (serde default → None). Start from a full serialization and drop the
         // two new keys so the rest of the required fields remain valid.
         let mut value: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&RecentSearch::default()).unwrap()).unwrap();
+            serde_json::from_str(&serde_json::to_string(&RecentSearch::default()).unwrap())
+                .unwrap();
         let obj = value.as_object_mut().unwrap();
         obj.remove("resolver_service_used");
         obj.remove("resolution_epoch");

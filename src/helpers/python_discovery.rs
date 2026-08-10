@@ -75,10 +75,7 @@ pub fn find_python(configured_path: Option<&str>) -> Option<PathBuf> {
 /// returns `Some((major, minor))` on success or `None` if the binary is
 /// missing, fails, or reports a version we cannot parse.
 pub fn validate_python(path: &std::path::Path) -> Option<(u32, u32)> {
-    let output = Command::new(path)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new(path).arg("--version").output().ok()?;
 
     // Python 2 writes to stderr; Python 3 writes to stdout.
     // Try both to handle edge cases.
@@ -137,10 +134,7 @@ fn common_locations() -> Vec<PathBuf> {
     // Conda / mamba typical install.
     if let Ok(home) = std::env::var("HOME") {
         for conda_dir in &["anaconda3", "miniconda3", "mambaforge", "miniforge3"] {
-            locations.push(PathBuf::from(format!(
-                "{}/{}/bin/python3",
-                home, conda_dir
-            )));
+            locations.push(PathBuf::from(format!("{}/{}/bin/python3", home, conda_dir)));
         }
         // Pyenv.
         locations.push(PathBuf::from(format!("{}/.pyenv/shims/python3", home)));
