@@ -759,11 +759,23 @@ impl SettingsPage {
                         let row = adw::ActionRow::new();
                         row.set_title(&r.name);
                         row.set_subtitle(&r.url);
-                        let (icon, detail) = if r.reachable {
+                        let (icon, detail) = if r.ok {
                             (
                                 "emblem-ok-symbolic",
                                 crate::tr_fmt!(
                                     "reachable — {} ({} ms)",
+                                    r.status.map(|s| s.to_string()).unwrap_or_default(),
+                                    r.latency_ms
+                                ),
+                            )
+                        } else if r.reachable {
+                            // The host answered, but with a 404/5xx: the endpoint is
+                            // wrong or the service is down. Reporting that as OK was
+                            // exactly the reference's QA-F3 bug.
+                            (
+                                "dialog-warning-symbolic",
+                                crate::tr_fmt!(
+                                    "host up, service failed — HTTP {} ({} ms)",
                                     r.status.map(|s| s.to_string()).unwrap_or_default(),
                                     r.latency_ms
                                 ),

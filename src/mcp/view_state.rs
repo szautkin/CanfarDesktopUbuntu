@@ -13,7 +13,12 @@
 
 use once_cell::sync::Lazy;
 use std::sync::RwLock;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+
+/// How long a UI-marshalled tool call waits for the GTK main loop before giving
+/// up with a typed "UI busy" error (mirrors the reference's 30s budget).
+const UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A `Send` snapshot of the current UI state, pushed by the UI and read by tools.
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -95,9 +100,19 @@ pub async fn viewer_command(
         reply: reply_tx,
     })
     .map_err(|_| "viewer bridge closed".to_string())?;
-    reply_rx
-        .await
-        .map_err(|_| "viewer did not respond".to_string())?
+    // Bound the wait: the reply only arrives once the GTK main loop drains the
+    // command queue, so a saturated UI thread would otherwise hang the tool call
+    // until the transport itself gave up. Fail with a descriptive error instead.
+    match tokio::time::timeout(UI_COMMAND_TIMEOUT, reply_rx).await {
+        Ok(reply) => reply.map_err(|_| "viewer did not respond".to_string())?,
+        Err(_) => Err(format!(
+            "UI busy: the {} viewer did not answer '{}' within {}s (the window is blocked by a \
+             long-running operation) — retry once it is idle.",
+            target,
+            op,
+            UI_COMMAND_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 // ── Pull half: the UI pushes, tools read ────────────────────────────────────

@@ -208,7 +208,15 @@ print('Pixel units (BUNIT):', header.get('BUNIT'))"
 
 fn cube_stub() -> String {
     "# Spectral cube — moment map + spectrum (edit the spaxel)\n\
-from spectral_cube import SpectralCube\n\
+try:\n\
+    from spectral_cube import SpectralCube\n\
+except ModuleNotFoundError:\n\
+    # Not shipped in every compute image — fail with the fix, not a bare import error.\n\
+    raise SystemExit(\n\
+        'spectral_cube is not installed in this kernel.\\n'\n\
+        'Run:  %pip install spectral-cube\\n'\n\
+        'then re-run this cell.'\n\
+    )\n\
 \n\
 cube = SpectralCube.read(path)  # carries SPECSYS / RESTFRQ / beam\n\
 print(cube)\n\
@@ -273,6 +281,17 @@ mod tests {
         let load = nb.cells[1].source.joined();
         assert!(load.contains("path = r'/data/obs/1234567p.fits'"));
         assert!(load.contains("wcs = WCS(header)"));
+    }
+
+    #[test]
+    fn cube_stub_guards_a_missing_spectral_cube_install() {
+        // spectral-cube is absent from several CANFAR images; the cell must name
+        // the exact fix rather than dying with a bare ModuleNotFoundError.
+        let stub = build_analysis_notebook(&obs(), Some("cube")).cells[2]
+            .source
+            .joined();
+        assert!(stub.contains("except ModuleNotFoundError:"));
+        assert!(stub.contains("%pip install spectral-cube"));
     }
 
     #[test]

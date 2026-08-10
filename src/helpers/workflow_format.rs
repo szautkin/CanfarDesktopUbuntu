@@ -202,23 +202,43 @@ pub fn parse(text: &str) -> WorkflowDoc {
 /// text is preserved (the file is the state, so rewrites must not reformat).
 /// Returns `Err` when the index doesn't exist.
 pub fn with_step_done(text: &str, step_index: usize, done: bool) -> Result<String, String> {
-    let mut lines: Vec<String> = normalize(text);
+    // Scan lines IN PLACE (no normalize/rejoin): running the text through
+    // `normalize()` rewrote every CRLF in a Windows-authored file as LF, which
+    // breaks the only-one-byte-changes contract above.
+    let bytes = text.as_bytes();
     let mut probe = 0usize;
-    for line in lines.iter_mut() {
+    let mut i = 0usize;
+    loop {
+        let mut end = i;
+        while end < bytes.len() && bytes[end] != b'\n' && bytes[end] != b'\r' {
+            end += 1;
+        }
+        let line = &text[i..end];
         if STEP_START.is_match(line.trim_end()) {
             if probe == step_index {
-                if let Some(open) = line.find('[') {
-                    // Replace exactly the single char at open+1.
-                    let mut bytes: Vec<char> = line.chars().collect();
-                    if open + 1 < bytes.len() {
-                        bytes[open + 1] = if done { 'x' } else { ' ' };
-                        *line = bytes.into_iter().collect();
-                        return Ok(lines.join("\n"));
+                // Replace exactly the single char at open+1, in the original text.
+                if let Some(rel) = line.find('[') {
+                    let open = i + rel;
+                    if open + 2 <= text.len() && text.is_char_boundary(open + 2) {
+                        let mut out = String::with_capacity(text.len());
+                        out.push_str(&text[..open + 1]);
+                        out.push(if done { 'x' } else { ' ' });
+                        out.push_str(&text[open + 2..]);
+                        return Ok(out);
                     }
                 }
             }
             probe += 1;
         }
+        if end >= bytes.len() {
+            break;
+        }
+        // Step over the terminator, treating CRLF as one break.
+        i = if bytes[end] == b'\r' && end + 1 < bytes.len() && bytes[end + 1] == b'\n' {
+            end + 2
+        } else {
+            end + 1
+        };
     }
     Err(format!(
         "workflow has {} steps; step {} does not exist.",
@@ -335,6 +355,24 @@ Time: ~2 h
     #[test]
     fn with_step_done_out_of_range_errors() {
         assert!(with_step_done(SAMPLE, 9, true).is_err());
+    }
+
+    #[test]
+    fn with_step_done_preserves_line_endings_crlf_and_lf() {
+        // The byte-preservation contract must hold whatever the file's line-ending
+        // flavour is — the old implementation rewrote every CRLF as LF, silently
+        // reformatting Windows-authored workflow files.
+        let crlf = "# T\r\n\r\n## Steps\r\n\r\n- [ ] **A** — first\r\n- [ ] **B** — second\r\n";
+        assert_eq!(
+            crlf.replace("- [ ] **B**", "- [x] **B**"),
+            with_step_done(crlf, 1, true).unwrap()
+        );
+
+        let lf = "# T\n\n## Steps\n\n- [ ] **A** — first\n- [x] **B** — second\n";
+        assert_eq!(
+            lf.replace("- [x] **B**", "- [ ] **B**"),
+            with_step_done(lf, 1, false).unwrap()
+        );
     }
 
     #[test]

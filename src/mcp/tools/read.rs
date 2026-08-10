@@ -12,7 +12,6 @@
 
 use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
 use crate::models::search_result::SearchFormState;
-use crate::services::health_tracker::{ServiceName, ServiceStatus};
 use serde_json::{json, Value};
 
 /// Hard cap on rows requested from the backend and returned to the caller.
@@ -139,9 +138,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         read_tool(
             "get_service_health",
-            "Report the last-known reachability of the upstream CADC/CANFAR services (auth, Skaha \
-             sessions, VOSpace storage, TAP archive, name resolver). Use it to tell whether a \
-             service is up before you depend on it.",
+            "Probe the upstream CADC/CANFAR services (TAP search, Skaha sessions, ARC/VOSpace \
+             storage, CADC auth) for reachability + round-trip latency. Use it to tell whether a \
+             service is up before you depend on it (e.g. before search_observations or \
+             launch_session). Per service, `reachable` means the HOST answered (any HTTP status) \
+             while `ok` means the service answered sanely (not 404/5xx) — trust `ok`/`healthyCount` \
+             for \"can I use it\", with `statusCode` as the detail.",
             empty_schema(),
         ),
     ]
@@ -165,7 +167,7 @@ pub async fn dispatch(
         "list_sessions" => list_sessions(services).await,
         "list_storage" => list_storage(services, args).await,
         "list_observations" => list_observations(services),
-        "get_service_health" => get_service_health(services),
+        "get_service_health" => get_service_health(services).await,
         _ => return None,
     };
     Some(result)
@@ -477,35 +479,39 @@ fn list_observations(services: &crate::state::AppServices) -> ToolResult {
 // Service health (last-known snapshot from the tracker)
 // ---------------------------------------------------------------------------
 
-fn get_service_health(services: &crate::state::AppServices) -> ToolResult {
-    let mut reachable_count = 0usize;
-    let entries: Vec<Value> = ServiceName::all()
+async fn get_service_health(services: &crate::state::AppServices) -> ToolResult {
+    // Probe live rather than replaying the tracker's last-known state: the tool
+    // is asked "can I use this right now?", and the tracker carries no status
+    // code, URL or latency to answer with.
+    let endpoints = services.endpoints.clone();
+    let results = services
+        .spawn(async move {
+            let client = reqwest::Client::new();
+            crate::services::probe_core(&client, &endpoints).await
+        })
+        .await;
+
+    let reachable_count = results.iter().filter(|r| r.reachable).count();
+    let healthy_count = results.iter().filter(|r| r.ok).count();
+    let entries: Vec<Value> = results
         .iter()
-        .map(|name| {
-            let status = services.health.get(name);
-            let (state, reason, since) = match &status {
-                ServiceStatus::Unknown => ("unknown", None, None),
-                ServiceStatus::Reachable => {
-                    reachable_count += 1;
-                    ("reachable", None, None)
-                }
-                ServiceStatus::Unreachable { since, reason } => {
-                    ("unreachable", Some(reason.clone()), Some(since.to_rfc3339()))
-                }
-            };
+        .map(|r| {
             json!({
-                "service": name.to_string(),
-                "state": state,
-                "reachable": status.is_reachable(),
-                "reason": reason,
-                "since": since,
+                "service": r.name,
+                "url": r.url,
+                "reachable": r.reachable,
+                "ok": r.ok,
+                "statusCode": r.status,
+                "latencyMs": r.latency_ms,
+                "error": r.error,
             })
         })
         .collect();
 
     ToolResult::Data(json!({
         "count": entries.len(),
-        "reachable_count": reachable_count,
+        "reachableCount": reachable_count,
+        "healthyCount": healthy_count,
         "services": entries,
     }))
 }

@@ -37,7 +37,7 @@ pub mod workflow_store;
 
 pub use api_error::ApiError;
 pub use cache_service::CacheService;
-pub use health_tracker::{ServiceHealthTracker, ServiceName, ServiceStatus};
+pub use health_tracker::ServiceHealthTracker;
 pub use notification_service::ToastNotifier;
 pub use auth_service::AuthService;
 pub use datalink_service::DataLinkService;
@@ -50,7 +50,7 @@ pub use platform_service::PlatformService;
 pub use recent_launch_service::RecentLaunchService;
 pub use search_store_service::SearchStoreService;
 #[allow(unused_imports)]
-pub use service_health_probe::{probe_all, ServiceProbeResult};
+pub use service_health_probe::{probe_all, probe_core, ServiceProbeResult};
 pub use session_service::SessionService;
 pub use settings_service::SettingsService;
 pub use storage_service::StorageService;
