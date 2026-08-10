@@ -18,7 +18,9 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{
+    opt_bool, opt_str_array, opt_u64, str_arg, ToolDescriptor, ToolResult, VerbClass,
+};
 use crate::models::vospace_node::NodeType;
 use crate::services::api_error::ApiError;
 use crate::state::AppServices;
@@ -83,7 +85,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "VOSpace file path relative to your home."},
-                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576, "description": "Max bytes to return (default 65536, hard cap 1048576)."},
+                    "maxBytes": {"type": "integer", "minimum": 1, "maximum": 1048576, "description": "Max bytes to return (default 65536, hard cap 1048576)."},
                     "encoding": {"type": "string", "enum": ["utf8", "base64"], "description": "How to return the bytes (default utf8)."}
                 },
                 "required": ["path"],
@@ -105,7 +107,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "path": {"type": "string", "description": "Destination VOSpace file path relative to your home."},
                     "content": {"type": "string", "description": "The text content to write."},
-                    "content_type": {"type": "string", "description": "MIME type (default text/plain)."}
+                    "contentType": {"type": "string", "description": "MIME type (default text/plain)."}
                 },
                 "required": ["path", "content"],
                 "additionalProperties": false
@@ -119,11 +121,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             json!({
                 "type": "object",
                 "properties": {
-                    "local_path": {"type": "string", "description": "Absolute path to the local file to upload."},
+                    "localPath": {"type": "string", "description": "Absolute path to the local file to upload."},
                     "path": {"type": "string", "description": "Destination VOSpace file path relative to your home, e.g. \"data/run1/out.fits\"."},
-                    "content_type": {"type": "string", "description": "MIME type (default guessed from the file extension, else application/octet-stream)."}
+                    "contentType": {"type": "string", "description": "MIME type (default guessed from the file extension, else application/octet-stream)."}
                 },
-                "required": ["local_path", "path"],
+                "required": ["localPath", "path"],
                 "additionalProperties": false
             }),
         ),
@@ -135,7 +137,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "VOSpace file path relative to your home to download."},
-                    "local_path": {"type": "string", "description": "Absolute local destination path (default: ~/Downloads/<filename>)."}
+                    "localPath": {"type": "string", "description": "Absolute local destination path (default: ~/Downloads/<filename>)."}
                 },
                 "required": ["path"],
                 "additionalProperties": false
@@ -166,9 +168,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "VOSpace node path relative to your home."},
-                    "is_public": {"type": "boolean", "description": "true = world-readable, false = not public. OMIT to leave unchanged."},
-                    "group_read": {"type": "array", "items": {"type": "string"}, "description": "Full GMS group URIs granted READ. OMIT = unchanged; [] = revoke all. REPLACES the whole read list."},
-                    "group_write": {"type": "array", "items": {"type": "string"}, "description": "Full GMS group URIs granted WRITE. OMIT = unchanged; [] = revoke all. REPLACES the whole write list."}
+                    "isPublic": {"type": "boolean", "description": "true = world-readable, false = not public. OMIT to leave unchanged."},
+                    "groupRead": {"type": "array", "items": {"type": "string"}, "description": "Full GMS group URIs granted READ. OMIT = unchanged; [] = revoke all. REPLACES the whole read list."},
+                    "groupWrite": {"type": "array", "items": {"type": "string"}, "description": "Full GMS group URIs granted WRITE. OMIT = unchanged; [] = revoke all. REPLACES the whole write list."}
                 },
                 "required": ["path"],
                 "additionalProperties": false
@@ -292,9 +294,9 @@ async fn read_file(services: &AppServices, args: &Value) -> ToolResult {
         return ToolResult::Data(json!({
             "path": path,
             "encoding": "base64",
-            "content_base64": base64::engine::general_purpose::STANDARD.encode(slice),
-            "bytes_returned": slice.len(),
-            "total_bytes": total,
+            "contentBase64": base64::engine::general_purpose::STANDARD.encode(slice),
+            "bytesReturned": slice.len(),
+            "totalBytes": total,
             "truncated": truncated,
         }));
     }
@@ -304,17 +306,17 @@ async fn read_file(services: &AppServices, args: &Value) -> ToolResult {
             "path": path,
             "encoding": "utf8",
             "content": text,
-            "bytes_returned": slice.len(),
-            "total_bytes": total,
+            "bytesReturned": slice.len(),
+            "totalBytes": total,
             "truncated": truncated,
         })),
         Err(_) => ToolResult::Data(json!({
             "path": path,
             "encoding": "base64",
             "note": "content is not valid UTF-8; returned as base64",
-            "content_base64": base64::engine::general_purpose::STANDARD.encode(slice),
-            "bytes_returned": slice.len(),
-            "total_bytes": total,
+            "contentBase64": base64::engine::general_purpose::STANDARD.encode(slice),
+            "bytesReturned": slice.len(),
+            "totalBytes": total,
             "truncated": truncated,
         })),
     }
@@ -327,13 +329,13 @@ async fn read_get_quota(services: &AppServices) -> ToolResult {
     };
     match services.storage.get_quota(&token, &username).await {
         Ok(q) => ToolResult::Data(json!({
-            "quota_bytes": q.quota_bytes,
-            "used_bytes": q.used_bytes,
-            "quota_gb": q.quota_gb(),
-            "used_gb": q.used_gb(),
-            "usage_percent": q.usage_percent(),
-            "is_warning": q.is_warning(),
-            "last_update": q.last_update,
+            "quotaBytes": q.quota_bytes,
+            "usedBytes": q.used_bytes,
+            "quotaGb": q.quota_gb(),
+            "usedGb": q.used_gb(),
+            "usagePercent": q.usage_percent(),
+            "isWarning": q.is_warning(),
+            "lastUpdate": q.last_update,
         })),
         Err(e) => ToolResult::Failed(format!("could not read quota: {}", e)),
     }
@@ -384,7 +386,7 @@ fn propose_upload_file(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> 
     if path.is_empty() {
         return ToolResult::Failed("path is required".to_string());
     }
-    let mut payload = json!({ "local_path": local_path, "path": path });
+    let mut payload = json!({ "localPath": local_path, "path": path });
     let content_type = str_arg(args, "content_type");
     if !content_type.is_empty() {
         payload["content_type"] = json!(content_type);
@@ -801,38 +803,10 @@ async fn auth(services: &AppServices) -> Result<(String, String), String> {
     Ok((token, username))
 }
 
-/// A trimmed string arg (or empty string when absent / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
 /// Normalize a VOSpace path: trim whitespace and a leading slash so the caller
 /// can pass either "data/x" or "/data/x" (both are relative to their home).
 fn norm_path(s: &str) -> String {
     s.trim().trim_start_matches('/').to_string()
-}
-
-fn opt_bool(args: &Value, key: &str) -> Option<bool> {
-    args.get(key).and_then(|v| v.as_bool())
-}
-
-fn opt_u64(args: &Value, key: &str) -> Option<u64> {
-    args.get(key).and_then(|v| v.as_u64())
-}
-
-/// An array-of-strings arg: `Some(list)` when the key is present as a JSON array
-/// (possibly empty), or `None` when the key is absent — preserving the
-/// "omit = unchanged" vs "[] = revoke" distinction for ACL dimensions.
-fn opt_str_array(args: &Value, key: &str) -> Option<Vec<String>> {
-    args.get(key).and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|item| item.as_str().map(|s| s.to_string()))
-            .collect()
-    })
 }
 
 /// Type tag string for a node's [`NodeType`].
@@ -851,13 +825,13 @@ fn node_to_json(path: &str, node: &crate::models::VoSpaceNode) -> Value {
         "name": node.name,
         "uri": node.uri,
         "type": type_str(&node.node_type),
-        "size_bytes": node.size,
-        "size_display": node.size_display(),
-        "content_type": node.content_type,
+        "sizeBytes": node.size,
+        "sizeDisplay": node.size_display(),
+        "contentType": node.content_type,
         "date": node.date,
-        "is_public": node.is_public,
-        "group_read": node.group_read,
-        "group_write": node.group_write,
+        "isPublic": node.is_public,
+        "groupRead": node.group_read,
+        "groupWrite": node.group_write,
     })
 }
 
@@ -913,7 +887,7 @@ mod tests {
             ToolResult::Failed(_)
         ));
         assert!(matches!(
-            propose_upload_file(&json!({ "local_path": "/tmp/x" }), &store),
+            propose_upload_file(&json!({ "localPath": "/tmp/x" }), &store),
             ToolResult::Failed(_)
         ));
         assert_eq!(store.pending_count(), 0);
@@ -923,14 +897,14 @@ mod tests {
     fn upload_file_enqueues_non_destructive_with_normalized_path() {
         let store = Arc::new(InMemoryProposalStore::new());
         match propose_upload_file(
-            &json!({ "local_path": "/tmp/x.fits", "path": "/data/x.fits" }),
+            &json!({ "localPath": "/tmp/x.fits", "path": "/data/x.fits" }),
             &store,
         ) {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.kind, "upload_file_to_vospace");
                 assert!(!p.destructive);
                 assert_eq!(p.payload["path"], "data/x.fits"); // leading slash stripped
-                assert_eq!(p.payload["local_path"], "/tmp/x.fits");
+                assert_eq!(p.payload["localPath"], "/tmp/x.fits");
             }
             _ => panic!("expected Proposed"),
         }
@@ -970,7 +944,7 @@ mod tests {
 
     #[test]
     fn opt_str_array_distinguishes_omit_from_empty() {
-        let args = json!({ "group_read": [], "group_write": ["ivo://g"] });
+        let args = json!({ "groupRead": [], "groupWrite": ["ivo://g"] });
         assert_eq!(opt_str_array(&args, "group_read"), Some(vec![]));
         assert_eq!(
             opt_str_array(&args, "group_write"),

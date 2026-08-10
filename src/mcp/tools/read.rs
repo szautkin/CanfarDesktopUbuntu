@@ -209,9 +209,9 @@ fn describe_app() -> ToolResult {
             "vospace_storage", "fits_wcs", "service_health"
         ],
         "capabilities": {
-            "read_tools": true,
-            "write_tools_via_proposals": true,
-            "agent_safe_reads": true
+            "readTools": true,
+            "writeToolsViaProposals": true,
+            "agentSafeReads": true
         }
     }))
 }
@@ -219,7 +219,7 @@ fn describe_app() -> ToolResult {
 async fn get_auth_state(services: &crate::state::AppServices) -> ToolResult {
     let username = services.get_username().await;
     ToolResult::Data(json!({
-        "is_authenticated": username.is_some(),
+        "isAuthenticated": username.is_some(),
         "username": username,
     }))
 }
@@ -307,7 +307,7 @@ async fn search_observations(services: &crate::state::AppServices, args: &Value)
             ToolResult::Data(json!({
                 "adql": adql,
                 "columns": cols,
-                "returned_rows": rows.len(),
+                "returnedRows": rows.len(),
                 "truncated": truncated,
                 "rows": rows,
             }))
@@ -333,8 +333,8 @@ async fn resolve_target(services: &crate::state::AppServices, args: &Value) -> T
             "target": r.target,
             "ra": r.ra,
             "dec": r.dec,
-            "coord_sys": r.coord_sys,
-            "object_type": r.object_type,
+            "coordSys": r.coord_sys,
+            "objectType": r.object_type,
             "service": r.service,
         })),
         Err(e) => ToolResult::Failed(format!("could not resolve target '{target}': {e}")),
@@ -350,7 +350,7 @@ fn list_saved_queries(services: &crate::state::AppServices) -> ToolResult {
         .search_store
         .load_saved()
         .into_iter()
-        .map(|q| json!({ "name": q.name, "adql": q.adql, "created_at": q.created_at }))
+        .map(|q| json!({ "name": q.name, "adql": q.adql, "createdAt": q.created_at }))
         .collect();
     ToolResult::Data(json!({ "count": queries.len(), "queries": queries }))
 }
@@ -367,7 +367,7 @@ fn get_saved_query(services: &crate::state::AppServices, args: &Value) -> ToolRe
         .find(|q| q.name == name)
     {
         Some(q) => ToolResult::Data(json!({
-            "name": q.name, "adql": q.adql, "created_at": q.created_at
+            "name": q.name, "adql": q.adql, "createdAt": q.created_at
         })),
         None => ToolResult::Failed(format!("no saved query named '{name}'")),
     }
@@ -384,8 +384,8 @@ fn list_recent_searches(services: &crate::state::AppServices, args: &Value) -> T
             json!({
                 "summary": s.summary,
                 "adql": s.adql,
-                "result_count": s.result_count,
-                "searched_at": s.searched_at,
+                "resultCount": s.result_count,
+                "searchedAt": s.searched_at,
             })
         })
         .collect();
@@ -414,12 +414,12 @@ async fn list_sessions(services: &crate::state::AppServices) -> ToolResult {
                         "type": s.session_type,
                         "status": s.status,
                         "image": s.image,
-                        "started_time": s.start_time,
-                        "expires_time": s.expiry_time,
-                        "cpu_allocated": s.requested_cpu_cores,
-                        "memory_allocated": s.requested_ram,
-                        "gpu_allocated": s.requested_gpu_cores,
-                        "connect_url": s.connect_url,
+                        "startedTime": s.start_time,
+                        "expiresTime": s.expiry_time,
+                        "cpuAllocated": s.requested_cpu_cores,
+                        "memoryAllocated": s.requested_ram,
+                        "gpuAllocated": s.requested_gpu_cores,
+                        "connectUrl": s.connect_url,
                     })
                 })
                 .collect();
@@ -452,10 +452,10 @@ async fn list_storage(services: &crate::state::AppServices, args: &Value) -> Too
                         "uri": n.uri,
                         "type": if n.is_container() { "container" } else { "data" },
                         "size": n.size,
-                        "size_display": n.size_display(),
+                        "sizeDisplay": n.size_display(),
                         "date": n.date,
-                        "content_type": n.content_type,
-                        "is_public": n.is_public,
+                        "contentType": n.content_type,
+                        "isPublic": n.is_public,
                     })
                 })
                 .collect();
@@ -477,22 +477,22 @@ fn list_observations(services: &crate::state::AppServices) -> ToolResult {
         .map(|o| {
             json!({
                 "id": o.id,
-                "publisher_id": o.publisher_id,
+                "publisherId": o.publisher_id,
                 "collection": o.collection,
-                "observation_id": o.observation_id,
-                "target_name": o.target_name,
+                "observationId": o.observation_id,
+                "targetName": o.target_name,
                 "instrument": o.instrument,
                 "filter": o.filter,
                 "ra": o.ra,
                 "dec": o.dec,
-                "start_date": o.start_date,
-                "cal_level": o.cal_level,
+                "startDate": o.start_date,
+                "calLevel": o.cal_level,
                 "bookmarked": o.is_bookmarked(),
-                "has_fits": o.has_fits(),
-                "local_path": o.local_path,
-                "file_size": o.file_size,
-                "size_display": o.formatted_size(),
-                "downloaded_at": o.downloaded_at,
+                "hasFits": o.has_fits(),
+                "localPath": o.local_path,
+                "fileSize": o.file_size,
+                "sizeDisplay": o.formatted_size(),
+                "downloadedAt": o.downloaded_at,
             })
         })
         .collect();

@@ -20,7 +20,7 @@
 
 use crate::helpers::agent_attribution::AgentAttribution;
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::observation_note::ObservationNote;
 use crate::services::observation_note_store::ObservationNoteStore;
 use crate::services::observation_store::DownloadedObservation;
@@ -174,9 +174,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "publisher_id": { "type": "string", "description": "The observation's publisher DID / id." }
+                    "publisherId": { "type": "string", "description": "The observation's publisher DID / id." }
                 },
-                "required": ["publisher_id"],
+                "required": ["publisherId"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Read,
@@ -198,11 +198,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "type": "string",
                         "description": "Full local path for the output .zip (parent folders are created)."
                     },
-                    "include_notes": {
+                    "includeNotes": {
                         "type": "boolean",
                         "description": "Include research notes (default true)."
                     },
-                    "include_search_history": {
+                    "includeSearchHistory": {
                         "type": "boolean",
                         "description": "Include saved + recent searches (default true)."
                     }
@@ -406,8 +406,8 @@ fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolR
         .unwrap_or(true);
     let payload = json!({
         "path": path,
-        "include_notes": include_notes,
-        "include_search_history": include_history,
+        "includeNotes": include_notes,
+        "includeSearchHistory": include_history,
     });
     let p = proposals.enqueue(
         "export_research_bundle",
@@ -714,15 +714,6 @@ fn observation_summary(obs: &DownloadedObservation) -> Value {
     })
 }
 
-/// Extract a trimmed string argument (empty string if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -797,8 +788,8 @@ mod tests {
                 assert!(!p.destructive, "export must be non-destructive");
                 assert_eq!(p.payload["path"], "/tmp/bundle.zip");
                 // Defaults applied.
-                assert_eq!(p.payload["include_notes"], true);
-                assert_eq!(p.payload["include_search_history"], true);
+                assert_eq!(p.payload["includeNotes"], true);
+                assert_eq!(p.payload["includeSearchHistory"], true);
             }
             _ => panic!("expected Proposed"),
         }

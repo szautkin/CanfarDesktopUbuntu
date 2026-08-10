@@ -26,7 +26,7 @@
 
 use crate::helpers::workflow_format;
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::workflow::{WorkflowInfo, WorkflowSource};
 use crate::services::workflow_store::{WorkflowStore, LOCAL_PREFIX};
 use crate::state::AppServices;
@@ -469,8 +469,8 @@ fn summary_json(w: &WorkflowInfo) -> Value {
         "description": w.doc.description,
         "tags": w.doc.tags(),
         "source": source_str(w.source),
-        "done_count": w.doc.done_count(),
-        "total_steps": w.doc.steps.len(),
+        "doneCount": w.doc.done_count(),
+        "totalSteps": w.doc.steps.len(),
     })
 }
 
@@ -498,10 +498,10 @@ fn workflow_json(w: &WorkflowInfo) -> Value {
         "description": w.doc.description,
         "tags": w.doc.tags(),
         "source": source_str(w.source),
-        "done_count": w.doc.done_count(),
-        "total_steps": w.doc.steps.len(),
+        "doneCount": w.doc.done_count(),
+        "totalSteps": w.doc.steps.len(),
         "steps": steps,
-        "raw_text": w.raw_text,
+        "rawText": w.raw_text,
     })
 }
 
@@ -512,15 +512,6 @@ fn source_str(source: WorkflowSource) -> &'static str {
         WorkflowSource::Local => "local",
         WorkflowSource::VoSpace => "vospace",
     }
-}
-
-/// Extract a trimmed string argument (empty string if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

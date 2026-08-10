@@ -16,7 +16,7 @@
 //! the host never auto-applies them — the real work happens later in [`apply`].
 
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{opt_u32, str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::SessionLaunchParams;
 use crate::state::AppServices;
 use serde_json::{json, Value};
@@ -194,12 +194,12 @@ fn session_json(s: &crate::models::Session) -> Value {
         "type": s.session_type,
         "status": s.status,
         "image": s.image,
-        "started_time": s.start_time,
-        "expires_time": s.expiry_time,
-        "cpu_allocated": s.requested_cpu_cores,
-        "memory_allocated": s.requested_ram,
-        "gpu_allocated": s.requested_gpu_cores,
-        "connect_url": s.connect_url,
+        "startedTime": s.start_time,
+        "expiresTime": s.expiry_time,
+        "cpuAllocated": s.requested_cpu_cores,
+        "memoryAllocated": s.requested_ram,
+        "gpuAllocated": s.requested_gpu_cores,
+        "connectUrl": s.connect_url,
     })
 }
 
@@ -478,20 +478,6 @@ async fn apply_delete_sessions_bulk(
 
 fn not_signed_in() -> ToolResult {
     ToolResult::Failed("not signed in (sign in to CADC/CANFAR first)".to_string())
-}
-
-/// Trimmed string argument (empty string if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-/// Optional `u32` argument (None if missing or not an unsigned int).
-fn opt_u32(args: &Value, key: &str) -> Option<u32> {
-    args.get(key).and_then(Value::as_u64).map(|n| n as u32)
 }
 
 /// Validate an optional resource field: absent → `Ok(None)`, present and `>= 1` →

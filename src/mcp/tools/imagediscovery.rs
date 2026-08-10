@@ -20,7 +20,7 @@
 //! coordinator.
 
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{bool_arg, opt_str_arg, str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::image_manifest::{capability, DiscoveryOutcome, PackageQuery};
 use crate::state::AppServices;
 use serde_json::{json, Value};
@@ -128,7 +128,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "image_id": {
+                    "imageId": {
                         "type": "string",
                         "minLength": 1,
                         "description": "Full image reference to probe, e.g. \
@@ -139,7 +139,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "description": "Bypass the cache and re-probe even if a manifest already exists."
                     }
                 },
-                "required": ["image_id"],
+                "required": ["imageId"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Write,
@@ -233,7 +233,7 @@ fn propose_discover(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Too
         format!("Discover packages installed in '{}'", image_id)
     };
     // Payload echoes the args so the applier can reconstruct the call verbatim.
-    let payload = json!({ "image_id": image_id, "force": force });
+    let payload = json!({ "imageId": image_id, "force": force });
     let p = proposals.enqueue("discover_image_packages", &summary, false, payload);
     ToolResult::Proposed(p)
 }
@@ -400,29 +400,6 @@ fn str_array(args: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// A trimmed optional string argument (`None` when missing / blank / not a string).
-fn opt_str_arg(args: &Value, key: &str) -> Option<String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
-/// A trimmed string argument (empty string when missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-/// A boolean argument, defaulting to `false` when missing / not a bool.
-fn bool_arg(args: &Value, key: &str) -> bool {
-    args.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -627,12 +604,12 @@ mod tests {
     #[test]
     fn propose_discover_default_not_force() {
         let store = Arc::new(InMemoryProposalStore::new());
-        match propose_discover(&json!({ "image_id": "img:a" }), &store) {
+        match propose_discover(&json!({ "imageId": "img:a" }), &store) {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.kind, "discover_image_packages");
                 assert!(!p.destructive, "discovery is non-destructive");
                 assert_eq!(p.summary, "Discover packages installed in 'img:a'");
-                assert_eq!(p.payload["image_id"], "img:a");
+                assert_eq!(p.payload["imageId"], "img:a");
                 assert_eq!(p.payload["force"], false);
             }
             _ => panic!("expected Proposed"),
@@ -643,7 +620,7 @@ mod tests {
     #[test]
     fn propose_discover_force_changes_summary_and_payload() {
         let store = Arc::new(InMemoryProposalStore::new());
-        match propose_discover(&json!({ "image_id": "img:a", "force": true }), &store) {
+        match propose_discover(&json!({ "imageId": "img:a", "force": true }), &store) {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.summary, "Re-probe packages installed in 'img:a'");
                 assert_eq!(p.payload["force"], true);
@@ -656,7 +633,7 @@ mod tests {
     fn propose_discover_requires_image_id() {
         let store = Arc::new(InMemoryProposalStore::new());
         assert!(matches!(
-            propose_discover(&json!({ "image_id": "   " }), &store),
+            propose_discover(&json!({ "imageId": "   " }), &store),
             ToolResult::Failed(_)
         ));
         assert!(matches!(

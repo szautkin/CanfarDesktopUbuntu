@@ -17,7 +17,7 @@
 //! contract-parity with the service-backed families).
 
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{num_arg, opt_str_arg, str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::caom2::{CAOM2Observation, Caom2Plane};
 use crate::services::caom2_service::{CAOM2Service, Caom2Status};
 use crate::services::vizier_service::VizierService;
@@ -54,12 +54,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "publisher_id": {
+                    "publisherId": {
                         "type": "string",
                         "description": "Observation publisher id / DID."
                     }
                 },
-                "required": ["publisher_id"],
+                "required": ["publisherId"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Read,
@@ -74,12 +74,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "publisher_id": {
+                    "publisherId": {
                         "type": "string",
                         "description": "Observation publisher id / DID."
                     }
                 },
-                "required": ["publisher_id"],
+                "required": ["publisherId"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Read,
@@ -99,7 +99,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "ra": { "type": "number", "description": "Cone-centre RA in degrees (ICRS)." },
                     "dec": { "type": "number", "description": "Cone-centre Dec in degrees (ICRS)." },
-                    "radius_deg": {
+                    "radiusDeg": {
                         "type": "number",
                         "minimum": 0,
                         "description": "Cone radius in degrees."
@@ -108,22 +108,22 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "type": "string",
                         "description": "VizieR catalogue identifier. Default: I/355/gaiadr3 (Gaia DR3)."
                     },
-                    "ra_column": {
+                    "raColumn": {
                         "type": "string",
                         "description": "Override the RA column name. Default: RAJ2000."
                     },
-                    "dec_column": {
+                    "decColumn": {
                         "type": "string",
                         "description": "Override the Dec column name. Default: DEJ2000."
                     },
-                    "max_rec": {
+                    "maxRec": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": MAX_REC_CAP,
                         "description": "Row cap; default 500."
                     }
                 },
-                "required": ["ra", "dec", "radius_deg"],
+                "required": ["ra", "dec", "radiusDeg"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Read,
@@ -395,32 +395,6 @@ fn plane_to_json(p: &Caom2Plane) -> Value {
 // Arg helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Extract a trimmed required string (empty if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-/// Extract a trimmed optional string; `None` if missing, non-string, or blank.
-fn opt_str_arg(args: &Value, key: &str) -> Option<String> {
-    let s = args.get(key).and_then(Value::as_str)?.trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
-}
-
-/// Extract a numeric argument (accepts JSON number, or a numeric string).
-fn num_arg(args: &Value, key: &str) -> Option<f64> {
-    let v = args.get(key)?;
-    v.as_f64()
-        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -454,7 +428,7 @@ mod tests {
         let required = d.input_schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "ra"));
         assert!(required.iter().any(|v| v == "dec"));
-        assert!(required.iter().any(|v| v == "radius_deg"));
+        assert!(required.iter().any(|v| v == "radiusDeg"));
     }
 
     #[test]

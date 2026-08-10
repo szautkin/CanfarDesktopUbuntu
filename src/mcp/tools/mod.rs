@@ -28,6 +28,122 @@ pub mod vospace;
 pub mod workflows;
 pub mod write;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared argument accessors
+//
+// Tool schemas declare arguments in camelCase, matching the reference (whose
+// serializer is configured `PropertyNamingPolicy = CamelCase`). The reference
+// also deserializes case-insensitively, so an agent that sends `publisher_id`
+// where the schema says `publisherId` still works there — and must here too.
+// These helpers therefore try the key as given, then its snake_case spelling.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `some_key` → `someKey`. Leaves an already-camelCase key untouched.
+fn camel_case(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut upper_next = false;
+    for c in key.chars() {
+        if c == '_' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(c.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `someKey` → `some_key`. Leaves an already-snake_case key untouched.
+fn snake_case(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 4);
+    for c in key.chars() {
+        if c.is_ascii_uppercase() {
+            out.push('_');
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Look up `key` in an arguments object, accepting either naming style.
+///
+/// Tools ask for the canonical (camelCase) name; a caller that sent snake_case
+/// still resolves. Returns `None` when neither spelling is present.
+pub fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a Value> {
+    if let Some(v) = args.get(key) {
+        return Some(v);
+    }
+    let alt = if key.contains('_') {
+        camel_case(key)
+    } else {
+        snake_case(key)
+    };
+    args.get(&alt)
+}
+
+/// A trimmed string argument, or `""` when absent or not a string.
+pub fn str_arg(args: &Value, key: &str) -> String {
+    arg(args, key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// A trimmed string argument, or `None` when absent, not a string, or blank.
+pub fn opt_str_arg(args: &Value, key: &str) -> Option<String> {
+    arg(args, key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// An optional boolean argument (`None` when absent or not a boolean).
+pub fn opt_bool(args: &Value, key: &str) -> Option<bool> {
+    arg(args, key).and_then(Value::as_bool)
+}
+
+/// A boolean argument defaulting to `false`.
+pub fn bool_arg(args: &Value, key: &str) -> bool {
+    opt_bool(args, key).unwrap_or(false)
+}
+
+/// An optional unsigned argument.
+pub fn opt_u64(args: &Value, key: &str) -> Option<u64> {
+    arg(args, key).and_then(Value::as_u64)
+}
+
+/// An optional unsigned argument narrowed to `u32`.
+pub fn opt_u32(args: &Value, key: &str) -> Option<u32> {
+    opt_u64(args, key).map(|n| n as u32)
+}
+
+/// A numeric argument, accepting a JSON number OR a numeric string — agents
+/// routinely send `"42"` where the schema says `number`.
+pub fn num_arg(args: &Value, key: &str) -> Option<f64> {
+    let v = arg(args, key)?;
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
+
+/// An optional array-of-strings argument.
+///
+/// Distinguishes "omitted" (`None`) from "explicitly empty" (`Some(vec![])`) —
+/// `set_vospace_acl` relies on that difference to tell "leave this dimension
+/// unchanged" from "revoke every group in it".
+pub fn opt_str_array(args: &Value, key: &str) -> Option<Vec<String>> {
+    arg(args, key).and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
 /// Apply an approved proposal by dispatching to the family that owns its `kind`.
 /// Each service-backed family exposes `apply(...) -> Option<Result<..>>`; the base
 /// write tools handle the rest (and error on a truly unknown kind).
@@ -233,5 +349,61 @@ impl ToolRouter for NullRouter {
     ) -> Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>> {
         let name = name.to_string();
         Box::pin(async move { ToolResult::Failed(format!("no such tool: {}", name)) })
+    }
+}
+
+#[cfg(test)]
+mod arg_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn case_conversions_are_idempotent_and_inverse() {
+        assert_eq!(camel_case("publisher_id"), "publisherId");
+        assert_eq!(camel_case("max_bytes"), "maxBytes");
+        assert_eq!(camel_case("a_b_c"), "aBC");
+        // Already camelCase: unchanged.
+        assert_eq!(camel_case("publisherId"), "publisherId");
+
+        assert_eq!(snake_case("publisherId"), "publisher_id");
+        assert_eq!(snake_case("maxBytes"), "max_bytes");
+        // Already snake_case: unchanged.
+        assert_eq!(snake_case("publisher_id"), "publisher_id");
+    }
+
+    /// The reference deserializes arguments case-insensitively, so an agent may
+    /// send either spelling regardless of what the schema declares. Both must
+    /// resolve, or a prompt written against one app breaks on the other.
+    #[test]
+    fn either_naming_style_resolves() {
+        let camel = json!({ "publisherId": "ivo://x?1", "maxBytes": 10 });
+        // Built key-by-key so a bulk casing pass over this file can never
+        // silently turn this fixture into a second camelCase case.
+        let mut snake = serde_json::Map::new();
+        snake.insert("publisher".to_string() + "_id", json!("ivo://x?1"));
+        snake.insert("max".to_string() + "_bytes", json!(10));
+        let snake = Value::Object(snake);
+
+        for args in [&camel, &snake] {
+            assert_eq!(str_arg(args, "publisherId"), "ivo://x?1");
+            assert_eq!(str_arg(args, "publisher_id"), "ivo://x?1");
+            assert_eq!(arg(args, "maxBytes").and_then(|v| v.as_u64()), Some(10));
+            assert_eq!(arg(args, "max_bytes").and_then(|v| v.as_u64()), Some(10));
+        }
+    }
+
+    #[test]
+    fn absent_and_wrong_type_arguments_are_empty_not_panics() {
+        let args = json!({ "count": 3 });
+        assert_eq!(str_arg(&args, "missing"), "");
+        // Present but not a string.
+        assert_eq!(str_arg(&args, "count"), "");
+        assert!(arg(&args, "missing").is_none());
+    }
+
+    #[test]
+    fn string_arguments_are_trimmed() {
+        let args = json!({ "path": "  data/run1  " });
+        assert_eq!(str_arg(&args, "path"), "data/run1");
     }
 }

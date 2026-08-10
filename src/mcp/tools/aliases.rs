@@ -302,6 +302,49 @@ mod tests {
         );
     }
 
+    /// Every name in a schema's `required` list must exist in its `properties`.
+    ///
+    /// These are the same identifier written twice, so a rename that touches only
+    /// one side produces a schema demanding an argument the tool never reads —
+    /// and a strict client refuses the call outright.
+    #[test]
+    fn every_required_argument_is_a_declared_property() {
+        for d in McpToolRouter::all_descriptors() {
+            let schema = &d.input_schema;
+            let Some(required) = schema.get("required").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            let properties = schema.get("properties").and_then(|v| v.as_object());
+            for name in required.iter().filter_map(|v| v.as_str()) {
+                let declared = properties.map(|p| p.contains_key(name)).unwrap_or(false);
+                assert!(
+                    declared,
+                    "tool `{}` requires argument `{}`, which its `properties` does not declare",
+                    d.name, name
+                );
+            }
+        }
+    }
+
+    /// Argument names are camelCase, matching the reference's serializer. A
+    /// snake_case leftover means a rename pass missed a schema.
+    #[test]
+    fn declared_arguments_are_camel_case() {
+        let mut offenders: Vec<String> = Vec::new();
+        for d in McpToolRouter::all_descriptors() {
+            let Some(props) = d.input_schema.get("properties").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for name in props.keys().filter(|n| n.contains('_')) {
+                offenders.push(format!("{}.{}", d.name, name));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "snake_case argument names left in tool schemas: {offenders:?}"
+        );
+    }
+
     /// An alias may never collide with a real tool name — dispatch resolves
     /// aliases first, so a collision would silently shadow the real tool.
     #[test]

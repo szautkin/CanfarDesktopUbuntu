@@ -11,6 +11,7 @@
 
 use super::{ToolDescriptor, ToolResult, VerbClass};
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
+use crate::mcp::tools::str_arg;
 use crate::mcp::view_state;
 use crate::state::AppServices;
 use serde_json::{json, Value};
@@ -85,7 +86,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             "Insert a new cell. cell_type is 'code' (default) or 'markdown'; index is the 0-based \
              position to insert at (default: append at the end).",
             json!({"type":"object","properties":{
-                "cell_type":{"type":"string","enum":["code","markdown"]},
+                "cellType":{"type":"string","enum":["code","markdown"]},
                 "index":{"type":"integer","minimum":0},
                 "notebook":sel
             },"required":[],"additionalProperties":false}),
@@ -115,9 +116,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             "Change the type of the cell at a 0-based index to 'code' or 'markdown'.",
             json!({"type":"object","properties":{
                 "index":{"type":"integer","minimum":0},
-                "cell_type":{"type":"string","enum":["code","markdown"]},
+                "cellType":{"type":"string","enum":["code","markdown"]},
                 "notebook":sel
-            },"required":["index","cell_type"],"additionalProperties":false}),
+            },"required":["index","cellType"],"additionalProperties":false}),
             VerbClass::Write,
         ),
         desc(
@@ -204,9 +205,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
              (aperture photometry), or 'cube' (moment map + spectrum). Writes the .ipynb under the \
              app data dir and opens it in the editor.",
             json!({"type":"object","properties":{
-                "publisher_id":{"type":"string","description":"The observation's CADC publisher id (from list_downloaded_observations)"},
+                "publisherId":{"type":"string","description":"The observation's CADC publisher id (from list_downloaded_observations)"},
                 "template":{"type":"string","enum":["image","photometry","cube","auto"],"description":"Template stub (default image)"}
-            },"required":["publisher_id"],"additionalProperties":false}),
+            },"required":["publisherId"],"additionalProperties":false}),
             VerbClass::Write,
         ),
     ]
@@ -355,15 +356,6 @@ async fn create_analysis_notebook(services: &AppServices, args: &Value) -> ToolR
     }
 }
 
-/// Extract a trimmed string argument (empty string if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
 /// Notebook tools apply live through the bridge — they never enqueue proposals.
 pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<String, String>> {
     None
@@ -401,6 +393,6 @@ mod tests {
         assert!(d.agent_safe);
         // publisher_id is the required argument.
         let required = d.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "publisher_id"));
+        assert!(required.iter().any(|v| v == "publisherId"));
     }
 }

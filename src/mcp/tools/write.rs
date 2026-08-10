@@ -16,7 +16,7 @@
 
 use crate::helpers::agent_attribution::AgentAttribution;
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{opt_u32, str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::search_result::SavedQuery;
 use crate::models::SessionLaunchParams;
 use crate::state::AppServices;
@@ -383,20 +383,6 @@ fn attribution_for(proposal: &PendingProposal) -> Option<AgentAttribution> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Argument helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Extract a trimmed string argument (empty string if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-/// Extract an optional `u32` argument (None if missing or not an unsigned int).
-fn opt_u32(args: &Value, key: &str) -> Option<u32> {
-    args.get(key).and_then(Value::as_u64).map(|n| n as u32)
-}
 
 /// Validate an optional resource field: absent → `Ok(None)`, present and `>= 1` →
 /// `Ok(Some(n))`, otherwise an error string.

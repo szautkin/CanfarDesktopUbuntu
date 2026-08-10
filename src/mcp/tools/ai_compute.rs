@@ -23,7 +23,7 @@
 //! the integrator notes) can be swapped in later without changing this family.
 
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::ai_compute::{RunCodeContract, RunCodeRequest, RunCodeResult};
 use crate::services::ai_compute_service::AIComputeService;
 use crate::state::AppServices;
@@ -169,7 +169,7 @@ fn propose_run_code(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Too
         "id": id,
         "language": language,
         "code": code,
-        "timeout_seconds": timeout,
+        "timeoutSeconds": timeout,
     });
     let p = proposals.enqueue("run_code", &summary, false, payload);
     ToolResult::Proposed(p)
@@ -296,15 +296,6 @@ async fn apply_stop_compute(services: &AppServices) -> Result<String, String> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Trimmed string argument (empty string if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
 
 /// The `ready=true` JSON view for `run_code_output` (decoded stdout/stderr).
 fn result_json(id: &str, r: &RunCodeResult) -> Value {

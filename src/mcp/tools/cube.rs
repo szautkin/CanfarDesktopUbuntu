@@ -67,14 +67,14 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "az": { "type": "number", "description": "Camera azimuth (radians)." },
                     "el": { "type": "number", "description": "Camera elevation (radians, clamped ±1.4)." },
                     "dist": { "type": "number", "description": "Camera distance (clamped 0.5–8)." },
-                    "reset_camera": { "type": "boolean", "description": "Reset the orbit camera to the default framing (applied before any az/el/dist override)." },
+                    "resetCamera": { "type": "boolean", "description": "Reset the orbit camera to the default framing (applied before any az/el/dist override)." },
                     "steps": { "type": "number", "description": "Ray-march quality steps (32–1024)." },
-                    "spectral_scale": { "type": "number", "description": "Spectral (Z) axis stretch (0.5–4)." },
+                    "spectralScale": { "type": "number", "description": "Spectral (Z) axis stretch (0.5–4)." },
                     "density": { "type": "number", "description": "Volume opacity/density multiplier (> 0)." },
                     "mip": { "type": "boolean", "description": "Max-intensity projection on/off." },
-                    "render_mode": { "type": "string", "description": "Volume render mode: \"emission\" or \"max-intensity\" (alias for the MIP toggle)." },
+                    "renderMode": { "type": "string", "description": "Volume render mode: \"emission\" or \"max-intensity\" (alias for the MIP toggle)." },
                     "background": { "type": "string", "enum": ["dark", "black", "light"], "description": "3D background preset." },
-                    "auto_orbit": { "type": "boolean", "description": "Idle auto-orbit on/off." },
+                    "autoOrbit": { "type": "boolean", "description": "Idle auto-orbit on/off." },
                     "channel": { "type": "integer", "minimum": 0, "description": "Slice-plane channel index." }
                 },
                 "additionalProperties": false

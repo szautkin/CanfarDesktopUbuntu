@@ -25,7 +25,7 @@
 //! live (matching the Windows reference).
 
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::state::AppServices;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -154,7 +154,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "name": { "type": "string", "description": "Current name of the guide tool to edit (from list_guide_tools)." },
                     "description": { "type": "string", "description": "New one-line tools/list description (max 600 chars)." },
                     "body": { "type": "string", "description": "New instruction text returned on call (max 4000 chars)." },
-                    "new_name": { "type": "string", "description": "Optional new display name (rename)." }
+                    "newName": { "type": "string", "description": "Optional new display name (rename)." }
                 },
                 "required": ["name", "description"],
                 "additionalProperties": false
@@ -410,7 +410,7 @@ fn propose_update_guide_tool(args: &Value, proposals: &Arc<InMemoryProposalStore
         "name": name,
         "description": description,
         "body": body,
-        "new_name": new_name,
+        "newName": new_name,
     });
     let p = proposals.enqueue(
         "update_guide_tool",
@@ -528,15 +528,6 @@ pub async fn apply(
 // ─────────────────────────────────────────────────────────────────────────────
 // Argument helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Extract a trimmed string argument (empty string if missing / not a string).
-fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests

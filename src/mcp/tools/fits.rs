@@ -50,13 +50,13 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "type":"object",
                 "properties": {
                     "zoom": { "type":"number", "minimum":5, "maximum":2000, "description":"Zoom percent (100 = 1:1)" },
-                    "center_x": { "type":"number", "description":"Image x-pixel to centre the viewport on" },
-                    "center_y": { "type":"number", "description":"Image y-pixel to centre the viewport on" },
+                    "centerX": { "type":"number", "description":"Image x-pixel to centre the viewport on" },
+                    "centerY": { "type":"number", "description":"Image y-pixel to centre the viewport on" },
                     "stretch": { "type":"string", "enum":["linear","log","sqrt","squared","asinh","histogram"] },
                     "colormap": { "type":"string", "enum":["grayscale","inverted","heat","viridis","plasma","inferno","magma","coolwarm"] },
-                    "min_cut": { "type":"number" },
-                    "max_cut": { "type":"number" },
-                    "north_up": { "type":"boolean" },
+                    "minCut": { "type":"number" },
+                    "maxCut": { "type":"number" },
+                    "northUp": { "type":"boolean" },
                     "reset": { "type":"boolean", "description":"Reset stretch + zoom/pan to defaults" }
                 },
                 "additionalProperties": false
