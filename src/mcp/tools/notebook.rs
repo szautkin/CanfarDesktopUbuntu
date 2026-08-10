@@ -141,13 +141,13 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             VerbClass::Write,
         ),
         desc(
-            "run_all",
+            "run_all_cells",
             "Execute every code cell in order (starts the kernel if needed).",
             json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
             VerbClass::Write,
         ),
         desc(
-            "clear_outputs",
+            "clear_cell_outputs",
             "Clear all cell outputs and execution counts.",
             json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
             VerbClass::Write,
@@ -252,8 +252,8 @@ pub async fn dispatch(
         | "change_cell_type"
         | "move_cell"
         | "run_cell"
-        | "run_all"
-        | "clear_outputs"
+        | "run_all_cells"
+        | "clear_cell_outputs"
         | "start_kernel"
         | "interrupt_kernel"
         | "restart_kernel"

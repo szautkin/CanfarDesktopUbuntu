@@ -11,6 +11,7 @@ use std::pin::Pin;
 
 pub mod ai_compute;
 pub mod aiguide_ext;
+pub mod aliases;
 pub mod caom2_vizier;
 pub mod catalog;
 pub mod cube;

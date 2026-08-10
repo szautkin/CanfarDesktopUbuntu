@@ -981,7 +981,7 @@ impl FitsViewer {
                     })),
                 }
             }
-            "list_fits_bookmark" => {
+            "list_fits_bookmarks" => {
                 let items = self.bookmarks.borrow();
                 Ok(json!({ "count": items.len(), "bookmarks": *items }))
             }

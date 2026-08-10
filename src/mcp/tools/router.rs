@@ -60,7 +60,20 @@ impl McpToolRouter {
     /// The FULL descriptor set (read ++ write ++ lifecycle), including
     /// non-agent-safe tools. Used by the external gate to look up a tool's
     /// `agent_safe` flag; the public `external_manifest` filters to agent-safe.
-    fn all_descriptors() -> Vec<ToolDescriptor> {
+    pub(crate) fn all_descriptors() -> Vec<ToolDescriptor> {
+        let canonical = Self::canonical_descriptors();
+        // Advertised aliases are real callable names, so they belong here too —
+        // both to appear in `tools/list` and to be found by the agent-safe gate.
+        // Deprecated aliases are deliberately absent: they still dispatch (see
+        // `aliases::canonical`) but must never widen the advertised name set.
+        let alias_descriptors = super::aliases::advertised_descriptors(&canonical);
+        canonical.into_iter().chain(alias_descriptors).collect()
+    }
+
+    /// The descriptors owned by the tool modules themselves — one entry per tool,
+    /// under its canonical name, with no aliases mixed in. This is what an alias
+    /// resolves *to*, so alias bookkeeping must be checked against this set.
+    pub(crate) fn canonical_descriptors() -> Vec<ToolDescriptor> {
         read::descriptors()
             .into_iter()
             .chain(write::descriptors())
@@ -265,6 +278,11 @@ impl ToolRouter for McpToolRouter {
     ) -> Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             let started = std::time::Instant::now();
+            // Resolve alternate spellings once, here, so no tool module has to know
+            // an alias exists. `name` is kept as the caller typed it — the audit
+            // trail and the "no such tool" message must both echo that back, not a
+            // name the caller never used.
+            let resolved = super::aliases::canonical(name);
             // Record agent activity so the UI can show a transient "agent working"
             // indicator (external callers only — internal/UI calls aren't "the agent").
             if ctx.is_external() {
@@ -275,7 +293,7 @@ impl ToolRouter for McpToolRouter {
                     .mcp_follow_activity
                     .load(std::sync::atomic::Ordering::Relaxed)
                 {
-                    if let Some(module) = crate::mcp::view_state::module_for_tool(name) {
+                    if let Some(module) = crate::mcp::view_state::module_for_tool(resolved) {
                         crate::mcp::view_state::navigate_fire(module);
                     }
                 }
@@ -284,7 +302,7 @@ impl ToolRouter for McpToolRouter {
                 // AI Guide tools aren't in the router — calling one returns the user's
                 // stored instruction text. Built-ins always win, so only short-circuit
                 // for a non-built-in name.
-                let is_builtin = Self::all_descriptors().iter().any(|d| d.name == name);
+                let is_builtin = Self::all_descriptors().iter().any(|d| d.name == resolved);
                 if !is_builtin {
                     if let Some(body) = self.services.ai_guide.snapshot().guide_body(name) {
                         return ToolResult::Text(body);
@@ -297,7 +315,7 @@ impl ToolRouter for McpToolRouter {
                 if ctx.is_external() {
                     let denied = Self::all_descriptors()
                         .iter()
-                        .any(|d| d.name == name && !d.agent_safe);
+                        .any(|d| d.name == resolved && !d.agent_safe);
                     if denied {
                         return ToolResult::Failed(
                             "tool not permitted for external clients".to_string(),
@@ -306,13 +324,13 @@ impl ToolRouter for McpToolRouter {
                 }
 
                 // Proposal-lifecycle tools operate on the router's own store.
-                if let Some(result) = self.handle_lifecycle(name, &args, ctx) {
+                if let Some(result) = self.handle_lifecycle(resolved, &args, ctx) {
                     return result;
                 }
 
                 // Reads first (side-effect-free), then writes (proposal-enqueuing).
                 // Each catalog returns `None` when it doesn't own the name.
-                if let Some(result) = read::dispatch(name, &self.services, &args).await {
+                if let Some(result) = read::dispatch(resolved, &self.services, &args).await {
                     return result;
                 }
 
@@ -320,10 +338,10 @@ impl ToolRouter for McpToolRouter {
                 // Their write tools also enqueue proposals, so honour the same
                 // auto-apply-non-destructive policy below via a shared handler.
                 let mut family_result =
-                    super::family_dispatch(name, &self.services, &args, &self.proposals).await;
+                    super::family_dispatch(resolved, &self.services, &args, &self.proposals).await;
                 if family_result.is_none() {
                     family_result =
-                        write::dispatch(name, &self.services, &args, &self.proposals).await;
+                        write::dispatch(resolved, &self.services, &args, &self.proposals).await;
                 }
                 if let Some(result) = family_result {
                     // Stamp the originating client on the freshly-enqueued proposal and
@@ -400,9 +418,11 @@ impl ToolRouter for McpToolRouter {
             }
 
             // PII-safe audit record for every dispatch (payload stored as a hash).
+            // The verb comes from the resolved tool; the record still names the
+            // tool as the caller spelled it.
             let verb = Self::all_descriptors()
                 .iter()
-                .find(|d| d.name == name)
+                .find(|d| d.name == resolved)
                 .map(|d| match d.verb {
                     VerbClass::Read => "read",
                     VerbClass::Write => "write",

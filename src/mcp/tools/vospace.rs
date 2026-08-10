@@ -1,9 +1,11 @@
 //! VOSpace / ARC storage tool family. Ported from
 //! `Mcp/Tools/Read/VoSpaceFitsReadTools.cs` + `Mcp/Tools/Write/VoSpaceWriteTools.cs`.
 //!
-//! Reads (`get_node`, `read_file`, `get_quota`) are side-effect-free and perform
-//! the real service call at dispatch time, returning [`ToolResult::Data`]. Writes
-//! (`upload_text`, `create_folder`, `set_acl`, `delete_node`) never touch app
+//! Reads (`get_vospace_node`, `read_vospace_file`, `get_storage_quota`) are
+//! side-effect-free and perform the real service call at dispatch time,
+//! returning [`ToolResult::Data`]. Writes (`upload_text_to_vospace`,
+//! `upload_file_to_vospace`, `download_vospace_file`, `create_vospace_folder`,
+//! `set_vospace_acl`, `delete_vospace_node`, `clear_user_site`) never touch app
 //! state at propose time — they enqueue a [`PendingProposal`] and the real
 //! service call happens in [`apply`] after the user (or the non-destructive
 //! auto-apply policy) approves it.
@@ -18,6 +20,7 @@ use std::sync::Arc;
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
 use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
 use crate::models::vospace_node::NodeType;
+use crate::services::api_error::ApiError;
 use crate::state::AppServices;
 
 /// Hard cap on the number of bytes `read_file` will return inline (1 MiB).
@@ -26,6 +29,9 @@ const MAX_READ_BYTES: usize = 1024 * 1024;
 const DEFAULT_READ_BYTES: usize = 64 * 1024;
 /// Hard cap on the UTF-8 byte size of an `upload_text` blob (1 MiB).
 const MAX_UPLOAD_TEXT_BYTES: usize = 1024 * 1024;
+/// Reported when `clear_user_site` found no user-site packages to remove — a
+/// success, not a failure: the user's problem (if any) lies elsewhere.
+const NOTHING_TO_CLEAR: &str = "No user-site packages found; nothing to clear";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Descriptors
@@ -55,7 +61,7 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> ToolDescrip
 pub fn descriptors() -> Vec<ToolDescriptor> {
     vec![
         read_tool(
-            "get_node",
+            "get_vospace_node",
             "Fetch metadata for one VOSpace/ARC node (file or folder) by its path relative to your \
              storage home: type, size, content-type, last-modified, and sharing (isPublic + the GMS \
              groups granted read/write).",
@@ -69,7 +75,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         read_tool(
-            "read_file",
+            "read_vospace_file",
             "Read a bounded slice of a VOSpace/ARC file and return it as utf8 text (default) or \
              base64. Binary files that aren't valid UTF-8 are returned as base64 with a note. \
              Default 65536 bytes, hard cap 1048576.",
@@ -85,13 +91,13 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         read_tool(
-            "get_quota",
+            "get_storage_quota",
             "Report the user's VOSpace/ARC storage quota: total and used bytes (and GB), the \
              usage percentage, and whether usage is in the warning band (>90%).",
             json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
         write_tool(
-            "upload_text",
+            "upload_text_to_vospace",
             "Propose writing a text blob (e.g. a script or config) to a VOSpace/ARC file path \
              relative to your home (overwrites if it exists; up to 1 MB). Queues for the user to apply.",
             json!({
@@ -136,7 +142,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         write_tool(
-            "create_folder",
+            "create_vospace_folder",
             "Propose creating a folder at a VOSpace/ARC path relative to your home. Queues for the \
              user to apply.",
             json!({
@@ -149,7 +155,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         write_tool(
-            "set_acl",
+            "set_vospace_acl",
             "Propose changing WHO can access a VOSpace/ARC node (its sharing). Each dimension is \
              independent and REPLACES the whole list: OMIT a field to leave it unchanged, pass [] to \
              revoke all groups in that dimension, or pass full GMS group URIs \
@@ -169,7 +175,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         write_tool(
-            "delete_node",
+            "delete_vospace_node",
             "Propose deleting a VOSpace/ARC file or folder by its path relative to your home. Queues \
              for the user to apply (a destructive change).",
             json!({
@@ -180,6 +186,16 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "required": ["path"],
                 "additionalProperties": false
             }),
+        ),
+        write_tool(
+            "clear_user_site",
+            "Wipe the user's ~/.local/lib/python3.*/site-packages directories in VOSpace. Use when \
+             `pip install --user` has poisoned subsequent jobs with incompatible package versions \
+             (typical symptom: `numpy` got upgraded across a major version boundary and \
+             pandas/erfa/scipy now error out). Doesn't touch ~/.local/bin or ~/.local/share. \
+             Doesn't touch system-site or conda envs (those live inside the container image, not \
+             in VOSpace). Queues for the user to apply (a destructive change).",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
     ]
 }
@@ -198,16 +214,17 @@ pub async fn dispatch(
 ) -> Option<ToolResult> {
     let result = match name {
         // Reads
-        "get_node" => read_get_node(services, args).await,
-        "read_file" => read_file(services, args).await,
-        "get_quota" => read_get_quota(services).await,
+        "get_vospace_node" => read_get_node(services, args).await,
+        "read_vospace_file" => read_file(services, args).await,
+        "get_storage_quota" => read_get_quota(services).await,
         // Writes
-        "upload_text" => propose_upload_text(args, proposals),
+        "upload_text_to_vospace" => propose_upload_text(args, proposals),
         "upload_file_to_vospace" => propose_upload_file(args, proposals),
         "download_vospace_file" => propose_download_file(args, proposals),
-        "create_folder" => propose_create_folder(args, proposals),
-        "set_acl" => propose_set_acl(args, proposals),
-        "delete_node" => propose_delete_node(args, proposals),
+        "create_vospace_folder" => propose_create_folder(args, proposals),
+        "set_vospace_acl" => propose_set_acl(args, proposals),
+        "delete_vospace_node" => propose_delete_node(args, proposals),
+        "clear_user_site" => propose_clear_user_site(proposals),
         _ => return None,
     };
     Some(result)
@@ -348,7 +365,7 @@ fn propose_upload_text(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> 
         payload["content_type"] = json!(content_type);
     }
     let p = proposals.enqueue(
-        "upload_text",
+        "upload_text_to_vospace",
         &format!("Write {} bytes to {}", content.len(), path),
         false,
         payload,
@@ -408,7 +425,7 @@ fn propose_create_folder(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
     }
     let payload = json!({ "path": path });
     let p = proposals.enqueue(
-        "create_folder",
+        "create_vospace_folder",
         &format!("Create folder {}", path),
         false,
         payload,
@@ -468,7 +485,7 @@ fn propose_set_acl(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Tool
     }
 
     let p = proposals.enqueue(
-        "set_acl",
+        "set_vospace_acl",
         &format!("Set ACL on {} -> {}", path, parts.join("; ")),
         false,
         payload,
@@ -482,7 +499,24 @@ fn propose_delete_node(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> 
         return ToolResult::Failed("path is required".to_string());
     }
     let payload = json!({ "path": path });
-    let p = proposals.enqueue("delete_node", &format!("Delete {}", path), true, payload);
+    let p = proposals.enqueue(
+        "delete_vospace_node",
+        &format!("Delete {}", path),
+        true,
+        payload,
+    );
+    ToolResult::Proposed(p)
+}
+
+fn propose_clear_user_site(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    // No arguments: the target is always the signed-in user's own user-site tree,
+    // resolved at apply time so the proposal can't be aimed elsewhere.
+    let p = proposals.enqueue(
+        "clear_user_site",
+        "Wipe user-site Python packages from VOSpace (~/.local/lib/python3.*/site-packages)",
+        true,
+        json!({}),
+    );
     ToolResult::Proposed(p)
 }
 
@@ -498,7 +532,7 @@ pub async fn apply(
 ) -> Option<Result<String, String>> {
     let payload = &proposal.payload;
     let out = match proposal.kind.as_str() {
-        "upload_text" => {
+        "upload_text_to_vospace" => {
             let (token, username) = match auth(services).await {
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
@@ -531,7 +565,7 @@ pub async fn apply(
                 Err(e) => Err(format!("upload failed: {}", e)),
             }
         }
-        "create_folder" => {
+        "create_vospace_folder" => {
             let (token, username) = match auth(services).await {
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
@@ -549,7 +583,7 @@ pub async fn apply(
                 Err(e) => Err(format!("create folder failed: {}", e)),
             }
         }
-        "set_acl" => {
+        "set_vospace_acl" => {
             let (token, username) = match auth(services).await {
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
@@ -584,7 +618,7 @@ pub async fn apply(
                 Err(e) => Err(format!("set ACL failed: {}", e)),
             }
         }
-        "delete_node" => {
+        "delete_vospace_node" => {
             let (token, username) = match auth(services).await {
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
@@ -596,6 +630,49 @@ pub async fn apply(
             match services.vospace.delete_node(&token, &username, &path).await {
                 Ok(()) => Ok(format!("Deleted {}", path)),
                 Err(e) => Err(format!("delete failed: {}", e)),
+            }
+        }
+        "clear_user_site" => {
+            let (token, username) = match auth(services).await {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let lib = format!("{}/.local/lib", username);
+            let python_dirs = match services.vospace.list_nodes(&token, &username, &lib).await {
+                Ok(nodes) => nodes,
+                // No `.local/lib` at all is the success case — there is nothing to
+                // clear. Any OTHER failure (auth expiry, 503, timeout) must
+                // propagate: swallowing it would report this destructive apply as
+                // successful when nothing was inspected or deleted.
+                Err(ApiError::Server { status: 404, .. }) => {
+                    return Some(Ok(NOTHING_TO_CLEAR.to_string()))
+                }
+                Err(e) => return Some(Err(format!("could not list {}: {}", lib, e))),
+            };
+
+            // VOSpace deletes are recursive server-side, so one delete per Python
+            // version clears that whole site-packages subtree.
+            let mut cleared = 0usize;
+            for dir in python_dirs.iter().filter(|d| d.name.starts_with("python")) {
+                let target = format!("{}/.local/lib/{}/site-packages", username, dir.name);
+                // Best-effort per directory: a Python version with no site-packages
+                // is normal, and must not abort the versions after it.
+                if services
+                    .vospace
+                    .delete_node(&token, &username, &target)
+                    .await
+                    .is_ok()
+                {
+                    cleared += 1;
+                }
+            }
+            if cleared == 0 {
+                Ok(NOTHING_TO_CLEAR.to_string())
+            } else {
+                Ok(format!(
+                    "Cleared user-site packages for {} Python version(s)",
+                    cleared
+                ))
             }
         }
         "upload_file_to_vospace" => {
@@ -813,7 +890,7 @@ mod tests {
     fn reads_are_read_writes_are_write() {
         for d in descriptors() {
             let expected = match d.name.as_str() {
-                "get_node" | "read_file" | "get_quota" => VerbClass::Read,
+                "get_vospace_node" | "read_vospace_file" | "get_storage_quota" => VerbClass::Read,
                 _ => VerbClass::Write,
             };
             assert_eq!(d.verb, expected, "wrong verb class for {}", d.name);

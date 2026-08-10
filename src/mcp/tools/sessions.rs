@@ -102,13 +102,13 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
         read_tool(
-            "get_session_logs",
+            "get_headless_job_logs",
             "Fetch the container logs (stdout/stderr) for a Skaha session or headless job by its id. \
              Useful for checking a headless job's output or debugging a failed launch.",
             id_schema("Session id to fetch logs for."),
         ),
         read_tool(
-            "get_session_events",
+            "get_headless_job_events",
             "Fetch the Kubernetes-style scheduling/lifecycle events for a Skaha session or headless \
              job by its id (scheduling, image-pull, and container state transitions). Useful for \
              diagnosing why a session is stuck Pending.",
@@ -174,8 +174,8 @@ pub async fn dispatch(
         "get_session" => get_session(services, args).await,
         "list_session_types" => list_session_types(),
         "list_headless_jobs" => list_headless_jobs(services).await,
-        "get_session_logs" => get_session_logs(services, args).await,
-        "get_session_events" => get_session_events(services, args).await,
+        "get_headless_job_logs" => get_session_logs(services, args).await,
+        "get_headless_job_events" => get_session_events(services, args).await,
         // Writes (propose only — no mutation here)
         "launch_headless_job" => propose_launch_headless_job(args, proposals),
         "delete_sessions_bulk" => propose_delete_sessions_bulk(args, proposals),

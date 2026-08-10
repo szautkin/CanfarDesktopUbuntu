@@ -96,7 +96,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
-            name: "list_fits_bookmark".into(),
+            name: "list_fits_bookmarks".into(),
             description: "List the in-memory FITS sky-coordinate bookmarks (name, RA/Dec in degrees, source file). \
                           Use fits_goto_coordinate with a bookmark's ra/dec to jump the viewport there."
                 .into(),
@@ -168,7 +168,7 @@ pub async fn dispatch(
         | "set_fits_view"
         | "probe_fits_pixel"
         | "fits_goto_coordinate"
-        | "list_fits_bookmark"
+        | "list_fits_bookmarks"
         | "save_fits_bookmark"
         | "delete_fits_bookmark" => Some(to_tool_result(
             viewer_command("fits", name, args.clone()).await,

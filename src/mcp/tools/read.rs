@@ -120,7 +120,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             empty_schema(),
         ),
         read_tool(
-            "list_storage",
+            "list_vospace_path",
             "List the contents of a VOSpace/ARC storage folder (name, type, size, last-modified). \
              Defaults to the user's home root when no path is given.",
             json!({
@@ -130,7 +130,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         read_tool(
-            "list_observations",
+            "list_downloaded_observations",
             "List the observations the user has downloaded or bookmarked into their local Research \
              library (publisher id, collection, target, instrument, filter, coordinates, local \
              path, size).",
@@ -165,8 +165,8 @@ pub async fn dispatch(
         "get_saved_query" => get_saved_query(services, args),
         "list_recent_searches" => list_recent_searches(services, args),
         "list_sessions" => list_sessions(services).await,
-        "list_storage" => list_storage(services, args).await,
-        "list_observations" => list_observations(services),
+        "list_vospace_path" => list_storage(services, args).await,
+        "list_downloaded_observations" => list_observations(services),
         "get_service_health" => get_service_health(services).await,
         _ => return None,
     };

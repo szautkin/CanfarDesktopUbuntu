@@ -724,13 +724,15 @@ impl NotebookTabHost {
                 Ok(self.state_of(&page))
             }
 
-            "run_all" => {
+            // Op names are the MCP tool names verbatim (see `mcp::tools::notebook`),
+            // so there is one vocabulary rather than a translation table to drift.
+            "run_all_cells" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 page.run_all();
                 Ok(self.state_of(&page))
             }
 
-            "clear_outputs" => {
+            "clear_cell_outputs" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 page.clear_all_outputs();
                 Ok(self.state_of(&page))

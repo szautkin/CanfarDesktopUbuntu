@@ -128,4 +128,66 @@ mod tests {
             }
         });
     }
+
+    /// Name a [`ToolResult`] variant for assertion messages. `ToolResult` has no
+    /// `Debug` on purpose — the `Image` variant carries base64 payload bytes that
+    /// should never land in a log or panic message.
+    fn variant_name(r: &crate::mcp::tools::ToolResult) -> &'static str {
+        use crate::mcp::tools::ToolResult;
+        match r {
+            ToolResult::Data(_) => "Data",
+            ToolResult::Text(_) => "Text",
+            ToolResult::Image { .. } => "Image",
+            ToolResult::Proposed(_) => "Proposed",
+            ToolResult::Failed(_) => "Failed",
+        }
+    }
+
+    /// A deprecated alias must reach the same tool as its canonical name, and the
+    /// resulting proposal must be recorded under the CANONICAL kind — the applier
+    /// matches on that, so an alias-named kind would enqueue a proposal nothing
+    /// could ever apply.
+    #[test]
+    fn a_deprecated_alias_dispatches_to_its_canonical_tool() {
+        use crate::mcp::tools::{ToolContext, ToolResult};
+
+        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+        let (services, _toast_rx) = AppServices::new(rt.handle().clone());
+        let (router, _proposals) = build_router(services);
+
+        rt.block_on(async {
+            let ctx = ToolContext::for_external("agent".into(), "req".into());
+            let args = serde_json::json!({ "path": "/a/x" });
+
+            let via_alias = router.dispatch("delete_node", args.clone(), &ctx).await;
+            let via_canonical = router
+                .dispatch("delete_vospace_node", args.clone(), &ctx)
+                .await;
+
+            for (label, result) in [("alias", via_alias), ("canonical", via_canonical)] {
+                match result {
+                    ToolResult::Proposed(p) => assert_eq!(
+                        p.kind, "delete_vospace_node",
+                        "{label} call recorded the wrong proposal kind"
+                    ),
+                    other => panic!(
+                        "{label} call should queue a proposal, got {}",
+                        variant_name(&other)
+                    ),
+                }
+            }
+
+            // An unknown name still reports the name the caller actually used.
+            let unknown = router
+                .dispatch("no_such_tool_at_all", serde_json::json!({}), &ctx)
+                .await;
+            match unknown {
+                ToolResult::Failed(msg) => assert!(
+                    msg.contains("no_such_tool_at_all"),
+                    "error should echo the requested name, got: {msg}"
+                ),
+                other => panic!("expected a failure, got {}", variant_name(&other)),
+            }
+        });
+    }
 }
