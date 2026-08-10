@@ -2,6 +2,33 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// On-disk schema version for the observations envelope. Bump when the record
+/// shape changes incompatibly so an older build refuses to load (and refuses to
+/// overwrite) a file written by a newer build. Mirrors
+/// `ObservationStore.SchemaVersion` in the Windows reference.
+const SCHEMA_VERSION: u32 = 1;
+
+/// Serialisation view of the versioned envelope written to disk:
+/// `{ "schema_version": N, "value": [ ... ] }`.  Borrows the slice so `write`
+/// never has to clone the whole list.  Mirrors `DiskPersistence.Envelope<T>`.
+#[derive(Serialize)]
+struct EnvelopeRef<'a> {
+    schema_version: u32,
+    value: &'a [DownloadedObservation],
+}
+
+/// Read the `schema_version` off a parsed envelope root, accepting both the
+/// snake_case field this build writes and the camelCase variant the Windows
+/// reference emits.  Defaults to the current version when the field is absent so
+/// a `{ "value": [...] }` object (no explicit version) still loads — matching
+/// the "add the version field with serde default" contract.
+fn envelope_version(root: &serde_json::Value) -> u64 {
+    root.get("schema_version")
+        .or_else(|| root.get("schemaVersion"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(SCHEMA_VERSION as u64)
+}
+
 /// A single observation that the user has either bookmarked (metadata only)
 /// or downloaded (with a local FITS file) from the CADC archive.
 ///
@@ -133,21 +160,75 @@ impl ObservationStore {
     /// the JSON file is rewritten to reflect the cleanup).  Bookmarked-only
     /// entries (empty `local_path`) are always kept.
     ///
-    /// Returns an empty list on any parse or I/O error.
+    /// Returns an empty list on any parse or I/O error — but, crucially, a
+    /// corrupt file is *quarantined* (renamed to a `.corrupt-<n>` sibling)
+    /// rather than silently loaded as empty, and a file written by a NEWER
+    /// schema version is left untouched.  Both guards exist because the next
+    /// `save` writes the loaded list straight back: loading a corrupt/newer file
+    /// as empty would clobber it and destroy the user's data.  Mirrors the
+    /// Windows `DiskPersistence.Read`.
     pub fn load(&self) -> Vec<DownloadedObservation> {
         if !self.data_path.exists() {
             return Vec::new();
         }
         let raw = match std::fs::read_to_string(&self.data_path) {
             Ok(json) => json,
+            // Transient read failure (file locked, permissions) — report empty
+            // but do NOT quarantine; the file may read fine on the next attempt.
             Err(_) => return Vec::new(),
         };
+
+        // Discriminate the on-disk shape before deserializing the records so a
+        // NEWER-schema file is refused (not clobbered) and a truly corrupt file
+        // is quarantined instead of silently loaded as empty.
+        let root: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => {
+                self.quarantine();
+                return Vec::new();
+            }
+        };
+
         // Do NOT prune records whose on-disk file is currently missing: the file
         // may live on an offline/unmounted volume, and dropping the record would
         // lose its metadata permanently. The UI shows a "file missing" affordance
         // (and offers to re-download) rather than deleting the record. (Matches the
         // reference ObservationStore's explicit no-prune contract.)
-        serde_json::from_str(&raw).unwrap_or_default()
+
+        // Versioned envelope: `{ "schema_version": N, "value": [ ... ] }`.
+        if root.is_object() {
+            match root.get("value") {
+                Some(value) => {
+                    if envelope_version(&root) > SCHEMA_VERSION as u64 {
+                        // Written by a newer build: load nothing and leave the
+                        // file intact so a `save` here never downgrades it.
+                        return Vec::new();
+                    }
+                    match serde_json::from_value::<Vec<DownloadedObservation>>(value.clone()) {
+                        Ok(list) => list,
+                        Err(_) => {
+                            self.quarantine();
+                            Vec::new()
+                        }
+                    }
+                }
+                // An object that is not an envelope is unexpected → quarantine.
+                None => {
+                    self.quarantine();
+                    Vec::new()
+                }
+            }
+        } else {
+            // Legacy bare array (pre-envelope): still readable so existing
+            // users' files are never lost.
+            match serde_json::from_value::<Vec<DownloadedObservation>>(root) {
+                Ok(list) => list,
+                Err(_) => {
+                    self.quarantine();
+                    Vec::new()
+                }
+            }
+        }
     }
 
     /// Append (or replace by `id`) an observation and flush to disk.
@@ -236,15 +317,62 @@ impl ObservationStore {
     // -----------------------------------------------------------------------
 
     fn write(&self, list: &[DownloadedObservation]) -> Result<(), String> {
+        // Never clobber a file written by a newer schema version.
+        if let Some(existing) = self.peek_version() {
+            if existing > SCHEMA_VERSION as u64 {
+                return Err(format!(
+                    "refusing to overwrite observations.json written by a newer app \
+                     version (on-disk schema {existing} > {SCHEMA_VERSION})"
+                ));
+            }
+        }
         if let Some(parent) = self.data_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let json = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
+        // Wrap the records in the versioned envelope so a future build can detect
+        // and refuse an older writer.
+        let envelope = EnvelopeRef {
+            schema_version: SCHEMA_VERSION,
+            value: list,
+        };
+        let json = serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())?;
         // Atomic write: write to a .tmp sibling then rename to avoid data
         // corruption on crash or NFS partial writes.
         let tmp = self.data_path.with_extension("json.tmp");
         std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, &self.data_path).map_err(|e| e.to_string())
+    }
+
+    /// Peek the on-disk envelope's `schema_version` without deserializing the
+    /// records.  Returns `None` for a missing/legacy/unreadable file (all safe
+    /// to overwrite).
+    fn peek_version(&self) -> Option<u64> {
+        let raw = std::fs::read_to_string(&self.data_path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        if root.is_object() {
+            root.get("schema_version")
+                .or_else(|| root.get("schemaVersion"))
+                .and_then(serde_json::Value::as_u64)
+        } else {
+            None
+        }
+    }
+
+    /// Move a corrupt data file aside to a `.corrupt-<n>` sibling (never
+    /// overwriting a previous quarantine) so its bytes survive for recovery
+    /// instead of being clobbered by the next `save`.  Best effort — never
+    /// throws from the load path.  Mirrors `DiskPersistence.Quarantine`.
+    fn quarantine(&self) {
+        let base = self.data_path.as_os_str().to_string_lossy().into_owned();
+        for n in 0..1000u32 {
+            let dest = PathBuf::from(format!("{base}.corrupt-{n}"));
+            if !dest.exists() {
+                let _ = std::fs::rename(&self.data_path, &dest);
+                return;
+            }
+        }
+        // Exhausted the numbered slots — fall back to clobbering the first.
+        let _ = std::fs::rename(&self.data_path, PathBuf::from(format!("{base}.corrupt-0")));
     }
 }
 
@@ -277,6 +405,131 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Test-only constructor pointing the store at an arbitrary path so tests
+    // never touch the user's real observations file.
+    impl ObservationStore {
+        fn with_path(path: PathBuf) -> Self {
+            ObservationStore { data_path: path }
+        }
+    }
+
+    /// A unique temp path per test, with its data + quarantine siblings cleaned
+    /// up on drop.
+    struct TempStore {
+        path: PathBuf,
+    }
+
+    impl TempStore {
+        fn new() -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "verbinal_obs_store_test_{}_{}_{}.json",
+                std::process::id(),
+                nanos,
+                n
+            ));
+            TempStore { path }
+        }
+
+        fn store(&self) -> ObservationStore {
+            ObservationStore::with_path(self.path.clone())
+        }
+    }
+
+    impl Drop for TempStore {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            let _ = std::fs::remove_file(self.path.with_extension("json.tmp"));
+            let base = self.path.as_os_str().to_string_lossy().into_owned();
+            for n in 0..8u32 {
+                let _ = std::fs::remove_file(PathBuf::from(format!("{base}.corrupt-{n}")));
+            }
+        }
+    }
+
+    #[test]
+    fn save_then_load_roundtrips_via_envelope() {
+        let tmp = TempStore::new();
+        let store = tmp.store();
+        store.save(sample_obs()).unwrap();
+
+        // On-disk file is the versioned envelope, not a bare array.
+        let raw = std::fs::read_to_string(&tmp.path).unwrap();
+        assert!(raw.contains("\"schema_version\""));
+        assert!(raw.contains("\"value\""));
+
+        let loaded = store.load();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].collection, "CFHT");
+    }
+
+    #[test]
+    fn legacy_bare_array_still_loads() {
+        let tmp = TempStore::new();
+        // Pre-envelope on-disk format: a bare JSON array.
+        std::fs::write(
+            &tmp.path,
+            serde_json::to_string(&vec![sample_obs()]).unwrap(),
+        )
+        .unwrap();
+        let loaded = tmp.store().load();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].observation_id, "obs-001");
+        // File was readable → NOT quarantined.
+        let base = tmp.path.as_os_str().to_string_lossy().into_owned();
+        assert!(!PathBuf::from(format!("{base}.corrupt-0")).exists());
+    }
+
+    #[test]
+    fn corrupt_file_is_quarantined_not_clobbered() {
+        let tmp = TempStore::new();
+        std::fs::write(&tmp.path, b"{ this is not valid json ][").unwrap();
+
+        let loaded = tmp.store().load();
+        assert!(loaded.is_empty());
+
+        // The bad bytes were moved aside, not deleted — the original path is gone
+        // and a `.corrupt-<n>` sibling holds the quarantined content.
+        assert!(!tmp.path.exists(), "corrupt file should have been renamed away");
+        let base = tmp.path.as_os_str().to_string_lossy().into_owned();
+        let quarantined = PathBuf::from(format!("{base}.corrupt-0"));
+        assert!(quarantined.exists(), "quarantine sibling should exist");
+        assert_eq!(
+            std::fs::read_to_string(&quarantined).unwrap(),
+            "{ this is not valid json ]["
+        );
+    }
+
+    #[test]
+    fn newer_schema_is_not_clobbered() {
+        let tmp = TempStore::new();
+        // A file written by a hypothetical future build (schema 999).
+        let future = format!(
+            r#"{{ "schema_version": 999, "value": [ {} ] }}"#,
+            serde_json::to_string(&sample_obs()).unwrap()
+        );
+        std::fs::write(&tmp.path, &future).unwrap();
+
+        let store = tmp.store();
+        // Refuse to load the newer file (returns empty, leaves it intact).
+        assert!(store.load().is_empty());
+
+        // A save must NOT overwrite the newer file.
+        let err = store.save(sample_obs()).unwrap_err();
+        assert!(err.contains("newer"), "save should refuse: {err}");
+
+        // The original newer-schema bytes are still on disk, untouched.
+        let raw = std::fs::read_to_string(&tmp.path).unwrap();
+        assert!(raw.contains("999"));
+    }
 
     #[test]
     fn format_bytes_scales_correctly() {

@@ -38,6 +38,10 @@ pub struct LaunchFormView {
     /// instead of prepending the advanced registry combo host.
     picked_image: Rc<RefCell<Option<String>>>,
     custom_type_combo: gtk::DropDown,
+    /// Editable session-name field for the Advanced tab (the reference gives the
+    /// Advanced pivot its own Name box + generate button rather than sharing the
+    /// Standard tab's field).
+    adv_name_entry: adw::EntryRow,
     adv_registry_combo: gtk::DropDown,
     registry_user_entry: adw::EntryRow,
     registry_secret_entry: adw::PasswordEntryRow,
@@ -48,8 +52,10 @@ pub struct LaunchFormView {
     headless_cmd_entry: adw::EntryRow,
     headless_args_entry: adw::EntryRow,
     headless_replicas: gtk::SpinButton,
-    headless_cores: gtk::SpinButton,
-    headless_ram: gtk::SpinButton,
+    /// Flexible (off) → send cores/ram/gpus = 0 (platform allocates); Fixed (on)
+    /// → use `headless_resource_selector`. Mirrors HeadlessResourceType.
+    headless_resource_type_switch: gtk::Switch,
+    headless_resource_selector: ResourceSelector,
     headless_launch_btn: gtk::Button,
 }
 
@@ -214,6 +220,15 @@ impl LaunchFormView {
             .build();
         adv_group.add(&custom_image_entry);
 
+        // Session name (Advanced tab has its own editable name + generate button).
+        let adv_name_entry = adw::EntryRow::builder().title(crate::tr_en!("Session Name")).build();
+        let adv_generate_name_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
+        adv_generate_name_btn.set_tooltip_text(Some(crate::tr_en!("Generate name")));
+        adv_generate_name_btn.add_css_class("flat");
+        adv_generate_name_btn.set_valign(gtk::Align::Center);
+        adv_name_entry.add_suffix(&adv_generate_name_btn);
+        adv_group.add(&adv_name_entry);
+
         // Registry auth
         let auth_group = adw::PreferencesGroup::builder()
             .title(crate::tr_en!("Registry Authentication"))
@@ -253,6 +268,11 @@ impl LaunchFormView {
         let headless_name_entry = adw::EntryRow::builder()
             .title(crate::tr_en!("Job Name"))
             .build();
+        let headless_generate_name_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
+        headless_generate_name_btn.set_tooltip_text(Some(crate::tr_en!("Generate name")));
+        headless_generate_name_btn.add_css_class("flat");
+        headless_generate_name_btn.set_valign(gtk::Align::Center);
+        headless_name_entry.add_suffix(&headless_generate_name_btn);
         headless_group.add(&headless_name_entry);
         let headless_cmd_entry = adw::EntryRow::builder()
             .title(crate::tr_en!("Command"))
@@ -273,25 +293,29 @@ impl LaunchFormView {
         replicas_row.add_suffix(&headless_replicas);
         headless_group.add(&replicas_row);
 
-        let headless_cores = gtk::SpinButton::with_range(1.0, 256.0, 1.0);
-        headless_cores.set_value(2.0);
-        headless_cores.set_valign(gtk::Align::Center);
-        let cores_row = adw::ActionRow::builder()
-            .title(crate::tr_en!("Cores"))
-            .build();
-        cores_row.add_suffix(&headless_cores);
-        headless_group.add(&cores_row);
-
-        let headless_ram = gtk::SpinButton::with_range(1.0, 512.0, 1.0);
-        headless_ram.set_value(8.0);
-        headless_ram.set_valign(gtk::Align::Center);
-        let ram_row = adw::ActionRow::builder()
-            .title(crate::tr_en!("RAM (GB)"))
-            .build();
-        ram_row.add_suffix(&headless_ram);
-        headless_group.add(&ram_row);
-
         headless_box.append(&headless_group);
+
+        // Resource type: Flexible (platform-managed) vs Fixed. Flexible sends
+        // cores/ram/gpus = 0; Fixed reveals a full ResourceSelector. Mirrors the
+        // Headless PivotItem's Flexible/Fixed RadioButtons + HeadlessResourcePanel.
+        let headless_resource_group = adw::PreferencesGroup::new();
+        let headless_resource_type_switch = gtk::Switch::new();
+        headless_resource_type_switch.set_active(false);
+        headless_resource_type_switch.set_valign(gtk::Align::Center);
+        let headless_resource_row = adw::ActionRow::builder()
+            .title(crate::tr_en!("Fixed Resources"))
+            .subtitle(crate::tr_en!(
+                "Off: flexible (platform-managed). On: specify exact CPU/RAM/GPU."
+            ))
+            .build();
+        headless_resource_row.add_suffix(&headless_resource_type_switch);
+        headless_resource_row.set_activatable_widget(Some(&headless_resource_type_switch));
+        headless_resource_group.add(&headless_resource_row);
+        headless_box.append(&headless_resource_group);
+
+        let headless_resource_selector = ResourceSelector::new();
+        headless_resource_selector.widget().set_visible(false);
+        headless_box.append(headless_resource_selector.widget());
 
         let headless_launch_btn = gtk::Button::with_label(crate::tr_en!("Launch Job"));
         headless_launch_btn.add_css_class("suggested-action");
@@ -334,6 +358,14 @@ impl LaunchFormView {
             });
         }
 
+        // Toggle headless resource selector visibility (Fixed → visible).
+        {
+            let resource_widget = headless_resource_selector.widget().clone();
+            headless_resource_type_switch.connect_active_notify(move |switch| {
+                resource_widget.set_visible(switch.is_active());
+            });
+        }
+
         let view = Rc::new(LaunchFormView {
             container,
             services,
@@ -354,6 +386,7 @@ impl LaunchFormView {
             custom_image_entry,
             picked_image: Rc::new(RefCell::new(None)),
             custom_type_combo,
+            adv_name_entry,
             adv_registry_combo,
             registry_user_entry,
             registry_secret_entry,
@@ -363,8 +396,8 @@ impl LaunchFormView {
             headless_cmd_entry,
             headless_args_entry,
             headless_replicas,
-            headless_cores,
-            headless_ram,
+            headless_resource_type_switch,
+            headless_resource_selector,
             headless_launch_btn,
         });
 
@@ -426,6 +459,22 @@ impl LaunchFormView {
             let view_clone = view.clone();
             generate_name_btn.connect_clicked(move |_| {
                 view_clone.generate_session_name();
+            });
+        }
+
+        // Advanced tab "Generate name" button (writes the Advanced name field).
+        {
+            let view_clone = view.clone();
+            adv_generate_name_btn.connect_clicked(move |_| {
+                view_clone.update_advanced_name();
+            });
+        }
+
+        // Headless tab "Generate name" button (writes `headless<n+1>`).
+        {
+            let view_clone = view.clone();
+            headless_generate_name_btn.connect_clicked(move |_| {
+                view_clone.generate_headless_name();
             });
         }
 
@@ -529,7 +578,19 @@ impl LaunchFormView {
                     self.resource_selector
                         .set_memory_options(&mem_opts, context.default_memory());
                     self.resource_selector.set_gpu_options(&gpu_opts);
+                    // The headless Fixed selector uses the same platform context.
+                    self.headless_resource_selector
+                        .set_core_options(&core_opts, context.default_cores());
+                    self.headless_resource_selector
+                        .set_memory_options(&mem_opts, context.default_memory());
+                    self.headless_resource_selector.set_gpu_options(&gpu_opts);
                 }
+
+                // Seed the Advanced and Headless tab name fields (they have their
+                // own editable Name boxes; mirrors GenerateSessionName +
+                // GenerateHeadlessSessionName in LoadImagesAndContextAsync).
+                self.update_advanced_name();
+                self.generate_headless_name();
             }
             Err(e) => {
                 self.status_label
@@ -701,26 +762,23 @@ impl LaunchFormView {
         let session_type = types.get(idx).unwrap_or(&"notebook");
         let count = self.session_count_for_type(session_type);
         let name = format!("{}{}", session_type, count + 1);
-        self.name_entry.set_text(&name);
+        self.adv_name_entry.set_text(&name);
     }
 
-    /// Re-derive the auto session name from the currently active tab's session
-    /// type (`<type><count+1>`), wired to the manual "Generate name" button.
+    /// Re-derive the headless job name (`headless<count+1>`), wired to the
+    /// Headless tab's "Generate name" button. Mirrors GenerateHeadlessSessionName.
+    fn generate_headless_name(&self) {
+        let count = self.session_count_for_type("headless");
+        self.headless_name_entry
+            .set_text(&format!("headless{}", count + 1));
+    }
+
+    /// Re-derive the Standard-tab session name from its selected type
+    /// (`<type><count+1>`), wired to the Standard tab's "Generate name" button.
+    /// The Advanced and Headless tabs have their own generate buttons writing
+    /// their own name fields (`update_advanced_name` / `generate_headless_name`).
     fn generate_session_name(&self) {
-        let session_type = if self.notebook.current_page() == Some(1) {
-            let types = [
-                "notebook",
-                "desktop",
-                "carta",
-                "contributed",
-                "firefly",
-                "headless",
-            ];
-            let idx = self.custom_type_combo.selected() as usize;
-            types.get(idx).unwrap_or(&"notebook").to_string()
-        } else {
-            self.selected_type()
-        };
+        let session_type = self.selected_type();
         let count = self.session_count_for_type(&session_type);
         self.name_entry
             .set_text(&format!("{}{}", session_type, count + 1));
@@ -813,7 +871,13 @@ impl LaunchFormView {
             return;
         }
 
-        let name = self.name_entry.text().to_string();
+        // The Advanced tab has its own Name field; the Standard tab uses the
+        // shared one.
+        let name = if is_advanced {
+            self.adv_name_entry.text().to_string()
+        } else {
+            self.name_entry.text().to_string()
+        };
         if name.is_empty() {
             self.status_label.set_text(crate::tr_en!("Please enter a session name"));
             return;
@@ -974,8 +1038,18 @@ impl LaunchFormView {
             }
         };
         let replicas = self.headless_replicas.value() as u32;
-        let cores = self.headless_cores.value() as u32;
-        let ram = self.headless_ram.value() as u32;
+        // Flexible (switch off) → send cores/ram/gpus = 0 so the platform
+        // allocates; Fixed (switch on) → use the resource selector. Mirrors
+        // LaunchHeadlessAsync (HeadlessResourceType == "fixed" ? selected : 0).
+        let fixed = self.headless_resource_type_switch.is_active();
+        let sel_cores = self.headless_resource_selector.cores();
+        let sel_ram = self.headless_resource_selector.ram();
+        let sel_gpus = self.headless_resource_selector.gpus();
+        let (cores, ram, gpus) = if fixed {
+            (sel_cores, sel_ram, sel_gpus)
+        } else {
+            (0, 0, 0)
+        };
 
         let params = SessionLaunchParams {
             name: name.clone(),
@@ -983,7 +1057,7 @@ impl LaunchFormView {
             session_type: "headless".to_string(),
             cores,
             ram,
-            gpus: 0,
+            gpus,
             cmd,
             env: None,
             registry_username: None,
@@ -1022,14 +1096,16 @@ impl LaunchFormView {
                     name: params.name.clone(),
                     session_type: "headless".to_string(),
                     image: params.image.clone(),
-                    cores: params.cores,
-                    ram: params.ram,
-                    gpus: params.gpus,
+                    // Preserve the selected resources in the record even when
+                    // flexible (they display only for Fixed); a flexible relaunch
+                    // re-zeroes them via to_launch_params.
+                    cores: sel_cores,
+                    ram: sel_ram,
+                    gpus: sel_gpus,
                     timestamp: now.clone(),
-                    // The headless tab exposes no project selector; it always
-                    // configures explicit cores/ram, so it is a fixed job.
+                    // The headless tab exposes no project selector.
                     project: None,
-                    resource_type: Some("fixed".to_string()),
+                    resource_type: Some(if fixed { "fixed" } else { "flexible" }.to_string()),
                     cmd: params.cmd.clone(),
                     args: params.args.clone(),
                     replicas: params.replicas,

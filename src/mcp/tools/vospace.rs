@@ -106,6 +106,36 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         write_tool(
+            "upload_file_to_vospace",
+            "Propose uploading a LOCAL file from disk to a VOSpace/ARC path relative to your home \
+             (overwrites if it exists) — use this to move a downloaded or produced file into cloud \
+             storage. Queues for the user to apply.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "local_path": {"type": "string", "description": "Absolute path to the local file to upload."},
+                    "path": {"type": "string", "description": "Destination VOSpace file path relative to your home, e.g. \"data/run1/out.fits\"."},
+                    "content_type": {"type": "string", "description": "MIME type (default guessed from the file extension, else application/octet-stream)."}
+                },
+                "required": ["local_path", "path"],
+                "additionalProperties": false
+            }),
+        ),
+        write_tool(
+            "download_vospace_file",
+            "Propose downloading a VOSpace/ARC file (by path relative to your home) to a LOCAL path \
+             on disk — defaults to your Downloads folder. Queues for the user to apply.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "VOSpace file path relative to your home to download."},
+                    "local_path": {"type": "string", "description": "Absolute local destination path (default: ~/Downloads/<filename>)."}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        write_tool(
             "create_folder",
             "Propose creating a folder at a VOSpace/ARC path relative to your home. Queues for the \
              user to apply.",
@@ -173,6 +203,8 @@ pub async fn dispatch(
         "get_quota" => read_get_quota(services).await,
         // Writes
         "upload_text" => propose_upload_text(args, proposals),
+        "upload_file_to_vospace" => propose_upload_file(args, proposals),
+        "download_vospace_file" => propose_download_file(args, proposals),
         "create_folder" => propose_create_folder(args, proposals),
         "set_acl" => propose_set_acl(args, proposals),
         "delete_node" => propose_delete_node(args, proposals),
@@ -314,6 +346,51 @@ fn propose_upload_text(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> 
     let p = proposals.enqueue(
         "upload_text",
         &format!("Write {} bytes to {}", content.len(), path),
+        false,
+        payload,
+    );
+    ToolResult::Proposed(p)
+}
+
+/// Propose uploading a local file to VOSpace. The local read + upload happen at
+/// apply time; here we only validate + echo the paths.
+fn propose_upload_file(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let local_path = str_arg(args, "local_path");
+    let path = norm_path(&str_arg(args, "path"));
+    if local_path.is_empty() {
+        return ToolResult::Failed("local_path is required".to_string());
+    }
+    if path.is_empty() {
+        return ToolResult::Failed("path is required".to_string());
+    }
+    let mut payload = json!({ "local_path": local_path, "path": path });
+    let content_type = str_arg(args, "content_type");
+    if !content_type.is_empty() {
+        payload["content_type"] = json!(content_type);
+    }
+    let p = proposals.enqueue(
+        "upload_file_to_vospace",
+        &format!("Upload {} to {}", local_path, path),
+        false,
+        payload,
+    );
+    ToolResult::Proposed(p)
+}
+
+/// Propose downloading a VOSpace file to local disk (default: ~/Downloads).
+fn propose_download_file(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let path = norm_path(&str_arg(args, "path"));
+    if path.is_empty() {
+        return ToolResult::Failed("path is required".to_string());
+    }
+    let mut payload = json!({ "path": path });
+    let local_path = str_arg(args, "local_path");
+    if !local_path.is_empty() {
+        payload["local_path"] = json!(local_path);
+    }
+    let p = proposals.enqueue(
+        "download_vospace_file",
+        &format!("Download {} to local disk", path),
         false,
         payload,
     );
@@ -505,9 +582,115 @@ pub async fn apply(
                 Err(e) => Err(format!("delete failed: {}", e)),
             }
         }
+        "upload_file_to_vospace" => {
+            let (token, username) = match auth(services).await {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let local_path = str_arg(payload, "local_path");
+            let path = norm_path(&str_arg(payload, "path"));
+            if local_path.is_empty() || path.is_empty() {
+                return Some(Err(
+                    "upload_file_to_vospace payload missing local_path/path".to_string(),
+                ));
+            }
+            // Read the local file off the async executor.
+            let lp = local_path.clone();
+            let bytes = match tokio::task::spawn_blocking(move || std::fs::read(&lp)).await {
+                Ok(Ok(b)) => b,
+                Ok(Err(e)) => return Some(Err(format!("could not read {}: {}", local_path, e))),
+                Err(e) => return Some(Err(format!("read task failed: {e}"))),
+            };
+            if bytes.len() as u64 > MAX_UPLOAD_FILE_BYTES {
+                return Some(Err(format!(
+                    "file is {} MB, above the {} MB upload limit",
+                    bytes.len() / (1024 * 1024),
+                    MAX_UPLOAD_FILE_BYTES / (1024 * 1024)
+                )));
+            }
+            let content_type = {
+                let c = str_arg(payload, "content_type");
+                if c.is_empty() {
+                    guess_content_type(&path)
+                } else {
+                    c
+                }
+            };
+            let n = bytes.len();
+            match services
+                .vospace
+                .upload_file(&token, &username, &path, bytes, &content_type)
+                .await
+            {
+                Ok(()) => Ok(format!("Uploaded {} bytes to {}", n, path)),
+                Err(e) => Err(format!("upload failed: {}", e)),
+            }
+        }
+        "download_vospace_file" => {
+            let (token, username) = match auth(services).await {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let path = norm_path(&str_arg(payload, "path"));
+            if path.is_empty() {
+                return Some(Err("download_vospace_file payload missing path".to_string()));
+            }
+            let local = str_arg(payload, "local_path");
+            let dest = if local.is_empty() {
+                let base = path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("download");
+                default_downloads_dir().join(base)
+            } else {
+                std::path::PathBuf::from(local)
+            };
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match services
+                .vospace
+                .download_file(&token, &username, &path, &dest)
+                .await
+            {
+                Ok(n) => Ok(format!("Downloaded {} bytes to {}", n, dest.display())),
+                Err(e) => Err(format!("download failed: {}", e)),
+            }
+        }
         _ => return None,
     };
     Some(out)
+}
+
+/// Hard cap on a single `upload_file_to_vospace` (the service buffers the whole
+/// file in memory, so guard against an accidental multi-GB upload).
+const MAX_UPLOAD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Best-effort MIME type from a path's extension (falls back to octet-stream).
+fn guess_content_type(path: &str) -> String {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "fits" | "fit" | "fts" => "application/fits",
+        "txt" | "md" | "log" => "text/plain",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "pdf" => "application/pdf",
+        "ipynb" => "application/x-ipynb+json",
+        "gz" | "tgz" => "application/gzip",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+/// The user's Downloads directory (fallback: home, then the current dir).
+fn default_downloads_dir() -> std::path::PathBuf {
+    directories::UserDirs::new()
+        .and_then(|d| d.download_dir().map(|p| p.to_path_buf()))
+        .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -619,6 +802,66 @@ mod tests {
         assert_eq!(norm_path("/data/x"), "data/x");
         assert_eq!(norm_path("  data/x  "), "data/x");
         assert_eq!(norm_path("data/x"), "data/x");
+    }
+
+    #[test]
+    fn upload_file_requires_local_path_and_path() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        assert!(matches!(
+            propose_upload_file(&json!({ "path": "a/b" }), &store),
+            ToolResult::Failed(_)
+        ));
+        assert!(matches!(
+            propose_upload_file(&json!({ "local_path": "/tmp/x" }), &store),
+            ToolResult::Failed(_)
+        ));
+        assert_eq!(store.pending_count(), 0);
+    }
+
+    #[test]
+    fn upload_file_enqueues_non_destructive_with_normalized_path() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_upload_file(
+            &json!({ "local_path": "/tmp/x.fits", "path": "/data/x.fits" }),
+            &store,
+        ) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.kind, "upload_file_to_vospace");
+                assert!(!p.destructive);
+                assert_eq!(p.payload["path"], "data/x.fits"); // leading slash stripped
+                assert_eq!(p.payload["local_path"], "/tmp/x.fits");
+            }
+            _ => panic!("expected Proposed"),
+        }
+    }
+
+    #[test]
+    fn download_file_requires_path_and_omits_default_dest() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        assert!(matches!(
+            propose_download_file(&json!({}), &store),
+            ToolResult::Failed(_)
+        ));
+        match propose_download_file(&json!({ "path": "data/out.fits" }), &store) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.kind, "download_vospace_file");
+                assert!(!p.destructive);
+                assert_eq!(p.payload["path"], "data/out.fits");
+                assert!(
+                    p.payload.get("local_path").is_none(),
+                    "an omitted local_path must stay absent (apply defaults to ~/Downloads)"
+                );
+            }
+            _ => panic!("expected Proposed"),
+        }
+    }
+
+    #[test]
+    fn guess_content_type_maps_common_extensions() {
+        assert_eq!(guess_content_type("a/b.fits"), "application/fits");
+        assert_eq!(guess_content_type("x.json"), "application/json");
+        assert_eq!(guess_content_type("x.unknownext"), "application/octet-stream");
+        assert_eq!(guess_content_type("noext"), "application/octet-stream");
     }
 
     #[test]

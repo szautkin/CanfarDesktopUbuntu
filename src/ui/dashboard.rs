@@ -16,6 +16,8 @@ use crate::ui::template_manager::TemplateManager;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
+use libadwaita as adw;
+use libadwaita::prelude::*;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -157,7 +159,35 @@ impl DashboardView {
                             }
                         }
                     }
-                    SessionAction::Renew(id, _name) => {
+                    SessionAction::Renew(id, name) => {
+                        // Progress + result dialog (mirrors ShowRenewDialogAsync):
+                        // a spinner while renewing, then a success/error message.
+                        let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                        let spinner = gtk::Spinner::new();
+                        spinner.start();
+                        let status = gtk::Label::new(Some(&crate::tr_fmt!(
+                            "Renewing session '{}'…",
+                            name
+                        )));
+                        status.set_wrap(true);
+                        status.set_xalign(0.0);
+                        content.append(&spinner);
+                        content.append(&status);
+
+                        let dialog = adw::MessageDialog::new(
+                            session_list
+                                .widget()
+                                .root()
+                                .and_downcast::<gtk::Window>()
+                                .as_ref(),
+                            Some(crate::tr_en!("Renew Session")),
+                            None,
+                        );
+                        dialog.set_extra_child(Some(&content));
+                        dialog.add_response("close", crate::tr_en!("Close"));
+                        dialog.set_close_response("close");
+                        dialog.present();
+
                         let svc = services.clone();
                         let id_c = id.clone();
                         let result = services
@@ -169,11 +199,36 @@ impl DashboardView {
                                 svc.sessions.renew_session(&token, &id_c).await
                             })
                             .await;
+
+                        spinner.stop();
+                        spinner.set_visible(false);
+
                         match result {
                             Ok(()) => {
+                                dialog.set_heading(Some(crate::tr_en!("Session renewed")));
+                                status.set_text(&crate::tr_fmt!(
+                                    "'{}' renewed. Its expiry has been extended.",
+                                    name
+                                ));
                                 session_list.refresh().await;
+                                update_session_limits(
+                                    &session_list,
+                                    &launch_form,
+                                    &recent_launches,
+                                );
+                                // Auto-close shortly after success (reference waits 2s).
+                                let dialog_ref = dialog.downgrade();
+                                glib::spawn_future_local(async move {
+                                    glib::timeout_future_seconds(2).await;
+                                    if let Some(d) = dialog_ref.upgrade() {
+                                        d.close();
+                                    }
+                                });
                             }
-                            Err(e) => eprintln!("Renew failed: {}", e),
+                            Err(e) => {
+                                dialog.set_heading(Some(crate::tr_en!("Renew failed")));
+                                status.set_text(&crate::tr_fmt!("Renew failed: {}", e));
+                            }
                         }
                     }
                     SessionAction::Events(id, name) => {
@@ -242,47 +297,40 @@ impl DashboardView {
                 let recent_launches_ref = recent_launches_ref.clone();
 
                 glib::spawn_future_local(async move {
-                    let type_count = session_list.session_count_by_type(&launch.session_type);
-                    let name = format!("{}{}", launch.session_type, type_count + 1);
-                    let params = SessionLaunchParams {
-                        name: name.clone(),
-                        image: launch.image.clone(),
-                        session_type: launch.session_type.clone(),
-                        cores: launch.cores,
-                        ram: launch.ram,
-                        gpus: launch.gpus,
-                        cmd: None,
-                        env: None,
-                        registry_username: None,
-                        registry_secret: None,
-                        args: None,
-                        replicas: None,
-                    };
+                    // Faithful relaunch (mirrors RelaunchAsync): reuse the recorded
+                    // session name and reproduce the saved configuration. A
+                    // flexible record zeroes cores/ram/gpus (platform-managed);
+                    // a headless record replays cmd/args/replicas and routes
+                    // through the headless launch (its session_type drives the
+                    // batch-job form fields), never the interactive path.
+                    let name = launch.name.clone();
+                    let params = launch.to_launch_params(name.clone());
 
                     let svc = services.clone();
+                    let params_clone = params.clone();
                     let result = services
                         .spawn(async move {
                             let token = svc.get_token().await;
                             let Some(token) = token else {
                                 return Err("No token".to_string());
                             };
-                            svc.sessions.launch_session(&token, &params).await
+                            svc.sessions.launch_session(&token, &params_clone).await
                         })
                         .await;
 
-                    let image_display = match launch.image.rsplit_once('/') {
+                    let image_display = match params.image.rsplit_once('/') {
                         Some((_, tail)) => tail.to_string(),
-                        None => launch.image.clone(),
+                        None => params.image.clone(),
                     };
 
                     show_launch_dialog(
                         recent_launches_ref.widget(),
                         &name,
                         &image_display,
-                        &launch.session_type,
-                        launch.cores,
-                        launch.ram,
-                        launch.gpus,
+                        &params.session_type,
+                        params.cores,
+                        params.ram,
+                        params.gpus,
                         result.clone(),
                     )
                     .await;

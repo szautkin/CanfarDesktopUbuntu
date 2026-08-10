@@ -144,6 +144,23 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
         ),
         write_tool(
+            "update_guide_tool",
+            "Edit an existing user \"guide\" tool (from list_guide_tools): change its one-line \
+             description and/or its body, and optionally rename it. Queues for the user to apply; \
+             the updated tool re-appears in tools/list.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Current name of the guide tool to edit (from list_guide_tools)." },
+                    "description": { "type": "string", "description": "New one-line tools/list description (max 600 chars)." },
+                    "body": { "type": "string", "description": "New instruction text returned on call (max 4000 chars)." },
+                    "new_name": { "type": "string", "description": "Optional new display name (rename)." }
+                },
+                "required": ["name", "description"],
+                "additionalProperties": false
+            }),
+        ),
+        write_tool(
             "delete_guide_tool",
             "Delete a user guide tool by name (from list_guide_tools). Destructive — queues for the \
              user to apply.",
@@ -182,6 +199,7 @@ pub async fn dispatch(
         "set_tool_description" => propose_set_tool_description(args, proposals),
         "clear_tool_description" => propose_clear_tool_description(args, proposals),
         "add_guide_tool" => propose_add_guide_tool(args, proposals),
+        "update_guide_tool" => propose_update_guide_tool(args, proposals),
         "delete_guide_tool" => propose_delete_guide_tool(args, proposals),
         _ => return None,
     };
@@ -367,6 +385,40 @@ fn propose_add_guide_tool(args: &Value, proposals: &Arc<InMemoryProposalStore>) 
     ToolResult::Proposed(p)
 }
 
+fn propose_update_guide_tool(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let name = str_arg(args, "name");
+    let description = str_arg(args, "description");
+    let body = str_arg(args, "body");
+    let new_name = str_arg(args, "new_name");
+    if name.is_empty() {
+        return ToolResult::Failed("name is required".to_string());
+    }
+    if description.is_empty() {
+        return ToolResult::Failed("description is required".to_string());
+    }
+    if description.chars().count() > MAX_DESCRIPTION_CHARS {
+        return ToolResult::Failed(format!(
+            "description exceeds {MAX_DESCRIPTION_CHARS} characters"
+        ));
+    }
+    if body.chars().count() > MAX_BODY_CHARS {
+        return ToolResult::Failed(format!("body exceeds {MAX_BODY_CHARS} characters"));
+    }
+    let payload = json!({
+        "name": name,
+        "description": description,
+        "body": body,
+        "new_name": new_name,
+    });
+    let p = proposals.enqueue(
+        "update_guide_tool",
+        &format!("Update guide tool: {name}"),
+        false,
+        payload,
+    );
+    ToolResult::Proposed(p)
+}
+
 fn propose_delete_guide_tool(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
     let name = str_arg(args, "name");
     if name.is_empty() {
@@ -428,6 +480,31 @@ pub async fn apply(
                 // add_guide does the real slug/uniqueness/length validation.
                 match services.ai_guide.add_guide(&name, &description, &body) {
                     Ok(()) => Ok(format!("Added guide tool '{name}'")),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+        "update_guide_tool" => {
+            let current = str_arg(payload, "name");
+            let description = str_arg(payload, "description");
+            let body = str_arg(payload, "body");
+            let new_name = {
+                let n = str_arg(payload, "new_name");
+                if n.is_empty() {
+                    current.clone()
+                } else {
+                    n
+                }
+            };
+            if current.is_empty() {
+                Err("update_guide_tool payload missing name".to_string())
+            } else {
+                // update_guide does the real slug/uniqueness/length validation.
+                match services
+                    .ai_guide
+                    .update_guide(&current, &new_name, &description, &body)
+                {
+                    Ok(()) => Ok(format!("Updated guide tool '{current}'")),
                     Err(e) => Err(e),
                 }
             }

@@ -1,5 +1,6 @@
 use crate::config::{api_endpoint_defaults as dflt, AppConfig};
 use crate::helpers::registry_credential_test::{test_registry_credentials, CredTestResult};
+use crate::services::ai_compute_service::AIComputeService;
 use crate::services::image_discovery_settings_service::ImageDiscoverySettingsService;
 use crate::services::mcp_settings_service::{McpSettingsService, PortalDefaultsService};
 use crate::state::AppServices;
@@ -91,6 +92,7 @@ impl SettingsPage {
         page.build_ai_group();
         page.build_connection_group();
         page.build_image_discovery_group();
+        page.build_ai_compute_group();
         page.build_about_group();
         page
     }
@@ -1064,6 +1066,387 @@ impl SettingsPage {
         }
 
         self.widget.add(&group);
+    }
+
+    /// "AI compute" section — configures the remote compute the agent `run_code`
+    /// tool uses: the compute container image (an EMPTY image DISABLES run_code),
+    /// the instance size (cores / RAM GB), and the registry credentials used to
+    /// pull a private compute image. Persists through an [`AIComputeService`]
+    /// (non-secret knobs as JSON, the secret in the OS keychain under a service
+    /// name DISTINCT from Image Discovery) with a "Test credentials" registry
+    /// probe and a "Reset to defaults" affordance. Live-applies every edit,
+    /// matching the other settings groups (there is no explicit Save step).
+    ///
+    /// Mirrors `Views/Dialogs/AIComputeSettingsPanel.xaml(.cs)`.
+    fn build_ai_compute_group(&self) {
+        // The service is its own store (data_dir JSON + keychain), independent of
+        // AppConfig. Shared across the row closures behind Rc<RefCell<…>> because
+        // the setters take &mut self.
+        let service = Rc::new(RefCell::new(AIComputeService::new()));
+
+        // Snapshot the persisted values to seed the rows.
+        let (image0, cores0, ram0, host0, repo0, user0) = {
+            let s = service.borrow();
+            let st = s.settings();
+            (
+                st.image.clone(),
+                st.cores,
+                st.ram,
+                st.registry_host.clone(),
+                st.registry_repository.clone(),
+                st.registry_username.clone(),
+            )
+        };
+
+        // ── Compute image + instance size ─────────────────────────────────
+        let group = adw::PreferencesGroup::new();
+        group.set_title(crate::tr_en!("AI compute")); // Settings_ComputeHeader
+        group.set_description(Some(crate::tr_en!(
+            "Configure the remote compute the agent's run_code tool uses. Leave the image blank to disable run_code. run_code runs agent-authored code on your CADC account: with auto-apply on it runs immediately; with it off each call queues for your approval."
+        )));
+
+        // Compute image. Blank disables run_code / start_compute (setter trims).
+        let image_row = adw::EntryRow::new();
+        image_row.set_title(crate::tr_en!("Compute image"));
+        image_row.set_text(&image0);
+        {
+            let service = service.clone();
+            image_row.connect_changed(move |r| {
+                service.borrow_mut().set_image(&r.text());
+            });
+        }
+        group.add(&image_row);
+
+        // Cores (1–64; the setter clamps).
+        let cores_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(cores0 as f64, 1.0, 64.0, 1.0, 1.0, 0.0)),
+            1.0,
+            0,
+        );
+        cores_row.set_title(crate::tr_en!("Cores"));
+        {
+            let service = service.clone();
+            cores_row.connect_value_notify(move |r| {
+                service.borrow_mut().set_cores(r.value() as u32);
+            });
+        }
+        group.add(&cores_row);
+
+        // RAM in GB (1–256; the setter clamps).
+        let ram_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(ram0 as f64, 1.0, 256.0, 1.0, 4.0, 0.0)),
+            1.0,
+            0,
+        );
+        ram_row.set_title(crate::tr_en!("RAM (GB)"));
+        {
+            let service = service.clone();
+            ram_row.connect_value_notify(move |r| {
+                service.borrow_mut().set_ram(r.value() as u32);
+            });
+        }
+        group.add(&ram_row);
+
+        self.widget.add(&group);
+
+        // ── Registry credentials ──────────────────────────────────────────
+        let reg_group = adw::PreferencesGroup::new();
+        reg_group.set_title(crate::tr_en!("Registry credentials"));
+        reg_group.set_description(Some(crate::tr_en!(
+            "Used to pull a private compute image. Stored separately from the Image Discovery tab's credentials."
+        )));
+
+        // Registry host — blank restores the default in the setter.
+        let host_row = adw::EntryRow::new();
+        host_row.set_title(crate::tr_en!("Registry host"));
+        host_row.set_text(&host0);
+        {
+            let service = service.clone();
+            host_row.connect_changed(move |r| {
+                service.borrow_mut().set_registry_host(&r.text());
+            });
+        }
+        reg_group.add(&host_row);
+
+        // Registry repository/project — prefixes a short compute image name.
+        let repo_row = adw::EntryRow::new();
+        repo_row.set_title(crate::tr_en!("Registry repository (project)"));
+        repo_row.set_text(&repo0);
+        {
+            let service = service.clone();
+            repo_row.connect_changed(move |r| {
+                service.borrow_mut().set_registry_repository(&r.text());
+            });
+        }
+        reg_group.add(&repo_row);
+
+        // Registry username.
+        let username_row = adw::EntryRow::new();
+        username_row.set_title(crate::tr_en!("Registry username"));
+        username_row.set_text(&user0);
+        {
+            let service = service.clone();
+            username_row.connect_changed(move |r| {
+                service.borrow_mut().set_username(&r.text());
+            });
+        }
+        reg_group.add(&username_row);
+
+        // Registry secret — never pre-filled; stored in the OS keychain. A suffix
+        // label reports whether one is on file, plus a Remove button.
+        let secret_row = adw::PasswordEntryRow::new();
+        secret_row.set_title(crate::tr_en!("Registry secret (Harbor CLI secret)"));
+        secret_row.set_show_apply_button(true);
+
+        let secret_status = gtk::Label::new(None);
+        secret_status.add_css_class("dim-label");
+        let remove_btn = gtk::Button::with_label(crate::tr_en!("Remove secret"));
+        remove_btn.add_css_class("flat");
+        remove_btn.set_valign(gtk::Align::Center);
+        secret_row.add_suffix(&secret_status);
+        secret_row.add_suffix(&remove_btn);
+
+        // Reflect the keychain state into the status label + Remove button.
+        let refresh_status = {
+            let service = service.clone();
+            let secret_status = secret_status.clone();
+            let remove_btn = remove_btn.clone();
+            move || {
+                let has = service.borrow().settings().has_secret;
+                secret_status.set_text(if has {
+                    crate::tr_en!(
+                        "A secret is stored. Type a new one to replace it, or leave blank to keep it."
+                    )
+                } else {
+                    crate::tr_en!("No secret stored.")
+                });
+                remove_btn.set_visible(has);
+            }
+        };
+        refresh_status();
+
+        // Persist the typed secret when the apply (✓) button is pressed, then
+        // clear the field so the raw value never lingers in the widget.
+        {
+            let service = service.clone();
+            let services = self.services.clone();
+            let refresh_status = refresh_status.clone();
+            secret_row.connect_apply(move |r| {
+                let text = r.text().to_string();
+                let res = service.borrow_mut().set_secret(&text);
+                match res {
+                    Ok(()) => {
+                        r.set_text("");
+                        refresh_status();
+                        services
+                            .toast
+                            .toast(crate::tr_en!("AI compute settings were saved."));
+                    }
+                    Err(e) => services.toast.toast(e),
+                }
+            });
+        }
+
+        // Remove the stored secret.
+        {
+            let service = service.clone();
+            let services = self.services.clone();
+            let refresh_status = refresh_status.clone();
+            let secret_row = secret_row.clone();
+            remove_btn.connect_clicked(move |_| {
+                service.borrow_mut().clear_secret();
+                secret_row.set_text("");
+                refresh_status();
+                services
+                    .toast
+                    .toast(crate::tr_en!("The stored registry secret was deleted."));
+            });
+        }
+        reg_group.add(&secret_row);
+
+        // Test credentials + an inline result row (hidden until first run).
+        let test_row = adw::ActionRow::new();
+        test_row.set_title(crate::tr_en!("Test credentials"));
+        test_row.set_subtitle(crate::tr_en!(
+            "Verify the registry secret before launching a compute job"
+        ));
+        let test_btn = gtk::Button::with_label(crate::tr_en!("Test credentials"));
+        test_btn.add_css_class("suggested-action");
+        test_btn.set_valign(gtk::Align::Center);
+        test_row.add_suffix(&test_btn);
+        test_row.set_activatable_widget(Some(&test_btn));
+        reg_group.add(&test_row);
+
+        let result_row = adw::ActionRow::new();
+        result_row.set_visible(false);
+        let result_icon = gtk::Image::new();
+        result_row.add_prefix(&result_icon);
+        reg_group.add(&result_row);
+
+        {
+            let service = service.clone();
+            let services = self.services.clone();
+            let host_row = host_row.clone();
+            let username_row = username_row.clone();
+            let secret_row = secret_row.clone();
+            let refresh_status = refresh_status.clone();
+            let result_row = result_row.clone();
+            let result_icon = result_icon.clone();
+            test_btn.connect_clicked(move |btn| {
+                // Flush host/username edits so the test uses what's on screen.
+                {
+                    let mut svc = service.borrow_mut();
+                    svc.set_registry_host(&host_row.text());
+                    svc.set_username(&username_row.text());
+                }
+
+                // If the user typed a secret, persist it so the test uses it.
+                let typed = secret_row.text().to_string();
+                if !typed.trim().is_empty() {
+                    let res = service.borrow_mut().set_secret(&typed);
+                    if let Err(e) = res {
+                        services.toast.toast(e);
+                        return;
+                    }
+                    secret_row.set_text("");
+                    refresh_status();
+                }
+
+                // Read the host + (username, secret) the service holds — the AI
+                // compute keychain lets the stored secret be read back to test it.
+                let (host, username, secret) = {
+                    let s = service.borrow();
+                    let (u, sec) = s.registry_credentials();
+                    (s.settings().registry_host.clone(), u, sec)
+                };
+
+                btn.set_sensitive(false);
+                btn.set_label(crate::tr_en!("Testing…"));
+                let btn = btn.clone();
+                let services = services.clone();
+                let result_row = result_row.clone();
+                let result_icon = result_icon.clone();
+                glib::spawn_future_local(async move {
+                    // reqwest needs the tokio runtime — bridge via AppServices::spawn.
+                    let result = services
+                        .spawn(async move {
+                            test_registry_credentials(&host, &username, &secret).await
+                        })
+                        .await;
+
+                    let (icon, css, title, message): (&str, &str, &str, String) = match &result {
+                        CredTestResult::Success => (
+                            "emblem-ok-symbolic",
+                            "success",
+                            crate::tr_en!("Credentials valid"),
+                            crate::tr_en!("The registry accepted the credentials.").to_string(),
+                        ),
+                        CredTestResult::Unauthorized => (
+                            "dialog-warning-symbolic",
+                            "warning",
+                            crate::tr_en!("Credentials rejected"),
+                            crate::tr_en!("The registry rejected the username or secret.")
+                                .to_string(),
+                        ),
+                        CredTestResult::MissingConfiguration => (
+                            "dialog-warning-symbolic",
+                            "warning",
+                            crate::tr_en!("Configuration incomplete"),
+                            crate::tr_en!("Set a registry host, username, and secret first.")
+                                .to_string(),
+                        ),
+                        CredTestResult::InvalidChallenge => (
+                            "dialog-error-symbolic",
+                            "error",
+                            crate::tr_en!("Unexpected registry response"),
+                            crate::tr_en!("The registry's auth challenge could not be parsed.")
+                                .to_string(),
+                        ),
+                        CredTestResult::NetworkError(msg) => (
+                            "dialog-error-symbolic",
+                            "error",
+                            crate::tr_en!("Network error"),
+                            msg.clone(),
+                        ),
+                    };
+
+                    result_icon.set_icon_name(Some(icon));
+                    for c in ["success", "warning", "error"] {
+                        result_icon.remove_css_class(c);
+                    }
+                    result_icon.add_css_class(css);
+                    result_row.set_title(title);
+                    result_row.set_subtitle(&message);
+                    result_row.set_subtitle_lines(0);
+                    result_row.set_visible(true);
+                    services.toast.toast(format!("{title} — {message}"));
+
+                    btn.set_sensitive(true);
+                    btn.set_label(crate::tr_en!("Test credentials"));
+                });
+            });
+        }
+
+        // Reset to defaults — clears the secret and restores every field. Mirrors
+        // the Windows confirm body as the row subtitle (there is no modal step).
+        let reset_row = adw::ActionRow::new();
+        reset_row.set_title(crate::tr_en!("Reset to defaults")); // Compute_ResetButton
+        reset_row.set_subtitle(crate::tr_en!(
+            "Reset the compute image, cores/RAM, registry host/repository/username, and the stored secret to defaults? This disables run_code until you set an image again."
+        ));
+        reset_row.set_subtitle_lines(0);
+        let reset_btn = gtk::Button::with_label(crate::tr_en!("Reset to defaults"));
+        reset_btn.add_css_class("destructive-action");
+        reset_btn.set_valign(gtk::Align::Center);
+        reset_row.add_suffix(&reset_btn);
+        reset_row.set_activatable_widget(Some(&reset_btn));
+        reg_group.add(&reset_row);
+
+        {
+            let service = service.clone();
+            let services = self.services.clone();
+            let image_row = image_row.clone();
+            let cores_row = cores_row.clone();
+            let ram_row = ram_row.clone();
+            let host_row = host_row.clone();
+            let repo_row = repo_row.clone();
+            let username_row = username_row.clone();
+            let secret_row = secret_row.clone();
+            let refresh_status = refresh_status.clone();
+            let result_row = result_row.clone();
+            reset_btn.connect_clicked(move |_| {
+                // Reset (clears the secret + restores defaults), then snapshot the
+                // fresh values WITHOUT holding the borrow across the widget setters
+                // (set_text/set_value re-fire the change handlers, which borrow_mut).
+                let (image, cores, ram, host, repo, user) = {
+                    let mut svc = service.borrow_mut();
+                    svc.reset_to_defaults();
+                    let st = svc.settings();
+                    (
+                        st.image.clone(),
+                        st.cores,
+                        st.ram,
+                        st.registry_host.clone(),
+                        st.registry_repository.clone(),
+                        st.registry_username.clone(),
+                    )
+                };
+                image_row.set_text(&image);
+                cores_row.set_value(cores as f64);
+                ram_row.set_value(ram as f64);
+                host_row.set_text(&host);
+                repo_row.set_text(&repo);
+                username_row.set_text(&user);
+                secret_row.set_text("");
+                refresh_status();
+                result_row.set_visible(false);
+                services.toast.toast(crate::tr_en!(
+                    "AI compute settings were reset to defaults (run_code is now disabled)."
+                ));
+            });
+        }
+
+        self.widget.add(&reg_group);
     }
 
     fn build_about_group(&self) {

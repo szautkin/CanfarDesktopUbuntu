@@ -299,11 +299,14 @@ impl SessionListView {
                     while let Some(child) = cards_box.first_child() {
                         cards_box.remove(&child);
                     }
-                    let count = new_sessions.len();
+                    // Headless (batch) jobs never render as cards nor count toward
+                    // the interactive cap (matches update_sessions above).
+                    let count = new_sessions.iter().filter(|s| !s.is_headless()).count();
                     let count_tmpl = if count == 1 { "{} session" } else { "{} sessions" };
                     count_label.set_text(&crate::tr_fmt!(count_tmpl, count));
                     let visible: Vec<&Session> = new_sessions
                         .iter()
+                        .filter(|s| !s.is_headless())
                         .filter(|s| match active_filter {
                             None => true,
                             Some(f) => s.session_type.eq_ignore_ascii_case(f),
@@ -341,7 +344,13 @@ impl SessionListView {
     }
 
     pub fn session_count(&self) -> usize {
-        self.sessions.borrow().len()
+        // Only interactive sessions count toward the 3-session cap; headless
+        // (batch) jobs are excluded (matches SessionListViewModel.IsHeadless).
+        self.sessions
+            .borrow()
+            .iter()
+            .filter(|s| !s.is_headless())
+            .count()
     }
 
     pub fn session_count_by_type(&self, session_type: &str) -> usize {

@@ -15,6 +15,9 @@ pub struct CAOM2Observation {
     /// "science" | "calibration".
     pub intent: Option<String>,
     pub sequence_number: Option<String>,
+    /// Metadata-release timestamp, kept as the raw ISO-8601 text (rendered as a
+    /// `YYYY-MM-DD` date). `None` when absent.
+    pub meta_release: Option<String>,
     /// "exposure" / "coadd" / ...
     pub algorithm: Option<String>,
 
@@ -67,6 +70,9 @@ pub struct Caom2Environment {
     pub humidity: Option<f64>,
     pub elevation: Option<f64>,
     pub tau: Option<f64>,
+    /// Ambient temperature (°C).
+    pub ambient_temp: Option<f64>,
+    pub photometric: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -77,15 +83,46 @@ pub struct Caom2Plane {
     pub data_product_type: Option<String>,
     /// junk / good / ...
     pub quality: Option<String>,
+    /// Data-processing provenance (pipeline + upstream plane inputs).
+    pub provenance: Option<Caom2Provenance>,
     /// Footprint polygon vertices as (RA, Dec) in degrees.
     pub position_bounds: Vec<(f64, f64)>,
+    /// Pixel dimensions `(naxis1, naxis2)` when reported.
+    pub position_dimension: Option<(i64, i64)>,
+    /// Spatial resolution in arcseconds.
+    pub position_resolution: Option<f64>,
+    /// Pixel sample size in arcseconds.
+    pub position_sample_size: Option<f64>,
     /// Spectral coverage in metres (CAOM2 native).
     pub energy_lower: Option<f64>,
     pub energy_upper: Option<f64>,
+    pub energy_bandpass: Option<String>,
+    pub energy_em_band: Option<String>,
+    pub energy_resolving_power: Option<f64>,
+    /// Rest wavelength in metres.
+    pub energy_rest_wav: Option<f64>,
     /// Temporal coverage in MJD.
     pub time_lower: Option<f64>,
     pub time_upper: Option<f64>,
+    /// Total exposure time in seconds.
+    pub time_exposure: Option<f64>,
+    /// Stokes polarization states present (free-form: "I", "Q", "RR", …).
+    pub polarization_states: Vec<String>,
     pub artifacts: Vec<Caom2Artifact>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Caom2Provenance {
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub project: Option<String>,
+    pub producer: Option<String>,
+    pub run_id: Option<String>,
+    pub reference: Option<String>,
+    /// Pipeline last-executed timestamp, kept as raw ISO-8601 text.
+    pub last_executed: Option<String>,
+    /// Plane URIs of the upstream observations that fed this plane.
+    pub inputs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

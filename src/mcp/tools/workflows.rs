@@ -94,6 +94,25 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "use_workflow".to_string(),
+            description: "Make a local working copy of a workflow so you can follow it and check \
+                off progress. Give the id of a built-in template (or any workflow) from \
+                list_workflows; a fresh local copy is created (progress reset to unchecked). \
+                Queues for the user to apply."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "builtin:… (or any) id from list_workflows to instantiate." },
+                    "name": { "type": "string", "description": "Optional name for the new local copy (defaults to the template's title)." }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "update_workflow".to_string(),
             description: "Replace the full text of a LOCAL workflow (refine a protocol). Built-in \
                 templates are read-only — save_workflow a copy first. Queues for the user to apply."
@@ -166,6 +185,7 @@ pub async fn dispatch(
         "list_workflows" => list_workflows(),
         "get_workflow" => get_workflow(args),
         "save_workflow" => propose_save_workflow(args, proposals),
+        "use_workflow" => propose_use_workflow(args, proposals),
         "update_workflow" => propose_update_workflow(args, proposals),
         "set_workflow_step" => propose_set_workflow_step(args, proposals),
         "delete_workflow" => propose_delete_workflow(args, proposals),
@@ -225,6 +245,42 @@ fn propose_save_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
     let payload = json!({ "name": name, "text": text });
     let summary = format!("Save workflow \"{}\" ({} steps)", name, doc.steps.len());
     let p = proposals.enqueue("save_workflow", &summary, false, payload);
+    ToolResult::Proposed(p)
+}
+
+/// `use_workflow` — instantiate any workflow (typically a built-in template) as a
+/// NEW local working copy with fresh progress. Resolves the source text at propose
+/// time (so a missing id fails fast) and enqueues a non-destructive create.
+fn propose_use_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let id = str_arg(args, "id");
+    if id.is_empty() {
+        return ToolResult::Failed("id is required".to_string());
+    }
+    let info = match WorkflowStore::new().get(&id) {
+        Some(w) => w,
+        None => {
+            return ToolResult::Failed(format!(
+                "no workflow '{}' — call list_workflows for ids",
+                id
+            ))
+        }
+    };
+    let name = {
+        let n = str_arg(args, "name");
+        if n.trim().is_empty() {
+            info.doc.title.clone()
+        } else {
+            n
+        }
+    };
+    let name = if name.trim().is_empty() {
+        "Workflow".to_string()
+    } else {
+        name
+    };
+    let payload = json!({ "name": name, "text": info.raw_text });
+    let summary = format!("Use workflow \"{}\" → new local copy \"{}\"", info.doc.title, name);
+    let p = proposals.enqueue("use_workflow", &summary, false, payload);
     ToolResult::Proposed(p)
 }
 
@@ -315,6 +371,16 @@ pub async fn apply(
             WorkflowStore::new()
                 .save_new(&name, &text)
                 .map(|info| format!("Saved workflow '{}' ({})", name, info.id))
+        }
+        "use_workflow" => {
+            let name = str_arg(payload, "name");
+            let text = payload.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            if name.is_empty() {
+                return Some(Err("use_workflow payload missing name".to_string()));
+            }
+            WorkflowStore::new()
+                .save_new(&name, &text)
+                .map(|info| format!("Created workflow '{}' ({}) from a template", name, info.id))
         }
         "update_workflow" => {
             let id = str_arg(payload, "id");
@@ -446,7 +512,7 @@ mod tests {
             assert!(!d.name.is_empty(), "empty descriptor name");
             assert!(seen.insert(d.name.clone()), "duplicate name: {}", d.name);
         }
-        assert_eq!(seen.len(), 6, "expected six workflow tools");
+        assert_eq!(seen.len(), 7, "expected seven workflow tools");
     }
 
     /// Verb + agent-safe invariants: reads are Read, writes are Write, all safe.

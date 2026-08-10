@@ -85,6 +85,11 @@ pub struct SearchFormState {
     pub wavelength_unit: String,
     pub spectral_coverage: Option<f64>,
     pub spectral_sampling: Option<f64>,
+    /// Optional operator-aware spectral-sampling text (RANGE syntax: `> 0.2`,
+    /// `0.1..0.3`, `<= 5`). When present it takes precedence over the legacy
+    /// numeric `spectral_sampling` (mirrors `pixel_scale_raw`).
+    #[serde(default)]
+    pub spectral_sampling_raw: Option<String>,
     pub spectral_sampling_unit: String,
     pub resolving_power_min: Option<f64>,
     pub resolving_power_max: Option<f64>,
@@ -162,6 +167,12 @@ pub struct ResolverResult {
     pub coord_sys: Option<String>,
     pub object_type: Option<String>,
     pub service: Option<String>,
+    /// UTC instant (RFC-3339) at which this resolution was produced — the
+    /// resolver-provenance epoch (mirrors Windows `ResolverResult.ResolvedAt`,
+    /// stamped `DateTime.UtcNow` when the result is materialized). Optional +
+    /// `#[serde(default)]` so pre-provenance cached JSON still deserializes.
+    #[serde(default)]
+    pub resolved_at: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +484,10 @@ pub fn parse_resolver_response(text: &str, target: &str) -> Option<ResolverResul
         coord_sys,
         object_type,
         service,
+        // Stamp the resolution epoch where the resolver result is materialized
+        // (tap_service forwards this value unchanged). Mirrors the Windows
+        // TAPService setting `ResolvedAt = DateTime.UtcNow`.
+        resolved_at: Some(chrono::Utc::now().to_rfc3339()),
     })
 }
 
@@ -768,6 +783,29 @@ mod tests {
     fn parse_resolver_missing_coords() {
         let text = "service=SIMBAD\noType=unknown";
         assert!(parse_resolver_response(text, "xxx").is_none());
+    }
+
+    #[test]
+    fn parse_resolver_stamps_resolved_at_epoch() {
+        // Provenance: a successful resolution carries a non-empty RFC-3339 epoch so
+        // the export provenance line can show a real timestamp instead of "unknown".
+        let text = "ra=83.633\ndec=22.014\nservice=NED";
+        let r = parse_resolver_response(text, "Crab").unwrap();
+        assert_eq!(r.service.as_deref(), Some("NED"));
+        let epoch = r.resolved_at.expect("resolved_at should be stamped");
+        assert!(!epoch.trim().is_empty());
+        // Round-trips through chrono as a valid RFC-3339 instant.
+        assert!(chrono::DateTime::parse_from_rfc3339(&epoch).is_ok());
+    }
+
+    #[test]
+    fn form_state_spectral_sampling_raw_defaults_absent() {
+        // New optional operator-aware field defaults to None and survives JSON.
+        let s = SearchFormState::new();
+        assert!(s.spectral_sampling_raw.is_none());
+        let json = serde_json::to_string(&s).unwrap();
+        let back: SearchFormState = serde_json::from_str(&json).unwrap();
+        assert!(back.spectral_sampling_raw.is_none());
     }
 
     #[test]

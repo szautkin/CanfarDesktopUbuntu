@@ -56,6 +56,24 @@ mod tests {
                 descriptor.name
             );
         }
+
+        // Parity guard: tools added for Windows-reference parity must actually be
+        // wired into the live manifest an agent sees over tools/list.
+        for expected in [
+            "get_observation_notes",
+            "update_observation_note",
+            "bulk_update_observation_notes",
+            "list_notebooks",
+            "use_workflow",
+            "update_guide_tool",
+            "upload_file_to_vospace",
+            "download_vospace_file",
+        ] {
+            assert!(
+                seen.contains(expected),
+                "expected parity tool '{expected}' missing from the external manifest"
+            );
+        }
     }
 
     /// One agent must never see another agent's queued proposals: lifecycle reads

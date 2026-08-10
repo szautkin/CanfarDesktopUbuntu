@@ -13,6 +13,7 @@
 //! malformed frame — collapses to `SelfTestResult { ok: false, error: Some(..) }`
 //! with a message fit to show a user.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -62,7 +63,17 @@ impl SelfTestResult {
 /// round-trip. Never panics; every failure path returns a `SelfTestResult`
 /// whose `error` is safe to surface in the connect wizard's Verify step.
 pub async fn run_self_test() -> SelfTestResult {
-    match tokio::time::timeout(OVERALL_TIMEOUT, handshake()).await {
+    run_self_test_at(socket_path()).await
+}
+
+/// [`run_self_test`] against an explicit socket `path`.
+///
+/// A test seam: it lets the full connect + handshake run over a private temp
+/// socket without mutating the process-wide `XDG_RUNTIME_DIR`. Production always
+/// reaches this through [`run_self_test`] with [`socket_path()`], so the wizard's
+/// Verify step is unchanged.
+pub(crate) async fn run_self_test_at(path: PathBuf) -> SelfTestResult {
+    match tokio::time::timeout(OVERALL_TIMEOUT, handshake(path)).await {
         Ok(result) => result,
         Err(_) => SelfTestResult::failed(
             "The MCP server didn't finish the handshake in time. Make sure it's enabled and try again.",
@@ -71,9 +82,7 @@ pub async fn run_self_test() -> SelfTestResult {
 }
 
 /// The connect + handshake, bounded overall by [`run_self_test`]'s 4s timeout.
-async fn handshake() -> SelfTestResult {
-    let path = socket_path();
-
+async fn handshake(path: PathBuf) -> SelfTestResult {
     // Connect with its own 2s bound (Ok(Ok) = connected; Ok(Err) = refused;
     // Err = the 2s elapsed).
     let stream = match tokio::time::timeout(CONNECT_TIMEOUT, UnixStream::connect(&path)).await {
@@ -269,20 +278,14 @@ mod tests {
 
     #[tokio::test]
     async fn self_test_fails_gracefully_when_socket_absent() {
-        // Point the endpoint at a directory that can't hold a live socket, so
-        // connect fails fast and we still get a well-formed failure result.
-        let dir = std::env::temp_dir().join(format!("verbinal-selftest-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var_os("XDG_RUNTIME_DIR");
-        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        // A socket path with nothing bound: connect fails fast and we still get a
+        // well-formed failure result. The path is injected, so no XDG mutation is
+        // needed (and no race with other env-sensitive tests).
+        let path = std::env::temp_dir()
+            .join(format!("verbinal-selftest-absent-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
 
-        let result = run_self_test().await;
-
-        match prev {
-            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-            None => std::env::remove_var("XDG_RUNTIME_DIR"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        let result = run_self_test_at(path).await;
 
         assert!(!result.ok);
         assert!(result.error.is_some());

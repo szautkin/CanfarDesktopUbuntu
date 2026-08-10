@@ -307,6 +307,7 @@ fn build_overview(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
         &[
             (crate::tr_en!("Algorithm").into(), f_text(obs.algorithm.as_deref())),
             (crate::tr_en!("Sequence Number").into(), f_text(obs.sequence_number.as_deref())),
+            (crate::tr_en!("Meta Release").into(), f_date(obs.meta_release.as_deref())),
             (crate::tr_en!("Type").into(), f_text(obs.observation_type.as_deref())),
             (crate::tr_en!("Intent").into(), f_text(obs.intent.as_deref())),
         ],
@@ -374,6 +375,8 @@ fn build_overview(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
                 (crate::tr_en!("Humidity").into(), f_number(e.humidity)),
                 (crate::tr_en!("Elevation").into(), f_degrees(e.elevation)),
                 (crate::tr_en!("Tau").into(), f_number(e.tau)),
+                (crate::tr_en!("Ambient Temp").into(), f_number(e.ambient_temp)),
+                (crate::tr_en!("Photometric").into(), f_bool(e.photometric)),
             ],
         );
     }
@@ -401,50 +404,75 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
     for (i, plane) in obs.planes.iter().enumerate() {
         let plane_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
 
-        // Spatial footprint (drawn polygon + RA/Dec bounding box).
-        if !plane.position_bounds.is_empty() {
+        // Spatial: drawn footprint + RA/Dec bounding box + pixel / resolution detail.
+        {
             if let Some(fp) = build_footprint(&plane.position_bounds) {
                 plane_box.append(&fp);
             }
-            let (min_ra, max_ra, min_dec, max_dec) = bbox(&plane.position_bounds);
-            add_card(
-                &plane_box,
-                crate::tr_en!("Spatial Footprint"),
-                &[
-                    (
-                        crate::tr_en!("RA range").into(),
-                        format!("{} – {}", f_degrees(Some(min_ra)), f_degrees(Some(max_ra))),
-                    ),
-                    (
-                        crate::tr_en!("Dec range").into(),
-                        format!("{} – {}", f_degrees(Some(min_dec)), f_degrees(Some(max_dec))),
-                    ),
-                    (crate::tr_en!("Vertices").into(), plane.position_bounds.len().to_string()),
-                ],
-            );
+            let mut rows: Vec<(String, String)> = Vec::new();
+            if !plane.position_bounds.is_empty() {
+                let (min_ra, max_ra, min_dec, max_dec) = bbox(&plane.position_bounds);
+                rows.push((
+                    crate::tr_en!("RA range").into(),
+                    format!("{} – {}", f_degrees(Some(min_ra)), f_degrees(Some(max_ra))),
+                ));
+                rows.push((
+                    crate::tr_en!("Dec range").into(),
+                    format!("{} – {}", f_degrees(Some(min_dec)), f_degrees(Some(max_dec))),
+                ));
+                rows.push((crate::tr_en!("Vertices").into(), plane.position_bounds.len().to_string()));
+            }
+            if let Some((a, b)) = plane.position_dimension {
+                rows.push((crate::tr_en!("Dimensions").into(), format!("{} × {} px", a, b)));
+            }
+            if let Some(r) = plane.position_resolution {
+                rows.push((crate::tr_en!("Resolution").into(), format!("{}″", trim_float(r, 4))));
+            }
+            if let Some(s) = plane.position_sample_size {
+                rows.push((crate::tr_en!("Sample Size").into(), format!("{}″", trim_float(s, 4))));
+            }
+            add_card(&plane_box, crate::tr_en!("Spatial Footprint"), &rows);
         }
 
-        // Spectral.
-        if plane.energy_lower.is_some() || plane.energy_upper.is_some() {
-            add_card(
-                &plane_box,
-                crate::tr_en!("Spectral"),
-                &[(
+        // Spectral (bandpass / band / wavelength range / resolving power / rest wavelength).
+        add_card(
+            &plane_box,
+            crate::tr_en!("Spectral"),
+            &[
+                (crate::tr_en!("Bandpass").into(), f_text(plane.energy_bandpass.as_deref())),
+                (crate::tr_en!("Band").into(), f_text(plane.energy_em_band.as_deref())),
+                (
                     crate::tr_en!("Wavelength").into(),
                     f_wavelength_range(plane.energy_lower, plane.energy_upper),
-                )],
-            );
-        }
+                ),
+                (crate::tr_en!("Resolving Power").into(), f_number(plane.energy_resolving_power)),
+                (crate::tr_en!("Rest Wavelength").into(), f_wavelength(plane.energy_rest_wav)),
+            ],
+        );
 
-        // Temporal (MJD → calendar UTC).
-        if plane.time_lower.is_some() || plane.time_upper.is_some() {
+        // Temporal (MJD → calendar UTC; exposure via caom2_format::seconds).
+        add_card(
+            &plane_box,
+            crate::tr_en!("Temporal"),
+            &[
+                (crate::tr_en!("Start").into(), f_mjd_to_date(plane.time_lower)),
+                (crate::tr_en!("End").into(), f_mjd_to_date(plane.time_upper)),
+                (
+                    crate::tr_en!("Exposure").into(),
+                    crate::helpers::caom2_format::seconds(plane.time_exposure),
+                ),
+            ],
+        );
+
+        // Polarization states.
+        if !plane.polarization_states.is_empty() {
             add_card(
                 &plane_box,
-                crate::tr_en!("Temporal"),
-                &[
-                    (crate::tr_en!("Start").into(), f_mjd_to_date(plane.time_lower)),
-                    (crate::tr_en!("End").into(), f_mjd_to_date(plane.time_upper)),
-                ],
+                crate::tr_en!("Polarization"),
+                &[(
+                    crate::tr_en!("States").into(),
+                    plane.polarization_states.join(", "),
+                )],
             );
         }
 
@@ -481,6 +509,26 @@ fn build_files(
 ) -> gtk::ScrolledWindow {
     let content = section_box();
 
+    // Snapshot the observation metadata a download needs to register itself in the
+    // Research library. Captured up front (owned) so the async download closure is
+    // independent of the page's lifetime — the page is reused across observations,
+    // so reading live fields at completion could stamp the wrong record.
+    let meta = ObsMeta {
+        publisher_id: publisher_id.to_string(),
+        collection: obs.collection.clone(),
+        observation_id: obs.observation_id.clone(),
+        target_name: obs
+            .target
+            .as_ref()
+            .and_then(|t| t.name.clone())
+            .unwrap_or_default(),
+        instrument: obs
+            .instrument
+            .as_ref()
+            .and_then(|i| i.name.clone())
+            .unwrap_or_default(),
+    };
+
     if obs.planes.is_empty() {
         content.append(&dim_label(crate::tr_en!("No files available.")));
     } else {
@@ -491,7 +539,7 @@ fn build_files(
                 plane_box.append(&dim_label(crate::tr_en!("No files in this plane.")));
             } else {
                 for art in &plane.artifacts {
-                    plane_box.append(&build_artifact_row(art, services, root, publisher_id));
+                    plane_box.append(&build_artifact_row(art, services, root, &meta));
                 }
             }
             let title = format!("{} · {} file(s)", plane.product_id, plane.artifacts.len());
@@ -516,7 +564,7 @@ fn build_artifact_row(
     art: &Caom2Artifact,
     services: &Arc<AppServices>,
     root: &gtk::Box,
-    publisher_id: &str,
+    meta: &ObsMeta,
 ) -> gtk::Frame {
     let inner = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     inner.set_margin_start(10);
@@ -549,11 +597,20 @@ fn build_artifact_row(
         meta_text.push_str("  ");
     }
     meta_text.push_str(&f_bytes(art.content_length));
-    let meta = gtk::Label::new(Some(&meta_text));
-    meta.add_css_class("dim-label");
-    meta.add_css_class("caption");
-    meta.set_valign(gtk::Align::Center);
-    inner.append(&meta);
+    let meta_label = gtk::Label::new(Some(&meta_text));
+    meta_label.add_css_class("dim-label");
+    meta_label.add_css_class("caption");
+    meta_label.set_valign(gtk::Align::Center);
+    inner.append(&meta_label);
+
+    // Inline status area (progress / viewer buttons / "Added to Research" banner).
+    // Hidden until a download starts; each artifact row owns its own so parallel
+    // downloads never overwrite each other's status.
+    let status_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    status_box.set_margin_start(10);
+    status_box.set_margin_end(10);
+    status_box.set_margin_bottom(8);
+    status_box.set_visible(false);
 
     let dl = gtk::Button::from_icon_name("folder-download-symbolic");
     dl.add_css_class("flat");
@@ -562,44 +619,74 @@ fn build_artifact_row(
     {
         let services = services.clone();
         let root = root.clone();
-        let pid = publisher_id.to_string();
+        let meta = meta.clone();
         let uri = art.uri.clone();
         let pt = art.product_type.clone();
-        dl.connect_clicked(move |_| {
+        let status_box = status_box.clone();
+        dl.connect_clicked(move |btn| {
+            // Guard against double-clicks: the streamed download can take a while.
+            btn.set_sensitive(false);
+            let btn = btn.clone();
             let services = services.clone();
             let root = root.clone();
-            let pid = pid.clone();
+            let meta = meta.clone();
             let uri = uri.clone();
             let pt = pt.clone();
+            let status_box = status_box.clone();
             glib::spawn_future_local(async move {
-                download_artifact(services, root, pid, uri, pt).await;
+                download_artifact(services, root, status_box, meta, uri, pt).await;
+                btn.set_sensitive(true);
             });
         });
     }
     inner.append(&dl);
 
+    // Frame wraps a vertical box: the file row on top, its status area below.
+    let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    outer.append(&inner);
+    outer.append(&status_box);
+
     let frame = gtk::Frame::new(None);
     frame.add_css_class("card");
-    frame.set_child(Some(&inner));
+    frame.set_child(Some(&outer));
     frame
 }
 
-/// Best-effort artifact download: resolve DataLink, pick the matching URL, stream
-/// to the user's Downloads directory, then open FITS files in the viewer (via the
-/// `app.open-fits-file` action) or hand other files to the OS default app.
+/// Owned snapshot of the observation metadata a download needs to register a
+/// Research-library record, captured when the Files tab is built. The page is
+/// reused across observations, so the download closure must not read live fields.
+#[derive(Clone)]
+struct ObsMeta {
+    publisher_id: String,
+    collection: String,
+    observation_id: String,
+    target_name: String,
+    instrument: String,
+}
+
+/// Download an artifact into the managed Research library, register the science
+/// file so it appears in Research, and recommend a viewer by inspecting the FITS
+/// content (spectral cube → 3D Cube Viewer, else 2D FITS Viewer).
+///
+/// Mirrors the Windows `OnDownloadArtifactAsync` / `DownloadUrlToFileAsync` /
+/// `RegisterInResearch` / `BuildViewerButton` flow. Reuses the same streaming
+/// helper the Search / Research pages use (`stream_download_to_file`, chunked to
+/// a sibling `.tmp` then renamed) and the same `open-fits-file` / `open-cube-file`
+/// / `navigate-research` app actions the Research page fires.
 async fn download_artifact(
     services: Arc<AppServices>,
     root: gtk::Box,
-    publisher_id: String,
+    status_box: gtk::Box,
+    meta: ObsMeta,
     artifact_uri: String,
     product_type: Option<String>,
 ) {
     let filename = artifact_file_name(&artifact_uri);
-    services.toast.toast(&format!("Downloading {}…", filename));
+    status_downloading(&status_box, &format!("Resolving {}…", filename));
 
     // 1. Resolve DataLink for this observation.
     let svc = services.clone();
-    let pid = publisher_id.clone();
+    let pid = meta.publisher_id.clone();
     let dl = match services
         .spawn(async move {
             let token = svc.get_token().await;
@@ -609,63 +696,182 @@ async fn download_artifact(
     {
         Ok(d) => d,
         Err(e) => {
-            services.toast.toast(&format!("Download failed: {}", e));
+            status_error(&status_box, &format!("Download failed: {}", e));
             return;
         }
     };
 
-    let is_preview = matches!(
-        product_type.as_deref().map(str::to_lowercase).as_deref(),
-        Some("preview") | Some("thumbnail")
-    );
+    // Branch on product type FIRST so a preview click never grabs the science URL
+    // (and vice versa) — mirrors the reference URL-selection guard.
+    let pt_lower = product_type.as_deref().map(|s| s.trim().to_lowercase());
+    let is_preview = matches!(pt_lower.as_deref(), Some("preview") | Some("thumbnail"));
     let url = match pick_url(&dl, &filename, is_preview) {
         Some(u) => u,
         None => {
-            services.toast.toast(&format!("No download link for {}", filename));
+            status_error(&status_box, &format!("No download link for {}", filename));
             return;
         }
     };
 
-    // Choose a target filename/path.
+    // 2. Destination under the managed Research directory (NOT ~/Downloads). The id
+    //    is deterministic per publisher DID, so the download lands in — and later
+    //    registers under — the same slot a Search-page save would use.
+    let obs_id = uuid_from_publisher_id(&meta.publisher_id);
+    let managed_dir = crate::services::managed_dir_for(&obs_id);
+    if let Err(e) = std::fs::create_dir_all(&managed_dir) {
+        status_error(&status_box, &format!("Cannot create storage directory: {}", e));
+        return;
+    }
     let mut name = filename.clone();
     if !name.contains('.') {
         name.push_str(".fits");
     }
-    let target = download_dir().join(&name);
+    let target = managed_dir.join(&name);
 
-    // 2. Download and write on the tokio pool (keeps the main loop responsive).
+    // 3. Stream the body chunk-by-chunk to disk (same helper the Search/Research
+    //    pages use). Progress surfaces as throttled toasts; the inline spinner
+    //    stays up for the duration.
+    status_downloading(&status_box, &format!("Downloading {}…", name));
     let svc = services.clone();
     let url2 = url.clone();
-    let target2 = target.clone();
-    let write_result = services
+    let dest = target.clone();
+    let toast_handle = services.toast.clone();
+    let progress_label = name.clone();
+    let dl_result = services
         .spawn(async move {
             let token = svc.get_token().await;
-            match svc.datalink.download_file(&url2, token.as_deref()).await {
-                Ok((bytes, _)) => match tokio::task::spawn_blocking(move || std::fs::write(&target2, &bytes)).await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(e)) => Err(e.to_string()),
-                    Err(e) => Err(e.to_string()),
-                },
-                Err(e) => Err(e.to_string()),
-            }
+            crate::ui::search_page::stream_download_to_file(
+                &url2,
+                token.as_deref(),
+                &dest,
+                &toast_handle,
+                &progress_label,
+            )
+            .await
         })
         .await;
 
-    match write_result {
-        Ok(()) => {
-            let path_str = target.to_string_lossy().to_string();
-            if is_fits_name(&name) {
-                services
-                    .toast
-                    .toast(&format!("Downloaded {} — opening in FITS viewer", name));
-                activate_open_fits(&root, &path_str);
-            } else {
-                services.toast.toast(&format!("Downloaded to {}", path_str));
-                let _ = open::that(&target);
-            }
+    let file_size = match dl_result {
+        Ok(n) => n,
+        Err(e) => {
+            status_error(&status_box, &format!("Download failed: {}", e));
+            return;
         }
-        Err(e) => services.toast.toast(&format!("Download failed: {}", e)),
+    };
+
+    let path_str = target.to_string_lossy().to_string();
+
+    // 4. Classify by CONTENT, not extension — a mis-served download can put FITS
+    //    bytes in a ".png" (and vice versa). Runs off the GLib thread.
+    let dest = target.clone();
+    let shape = services
+        .spawn(async move {
+            tokio::task::spawn_blocking(move || crate::helpers::fits_sniff::inspect(&dest))
+                .await
+                .ok()
+        })
+        .await;
+
+    match shape {
+        Some(shape) if shape.kind != crate::helpers::fits_sniff::FitsKind::NotFits => {
+            // Only the SCIENCE file is registered — a calibration/aux FITS would
+            // clobber the science record (the store replaces by id/publisher DID).
+            let is_science = !is_preview
+                && matches!(pt_lower.as_deref(), None | Some("") | Some("science"));
+            let registered = if is_science {
+                register_in_research(&services, &meta, &dl, &path_str, file_size).await
+            } else {
+                false
+            };
+            status_downloaded_fits(&status_box, &root, &name, &path_str, shape, registered);
+        }
+        _ => {
+            // Preview PNG / README / other sidecar — offer an OS-default open.
+            status_downloaded_other(&status_box, &name, &path_str);
+        }
     }
+}
+
+/// Register a downloaded science file in the Research library so it appears there.
+/// Uses a deterministic id derived from the publisher DID, so re-downloading (or a
+/// prior Search-page save) updates the same record rather than duplicating it, and
+/// preserves any previously-cached preview. Best-effort; returns whether it saved.
+async fn register_in_research(
+    services: &Arc<AppServices>,
+    meta: &ObsMeta,
+    dl: &DataLinkResult,
+    local_path: &str,
+    file_size: u64,
+) -> bool {
+    let obs_id = uuid_from_publisher_id(&meta.publisher_id);
+
+    // Preview URLs from DataLink so Research can show the image (falls back to any
+    // existing record's cached values — the store swaps by id).
+    let thumbnail_url = dl
+        .files
+        .iter()
+        .find(|f| f.is_thumbnail())
+        .map(|f| f.url.clone())
+        .unwrap_or_default();
+    let preview_url = dl
+        .files
+        .iter()
+        .find(|f| f.is_preview())
+        .map(|f| f.url.clone())
+        .unwrap_or_default();
+
+    // Preserve a prior save's cached preview path / URLs when present.
+    let svc = services.clone();
+    let pid = meta.publisher_id.clone();
+    let existing = services
+        .spawn(async move {
+            svc.observation_store
+                .load_async()
+                .await
+                .into_iter()
+                .find(|o| o.publisher_id == pid)
+        })
+        .await;
+
+    let obs = crate::services::DownloadedObservation {
+        id: obs_id,
+        publisher_id: meta.publisher_id.clone(),
+        collection: meta.collection.clone(),
+        observation_id: meta.observation_id.clone(),
+        target_name: meta.target_name.clone(),
+        instrument: meta.instrument.clone(),
+        filter: existing.as_ref().map(|o| o.filter.clone()).unwrap_or_default(),
+        ra: existing.as_ref().map(|o| o.ra.clone()).unwrap_or_default(),
+        dec: existing.as_ref().map(|o| o.dec.clone()).unwrap_or_default(),
+        start_date: existing.as_ref().map(|o| o.start_date.clone()).unwrap_or_default(),
+        cal_level: existing.as_ref().map(|o| o.cal_level.clone()).unwrap_or_default(),
+        local_path: local_path.to_string(),
+        file_size,
+        downloaded_at: chrono::Utc::now().to_rfc3339(),
+        thumbnail_url: if thumbnail_url.is_empty() {
+            existing.as_ref().map(|o| o.thumbnail_url.clone()).unwrap_or_default()
+        } else {
+            thumbnail_url
+        },
+        preview_url: if preview_url.is_empty() {
+            existing.as_ref().map(|o| o.preview_url.clone()).unwrap_or_default()
+        } else {
+            preview_url
+        },
+        local_preview_path: existing
+            .as_ref()
+            .map(|o| o.local_preview_path.clone())
+            .unwrap_or_default(),
+        agent_attribution: None,
+    };
+
+    let svc = services.clone();
+    matches!(
+        services
+            .spawn(async move { svc.observation_store.save_async(obs).await })
+            .await,
+        Ok(())
+    )
 }
 
 fn pick_url(dl: &DataLinkResult, filename: &str, is_preview: bool) -> Option<String> {
@@ -697,42 +903,57 @@ fn pick_url(dl: &DataLinkResult, filename: &str, is_preview: bool) -> Option<Str
 fn build_provenance(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
     let content = section_box();
 
-    add_card(
-        &content,
-        crate::tr_en!("Processing"),
-        &[
-            (crate::tr_en!("Algorithm").into(), f_text(obs.algorithm.as_deref())),
-            (crate::tr_en!("Sequence Number").into(), f_text(obs.sequence_number.as_deref())),
-            (crate::tr_en!("Observation Type").into(), f_text(obs.observation_type.as_deref())),
-            (crate::tr_en!("Intent").into(), f_text(obs.intent.as_deref())),
-        ],
-    );
-
-    if !obs.planes.is_empty() {
-        let rows: Vec<(String, String)> = obs
-            .planes
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                (
-                    format!("Plane {}", i + 1),
-                    format!(
-                        "{} (L{}, {})",
-                        p.product_id,
-                        p.calibration_level.map(|c| c.to_string()).unwrap_or_else(|| "?".to_string()),
-                        f_text(p.data_product_type.as_deref())
-                    ),
-                )
-            })
-            .collect();
-        add_card(&content, crate::tr_en!("Planes"), &rows);
+    if obs.planes.is_empty() {
+        content.append(&dim_label(crate::tr_en!("No provenance information available.")));
+        return scrolled(&content);
     }
 
-    if content.first_child().is_none() {
-        content.append(&dim_label(crate::tr_en!("No provenance information available.")));
+    let multi = obs.planes.len() > 1;
+    for (i, plane) in obs.planes.iter().enumerate() {
+        let plane_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+
+        match &plane.provenance {
+            None => {
+                plane_box.append(&dim_label(crate::tr_en!("No provenance in this plane.")));
+            }
+            Some(pv) => {
+                add_card(
+                    &plane_box,
+                    crate::tr_en!("Pipeline"),
+                    &[
+                        (crate::tr_en!("Name").into(), f_text(pv.name.as_deref())),
+                        (crate::tr_en!("Version").into(), f_text(pv.version.as_deref())),
+                        (crate::tr_en!("Project").into(), f_text(pv.project.as_deref())),
+                        (crate::tr_en!("Producer").into(), f_text(pv.producer.as_deref())),
+                        (crate::tr_en!("Run ID").into(), f_text(pv.run_id.as_deref())),
+                        (crate::tr_en!("Reference").into(), f_text(pv.reference.as_deref())),
+                        (crate::tr_en!("Last Executed").into(), f_date(pv.last_executed.as_deref())),
+                    ],
+                );
+                if !pv.inputs.is_empty() {
+                    add_inputs_card(&plane_box, &pv.inputs);
+                }
+            }
+        }
+
+        append_plane(&content, plane_box, plane_expander_title(plane), multi, i == 0);
     }
 
     scrolled(&content)
+}
+
+/// Build an "Inputs" card listing the upstream plane URIs that fed a plane's
+/// provenance. Mirrors the reference's Inputs heading + per-URI rows.
+fn add_inputs_card(container: &gtk::Box, inputs: &[String]) {
+    let group = adw::PreferencesGroup::new();
+    group.set_title(crate::tr_en!("Inputs"));
+    for input in inputs {
+        // The URI can contain `&`; disable Pango markup so it renders verbatim.
+        let row = adw::ActionRow::builder().title(input.as_str()).build();
+        row.set_use_markup(false);
+        group.add(&row);
+    }
+    container.append(&group);
 }
 
 // ---------------------------------------------------------------------------
@@ -747,6 +968,7 @@ fn build_raw(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
     push_raw(&mut lines, "type", f_text(obs.observation_type.as_deref()));
     push_raw(&mut lines, "intent", f_text(obs.intent.as_deref()));
     push_raw(&mut lines, "sequenceNumber", f_text(obs.sequence_number.as_deref()));
+    push_raw(&mut lines, "metaRelease", f_date(obs.meta_release.as_deref()));
     push_raw(&mut lines, "algorithm", f_text(obs.algorithm.as_deref()));
     push_raw(&mut lines, "target.name", f_text(obs.target.as_ref().and_then(|t| t.name.as_deref())));
     push_raw(&mut lines, "target.type", f_text(obs.target.as_ref().and_then(|t| t.kind.as_deref())));
@@ -762,6 +984,8 @@ fn build_raw(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
         push_raw(&mut lines, "environment.humidity", f_number(e.humidity));
         push_raw(&mut lines, "environment.elevation", f_degrees(e.elevation));
         push_raw(&mut lines, "environment.tau", f_number(e.tau));
+        push_raw(&mut lines, "environment.ambientTemp", f_number(e.ambient_temp));
+        push_raw(&mut lines, "environment.photometric", f_bool(e.photometric));
     }
 
     for (i, p) in obs.planes.iter().enumerate() {
@@ -774,10 +998,12 @@ fn build_raw(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             p.calibration_level.map(|c| c.to_string()).unwrap_or_else(|| DASH.to_string()),
         );
         push_raw(&mut lines, &format!("{}quality", prefix), f_text(p.quality.as_deref()));
+        push_raw(&mut lines, &format!("{}energy.bandpass", prefix), f_text(p.energy_bandpass.as_deref()));
         push_raw(&mut lines, &format!("{}energy.lower", prefix), f_wavelength(p.energy_lower));
         push_raw(&mut lines, &format!("{}energy.upper", prefix), f_wavelength(p.energy_upper));
         push_raw(&mut lines, &format!("{}time.lower", prefix), f_mjd_to_date(p.time_lower));
         push_raw(&mut lines, &format!("{}time.upper", prefix), f_mjd_to_date(p.time_upper));
+        push_raw(&mut lines, &format!("{}time.exposure", prefix), crate::helpers::caom2_format::seconds(p.time_exposure));
         push_raw(&mut lines, &format!("{}artifacts", prefix), p.artifacts.len().to_string());
     }
 
@@ -964,21 +1190,190 @@ fn artifact_badge_class(product_type: &str) -> &'static str {
     }
 }
 
-/// Activate the app-level `open-fits-file` action with a downloaded path.
-fn activate_open_fits(widget: &gtk::Box, path: &str) {
+/// Activate a named app-level action from a widget (walks up to the window →
+/// application action group). Used for `open-fits-file` / `open-cube-file`
+/// (STRING path parameter) and `navigate-research` (no parameter) — the same
+/// actions the Research page fires.
+fn activate_app_action(widget: &gtk::Box, name: &str, param: Option<&glib::Variant>) {
     if let Some(root) = widget.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
         if let Some(app) = root.application() {
             let ag: &gtk::gio::ActionGroup = app.upcast_ref();
-            ag.activate_action("open-fits-file", Some(&glib::Variant::from(path)));
+            ag.activate_action(name, param);
         }
     }
 }
 
-fn download_dir() -> std::path::PathBuf {
-    directories::UserDirs::new()
-        .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
-        .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()))
-        .unwrap_or_else(std::env::temp_dir)
+/// Stable, deterministic Research-library id for a publisher DID. Mirrors
+/// `search_page::uuid_from_publisher_id` so a download from the detail page shares
+/// the managed directory and store slot of a Search-page save (no duplicates).
+fn uuid_from_publisher_id(publisher_id: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    publisher_id.hash(&mut hasher);
+    format!("obs-{:016x}", hasher.finish())
+}
+
+// ---------------------------------------------------------------------------
+// Inline download-status area (per artifact row)
+// ---------------------------------------------------------------------------
+
+/// Clear and reveal an artifact row's inline status area.
+fn status_reset(status_box: &gtk::Box) {
+    while let Some(child) = status_box.first_child() {
+        status_box.remove(&child);
+    }
+    status_box.set_visible(true);
+}
+
+/// Show a spinner + label while a download is in flight (matches the page's
+/// existing loading-spinner style).
+fn status_downloading(status_box: &gtk::Box, text: &str) {
+    status_reset(status_box);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let spinner = gtk::Spinner::new();
+    spinner.start();
+    row.append(&spinner);
+    let label = gtk::Label::new(Some(text));
+    label.add_css_class("caption");
+    label.set_halign(gtk::Align::Start);
+    label.set_wrap(true);
+    label.set_xalign(0.0);
+    row.append(&label);
+    status_box.append(&row);
+}
+
+/// Show an inline error line.
+fn status_error(status_box: &gtk::Box, text: &str) {
+    status_reset(status_box);
+    let label = gtk::Label::new(Some(text));
+    label.add_css_class("error");
+    label.add_css_class("caption");
+    label.set_halign(gtk::Align::Start);
+    label.set_wrap(true);
+    label.set_xalign(0.0);
+    status_box.append(&label);
+}
+
+/// Success state for a downloaded FITS file: a "Downloaded" line, viewer button(s)
+/// recommending Cube vs FITS by the sniffed shape, and — when the file was added to
+/// the Research library — an "Added to Research" banner with a "View in Research"
+/// action. Mirrors the Windows `BuildViewerButton` + `DownloadResearchRow`.
+fn status_downloaded_fits(
+    status_box: &gtk::Box,
+    root: &gtk::Box,
+    name: &str,
+    path: &str,
+    shape: crate::helpers::fits_sniff::FitsShape,
+    registered: bool,
+) {
+    status_reset(status_box);
+
+    let done = gtk::Label::new(Some(&format!("Downloaded {}", name)));
+    done.add_css_class("caption");
+    done.add_css_class("dim-label");
+    done.set_halign(gtk::Align::Start);
+    done.set_wrap(true);
+    done.set_xalign(0.0);
+    status_box.append(&done);
+
+    // Viewer buttons. A pure 2D image → a single FITS-viewer button. A file with a
+    // real third axis → BOTH viewers (the recommendation only reorders / styles the
+    // buttons, it never restricts the choice).
+    let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    btn_row.set_halign(gtk::Align::Start);
+
+    let fits_btn = gtk::Button::with_label(crate::tr_en!("Open in FITS Viewer"));
+    {
+        let root = root.clone();
+        let path = path.to_string();
+        fits_btn.connect_clicked(move |_| {
+            activate_app_action(&root, "open-fits-file", Some(&glib::Variant::from(path.as_str())));
+        });
+    }
+
+    if shape.has_cube_axis() {
+        let cube_btn = gtk::Button::with_label(crate::tr_en!("Open in Cube Viewer"));
+        {
+            let root = root.clone();
+            let path = path.to_string();
+            cube_btn.connect_clicked(move |_| {
+                activate_app_action(&root, "open-cube-file", Some(&glib::Variant::from(path.as_str())));
+            });
+        }
+        if shape.recommend_cube() {
+            // Spectral cube → recommend the Cube Viewer (listed first + accented).
+            cube_btn.add_css_class("suggested-action");
+            btn_row.append(&cube_btn);
+            btn_row.append(&fits_btn);
+        } else {
+            // Detector stack (3rd axis, but not spectral) → keep the 2D default.
+            fits_btn.add_css_class("suggested-action");
+            btn_row.append(&fits_btn);
+            btn_row.append(&cube_btn);
+        }
+        status_box.append(&btn_row);
+        if shape.recommend_cube() {
+            let reco = gtk::Label::new(Some(crate::tr_en!(
+                "Spectral cube detected — Cube Viewer recommended"
+            )));
+            reco.add_css_class("caption");
+            reco.add_css_class("accent");
+            reco.set_halign(gtk::Align::Start);
+            reco.set_xalign(0.0);
+            status_box.append(&reco);
+        }
+    } else {
+        fits_btn.add_css_class("suggested-action");
+        btn_row.append(&fits_btn);
+        status_box.append(&btn_row);
+    }
+
+    // "Added to Research" banner with a "View in Research" action.
+    if registered {
+        let research_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        research_row.set_halign(gtk::Align::Start);
+        research_row.set_margin_top(2);
+        let added = gtk::Label::new(Some(crate::tr_en!("Added to Research")));
+        added.add_css_class("caption");
+        added.add_css_class("success");
+        added.set_valign(gtk::Align::Center);
+        research_row.append(&added);
+        let view_btn = gtk::Button::with_label(crate::tr_en!("View in Research"));
+        view_btn.add_css_class("flat");
+        {
+            let root = root.clone();
+            view_btn.connect_clicked(move |_| {
+                activate_app_action(&root, "navigate-research", None);
+            });
+        }
+        research_row.append(&view_btn);
+        status_box.append(&research_row);
+    }
+}
+
+/// Success state for a non-FITS sidecar (preview PNG / README / …): a "Downloaded"
+/// line and an OS-default "Open" button.
+fn status_downloaded_other(status_box: &gtk::Box, name: &str, path: &str) {
+    status_reset(status_box);
+
+    let done = gtk::Label::new(Some(&format!("Downloaded {}", name)));
+    done.add_css_class("caption");
+    done.add_css_class("dim-label");
+    done.set_halign(gtk::Align::Start);
+    done.set_wrap(true);
+    done.set_xalign(0.0);
+    status_box.append(&done);
+
+    let open_btn = gtk::Button::with_label(crate::tr_en!("Open"));
+    open_btn.set_halign(gtk::Align::Start);
+    {
+        let path = path.to_string();
+        open_btn.connect_clicked(move |_| {
+            let _ = open::that(&path);
+        });
+    }
+    status_box.append(&open_btn);
 }
 
 /// Last path segment of a `cadc:`/`vos:` artifact URI (the file name).
@@ -992,11 +1387,6 @@ fn artifact_file_name(uri: &str) -> String {
     }
 }
 
-fn is_fits_name(name: &str) -> bool {
-    let l = name.to_lowercase();
-    l.ends_with(".fits") || l.ends_with(".fit") || l.ends_with(".fts") || l.ends_with(".fz")
-}
-
 // ---------------------------------------------------------------------------
 // Value formatting (mirrors Helpers/Caom2Format.cs)
 // ---------------------------------------------------------------------------
@@ -1004,6 +1394,22 @@ fn is_fits_name(name: &str) -> bool {
 fn f_text(s: Option<&str>) -> String {
     match s {
         Some(v) if !v.trim().is_empty() => v.to_string(),
+        _ => DASH.to_string(),
+    }
+}
+
+/// ISO-8601 timestamp → calendar date `YYYY-MM-DD` (mirrors `Caom2Format.Date`).
+/// Tolerant: parses the leading date portion and falls back to the raw text.
+fn f_date(s: Option<&str>) -> String {
+    match s {
+        Some(v) if !v.trim().is_empty() => {
+            let t = v.trim();
+            let head = t.get(..10).unwrap_or(t);
+            match chrono::NaiveDate::parse_from_str(head, "%Y-%m-%d") {
+                Ok(d) => d.format("%Y-%m-%d").to_string(),
+                Err(_) => t.to_string(),
+            }
+        }
         _ => DASH.to_string(),
     }
 }

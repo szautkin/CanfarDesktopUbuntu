@@ -370,12 +370,16 @@ impl ResearchPage {
             .spawn(async move { svc.observation_store.load_async().await })
             .await;
 
-        // Case-insensitive filter in memory
+        // Case-insensitive filter in memory. A record is shown when its METADATA
+        // matches OR its note/tag text matches — mirroring the Windows
+        // `ResearchViewModel.Refresh`, which unions the metadata match with
+        // `_noteStore.SearchPublisherIds(FilterText)`.
         let filtered: Vec<DownloadedObservation> = if text.is_empty() {
             full
         } else {
             let needle = text.to_lowercase();
-            full.into_iter()
+            let mut result: Vec<DownloadedObservation> = full
+                .iter()
                 .filter(|o| {
                     o.collection.to_lowercase().contains(&needle)
                         || o.observation_id.to_lowercase().contains(&needle)
@@ -383,7 +387,28 @@ impl ResearchPage {
                         || o.instrument.to_lowercase().contains(&needle)
                         || o.filter.to_lowercase().contains(&needle)
                 })
-                .collect()
+                .cloned()
+                .collect();
+
+            // Union in observations whose stored note text OR any tag matches the
+            // query (the notes file is tiny, so the scan is read inline like the
+            // note editor's `get`). Skip records already matched by metadata.
+            let note_ids: std::collections::HashSet<String> =
+                self.note_store.search(text).into_iter().collect();
+            if !note_ids.is_empty() {
+                let already: std::collections::HashSet<&str> =
+                    result.iter().map(|o| o.publisher_id.as_str()).collect();
+                let by_note: Vec<DownloadedObservation> = full
+                    .iter()
+                    .filter(|o| {
+                        note_ids.contains(&o.publisher_id)
+                            && !already.contains(o.publisher_id.as_str())
+                    })
+                    .cloned()
+                    .collect();
+                result.extend(by_note);
+            }
+            result
         };
 
         *self.current_list.borrow_mut() = filtered.clone();
@@ -1300,31 +1325,84 @@ impl ResearchPage {
     // Research export bundle
     // -----------------------------------------------------------------------
 
-    /// Build a Claude-friendly research bundle (observations.json + notes.json +
-    /// notes.md), pop a save-file picker, and write it to a `.zip`.  The store
-    /// read + zip write are offloaded so the UI thread never blocks.  Mirrors
-    /// the reference `ResearchPage.xaml.cs` `OnExportClick`.
+    /// Build a Claude-friendly research bundle — a proper wrapper with a
+    /// top-level `manifest.json` + `README.md` alongside `research/` and
+    /// `search/` module subdirectories — after asking what to include, then pop
+    /// a save-file picker, write the `.zip`, and (optionally) upload it to
+    /// VOSpace.  The store reads + zip write are offloaded so the UI thread never
+    /// blocks.  Mirrors the reference `ResearchPage.xaml.cs` `OnExportClick`.
     async fn export_bundle(self: &Rc<Self>) {
         // Persist any in-flight note edit so it is included in the export.
         self.flush_note();
 
-        // Gather the data. Observations come off the blocking pool; the notes
-        // file is tiny so we read it inline (same as the note editor does).
+        // ── Export options dialog (include notes / history / upload) ───────
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let description = gtk::Label::new(Some(crate::tr_en!(
+            "Bundle your saved observations, notes, and searches into a single \
+             Claude-friendly .zip."
+        )));
+        description.add_css_class("caption");
+        description.set_wrap(true);
+        description.set_xalign(0.0);
+        content.append(&description);
+
+        let include_notes = gtk::CheckButton::with_label(crate::tr_en!("Include research notes"));
+        include_notes.set_active(true);
+        let include_history =
+            gtk::CheckButton::with_label(crate::tr_en!("Include search history"));
+        include_history.set_active(true);
+        let upload_vospace =
+            gtk::CheckButton::with_label(crate::tr_en!("Upload to VOSpace"));
+        upload_vospace.set_active(false);
+        content.append(&include_notes);
+        content.append(&include_history);
+        content.append(&upload_vospace);
+
+        let opt_dialog = adw::MessageDialog::builder()
+            .heading(crate::tr_en!("Export Research Bundle"))
+            .build();
+        if let Some(win) = self.widget.root().and_downcast_ref::<gtk::Window>() {
+            opt_dialog.set_transient_for(Some(win));
+        }
+        opt_dialog.set_extra_child(Some(&content));
+        opt_dialog.add_response("cancel", crate::tr_en!("Cancel"));
+        opt_dialog.add_response("export", crate::tr_en!("Choose Folder…"));
+        opt_dialog.set_response_appearance("export", adw::ResponseAppearance::Suggested);
+        opt_dialog.set_default_response(Some("export"));
+        opt_dialog.set_close_response("cancel");
+
+        if opt_dialog.choose_future().await != "export" {
+            return;
+        }
+
+        let options = crate::helpers::research_exporter::BundleOptions {
+            include_notes: include_notes.is_active(),
+            include_search_history: include_history.is_active(),
+        };
+        let do_upload = upload_vospace.is_active();
+
+        // ── Gather the data. Observations come off the blocking pool; the note
+        //    + search files are tiny so we read them inline. ────────────────
         let svc = self.services.clone();
         let observations = self
             .services
             .spawn(async move { svc.observation_store.load_async().await })
             .await;
         let notes = self.note_store.all();
+        let saved = self.services.search_store.load_saved();
+        let recent = self.services.search_store.load_recent();
 
-        if observations.is_empty() && notes.is_empty() {
+        if observations.is_empty() && notes.is_empty() && saved.is_empty() && recent.is_empty() {
             self.services
                 .toast
                 .toast(crate::tr_en!("Nothing to export yet — save an observation first"));
             return;
         }
 
-        // ── Save-file picker (defaults to research-bundle.zip) ─────────────
+        // Stamp one clock so the default filename and the bundle contents agree.
+        let now = chrono::Utc::now();
+
+        // ── Save-file picker (defaults to the timestamped bundle name) ─────
         let root = self.widget.root().and_downcast::<gtk::Window>();
 
         let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
@@ -1333,10 +1411,12 @@ impl ResearchPage {
         zip_filter.add_pattern("*.zip");
         filters.append(&zip_filter);
 
+        let default_name =
+            format!("{}.zip", crate::helpers::research_exporter::bundle_name(now));
         let dialog = gtk::FileDialog::builder()
             .title(crate::tr_en!("Export Research Bundle"))
             .modal(true)
-            .initial_name("research-bundle.zip")
+            .initial_name(&default_name)
             .filters(&filters)
             .build();
 
@@ -1359,15 +1439,23 @@ impl ResearchPage {
         }
 
         // ── Write on the blocking pool — pure Rust, no GTK ─────────────────
+        let app_version = env!("CARGO_PKG_VERSION").to_string();
+        let host = host_name();
         let write_path = path.clone();
         let result = self
             .services
             .spawn(async move {
                 tokio::task::spawn_blocking(move || {
-                    crate::helpers::research_exporter::write_bundle_zip(
+                    crate::helpers::research_exporter::write_research_bundle_zip(
                         &write_path,
                         &observations,
                         &notes,
+                        &saved,
+                        &recent,
+                        options,
+                        now,
+                        &app_version,
+                        &host,
                     )
                 })
                 .await
@@ -1375,16 +1463,98 @@ impl ResearchPage {
             })
             .await;
 
-        match result {
-            Ok(count) => self.services.toast.toast(format!(
-                "Exported {} observation{} to {}",
-                count,
-                if count == 1 { "" } else { "s" },
-                path.display()
-            )),
-            Err(e) => self.services.toast.toast(format!("Export failed: {e}")),
+        let summary = match result {
+            Ok(s) => s,
+            Err(e) => {
+                self.services.toast.toast(format!("Export failed: {e}"));
+                return;
+            }
+        };
+
+        self.services.toast.toast(format!(
+            "Exported {} ({} observation{}, {} note{}, {} quer{}, {} recent) to {}",
+            summary.bundle_name,
+            summary.observation_count,
+            if summary.observation_count == 1 { "" } else { "s" },
+            summary.note_count,
+            if summary.note_count == 1 { "" } else { "s" },
+            summary.saved_count,
+            if summary.saved_count == 1 { "y" } else { "ies" },
+            summary.recent_count,
+            path.display()
+        ));
+
+        // ── Optional VOSpace upload of the finished bundle ─────────────────
+        if do_upload {
+            self.upload_bundle_to_vospace(&path).await;
         }
     }
+
+    /// Upload a finished bundle `.zip` to `vos:<user>/Verbinal-Exports/<name>.zip`
+    /// via the existing VOSpace service.  Requires an authenticated session; if
+    /// the user is signed out the bundle is still saved locally and a toast
+    /// explains the skip.  Mirrors `ExportService.UploadBundleToVoSpaceAsync`.
+    async fn upload_bundle_to_vospace(self: &Rc<Self>, path: &std::path::Path) {
+        let filename = match path.file_name().map(|n| n.to_string_lossy().to_string()) {
+            Some(n) if !n.is_empty() => n,
+            _ => return,
+        };
+        let remote_path = format!("Verbinal-Exports/{filename}");
+        let local_path = path.to_path_buf();
+
+        self.services
+            .toast
+            .toast(crate::tr_en!("Uploading bundle to VOSpace…"));
+
+        let svc = self.services.clone();
+        let remote_for_task = remote_path.clone();
+        let result: Result<(), String> = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await.ok_or_else(|| {
+                    "Sign in to CANFAR to upload the bundle to VOSpace".to_string()
+                })?;
+                let username = svc.get_username().await.ok_or_else(|| {
+                    "Sign in to CANFAR to upload the bundle to VOSpace".to_string()
+                })?;
+                let data = std::fs::read(&local_path)
+                    .map_err(|e| format!("Could not read bundle: {e}"))?;
+                // Ensure the destination folder exists (409 = already there).
+                let _ = svc
+                    .vospace
+                    .create_folder(&token, &username, "Verbinal-Exports")
+                    .await;
+                svc.vospace
+                    .upload_file(&token, &username, &remote_for_task, data, "application/zip")
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+
+        match result {
+            Ok(()) => {
+                let user = self.services.get_username().await.unwrap_or_default();
+                self.services
+                    .toast
+                    .toast(format!("Uploaded to vos:{user}/{remote_path}"));
+            }
+            Err(e) => self.services.toast.toast(format!("VOSpace upload failed: {e}")),
+        }
+    }
+}
+
+/// Best-effort local hostname for the export manifest/README provenance.
+fn host_name() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Build a standard `Icon + Label` button used in the detail pane action bar.

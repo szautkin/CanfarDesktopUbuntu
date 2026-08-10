@@ -96,6 +96,16 @@ pub struct FitsViewer {
     suppress_sync: Rc<RefCell<bool>>,
     /// Guards the notebook `switch-page` handler during an in-place HDU swap.
     suppress_page_switch: Rc<RefCell<bool>>,
+    /// Persistent sync-zoom toggle (mirrors Windows `IsSyncZoomEnabled`): when on,
+    /// every tab is re-zoomed to a shared angular field as it becomes active.
+    sync_zoom_enabled: Rc<Cell<bool>>,
+    /// Shared angular zoom in arcsec per screen pixel (mirrors Windows
+    /// `SharedAngularZoom`), captured from the active tab and re-applied to each
+    /// tab on activation. `0.0` = unset.
+    shared_angular_zoom: Rc<Cell<f64>>,
+    /// Image A's pre-blink viewport `(tab, center_x, center_y, zoom)`, snapshotted
+    /// before a blink reframes it and restored on stop (mirrors `_blinkRestore`).
+    blink_restore: RefCell<Option<(Rc<FitsTab>, f64, f64, f64)>>,
 }
 
 impl FitsViewer {
@@ -241,10 +251,11 @@ impl FitsViewer {
         blink_interval_scale.set_valign(gtk::Align::Center);
         blink_interval_scale.set_tooltip_text(Some(crate::tr_en!("Blink fade interval (ms)")));
 
-        let sync_fov_btn = gtk::Button::from_icon_name("zoom-fit-best-symbolic");
+        let sync_fov_btn = gtk::ToggleButton::new();
+        sync_fov_btn.set_icon_name("zoom-fit-best-symbolic");
         sync_fov_btn.add_css_class("flat");
         sync_fov_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Sync field of view across tabs (match the current image's sky field)"
+            "Sync zoom across tabs — match the current image's angular field (re-applied as you switch tabs)"
         )));
 
         let copy_radec_btn = gtk::Button::from_icon_name("edit-copy-symbolic");
@@ -485,6 +496,9 @@ impl FitsViewer {
             hdu_current_pos,
             suppress_sync: Rc::new(RefCell::new(false)),
             suppress_page_switch: Rc::new(RefCell::new(false)),
+            sync_zoom_enabled: Rc::new(Cell::new(false)),
+            shared_angular_zoom: Rc::new(Cell::new(0.0)),
+            blink_restore: RefCell::new(None),
         });
 
         // ── Wire toolbar signals ─────────────────────────────────────────────
@@ -617,9 +631,18 @@ impl FitsViewer {
                 v.build_blink_target_popover(mb);
             });
         }
+        // Persistent sync-zoom toggle (mirrors OnToggleSyncZoom): enabling it
+        // captures the active tab's angular scale as the shared value; other tabs
+        // adopt it lazily when they become active.
         {
             let v = viewer.clone();
-            sync_fov_btn.connect_clicked(move |_| v.sync_fov_to_current());
+            sync_fov_btn.connect_toggled(move |btn| {
+                v.sync_zoom_enabled.set(btn.is_active());
+                if btn.is_active() {
+                    v.update_shared_angular_zoom();
+                }
+                v.update_wcs_banner();
+            });
         }
         // Blink keys: Esc stop · Space pause · Left show-A · Right show-B.
         {
@@ -672,6 +695,9 @@ impl FitsViewer {
                     if let Some(tab) = v.current_tab() {
                         tab.set_zoom(*percent as f64 / 100.0);
                         v.zoom_entry.set_text(&percent.to_string());
+                        if v.sync_zoom_enabled.get() {
+                            v.update_shared_angular_zoom();
+                        }
                     }
                 }
             });
@@ -691,6 +717,9 @@ impl FitsViewer {
                             tab.set_zoom(pct / 100.0);
                             // Reflect the (clamped) applied zoom back to both widgets.
                             v.sync_toolbar_to_tab(&tab);
+                            if v.sync_zoom_enabled.get() {
+                                v.update_shared_angular_zoom();
+                            }
                         }
                     }
                 }
@@ -763,10 +792,13 @@ impl FitsViewer {
                     // once the welcome page has been removed.
                     let tab = v.tabs.borrow().get(page_idx as usize).cloned();
                     if let Some(tab) = tab {
+                        // Apply the shared view FIRST (mirrors ApplySharedViewToActivePage):
+                        // reposition the linked crosshair onto this tab's sky, then match the
+                        // shared angular zoom, THEN sync the toolbar so the zoom % reflects it.
+                        tab.apply_linked_crosshair();
+                        v.apply_shared_view_to_active(&tab);
                         v.sync_toolbar_to_tab(&tab);
                         v.update_hdu_and_banner(&tab);
-                        // Reposition the linked crosshair onto this tab's sky.
-                        tab.apply_linked_crosshair();
                     }
                 });
         }
@@ -1176,14 +1208,58 @@ impl FitsViewer {
 
     /// Refresh the approximate-WCS banner and the extension selector for `tab`.
     fn update_hdu_and_banner(&self, tab: &Rc<FitsTab>) {
-        let approximate = tab
-            .data()
-            .wcs
-            .as_ref()
-            .map(|w| w.is_approximate)
-            .unwrap_or(false);
-        self.wcs_banner.set_revealed(approximate);
+        self.update_wcs_banner();
         self.set_hdu_selector(&tab.hdus(), tab.hdu_index());
+    }
+
+    /// Reveal the approximate-WCS banner iff a sync/link mode is active AND any
+    /// open tab has a missing / invalid / approximate WCS (mirrors Windows
+    /// `UpdateWcsSyncWarning`). Sync maps positions through each image's WCS, so
+    /// an imprecise one makes the linked crosshair and matched zoom unreliable.
+    fn update_wcs_banner(&self) {
+        let syncing = self.sync_zoom_enabled.get() || self.link_btn.is_active();
+        let any_imprecise = syncing
+            && self
+                .tabs
+                .borrow()
+                .iter()
+                .any(|t| match t.data().wcs.as_ref() {
+                    Some(w) => !w.is_valid() || w.is_approximate,
+                    None => true,
+                });
+        self.wcs_banner.set_revealed(syncing && any_imprecise);
+    }
+
+    /// Capture the active tab's current zoom as a shared angular scale
+    /// (arcsec per screen pixel) so other tabs can match it when they become
+    /// active (mirrors Windows `UpdateSharedAngularZoom`).
+    fn update_shared_angular_zoom(&self) {
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        if let Some(arcsec_per_px) = tab.angular_scale_arcsec() {
+            self.shared_angular_zoom.set(arcsec_per_px);
+        }
+    }
+
+    /// Re-apply the shared angular zoom to `tab` (and re-center it on the shared
+    /// linked crosshair sky point) when the sync-zoom toggle is on. Mirrors the
+    /// zoom step of Windows `ApplySharedViewToActivePage`.
+    fn apply_shared_view_to_active(&self, tab: &Rc<FitsTab>) {
+        if !self.sync_zoom_enabled.get() {
+            return;
+        }
+        let shared = self.shared_angular_zoom.get();
+        if shared <= 0.0 {
+            return;
+        }
+        // Zoom so this tab shows `shared` arcsec per screen pixel.
+        tab.set_angular_scale_arcsec(shared);
+        // Re-center on the shared linked crosshair sky point, if one is set.
+        let placed = self.shared.borrow().placed;
+        if let Some((ra, dec)) = placed {
+            tab.center_on_world(ra, dec);
+        }
     }
 
     /// Populate the extension dropdown from `hdus`, selecting `selected_index`
@@ -1304,6 +1380,12 @@ impl FitsViewer {
         };
         self.blink_target.set(b_idx);
 
+        // Snapshot A's pre-blink viewport (center + zoom) so Stop can restore it —
+        // the alignment below re-centers A on the reference sky point (mirrors the
+        // Windows `_blinkRestore`).
+        let (a_cx, a_cy) = a.viewport_center();
+        *self.blink_restore.borrow_mut() = Some((a.clone(), a_cx, a_cy, a.zoom_scale()));
+
         // Align A and B on a shared sky point at a matched angular scale.
         let ref_sky = a.crosshair_world_pos().or_else(|| a.image_center_world());
         if let Some(target_scale) = a.angular_scale_arcsec() {
@@ -1371,6 +1453,12 @@ impl FitsViewer {
         *self.blink_active.borrow_mut() = false;
         if let Some(c) = self.blink_canvas.borrow_mut().take() {
             c.exit_blink();
+        }
+        // Restore image A's pre-blink view (blink re-centered/re-zoomed it to frame
+        // the overlap). Mirrors Windows `StopBlink` `_blinkRestore`.
+        if let Some((a, cx, cy, zoom)) = self.blink_restore.borrow_mut().take() {
+            a.set_zoom(zoom);
+            a.set_viewport_center(cx, cy);
         }
     }
 
@@ -1461,6 +1549,8 @@ impl FitsViewer {
         if let Some(tab) = self.current_tab() {
             tab.canvas().widget().queue_draw();
         }
+        // Link state feeds the approximate-WCS banner (mirrors UpdateWcsSyncWarning).
+        self.update_wcs_banner();
     }
 
     /// Basenames of every open tab (for the blink target picker).
@@ -1520,26 +1610,6 @@ impl FitsViewer {
         }
         popover.set_child(Some(&vbox));
         mb.set_popover(Some(&popover));
-    }
-
-    /// Match every open tab to the CURRENT tab's angular field of view + sky centre
-    /// (so tabs with different plate scales show the same patch of sky).
-    fn sync_fov_to_current(&self) {
-        let Some(cur) = self.current_tab() else {
-            return;
-        };
-        let Some(target) = cur.angular_scale_arcsec() else {
-            self.status_label
-                .set_text(crate::tr_en!("Sync FOV needs a WCS on the current image"));
-            return;
-        };
-        let center = cur.crosshair_world_pos().or_else(|| cur.image_center_world());
-        for tab in self.tabs.borrow().iter() {
-            tab.set_angular_scale_arcsec(target);
-            if let Some((ra, dec)) = center {
-                tab.center_on_world(ra, dec);
-            }
-        }
     }
 
     /// Load a FITS file from a path (used by VOSpace integration).

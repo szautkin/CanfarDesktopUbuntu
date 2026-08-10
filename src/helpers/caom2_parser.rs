@@ -8,7 +8,7 @@
 
 use crate::models::caom2::{
     CAOM2Observation, Caom2Artifact, Caom2Environment, Caom2Instrument, Caom2Plane, Caom2Proposal,
-    Caom2Target, Caom2Telescope,
+    Caom2Provenance, Caom2Target, Caom2Telescope,
 };
 
 type Node<'a> = roxmltree::Node<'a, 'a>;
@@ -34,6 +34,7 @@ fn parse_observation(el: Node) -> Result<CAOM2Observation, String> {
         observation_type: text_child(el, "type"),
         intent: text_child(el, "intent"),
         sequence_number: text_child(el, "sequenceNumber"),
+        meta_release: text_child(el, "metaRelease"),
         algorithm: child(el, "algorithm").and_then(|a| text_child(a, "name")),
         proposal: child(el, "proposal").map(parse_proposal),
         target: child(el, "target").map(parse_target),
@@ -95,15 +96,20 @@ fn parse_environment(el: Node) -> Caom2Environment {
         humidity: double_child(el, "humidity"),
         elevation: double_child(el, "elevation"),
         tau: double_child(el, "tau"),
+        ambient_temp: double_child(el, "ambientTemp"),
+        photometric: bool_child(el, "photometric"),
     }
 }
 
 fn parse_plane(el: Node) -> Caom2Plane {
-    let (energy_lower, energy_upper) = match child(el, "energy") {
+    let energy = child(el, "energy");
+    let (energy_lower, energy_upper) = match energy {
         Some(en) => parse_energy_bounds(en),
         None => (None, None),
     };
-    let (time_lower, time_upper) = match child(el, "time").and_then(|t| child(t, "bounds")) {
+    let position = child(el, "position");
+    let time = child(el, "time");
+    let (time_lower, time_upper) = match time.and_then(|t| child(t, "bounds")) {
         Some(b) => (double_child(b, "lower"), double_child(b, "upper")),
         None => (None, None),
     };
@@ -113,13 +119,23 @@ fn parse_plane(el: Node) -> Caom2Plane {
         calibration_level: int_child(el, "calibrationLevel"),
         data_product_type: text_child(el, "dataProductType"),
         quality: child(el, "quality").and_then(|q| text_child(q, "flag")),
-        position_bounds: child(el, "position")
-            .map(parse_position_bounds)
-            .unwrap_or_default(),
+        provenance: child(el, "provenance").map(parse_provenance),
+        position_bounds: position.map(parse_position_bounds).unwrap_or_default(),
+        position_dimension: position.and_then(|p| child(p, "dimension")).and_then(parse_dimension),
+        position_resolution: position.and_then(|p| double_child(p, "resolution")),
+        position_sample_size: position.and_then(|p| double_child(p, "sampleSize")),
         energy_lower,
         energy_upper,
+        energy_bandpass: energy.and_then(|en| text_child(en, "bandpassName")),
+        energy_em_band: energy.and_then(|en| text_child(en, "emBand")),
+        energy_resolving_power: energy.and_then(|en| double_child(en, "resolvingPower")),
+        energy_rest_wav: energy.and_then(|en| double_child(en, "restwav")),
         time_lower,
         time_upper,
+        time_exposure: time.and_then(|t| double_child(t, "exposure")),
+        polarization_states: child(el, "polarization")
+            .map(|pol| text_value_list(pol, "states", "state"))
+            .unwrap_or_default(),
         artifacts: child(el, "artifacts")
             .map(|a| {
                 children(a, "artifact")
@@ -128,6 +144,40 @@ fn parse_plane(el: Node) -> Caom2Plane {
                     .collect()
             })
             .unwrap_or_default(),
+    }
+}
+
+fn parse_provenance(el: Node) -> Caom2Provenance {
+    Caom2Provenance {
+        name: text_child(el, "name"),
+        version: text_child(el, "version"),
+        project: text_child(el, "project"),
+        producer: text_child(el, "producer"),
+        run_id: text_child(el, "runID"),
+        reference: text_child(el, "reference"),
+        last_executed: text_child(el, "lastExecuted"),
+        inputs: text_value_list(el, "inputs", "planeURI"),
+    }
+}
+
+/// Pixel dimensions `naxis1 × naxis2`, or `None` when either axis is absent.
+fn parse_dimension(dim: Node) -> Option<(i64, i64)> {
+    match (i64_child(dim, "naxis1"), i64_child(dim, "naxis2")) {
+        (Some(a), Some(b)) => Some((a, b)),
+        _ => None,
+    }
+}
+
+/// Trimmed, non-empty text of each `item` child under a `container` child of
+/// `parent` (e.g. `inputs/planeURI`, `states/state`). Empty when absent.
+fn text_value_list(parent: Node, container: &str, item: &str) -> Vec<String> {
+    match child(parent, container) {
+        Some(c) => children(c, item)
+            .into_iter()
+            .map(|n| node_text(n).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => Vec::new(),
     }
 }
 
@@ -239,6 +289,10 @@ fn int_child(parent: Node, name: &str) -> Option<i32> {
     text_child(parent, name)?.parse::<i32>().ok()
 }
 
+fn i64_child(parent: Node, name: &str) -> Option<i64> {
+    text_child(parent, name)?.parse::<i64>().ok()
+}
+
 fn u64_child(parent: Node, name: &str) -> Option<u64> {
     text_child(parent, name)?.parse::<u64>().ok()
 }
@@ -282,6 +336,7 @@ mod tests {
   <caom2:observationID>1234567</caom2:observationID>
   <caom2:type>OBJECT</caom2:type>
   <caom2:intent>science</caom2:intent>
+  <caom2:metaRelease>2012-03-14T00:00:00.000</caom2:metaRelease>
   <caom2:algorithm>
     <caom2:name>exposure</caom2:name>
   </caom2:algorithm>
@@ -308,6 +363,8 @@ mod tests {
   </caom2:instrument>
   <caom2:environment>
     <caom2:seeing>0.7</caom2:seeing>
+    <caom2:ambientTemp>2.5</caom2:ambientTemp>
+    <caom2:photometric>true</caom2:photometric>
   </caom2:environment>
   <caom2:planes>
     <caom2:plane>
@@ -317,6 +374,19 @@ mod tests {
       <caom2:quality>
         <caom2:flag>good</caom2:flag>
       </caom2:quality>
+      <caom2:provenance>
+        <caom2:name>MegaPipe</caom2:name>
+        <caom2:version>2.0</caom2:version>
+        <caom2:project>CFHTLS</caom2:project>
+        <caom2:producer>CADC</caom2:producer>
+        <caom2:runID>run-42</caom2:runID>
+        <caom2:reference>http://example.org/megapipe</caom2:reference>
+        <caom2:lastExecuted>2012-04-01T09:30:00.000</caom2:lastExecuted>
+        <caom2:inputs>
+          <caom2:planeURI>caom:CFHT/1234566/1234566p</caom2:planeURI>
+          <caom2:planeURI>caom:CFHT/1234565/1234565p</caom2:planeURI>
+        </caom2:inputs>
+      </caom2:provenance>
       <caom2:position>
         <caom2:bounds>
           <caom2:Polygon>
@@ -332,19 +402,36 @@ mod tests {
             </caom2:points>
           </caom2:Polygon>
         </caom2:bounds>
+        <caom2:dimension>
+          <caom2:naxis1>2048</caom2:naxis1>
+          <caom2:naxis2>4096</caom2:naxis2>
+        </caom2:dimension>
+        <caom2:resolution>0.6</caom2:resolution>
+        <caom2:sampleSize>0.187</caom2:sampleSize>
       </caom2:position>
       <caom2:energy>
         <caom2:bounds>
           <caom2:lower>3.5e-7</caom2:lower>
           <caom2:upper>6.0e-7</caom2:upper>
         </caom2:bounds>
+        <caom2:bandpassName>r.MP9601</caom2:bandpassName>
+        <caom2:emBand>Optical</caom2:emBand>
+        <caom2:resolvingPower>4.5</caom2:resolvingPower>
+        <caom2:restwav>4.75e-7</caom2:restwav>
       </caom2:energy>
       <caom2:time>
         <caom2:bounds>
           <caom2:lower>56000.0</caom2:lower>
           <caom2:upper>56000.01</caom2:upper>
         </caom2:bounds>
+        <caom2:exposure>615.0</caom2:exposure>
       </caom2:time>
+      <caom2:polarization>
+        <caom2:states>
+          <caom2:state>I</caom2:state>
+          <caom2:state>Q</caom2:state>
+        </caom2:states>
+      </caom2:polarization>
       <caom2:artifacts>
         <caom2:artifact>
           <caom2:uri>cadc:CFHT/1234567p.fits.fz</caom2:uri>
@@ -403,6 +490,48 @@ mod tests {
         assert_eq!(artifact.product_type.as_deref(), Some("science"));
         assert_eq!(artifact.content_type.as_deref(), Some("application/fits"));
         assert_eq!(artifact.content_length, Some(123_456_789));
+    }
+
+    #[test]
+    fn parses_extended_detail_fields() {
+        let obs = parse(SAMPLE).expect("parse ok");
+
+        // Observation meta-release (raw ISO text) + environment extras.
+        assert_eq!(obs.meta_release.as_deref(), Some("2012-03-14T00:00:00.000"));
+        let env = obs.environment.expect("environment");
+        assert_eq!(env.ambient_temp, Some(2.5));
+        assert_eq!(env.photometric, Some(true));
+
+        let plane = &obs.planes[0];
+
+        // Provenance pipeline + upstream inputs.
+        let pv = plane.provenance.as_ref().expect("provenance");
+        assert_eq!(pv.name.as_deref(), Some("MegaPipe"));
+        assert_eq!(pv.version.as_deref(), Some("2.0"));
+        assert_eq!(pv.project.as_deref(), Some("CFHTLS"));
+        assert_eq!(pv.producer.as_deref(), Some("CADC"));
+        assert_eq!(pv.run_id.as_deref(), Some("run-42"));
+        assert_eq!(pv.reference.as_deref(), Some("http://example.org/megapipe"));
+        assert_eq!(pv.last_executed.as_deref(), Some("2012-04-01T09:30:00.000"));
+        assert_eq!(
+            pv.inputs,
+            vec!["caom:CFHT/1234566/1234566p", "caom:CFHT/1234565/1234565p"]
+        );
+
+        // Position detail (dimension / resolution / sample size).
+        assert_eq!(plane.position_dimension, Some((2048, 4096)));
+        assert_eq!(plane.position_resolution, Some(0.6));
+        assert_eq!(plane.position_sample_size, Some(0.187));
+
+        // Energy detail (bandpass / band / resolving power / rest wavelength).
+        assert_eq!(plane.energy_bandpass.as_deref(), Some("r.MP9601"));
+        assert_eq!(plane.energy_em_band.as_deref(), Some("Optical"));
+        assert_eq!(plane.energy_resolving_power, Some(4.5));
+        assert_eq!(plane.energy_rest_wav, Some(4.75e-7));
+
+        // Time exposure + polarization states.
+        assert_eq!(plane.time_exposure, Some(615.0));
+        assert_eq!(plane.polarization_states, vec!["I", "Q"]);
     }
 
     #[test]

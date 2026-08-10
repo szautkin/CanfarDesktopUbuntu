@@ -46,7 +46,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "get_cube_view".into(),
             description:
-                "Read the active cube's 3D view: camera az/el/dist, quality steps, spectral scale, current channel, and dimensions."
+                "Read the active cube's 3D view: camera az/el/dist, quality steps, spectral scale, current channel, BUNIT value unit, and voxel dimensions."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -59,7 +59,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "set_cube_view".into(),
             description:
-                "Update any subset of the active cube's 3D view (orbit az/el, dolly dist, quality steps, spectral scale, current channel). Returns the resulting view."
+                "Update any subset of the active cube's 3D volume view — orbit az/el, dolly dist, camera reset, quality steps, spectral (Z) stretch, opacity density, MIP / render mode, background preset, idle auto-orbit, and slice-plane channel. Returns the resulting view."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -67,8 +67,14 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "az": { "type": "number", "description": "Camera azimuth (radians)." },
                     "el": { "type": "number", "description": "Camera elevation (radians, clamped ±1.4)." },
                     "dist": { "type": "number", "description": "Camera distance (clamped 0.5–8)." },
+                    "reset_camera": { "type": "boolean", "description": "Reset the orbit camera to the default framing (applied before any az/el/dist override)." },
                     "steps": { "type": "number", "description": "Ray-march quality steps (32–1024)." },
                     "spectral_scale": { "type": "number", "description": "Spectral (Z) axis stretch (0.5–4)." },
+                    "density": { "type": "number", "description": "Volume opacity/density multiplier (> 0)." },
+                    "mip": { "type": "boolean", "description": "Max-intensity projection on/off." },
+                    "render_mode": { "type": "string", "description": "Volume render mode: \"emission\" or \"max-intensity\" (alias for the MIP toggle)." },
+                    "background": { "type": "string", "enum": ["dark", "black", "light"], "description": "3D background preset." },
+                    "auto_orbit": { "type": "boolean", "description": "Idle auto-orbit on/off." },
                     "channel": { "type": "integer", "minimum": 0, "description": "Slice-plane channel index." }
                 },
                 "additionalProperties": false
@@ -96,14 +102,17 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "export_cube_figure".into(),
             description:
-                "Render the current cube view (3D volume or 2D slice) to a PNG image at the requested size."
+                "Render the current cube view (3D volume or 2D slice) to a figure. With a 'path' set, write it to disk as PNG or PDF and return the path (mirrors ExportCubeToPathAsync); otherwise return the PNG inline as base64."
                     .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "width": { "type": "integer", "minimum": 16, "maximum": 4096, "description": "Output width px (default 1024)." },
-                    "height": { "type": "integer", "minimum": 16, "maximum": 4096, "description": "Output height px (default 768)." },
-                    "transparent": { "type": "boolean", "description": "Clear the 3D background to alpha 0 (default false)." }
+                    "width": { "type": "integer", "minimum": 16, "maximum": 4096, "description": "Base output width px (default 1024), before 'scale'." },
+                    "height": { "type": "integer", "minimum": 16, "maximum": 4096, "description": "Base output height px (default 768), before 'scale'." },
+                    "scale": { "type": "integer", "minimum": 1, "maximum": 4, "description": "Resolution multiplier applied to width/height (default 1)." },
+                    "transparent": { "type": "boolean", "description": "Clear the 3D background to alpha 0 (default false)." },
+                    "path": { "type": "string", "description": "Absolute output file path. When set, the figure is written to disk (PNG/PDF) and the path is returned instead of base64." },
+                    "format": { "type": "string", "enum": ["png", "pdf"], "description": "Output format for a path export; defaults to the path's extension." }
                 },
                 "additionalProperties": false
             }),

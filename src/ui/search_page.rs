@@ -5,7 +5,7 @@ use crate::helpers::range_parser;
 use crate::helpers::unit_converter;
 use crate::models::search_result::{
     build_columns_from_headers, default_columns, format_cell, format_cell_with_unit, RecentSearch,
-    SavedQuery, SearchFormState, SearchResultRow, SearchResults,
+    ResolverResult, SavedQuery, SearchFormState, SearchResultRow, SearchResults,
 };
 
 // The filter→ADQL converter lives at `src/helpers/filter_to_adql.rs`. It is
@@ -105,6 +105,14 @@ pub struct SearchPage {
     // --- State ---
     resolved_ra: Rc<RefCell<Option<f64>>>,
     resolved_dec: Rc<RefCell<Option<f64>>>,
+    /// Resolver-provenance (SCI-9-3): the service that actually produced the
+    /// current coordinates (`result.service` else the selected resolver) and the
+    /// RFC-3339 epoch it was resolved at. Captured on a successful resolution,
+    /// cleared whenever the coordinates are (target edit / reset / FITS crosshair),
+    /// and frozen into the saved/recent search + export bundle. Mirrors Windows
+    /// `SearchViewModel._resolverServiceUsed` / `_resolutionEpoch`.
+    resolver_service_used: Rc<RefCell<Option<String>>>,
+    resolution_epoch: Rc<RefCell<Option<String>>>,
     results_store: Rc<RefCell<Option<SearchResults>>>,
     current_page: Rc<RefCell<usize>>,
     page_size: Rc<RefCell<usize>>,
@@ -114,8 +122,9 @@ pub struct SearchPage {
     hidden_columns: Rc<RefCell<std::collections::HashSet<String>>>,
     /// Per-column chosen display unit (cleaned column key → unit id). Only holds
     /// explicit non-default choices; an absent key means "column default" (RA/Dec
-    /// → sexagesimal, others → their legacy readable format). Not persisted
-    /// across sessions. Ref `ColumnUnitCatalog` / `BuildUnitHeader`.
+    /// → sexagesimal, others → their legacy readable format). Loaded on build and
+    /// saved on every change (search_store `column_units.json`), so choices survive
+    /// restarts. Ref `ColumnUnitCatalog` / `LocalSettingsColumnUnitStore`.
     column_units: Rc<RefCell<std::collections::HashMap<String, String>>>,
     /// Monotonic token used to debounce + cancel live target resolution: each
     /// keystroke bumps it, and a pending timeout / in-flight resolve is discarded
@@ -478,6 +487,9 @@ impl SearchPage {
         // =====================================================================
         // Build the struct
         // =====================================================================
+        // Restore persisted per-column display-unit choices before the struct
+        // takes ownership of `services`.
+        let loaded_column_units = services.search_store.load_column_units();
         let page = Rc::new(SearchPage {
             widget,
             services,
@@ -525,6 +537,8 @@ impl SearchPage {
             search_spinner,
             resolved_ra: Rc::new(RefCell::new(None)),
             resolved_dec: Rc::new(RefCell::new(None)),
+            resolver_service_used: Rc::new(RefCell::new(None)),
+            resolution_epoch: Rc::new(RefCell::new(None)),
             results_store: Rc::new(RefCell::new(None)),
             current_page: Rc::new(RefCell::new(0)),
             page_size: Rc::new(RefCell::new(DEFAULT_PAGE_SIZE)),
@@ -532,7 +546,7 @@ impl SearchPage {
             sort_ascending: Rc::new(RefCell::new(true)),
             column_filters: Rc::new(RefCell::new(std::collections::HashMap::new())),
             hidden_columns: Rc::new(RefCell::new(std::collections::HashSet::new())),
-            column_units: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            column_units: Rc::new(RefCell::new(loaded_column_units)),
             resolve_generation: Rc::new(RefCell::new(0)),
         });
 
@@ -779,13 +793,18 @@ impl SearchPage {
         // Bandpass width
         let (bw_min, bw_max) = parse_range_minmax(&self.bandpass_width);
 
-        // Spectral sampling
-        let ss_val = self
-            .spectral_sampling
-            .text()
-            .trim()
-            .parse::<f64>()
-            .ok();
+        // Spectral sampling — keep the operator-aware raw text (so `>`, `<=`,
+        // `A..B` reach the ADQL builder) alongside the legacy numeric parse.
+        let ss_text = self.spectral_sampling.text().to_string();
+        let ss_raw = {
+            let trimmed = ss_text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(ss_text.clone())
+            }
+        };
+        let ss_val = ss_text.trim().parse::<f64>().ok();
 
         // Rest frame energy
         let (rfe_min, rfe_max) = parse_range_minmax(&self.rest_frame_energy);
@@ -810,6 +829,10 @@ impl SearchPage {
                 .get(self.resolver.selected() as usize)
                 .unwrap_or(&"ALL")
                 .to_string(),
+            // Resolver provenance captured on the last successful resolution
+            // (mirrors Windows `_resolverServiceUsed` / `_resolutionEpoch`).
+            resolver_service_used: self.resolver_service_used.borrow().clone(),
+            resolution_epoch: self.resolution_epoch.borrow().clone(),
             resolved_ra: *self.resolved_ra.borrow(),
             resolved_dec: *self.resolved_dec.borrow(),
             search_radius: self.radius.value(),
@@ -848,6 +871,7 @@ impl SearchPage {
             wavelength_unit: spectral_unit.clone(),
             spectral_coverage: None, // covered by wavelength_min/max
             spectral_sampling: ss_val,
+            spectral_sampling_raw: ss_raw,
             spectral_sampling_unit: spectral_unit.clone(),
             resolving_power_min: rp_min,
             resolving_power_max: rp_max,
@@ -902,6 +926,7 @@ impl SearchPage {
         self.max_records.set_value(10000.0);
         *self.resolved_ra.borrow_mut() = None;
         *self.resolved_dec.borrow_mut() = None;
+        self.clear_resolver_provenance();
         self.status_label.set_text(crate::tr_en!("Form cleared"));
     }
 
@@ -934,6 +959,12 @@ impl SearchPage {
                     state.resolved_dec = Some(r.dec);
                     *self.resolved_ra.borrow_mut() = Some(r.ra);
                     *self.resolved_dec.borrow_mut() = Some(r.dec);
+                    // Capture resolver provenance into both the persistent page
+                    // state and this search's form state (feeds RecentSearch +
+                    // the export provenance line).
+                    self.capture_resolver_provenance(&r, &state.resolver_service);
+                    state.resolver_service_used = self.resolver_service_used.borrow().clone();
+                    state.resolution_epoch = self.resolution_epoch.borrow().clone();
                     self.resolver_status.set_text(&format!(
                         "RA: {:.5}  Dec: {:.5} ({})",
                         r.ra,
@@ -1005,10 +1036,14 @@ impl SearchPage {
                 let recent = RecentSearch {
                     summary,
                     adql: adql.to_string(),
+                    // Denormalised resolver-provenance copies (the primary source
+                    // is `form_state`; these are the exporter's fallback).
+                    resolver_service_used: form_state
+                        .and_then(|s| s.resolver_service_used.clone()),
+                    resolution_epoch: form_state.and_then(|s| s.resolution_epoch.clone()),
                     form_state: form_state.cloned().unwrap_or_default(),
                     result_count: count,
                     searched_at: chrono::Utc::now().to_rfc3339(),
-                    ..Default::default()
                 };
                 let _ = self.services.search_store.save_recent(recent);
                 self.refresh_recent();
@@ -1421,13 +1456,45 @@ impl SearchPage {
             .to_string()
     }
 
+    /// Freeze resolver provenance from a successful resolution. Mirrors Windows
+    /// `_resolverServiceUsed = result.Service ?? ResolverService` and
+    /// `_resolutionEpoch = result.ResolvedAt`: the actual resolver that produced
+    /// the coordinates (falling back to the selected service) and the resolution
+    /// epoch (falling back to now if the result carried none).
+    fn capture_resolver_provenance(&self, r: &ResolverResult, selected_service: &str) {
+        let service = r
+            .service
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(selected_service)
+            .to_string();
+        *self.resolver_service_used.borrow_mut() = Some(service);
+        *self.resolution_epoch.borrow_mut() = Some(
+            r.resolved_at
+                .clone()
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        );
+    }
+
+    /// Clear resolver provenance whenever the coordinates it describes are cleared
+    /// (target edit, form reset, unresolved result, or FITS-crosshair coords which
+    /// come from no resolver). Mirrors Windows clearing `_resolverServiceUsed` /
+    /// `_resolutionEpoch` alongside `ResolvedRA` / `ResolvedDec`.
+    fn clear_resolver_provenance(&self) {
+        *self.resolver_service_used.borrow_mut() = None;
+        *self.resolution_epoch.borrow_mut() = None;
+    }
+
     /// Debounced live target-name resolution (ref `ResolveTargetDebouncedAsync`).
     /// Each call bumps the generation token, so a pending 500 ms timeout or an
     /// in-flight network resolve is discarded once superseded by a newer edit.
     fn schedule_target_resolve(self: &Rc<Self>) {
-        // A changed target invalidates any previously resolved coordinates.
+        // A changed target invalidates any previously resolved coordinates and
+        // their resolver provenance.
         *self.resolved_ra.borrow_mut() = None;
         *self.resolved_dec.borrow_mut() = None;
+        self.clear_resolver_provenance();
 
         let my_gen = {
             let mut g = self.resolve_generation.borrow_mut();
@@ -1474,6 +1541,7 @@ impl SearchPage {
                     Ok(r) => {
                         *page.resolved_ra.borrow_mut() = Some(r.ra);
                         *page.resolved_dec.borrow_mut() = Some(r.dec);
+                        page.capture_resolver_provenance(&r, &service);
                         let type_suffix = r
                             .object_type
                             .as_deref()
@@ -1488,11 +1556,21 @@ impl SearchPage {
                     Err(_) => {
                         *page.resolved_ra.borrow_mut() = None;
                         *page.resolved_dec.borrow_mut() = None;
+                        page.clear_resolver_provenance();
                         page.resolver_status.set_text(crate::tr_en!("Not found"));
                     }
                 }
             });
         });
+    }
+
+    /// Persist the current per-column display-unit map so choices survive restarts
+    /// (search_store `column_units.json`; mirrors the Windows column-unit store).
+    fn persist_column_units(&self) {
+        let _ = self
+            .services
+            .search_store
+            .save_column_units(&self.column_units.borrow());
     }
 
     /// Build the small unit-menu chevron for a unit-bearing column header (ref
@@ -1532,6 +1610,7 @@ impl SearchPage {
                 def.connect_toggled(move |b| {
                     if b.is_active() {
                         page.column_units.borrow_mut().remove(&key_c);
+                        page.persist_column_units();
                         pop.popdown();
                         // Defer the rebuild: this handler's own popover/menu is a
                         // child of the grid we are about to tear down.
@@ -1574,6 +1653,7 @@ impl SearchPage {
                             .borrow_mut()
                             .insert(key_c.clone(), id.clone());
                     }
+                    page.persist_column_units();
                     pop.popdown();
                     // Defer the rebuild: this handler's own popover/menu is a
                     // child of the grid we are about to tear down.

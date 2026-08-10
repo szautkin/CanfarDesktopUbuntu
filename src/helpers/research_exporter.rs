@@ -25,9 +25,11 @@
 //! between `ResearchExporter` and `ResearchExportBuilder`).
 
 use crate::models::observation_note::ObservationNote;
+use crate::models::search_result::{RecentSearch, SavedQuery};
 use crate::services::observation_store::DownloadedObservation;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use std::collections::HashMap;
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// The rendered payload of a research export, before it is zipped. Kept separate
@@ -81,6 +83,324 @@ pub fn write_bundle_zip(
     ];
     write_zip(path, &entries)?;
     Ok(bundle.observation_count)
+}
+
+// ---------------------------------------------------------------------------
+// Wrapped bundle: manifest.json + README.md + per-module subdirectories
+//
+// Port of `ExportService.BuildBundleAsync` + `ZipBundle`. Where the flat
+// [`write_bundle_zip`] emits three loose files, this assembles a proper,
+// Claude-friendly bundle: a top-level `manifest.json` (machine index) and
+// `README.md` (human/LLM guide) alongside a `research/` and `search/`
+// subdirectory, all nested under a timestamped base folder inside the zip.
+// ---------------------------------------------------------------------------
+
+/// What a wrapped research bundle should contain. Mirrors the subset of the
+/// Windows `ExportOptions` surfaced by the Research page's export dialog
+/// (file copies are not offered on Linux).
+#[derive(Debug, Clone, Copy)]
+pub struct BundleOptions {
+    /// Include `research/notes.json` + `research/notes.md`.
+    pub include_notes: bool,
+    /// Include `search/recent_searches.json` (recent-search history).
+    pub include_search_history: bool,
+}
+
+/// Item counts + the bundle's base folder name, returned so the caller can toast
+/// a summary without re-reading the archive.
+#[derive(Debug, Clone)]
+pub struct BundleSummary {
+    pub bundle_name: String,
+    pub observation_count: usize,
+    pub note_count: usize,
+    pub saved_count: usize,
+    pub recent_count: usize,
+}
+
+const EXPORT_VERSION: &str = "1.0";
+const APP_NAME: &str = "Verbinal";
+
+/// Timestamped base-folder name, e.g. `Verbinal-Export-2026-07-08_143000`.
+/// Matches `ExportService.BundleName`.
+pub fn bundle_name(now: DateTime<Utc>) -> String {
+    format!("Verbinal-Export-{}", now.format("%Y-%m-%d_%H%M%S"))
+}
+
+// ── Manifest model (camelCase JSON, 1-to-1 with Models/Export/ExportManifest) ─
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportManifest {
+    export_version: String,
+    app_name: String,
+    app_version: String,
+    exported_at: String,
+    host_name: String,
+    modules: Vec<ExportManifestModule>,
+    claude_hints: ExportClaudeHints,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportManifestModule {
+    id: String,
+    display_name: String,
+    files: Vec<String>,
+    item_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportClaudeHints {
+    primary_context: Option<String>,
+    metadata_schema: Option<String>,
+    read_me_first: String,
+}
+
+/// One module's assembled payload before it is placed into the bundle tree.
+struct ModuleBuild {
+    id: &'static str,
+    display_name: &'static str,
+    /// (module-relative filename, bytes), e.g. `("observations.json", …)`.
+    files: Vec<(String, Vec<u8>)>,
+    item_counts: BTreeMap<String, usize>,
+}
+
+/// The fully assembled bundle: zip entries (paths already nested under the
+/// timestamped base folder) plus the summary counts.
+pub struct WrappedBundle {
+    /// (zip entry path, bytes) — e.g. `("Verbinal-Export-…/research/observations.json", …)`.
+    pub entries: Vec<(String, Vec<u8>)>,
+    pub summary: BundleSummary,
+}
+
+/// Assemble the wrapped bundle in memory. Pure — no I/O — so the manifest +
+/// README rendering is unit-testable with fabricated data (mirrors the split
+/// between `ExportService` and its inputs). `now` / `app_version` / `host_name`
+/// are injected for deterministic tests.
+pub fn build_wrapped_bundle(
+    observations: &[DownloadedObservation],
+    notes: &[ObservationNote],
+    saved: &[SavedQuery],
+    recent: &[RecentSearch],
+    options: BundleOptions,
+    now: DateTime<Utc>,
+    app_version: &str,
+    host_name: &str,
+) -> WrappedBundle {
+    let base = bundle_name(now);
+
+    // ── Research module ─────────────────────────────────────────────────
+    let research = build_bundle(observations, notes, now);
+    let mut research_files: Vec<(String, Vec<u8>)> = vec![(
+        "observations.json".to_string(),
+        research.observations_json.into_bytes(),
+    )];
+    let mut research_counts: BTreeMap<String, usize> = BTreeMap::new();
+    research_counts.insert("observations".to_string(), observations.len());
+    if options.include_notes {
+        research_files.push(("notes.json".to_string(), research.notes_json.into_bytes()));
+        research_files.push(("notes.md".to_string(), research.notes_md.into_bytes()));
+        research_counts.insert("notes".to_string(), notes.len());
+    }
+
+    // ── Search module (reuses the sibling search exporter's renderer) ────
+    let search_raw = crate::helpers::search_exporter::build_search_bundle(
+        saved,
+        recent,
+        options.include_search_history,
+        now,
+    );
+    let search_files: Vec<(String, Vec<u8>)> = search_raw
+        .into_iter()
+        .map(|(name, content)| (name, content.into_bytes()))
+        .collect();
+    let mut search_counts: BTreeMap<String, usize> = BTreeMap::new();
+    search_counts.insert("saved_queries".to_string(), saved.len());
+    if options.include_search_history {
+        search_counts.insert("recent_searches".to_string(), recent.len());
+    }
+
+    let modules = [
+        ModuleBuild {
+            id: "research",
+            display_name: "Research",
+            files: research_files,
+            item_counts: research_counts,
+        },
+        ModuleBuild {
+            id: "search",
+            display_name: "Search",
+            files: search_files,
+            item_counts: search_counts,
+        },
+    ];
+
+    // ── Manifest ────────────────────────────────────────────────────────
+    let mut manifest_modules: Vec<ExportManifestModule> = Vec::new();
+    let mut all_files: Vec<String> = Vec::new();
+    for m in &modules {
+        let mut rel: Vec<String> = m
+            .files
+            .iter()
+            .map(|(name, _)| format!("{}/{}", m.id, name))
+            .collect();
+        rel.sort(); // stable, ordinal-ish order for the manifest
+        all_files.extend(rel.iter().cloned());
+        manifest_modules.push(ExportManifestModule {
+            id: m.id.to_string(),
+            display_name: m.display_name.to_string(),
+            files: rel,
+            item_counts: m.item_counts.clone(),
+        });
+    }
+
+    let manifest = ExportManifest {
+        export_version: EXPORT_VERSION.to_string(),
+        app_name: APP_NAME.to_string(),
+        app_version: app_version.to_string(),
+        exported_at: iso_utc(now),
+        host_name: host_name.to_string(),
+        claude_hints: ExportClaudeHints {
+            primary_context: all_files.iter().find(|f| f.ends_with(".md")).cloned(),
+            metadata_schema: all_files.iter().find(|f| f.ends_with(".json")).cloned(),
+            read_me_first: "README.md".to_string(),
+        },
+        modules: manifest_modules,
+    };
+
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".to_string());
+    let readme = render_readme(&manifest, now);
+
+    // ── Assemble zip entries under the timestamped base folder ──────────
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    entries.push((format!("{base}/manifest.json"), manifest_json.into_bytes()));
+    entries.push((format!("{base}/README.md"), readme.into_bytes()));
+    for m in modules {
+        for (name, bytes) in m.files {
+            entries.push((format!("{base}/{}/{name}", m.id), bytes));
+        }
+    }
+
+    WrappedBundle {
+        summary: BundleSummary {
+            bundle_name: base,
+            observation_count: observations.len(),
+            note_count: notes.len(),
+            saved_count: saved.len(),
+            recent_count: if options.include_search_history {
+                recent.len()
+            } else {
+                0
+            },
+        },
+        entries,
+    }
+}
+
+/// Build the wrapped bundle and write it to `path` as a store-only ZIP. Returns
+/// the summary counts. Blocking disk I/O — call from a blocking thread.
+pub fn write_research_bundle_zip(
+    path: &Path,
+    observations: &[DownloadedObservation],
+    notes: &[ObservationNote],
+    saved: &[SavedQuery],
+    recent: &[RecentSearch],
+    options: BundleOptions,
+    now: DateTime<Utc>,
+    app_version: &str,
+    host_name: &str,
+) -> Result<BundleSummary, String> {
+    let wrapped = build_wrapped_bundle(
+        observations,
+        notes,
+        saved,
+        recent,
+        options,
+        now,
+        app_version,
+        host_name,
+    );
+    let entries: Vec<(&str, &[u8])> = wrapped
+        .entries
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    write_zip(path, &entries)?;
+    Ok(wrapped.summary)
+}
+
+/// Render the bundle `README.md`. Port of `ExportService.RenderReadme`.
+fn render_readme(m: &ExportManifest, now: DateTime<Utc>) -> String {
+    // "Wednesday, 08 July 2026 14:30" — matches the reference "dddd, dd MMMM yyyy HH:mm".
+    let date = now.format("%A, %d %B %Y %H:%M").to_string();
+    let mut sb = String::new();
+    sb.push_str(&format!("# Verbinal Export — {date}\n\n"));
+    sb.push_str(&format!(
+        "This bundle was exported from Verbinal v{} on `{}`.\n",
+        m.app_version, m.host_name
+    ));
+    sb.push_str(
+        "It is structured for consumption by Claude, other LLMs, and human collaborators.\n\n",
+    );
+
+    sb.push_str("## Contents\n\n");
+    for module in &m.modules {
+        let counts = module
+            .item_counts
+            .iter()
+            .map(|(k, v)| format!("{v} {k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sb.push_str(&format!(
+            "- **{}** (`{}/`) — {}\n",
+            module.display_name,
+            module.id,
+            if counts.is_empty() { "no items".to_string() } else { counts }
+        ));
+    }
+    sb.push('\n');
+
+    sb.push_str("## For Claude / LLM ingestion\n\n");
+    if let Some(primary) = &m.claude_hints.primary_context {
+        sb.push_str("1. Start with `manifest.json` to understand the bundle shape.\n");
+        sb.push_str(&format!("2. Read `{primary}` for human-readable per-item content.\n"));
+        if let Some(schema) = &m.claude_hints.metadata_schema {
+            sb.push_str(&format!("3. Cross-reference with `{schema}` for full metadata.\n\n"));
+        } else {
+            sb.push('\n');
+        }
+    }
+
+    sb.push_str("### Suggested prompts\n\n");
+    sb.push_str("- *\"Summarize the data in this export, grouped by module.\"*\n");
+    sb.push_str("- *\"Which items stand out as needing further investigation?\"*\n");
+    sb.push_str("- *\"List everything tagged `calibration` across all modules.\"*\n\n");
+
+    sb.push_str("## Data citation & provenance\n\n");
+    sb.push_str(&format!(
+        "- **Retrieved:** {date} — from CADC/CANFAR via Verbinal v{}.\n",
+        m.app_version
+    ));
+    sb.push_str("- **How to cite:** acknowledge the Canadian Astronomy Data Centre (CADC) and the ");
+    sb.push_str("originating collection/telescope of each observation. Each downloaded observation in the ");
+    sb.push_str("research module records its collection, instrument, calibration level, and data-release ");
+    sb.push_str("date — cite the collection's standard reference and include the retrieval date above.\n");
+    sb.push_str("- **No per-observation DOI:** CADC's CAOM2 metadata does not assign a DOI or bibcode to ");
+    sb.push_str("individual observations. The closest citable handle is the originating **proposal** ");
+    sb.push_str("(id / PI / title), recorded per observation in `notes.md` where available. DOIs, when they ");
+    sb.push_str("exist, are assigned at the collection level — see the CADC collection page below.\n");
+    sb.push_str("- **Reproducibility:** saved/recent searches keep the exact ADQL; re-running it against ");
+    sb.push_str("CADC's TAP service reproduces the selection (name-resolver coordinates can drift between ");
+    sb.push_str("services/epochs — `queries.md` freezes which resolver and epoch produced them).\n");
+    sb.push_str("- See https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/ for collection documentation and DOIs.\n\n");
+
+    sb.push_str("## Privacy note\n\n");
+    sb.push_str("This bundle excludes all authentication tokens, Keychain entries, session state, ");
+    sb.push_str("and cached credentials. Only user-authored data and public CADC metadata are exported.\n");
+
+    sb
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +819,171 @@ mod tests {
         // All three member names are present in the raw archive.
         let haystack = bytes.as_slice();
         for name in ["observations.json", "notes.json", "notes.md"] {
+            assert!(
+                haystack.windows(name.len()).any(|w| w == name.as_bytes()),
+                "archive missing {name}"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Wrapped bundle (manifest + README + module subdirs) ──────────────
+
+    fn opts(include_notes: bool, include_history: bool) -> BundleOptions {
+        BundleOptions {
+            include_notes,
+            include_search_history: include_history,
+        }
+    }
+
+    /// Find a wrapped-bundle entry whose path ends with `suffix`.
+    fn entry<'a>(b: &'a WrappedBundle, suffix: &str) -> Option<&'a (String, Vec<u8>)> {
+        b.entries.iter().find(|(name, _)| name.ends_with(suffix))
+    }
+
+    #[test]
+    fn wrapped_bundle_lays_out_manifest_readme_and_modules() {
+        let observations = vec![
+            obs("ivo://x?1", "M31", "CFHT", "obs-1"),
+            obs("ivo://x?2", "", "CFHT", "obs-2"),
+        ];
+        let notes = vec![note("ivo://x?1", 4, "Nice galaxy", &["galaxy"])];
+
+        let b = build_wrapped_bundle(
+            &observations,
+            &notes,
+            &[],
+            &[],
+            opts(true, false),
+            fixed_now(),
+            "1.2.3",
+            "test-host",
+        );
+
+        // Base folder name is timestamped, and every entry nests under it.
+        let base = bundle_name(fixed_now());
+        assert_eq!(base, "Verbinal-Export-2026-07-07_083000");
+        assert!(b.entries.iter().all(|(name, _)| name.starts_with(&format!("{base}/"))));
+
+        // Top-level wrapper files exist.
+        assert!(entry(&b, "/manifest.json").is_some());
+        assert!(entry(&b, "/README.md").is_some());
+
+        // Research module files (notes included).
+        assert!(entry(&b, "research/observations.json").is_some());
+        assert!(entry(&b, "research/notes.json").is_some());
+        assert!(entry(&b, "research/notes.md").is_some());
+        // Search module always contributes saved_queries.json + queries.md.
+        assert!(entry(&b, "search/saved_queries.json").is_some());
+        assert!(entry(&b, "search/queries.md").is_some());
+        // History off → no recent_searches.json.
+        assert!(entry(&b, "recent_searches.json").is_none());
+
+        // Summary counts.
+        assert_eq!(b.summary.observation_count, 2);
+        assert_eq!(b.summary.note_count, 1);
+        assert_eq!(b.summary.recent_count, 0);
+
+        // Manifest is valid, camelCase JSON describing both modules.
+        let manifest_bytes = &entry(&b, "/manifest.json").unwrap().1;
+        let manifest: serde_json::Value = serde_json::from_slice(manifest_bytes).unwrap();
+        assert_eq!(manifest["appName"], "Verbinal");
+        assert_eq!(manifest["exportVersion"], "1.0");
+        assert_eq!(manifest["appVersion"], "1.2.3");
+        assert_eq!(manifest["hostName"], "test-host");
+        assert_eq!(manifest["claudeHints"]["readMeFirst"], "README.md");
+        // First .md across modules is research/notes.md (research module first).
+        assert_eq!(manifest["claudeHints"]["primaryContext"], "research/notes.md");
+        // First .json in ordinal-sorted order is research/notes.json (< observations.json).
+        assert_eq!(manifest["claudeHints"]["metadataSchema"], "research/notes.json");
+
+        let modules = manifest["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 2);
+        let research = &modules[0];
+        assert_eq!(research["id"], "research");
+        assert_eq!(research["displayName"], "Research");
+        assert_eq!(research["itemCounts"]["observations"], 2);
+        assert_eq!(research["itemCounts"]["notes"], 1);
+        assert!(research["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "research/observations.json"));
+
+        // README names both modules and cites CADC.
+        let readme = String::from_utf8(entry(&b, "/README.md").unwrap().1.clone()).unwrap();
+        assert!(readme.contains("# Verbinal Export"));
+        assert!(readme.contains("**Research** (`research/`)"));
+        assert!(readme.contains("**Search** (`search/`)"));
+        assert!(readme.contains("2 observations"));
+        assert!(readme.contains("Canadian Astronomy Data Centre"));
+    }
+
+    #[test]
+    fn wrapped_bundle_omits_notes_when_disabled() {
+        let observations = vec![obs("ivo://x?1", "M31", "CFHT", "obs-1")];
+        let notes = vec![note("ivo://x?1", 4, "hidden", &["x"])];
+        let b = build_wrapped_bundle(
+            &observations,
+            &notes,
+            &[],
+            &[],
+            opts(false, true),
+            fixed_now(),
+            "9",
+            "h",
+        );
+
+        assert!(entry(&b, "research/observations.json").is_some());
+        assert!(entry(&b, "research/notes.json").is_none());
+        assert!(entry(&b, "research/notes.md").is_none());
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&entry(&b, "/manifest.json").unwrap().1).unwrap();
+        let research = &manifest["modules"][0];
+        assert!(research["itemCounts"].get("notes").is_none());
+        // Primary context falls back to the search module's markdown.
+        assert_eq!(manifest["claudeHints"]["primaryContext"], "search/queries.md");
+    }
+
+    #[test]
+    fn write_research_bundle_zip_produces_wrapped_archive() {
+        let observations = vec![obs("ivo://x?1", "M31", "CFHT", "obs-1")];
+        let notes = vec![note("ivo://x?1", 3, "Fair", &["queue"])];
+
+        let path = std::env::temp_dir().join(format!(
+            "verbinal_wrapped_export_test_{}_{}.zip",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        let summary = write_research_bundle_zip(
+            &path,
+            &observations,
+            &notes,
+            &[],
+            &[],
+            opts(true, true),
+            fixed_now(),
+            "1.0.0",
+            "host",
+        )
+        .unwrap();
+        assert_eq!(summary.observation_count, 1);
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], &[0x50, 0x4b, 0x03, 0x04]);
+        let haystack = bytes.as_slice();
+        for name in [
+            "manifest.json",
+            "README.md",
+            "research/observations.json",
+            "search/saved_queries.json",
+        ] {
             assert!(
                 haystack.windows(name.len()).any(|w| w == name.as_bytes()),
                 "archive missing {name}"

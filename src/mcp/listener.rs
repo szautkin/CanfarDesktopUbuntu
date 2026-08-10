@@ -1,7 +1,7 @@
 //! In-app UNIX-domain-socket listener (the Linux equivalent of the Windows
 //! named-pipe `McpListenerService`).
 //!
-//! The running app binds a per-user socket under `$XDG_RUNTIME_DIR` (see
+//! The running app binds a per-user socket in the uid's runtime directory (see
 //! [`crate::mcp::socket_path`]), hardens it to owner-only, then accepts
 //! connections forever. Each accepted connection is served concurrently by a
 //! fresh [`crate::mcp::server::serve`] task — one server instance per
@@ -13,7 +13,7 @@
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::net::UnixListener;
@@ -39,8 +39,20 @@ pub async fn run(
     router: Arc<dyn ToolRouter>,
     gate: Arc<dyn ApprovalGate>,
 ) -> io::Result<()> {
-    let path = socket_path();
+    run_on_path(socket_path(), router, gate).await
+}
 
+/// [`run`] against an explicit socket `path`.
+///
+/// Split out so tests can drive the full bind → harden → accept → serve path
+/// over a private temp socket without depending on the process-wide
+/// `XDG_RUNTIME_DIR`-derived endpoint (which a live app instance may own).
+/// Production always reaches this through [`run`] with [`socket_path()`].
+pub(crate) async fn run_on_path(
+    path: PathBuf,
+    router: Arc<dyn ToolRouter>,
+    gate: Arc<dyn ApprovalGate>,
+) -> io::Result<()> {
     // A leftover socket node from a previous run makes bind() fail; clear it.
     // A missing file is the normal case, so ignore the error.
     let _ = std::fs::remove_file(&path);

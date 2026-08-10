@@ -598,6 +598,27 @@ impl CubeViewer {
             .unwrap_or(cube_colormaps::DEFAULT)
             .to_string();
         let (lo_label, hi_label) = self.colorbar_labels();
+
+        // Live box + caption overlay + metadata footer inputs (mirrors Windows
+        // CubeViewerPage.BuildPlateData). Captions render only over the 3D volume;
+        // the export overlay shares the GL camera via `view_proj`, so it aligns
+        // with the captured render at any plate scale.
+        let is_3d = self
+            .stack
+            .visible_child_name()
+            .map_or(true, |n| n == "volume");
+        let gl = self.gl.clone();
+        let overlay = crate::ui::cube_export::PlateOverlay {
+            captions_on: is_3d && self.captions_toggle.is_active(),
+            wcs: self.wcs.clone(),
+            view_proj: Rc::new(move |w, h| gl.view_proj(w, h)),
+            nx: self.vol.nx,
+            ny: self.vol.ny,
+            nz: self.vol.nz,
+            spectral_scale: self.gl.spectral_scale(),
+            meta: self.vol.meta.clone(),
+        };
+
         crate::ui::cube_export::show_cube_export(
             &self.widget,
             capture,
@@ -606,6 +627,7 @@ impl CubeViewer {
             colormap,
             lo_label,
             hi_label,
+            overlay,
         );
     }
 

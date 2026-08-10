@@ -7,9 +7,9 @@
 //!
 //! * `get_downloaded_observation` — one observation by its local id (or publisher
 //!   id), read-only.
-//! * `get_observation_notes` — the astronomer-notes surface. Verbinal's
-//!   `DownloadedObservation` carries **no** note field, so this always returns an
-//!   empty set (parity placeholder for the Windows note store).
+//! * `get_observation_notes` — the astronomer-notes surface, read from the
+//!   standalone [`ObservationNoteStore`] (the same store the Research page and the
+//!   `update_observation_note` / `bulk_update_observation_notes` writes use).
 //! * `delete_downloaded_observation` — propose removing one observation (its
 //!   record + managed files). Destructive.
 //! * `clear_research_archive` — propose removing EVERY observation. Destructive.
@@ -18,8 +18,11 @@
 //! mutate at propose time: they enqueue a [`PendingProposal`]; the real store
 //! mutation happens in [`apply`] once the user approves.
 
+use crate::helpers::agent_attribution::AgentAttribution;
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
 use crate::mcp::tools::{ToolDescriptor, ToolResult, VerbClass};
+use crate::models::observation_note::ObservationNote;
+use crate::services::observation_note_store::ObservationNoteStore;
 use crate::services::observation_store::DownloadedObservation;
 use crate::state::AppServices;
 use chrono::Utc;
@@ -58,10 +61,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "get_observation_notes".to_string(),
-            description: "Get the user's research notes for a downloaded observation. Verbinal's \
-                Research library stores only observation metadata (no free-text notes/rating/tags), \
-                so this always returns an empty note set — provided for parity with clients that \
-                probe for notes."
+            description: "Get the user's research notes (rating + free-text note + tags) for \
+                downloaded observations. With no id it returns every note; with an id (a CADC \
+                publisher id or a local id) it returns just that observation's note."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -74,6 +76,60 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "additionalProperties": false
             }),
             verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "update_observation_note".to_string(),
+            description: "Set the user's research note for a downloaded observation: a 0–5 star \
+                rating, a free-text note, and tags. Identify the observation by its CADC publisher \
+                id (or a local id from list_downloaded_observations). Only the fields you pass are \
+                changed; the rest are kept. Queues a reversible write for approval — on apply it \
+                upserts the note (an all-blank note clears it)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The observation's CADC publisher id, or a local id." },
+                    "rating": { "type": "integer", "minimum": 0, "maximum": 5, "description": "Star rating 0–5 (0 = unrated)." },
+                    "note": { "type": "string", "description": "Free-text note body." },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "Tag list (replaces the existing tags)." }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "bulk_update_observation_notes".to_string(),
+            description: "Set research notes for several observations at once (1–50). Each item \
+                targets one observation by publisher/local id and may set rating, note, and tags. \
+                Queues a single reversible write for approval; on apply each note is upserted."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "rating": { "type": "integer", "minimum": 0, "maximum": 5 },
+                                "note": { "type": "string" },
+                                "tags": { "type": "array", "items": { "type": "string" } }
+                            },
+                            "required": ["id"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["items"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
             agent_safe: true,
         },
         ToolDescriptor {
@@ -177,8 +233,10 @@ pub async fn dispatch(
 ) -> Option<ToolResult> {
     let result = match name {
         "get_downloaded_observation" => get_downloaded_observation(services, args).await,
-        "get_observation_notes" => get_observation_notes(args),
+        "get_observation_notes" => get_observation_notes(services, args).await,
         "get_preview_image" => get_preview_image(services, args).await,
+        "update_observation_note" => propose_update_note(args, proposals),
+        "bulk_update_observation_notes" => propose_bulk_update_notes(args, proposals),
         "delete_downloaded_observation" => propose_delete(args, proposals),
         "clear_research_archive" => propose_clear(proposals),
         "export_research_bundle" => propose_export(args, proposals),
@@ -218,21 +276,87 @@ async fn get_downloaded_observation(services: &AppServices, args: &Value) -> Too
     }
 }
 
-/// Notes surface. The Verbinal `DownloadedObservation` has no note field, so —
-/// per the family's documented contract — this always returns an empty set
-/// regardless of the (optional) id filter.
-fn get_observation_notes(args: &Value) -> ToolResult {
+/// Notes surface — reads the standalone [`ObservationNoteStore`] (the same store
+/// the Research page writes to). With no `id` it returns every note; with an `id`
+/// it resolves a local id to its publisher id (falling back to treating the id as
+/// a publisher id) and returns just that observation's note. Mirrors the Windows
+/// `GetObservationNotesTool` (which reads `ObservationNoteStore.All()`).
+async fn get_observation_notes(services: &AppServices, args: &Value) -> ToolResult {
     let id = str_arg(args, "id");
-    let filtered_by = if id.is_empty() {
-        Value::Null
+    // Resolve an optional filter to a publisher id (accepting a local id too).
+    let filter_pub: Option<String> = if id.is_empty() {
+        None
     } else {
-        Value::String(id)
+        let list = services.observation_store.load_async().await;
+        Some(find_observation(&list, &id).map(|o| o.publisher_id.clone()).unwrap_or(id))
     };
+
+    let notes: Vec<Value> = ObservationNoteStore::new()
+        .all()
+        .iter()
+        .filter(|n| filter_pub.as_ref().map_or(true, |p| &n.publisher_id == p))
+        .map(note_summary)
+        .collect();
+
     ToolResult::Data(json!({
-        "count": 0,
-        "notes": [],
-        "filteredBy": filtered_by
+        "count": notes.len(),
+        "notes": notes,
+        "filteredBy": filter_pub.map(Value::String).unwrap_or(Value::Null),
     }))
+}
+
+/// Compact JSON view of one research note.
+fn note_summary(n: &ObservationNote) -> Value {
+    json!({
+        "publisherId": n.publisher_id,
+        "rating": n.rating,
+        "note": n.note,
+        "tags": n.tags,
+        "updated": n.updated,
+        "agentAttribution": serde_json::to_value(&n.agent_attribution).unwrap_or(Value::Null),
+    })
+}
+
+/// Queue a single note upsert (reversible — routes through the proposal gate so
+/// an agent write is still user-approvable / attributed).
+fn propose_update_note(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let id = str_arg(args, "id");
+    if id.is_empty() {
+        return ToolResult::Failed("id is required".to_string());
+    }
+    // Preserve only the fields the caller actually set (apply merges the rest).
+    let mut payload = serde_json::Map::new();
+    payload.insert("id".to_string(), json!(id));
+    for key in ["rating", "note", "tags"] {
+        if let Some(v) = args.get(key) {
+            payload.insert(key.to_string(), v.clone());
+        }
+    }
+    let p = proposals.enqueue(
+        "update_observation_note",
+        &format!("Set research note for {}", id),
+        false,
+        Value::Object(payload),
+    );
+    ToolResult::Proposed(p)
+}
+
+/// Queue a bulk note upsert (1–50 items).
+fn propose_bulk_update_notes(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let items = match args.get("items").and_then(Value::as_array) {
+        Some(items) if !items.is_empty() => items.clone(),
+        _ => return ToolResult::Failed("items (a non-empty array) is required".to_string()),
+    };
+    if items.len() > 50 {
+        return ToolResult::Failed("at most 50 items may be updated at once".to_string());
+    }
+    let p = proposals.enqueue(
+        "bulk_update_observation_notes",
+        &format!("Set research notes for {} observations", items.len()),
+        false,
+        json!({ "items": items }),
+    );
+    ToolResult::Proposed(p)
 }
 
 fn propose_delete(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
@@ -302,11 +426,115 @@ pub async fn apply(
     proposal: &PendingProposal,
 ) -> Option<Result<String, String>> {
     match proposal.kind.as_str() {
+        "update_observation_note" => Some(apply_update_note(services, proposal).await),
+        "bulk_update_observation_notes" => Some(apply_bulk_update_notes(services, proposal).await),
         "delete_downloaded_observation" => Some(apply_delete(services, &proposal.payload).await),
         "clear_research_archive" => Some(apply_clear(services).await),
         "export_research_bundle" => Some(apply_export(services, &proposal.payload).await),
         _ => None,
     }
+}
+
+/// Resolve a caller-supplied id (local OR publisher) to a publisher id; falls
+/// back to treating the id as a publisher id when no downloaded record matches
+/// (an agent may annotate an observation it hasn't downloaded).
+async fn resolve_publisher_id(services: &AppServices, id: &str) -> String {
+    let list = services.observation_store.load_async().await;
+    find_observation(&list, id)
+        .map(|o| o.publisher_id.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Upsert one note into the standalone [`ObservationNoteStore`], merging only the
+/// fields present in `spec` over any existing note, stamping agent provenance.
+fn upsert_note_blocking(pub_id: String, spec: &Value, attribution: Option<AgentAttribution>) {
+    let store = ObservationNoteStore::new();
+    let mut note = store.get(&pub_id).unwrap_or_default();
+    note.publisher_id = pub_id;
+    if let Some(r) = spec.get("rating").and_then(Value::as_u64) {
+        note.rating = r.min(5) as u8;
+    }
+    if let Some(t) = spec.get("note").and_then(Value::as_str) {
+        note.note = t.to_string();
+    }
+    if let Some(tags) = spec.get("tags").and_then(Value::as_array) {
+        note.tags = tags
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    note.updated = Utc::now().to_rfc3339();
+    note.agent_attribution = attribution;
+    // Best-effort: a save failure is surfaced by the caller's Result.
+    let _ = store.save(note);
+}
+
+async fn apply_update_note(
+    services: &AppServices,
+    proposal: &PendingProposal,
+) -> Result<String, String> {
+    let id = str_arg(&proposal.payload, "id");
+    if id.is_empty() {
+        return Err("update_observation_note payload missing id".to_string());
+    }
+    let pub_id = resolve_publisher_id(services, &id).await;
+    let attribution = attribution_for(proposal);
+    let spec = proposal.payload.clone();
+    let pub_for_msg = pub_id.clone();
+    tokio::task::spawn_blocking(move || upsert_note_blocking(pub_id, &spec, attribution))
+        .await
+        .map_err(|e| format!("note task failed: {e}"))?;
+    Ok(format!("Set research note for {pub_for_msg}"))
+}
+
+async fn apply_bulk_update_notes(
+    services: &AppServices,
+    proposal: &PendingProposal,
+) -> Result<String, String> {
+    let items = proposal
+        .payload
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Err("bulk_update_observation_notes payload missing items".to_string());
+    }
+    // Resolve ids up front (needs the async store), then do all the note writes
+    // together on the blocking pool.
+    let mut resolved: Vec<(String, Value)> = Vec::with_capacity(items.len());
+    for item in items {
+        let id = str_arg(&item, "id");
+        if id.is_empty() {
+            continue;
+        }
+        let pub_id = resolve_publisher_id(services, &id).await;
+        resolved.push((pub_id, item));
+    }
+    let count = resolved.len();
+    let attribution = attribution_for(proposal);
+    tokio::task::spawn_blocking(move || {
+        for (pub_id, spec) in resolved {
+            upsert_note_blocking(pub_id, &spec, attribution.clone());
+        }
+    })
+    .await
+    .map_err(|e| format!("bulk note task failed: {e}"))?;
+    Ok(format!(
+        "Set research notes for {count} observation{}",
+        if count == 1 { "" } else { "s" }
+    ))
+}
+
+/// Provenance stamp for an applied note write, or `None` when user-originated.
+/// Mirrors [`crate::mcp::tools::write`]'s `attribution_for`.
+fn attribution_for(proposal: &PendingProposal) -> Option<AgentAttribution> {
+    proposal
+        .origin
+        .as_ref()
+        .map(|_| AgentAttribution::for_proposal(proposal, Utc::now().to_rfc3339()))
 }
 
 async fn apply_delete(services: &AppServices, payload: &Value) -> Result<String, String> {
@@ -593,14 +821,59 @@ mod tests {
     }
 
     #[test]
-    fn notes_are_always_empty() {
-        match get_observation_notes(&json!({ "id": "anything" })) {
-            ToolResult::Data(v) => {
-                assert_eq!(v["count"], 0);
-                assert_eq!(v["notes"], json!([]));
-                assert_eq!(v["filteredBy"], "anything");
+    fn update_note_requires_id() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        assert!(matches!(
+            propose_update_note(&json!({}), &store),
+            ToolResult::Failed(_)
+        ));
+        assert_eq!(store.pending_count(), 0);
+    }
+
+    #[test]
+    fn update_note_enqueues_non_destructive_with_only_given_fields() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        // `note` is omitted, so it must NOT appear in the payload (apply merges).
+        match propose_update_note(&json!({ "id": "ivo://x?1", "rating": 4, "tags": ["a"] }), &store) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.kind, "update_observation_note");
+                assert!(!p.destructive, "a note edit is reversible");
+                assert_eq!(p.payload["id"], "ivo://x?1");
+                assert_eq!(p.payload["rating"], 4);
+                assert_eq!(p.payload["tags"], json!(["a"]));
+                assert!(p.payload.get("note").is_none(), "unset fields stay absent");
             }
-            _ => panic!("expected Data"),
+            _ => panic!("expected Proposed"),
+        }
+    }
+
+    #[test]
+    fn bulk_update_requires_non_empty_items() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        assert!(matches!(
+            propose_bulk_update_notes(&json!({}), &store),
+            ToolResult::Failed(_)
+        ));
+        assert!(matches!(
+            propose_bulk_update_notes(&json!({ "items": [] }), &store),
+            ToolResult::Failed(_)
+        ));
+        assert_eq!(store.pending_count(), 0);
+    }
+
+    #[test]
+    fn bulk_update_enqueues_items() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_bulk_update_notes(
+            &json!({ "items": [ { "id": "a", "rating": 5 }, { "id": "b", "note": "hi" } ] }),
+            &store,
+        ) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.kind, "bulk_update_observation_notes");
+                assert!(!p.destructive);
+                assert_eq!(p.payload["items"].as_array().unwrap().len(), 2);
+            }
+            _ => panic!("expected Proposed"),
         }
     }
 

@@ -575,8 +575,27 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         }
     }
 
-    // Spectral sampling (convert to meters)
-    if let Some(ss) = state.spectral_sampling {
+    // Spectral sampling — an operator-aware raw text field (RANGE syntax) takes
+    // precedence over the legacy numeric value. Mirrors the Windows
+    // `AddConvertedRangeClause("Plane.energy_sampleSize", …, ConvertSpectral)`
+    // and the local `pixel_scale_raw` path: `>`, `>=`, `<`, `<=`, `A..B`, `=`.
+    if let Some(raw) = state
+        .spectral_sampling_raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(range) = range_parser::parse_range(raw) {
+            add_converted_range_clause(
+                "Plane.energy_sampleSize",
+                &range,
+                &state.spectral_sampling_unit,
+                clauses,
+                |v, u| v.trim().parse::<f64>().ok().and_then(|n| convert_spectral_to_metres(n, u)),
+            );
+        }
+    } else if let Some(ss) = state.spectral_sampling {
+        // Legacy numeric fallback (bare value → `<=`).
         if let Some(m) = convert_spectral_to_metres(ss, &state.spectral_sampling_unit) {
             clauses.push(format!("Plane.energy_sampleSize <= {}", m));
         }
@@ -1081,6 +1100,64 @@ mod tests {
         let adql = build(&state);
         assert!(adql.contains("Plane.time_bounds_lower >"));
         assert!(adql.contains("time_exposure >= 60"));
+    }
+
+    #[test]
+    fn spectral_sampling_raw_operators() {
+        // `>` operator, nm → metres conversion (0.5 nm == 5e-10 m).
+        let mut gt = SearchFormState::new();
+        gt.spectral_sampling_raw = Some("> 0.5".to_string());
+        gt.spectral_sampling_unit = "nm".to_string();
+        let a = build(&gt);
+        let m = 0.5e-9;
+        assert!(a.contains(&format!("Plane.energy_sampleSize > {}", m)), "{}", a);
+
+        // `<=` operator.
+        let mut le = SearchFormState::new();
+        le.spectral_sampling_raw = Some("<= 2".to_string());
+        le.spectral_sampling_unit = "nm".to_string();
+        let b = build(&le);
+        assert!(b.contains(&format!("Plane.energy_sampleSize <= {}", 2e-9)), "{}", b);
+
+        // `A..B` between range, normalised low→high.
+        let mut bt = SearchFormState::new();
+        bt.spectral_sampling_raw = Some("1..3".to_string());
+        bt.spectral_sampling_unit = "nm".to_string();
+        let c = build(&bt);
+        assert!(
+            c.contains(&format!(
+                "Plane.energy_sampleSize >= {} AND Plane.energy_sampleSize <= {}",
+                1e-9, 3e-9
+            )),
+            "{}",
+            c
+        );
+
+        // Plain value → `=` (Windows AddConvertedRangeClause Equals semantics).
+        let mut eq = SearchFormState::new();
+        eq.spectral_sampling_raw = Some("5".to_string());
+        eq.spectral_sampling_unit = "nm".to_string();
+        let d = build(&eq);
+        assert!(d.contains(&format!("Plane.energy_sampleSize = {}", 5e-9)), "{}", d);
+    }
+
+    #[test]
+    fn spectral_sampling_raw_overrides_numeric_and_legacy_fallback() {
+        // Raw text takes precedence over the legacy numeric value.
+        let mut state = SearchFormState::new();
+        state.spectral_sampling = Some(9.0);
+        state.spectral_sampling_raw = Some(">= 1".to_string());
+        state.spectral_sampling_unit = "nm".to_string();
+        let adql = build(&state);
+        assert!(adql.contains(&format!("Plane.energy_sampleSize >= {}", 1e-9)), "{}", adql);
+        assert!(!adql.contains("Plane.energy_sampleSize <="), "{}", adql);
+
+        // With no raw text, the legacy numeric field still emits `<=`.
+        let mut legacy = SearchFormState::new();
+        legacy.spectral_sampling = Some(4.0);
+        legacy.spectral_sampling_unit = "nm".to_string();
+        let l = build(&legacy);
+        assert!(l.contains(&format!("Plane.energy_sampleSize <= {}", 4e-9)), "{}", l);
     }
 
     #[test]

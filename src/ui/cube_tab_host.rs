@@ -224,9 +224,24 @@ impl CubeTabHost {
                 let v = self.active_viewer().ok_or_else(|| "no cube open".to_string())?;
                 Ok(view_json(&v))
             }
-            // Mutate any subset of the active cube's view parameters.
+            // Mutate any subset of the active cube's view parameters. Mirrors the
+            // reachable half of Windows `ApplyCubeView`: the GL-only volume controls
+            // (camera + reset, quality steps, spectral stretch, MIP/render-mode,
+            // density, background preset, idle auto-orbit) plus the slice-plane
+            // channel. Colormap / stretch / window / mode / slice-plane + caption
+            // toggles are intentionally NOT applied here: in the UI they drive BOTH
+            // the GL volume AND the 2D slice view + colorbar, which requires
+            // `CubeViewer` accessors this module cannot reach (see the parity note in
+            // the returning summary).
             "set_cube_view" => {
                 let v = self.active_viewer().ok_or_else(|| "no cube open".to_string())?;
+
+                // Camera: reset first (as ApplyCubeView does), then apply any
+                // az/el/dist overrides on top. set_camera re-applies the interactive
+                // clamps (el ±1.4, dist 0.5–8) so an agent can't push an invalid pose.
+                if args.get("reset_camera").and_then(|x| x.as_bool()).unwrap_or(false) {
+                    v.gl().reset_view();
+                }
                 let (mut az, mut el, mut dist) = v.gl().camera();
                 if let Some(x) = args.get("az").and_then(|x| x.as_f64()) {
                     az = x as f32;
@@ -238,11 +253,38 @@ impl CubeTabHost {
                     dist = x as f32;
                 }
                 v.gl().set_camera(az, el, dist);
+
                 if let Some(x) = args.get("steps").and_then(|x| x.as_f64()) {
                     v.gl().set_steps(x as f32);
                 }
                 if let Some(x) = args.get("spectral_scale").and_then(|x| x.as_f64()) {
                     v.gl().set_spectral_scale(x as f32);
+                }
+                if let Some(x) = args.get("density").and_then(|x| x.as_f64()) {
+                    v.gl().set_density(x as f32);
+                }
+                // MIP: an explicit `mip` bool wins; otherwise derive it from a
+                // `render_mode` string ("max-intensity"/"mip" → on, else off),
+                // matching ApplyCubeView's RenderModeCombo mapping.
+                if let Some(on) = args.get("mip").and_then(|x| x.as_bool()) {
+                    v.gl().set_mip(on);
+                } else if let Some(mode) = args.get("render_mode").and_then(|x| x.as_str()) {
+                    let on =
+                        mode.to_ascii_lowercase().contains("max") || mode.eq_ignore_ascii_case("mip");
+                    v.gl().set_mip(on);
+                }
+                // Background preset (Dark / Black / Light) — the exact RGB the
+                // Background dropdown applies; unknown names fall back to Dark.
+                if let Some(bg) = args.get("background").and_then(|x| x.as_str()) {
+                    let rgb = match bg.trim().to_ascii_lowercase().as_str() {
+                        "black" => [0.0, 0.0, 0.0],
+                        "light" => [0.92, 0.92, 0.94],
+                        _ => [0.06, 0.06, 0.08], // dark (default)
+                    };
+                    v.gl().set_background(rgb);
+                }
+                if let Some(on) = args.get("auto_orbit").and_then(|x| x.as_bool()) {
+                    v.gl().set_auto_orbit(on);
                 }
                 if let Some(x) = args.get("channel").and_then(|x| x.as_u64()) {
                     v.set_current_channel(x as usize);
@@ -280,15 +322,77 @@ impl CubeTabHost {
                     "spectrum": samples,
                 }))
             }
-            // Render the current view to a PNG (base64) at the requested size.
+            // Render the current view (3D volume or 2D slice) to a figure. With a
+            // `path`, write it straight to disk as PNG or PDF and return the path
+            // (mirrors ExportCubeToPathAsync); without a `path`, return the PNG as
+            // base64 (the existing behavior). `scale` multiplies the base
+            // width/height so an agent can pull a higher-resolution plate.
+            //
+            // NOTE: this writes the raw rendered frame. The Windows path composes the
+            // *styled plate* (header band, WCS caption, colorbar, metadata footer,
+            // dark/light theme). That composer (`cube_export::PlateSpec::compose`) and
+            // its inputs live behind private `CubeViewer` state, so a faithful themed
+            // plate export needs the accessors listed in the returning summary.
             "export_cube_figure" => {
                 let v = self.active_viewer().ok_or_else(|| "no cube open".to_string())?;
-                let width =
+                let scale = args.get("scale").and_then(|x| x.as_u64()).unwrap_or(1).clamp(1, 4) as i32;
+                let base_w =
                     args.get("width").and_then(|x| x.as_u64()).unwrap_or(1024).clamp(16, 4096) as i32;
-                let height =
+                let base_h =
                     args.get("height").and_then(|x| x.as_u64()).unwrap_or(768).clamp(16, 4096) as i32;
+                let width = (base_w * scale).clamp(16, 8192);
+                let height = (base_h * scale).clamp(16, 8192);
                 let transparent =
                     args.get("transparent").and_then(|x| x.as_bool()).unwrap_or(false);
+
+                // ── File-path export (PNG / PDF) ──────────────────────────────────
+                if let Some(path_str) = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    let path = std::path::Path::new(path_str);
+                    if !path.is_absolute() {
+                        return Err("path must be a full (absolute) file path".to_string());
+                    }
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase());
+                    // Format: explicit `format` wins; else infer from the extension.
+                    let fmt = args
+                        .get("format")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .unwrap_or_else(|| ext.clone().unwrap_or_else(|| "png".to_string()));
+                    let pdf = fmt == "pdf";
+                    // Enforce a matching extension, exactly like ExportCubeToPathAsync.
+                    if pdf && ext.as_deref() != Some("pdf") {
+                        return Err("path must end in .pdf for a PDF export".to_string());
+                    }
+                    if !pdf && ext.as_deref() != Some("png") {
+                        return Err("path must end in .png for a PNG export".to_string());
+                    }
+                    let rgba = v.render_figure(width, height, transparent).ok_or_else(|| {
+                        "cube figure could not be rendered (GL unavailable)".to_string()
+                    })?;
+                    let res = if pdf {
+                        crate::helpers::pdf_writer::write_pdf(path, width, height, &rgba)
+                    } else {
+                        crate::helpers::pdf_writer::write_png(path, width, height, &rgba)
+                    };
+                    res.map_err(|e| format!("export failed: {e}"))?;
+                    return Ok(json!({
+                        "path": path_str,
+                        "format": if pdf { "pdf" } else { "png" },
+                        "width": width,
+                        "height": height,
+                        "scale": scale,
+                        "transparent": transparent,
+                    }));
+                }
+
+                // ── Base64 export (no path) ───────────────────────────────────────
                 let rgba = v
                     .render_figure(width, height, transparent)
                     .ok_or_else(|| "cube figure could not be rendered (GL unavailable)".to_string())?;
@@ -297,6 +401,7 @@ impl CubeTabHost {
                 Ok(json!({
                     "width": width,
                     "height": height,
+                    "scale": scale,
                     "transparent": transparent,
                     "image_base64": image_base64,
                 }))
@@ -471,6 +576,7 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
         "steps": v.gl().steps(),
         "spectral_scale": v.gl().spectral_scale(),
         "channel": v.current_channel(),
+        "unit": v.value_unit(),
         "dims": { "nx": nx, "ny": ny, "nz": nz },
     })
 }

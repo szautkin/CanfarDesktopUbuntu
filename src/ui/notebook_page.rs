@@ -14,7 +14,7 @@
 use crate::helpers::notebook_parser;
 use crate::helpers::notebook_undo::UndoRedoStack;
 use crate::models::notebook_document::{CellOutput, CellSource, NotebookCell, NotebookDocument};
-use crate::services::kernel_service::LocalKernelService;
+use crate::services::kernel_service::{KernelState, LocalKernelService};
 use crate::services::notebook_settings_service::NotebookSettingsService;
 use crate::state::AppServices;
 use crate::ui::notebook_cell::{CellWidget, CodeCellWidget, MarkdownCellWidget};
@@ -92,6 +92,14 @@ pub struct NotebookPage {
     editor_tab_size: Cell<u32>,
     /// Whether code cells wrap long lines.
     editor_word_wrap: Cell<bool>,
+    /// Soft execution-timeout threshold in seconds (`0` = never warn). Read
+    /// from `NotebookSettings.execution_timeout_secs`; when a running cell
+    /// exceeds it we surface a non-fatal warning offering Interrupt — the
+    /// kernel is never hard-killed (mirrors `RunSelectedCellAsync`).
+    exec_timeout_secs: Cell<u32>,
+    /// Re-entrancy guard so a second Run-All can't interleave with the first
+    /// (mirrors the reference `_runAllInProgress`).
+    run_all_in_progress: Cell<bool>,
     /// App services (needed to bridge tokio → glib).
     services: Arc<AppServices>,
 }
@@ -185,6 +193,8 @@ impl NotebookPage {
             editor_font_size: Cell::new(editor.font_size),
             editor_tab_size: Cell::new(editor.tab_size),
             editor_word_wrap: Cell::new(editor.word_wrap),
+            exec_timeout_secs: Cell::new(editor.execution_timeout_secs),
+            run_all_in_progress: Cell::new(false),
             services,
         });
 
@@ -213,15 +223,44 @@ impl NotebookPage {
     }
 
     /// Execute the cell at `index` (must be a code cell).
+    ///
+    /// Fire-and-forget entry point used by the run button, Ctrl+Enter, and
+    /// Shift+Enter; drives the shared awaitable
+    /// [`run_cell_async`](Self::run_cell_async).
     pub fn run_cell(self: &Rc<Self>, index: usize) {
+        let page = self.clone();
+        glib::spawn_future_local(async move {
+            page.run_cell_async(index).await;
+        });
+    }
+
+    /// Read the kernel's current lifecycle state off the tokio runtime.
+    async fn kernel_state(self: &Rc<Self>) -> KernelState {
+        let kernel = self.kernel.clone();
+        self.services
+            .spawn(async move {
+                let k = kernel.lock().await;
+                k.state().clone()
+            })
+            .await
+    }
+
+    /// Execute the cell at `index`, **awaiting** completion.
+    ///
+    /// Returns `true` while the kernel remains usable afterwards, or `false`
+    /// if the kernel died / errored — so sequential callers like
+    /// [`run_all`](Self::run_all) can stop early. Mirrors the reference
+    /// `RunSelectedCellAsync`, including the soft, non-fatal execution-timeout
+    /// warning (the kernel is never hard-killed on timeout).
+    async fn run_cell_async(self: &Rc<Self>, index: usize) -> bool {
         let doc_len = self.document.borrow().cells.len();
         if index >= doc_len {
-            return;
+            return true;
         }
 
         let cell_type = self.document.borrow().cells[index].cell_type.clone();
         if cell_type != "code" {
-            return;
+            return true;
         }
 
         // Read current source from widget
@@ -243,93 +282,141 @@ impl NotebookPage {
 
         self.update_kernel_status_label("Kernel: busy");
 
+        // ── Soft execution-timeout warning ────────────────────────────────
+        // A configurable, NON-FATAL warning: if the cell is still running
+        // after `execution_timeout_secs`, surface a hint to Interrupt —
+        // without killing the kernel or forcing an Error state (mirrors the
+        // reference `RunSelectedCellAsync` soft timeout). `0` disables it.
+        let done = Rc::new(Cell::new(false));
+        let timeout_secs = self.exec_timeout_secs.get();
+        if timeout_secs > 0 {
+            let page = self.clone();
+            let done = done.clone();
+            glib::spawn_future_local(async move {
+                glib::timeout_future(std::time::Duration::from_secs(timeout_secs as u64)).await;
+                if !done.get() {
+                    page.update_kernel_status_label(&format!(
+                        "Kernel: busy — cell running over {timeout_secs}s (press I,I to Interrupt)"
+                    ));
+                }
+            });
+        }
+
         // Clone what we need to move into the async block
         let services = self.services.clone();
         let kernel = self.kernel.clone();
         let code_str = source.clone();
         let page = self.clone();
 
-        glib::spawn_future_local(async move {
-            // Run the blocking kernel call on the tokio thread pool
-            let result = services
-                .spawn(async move {
-                    let mut k = kernel.lock().await;
-                    k.execute(&code_str).await
-                })
-                .await;
+        // Run the blocking kernel call on the tokio thread pool
+        let result = services
+            .spawn(async move {
+                let mut k = kernel.lock().await;
+                k.execute(&code_str).await
+            })
+            .await;
 
-            match result {
-                Ok((raw_outputs, exec_count)) => {
-                    // Parse raw JSON outputs into CellOutput
-                    let outputs: Vec<CellOutput> = raw_outputs
-                        .iter()
-                        .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                        .collect();
+        // Execution finished — stop the soft-timeout warning from firing.
+        done.set(true);
 
-                    // Update document
-                    {
-                        let mut doc = page.document.borrow_mut();
-                        if let Some(cell) = doc.cells.get_mut(index) {
-                            cell.outputs = outputs.clone();
-                            cell.execution_count = Some(exec_count);
-                            cell.source = CellSource::Single(source);
-                        }
+        match result {
+            Ok((raw_outputs, exec_count)) => {
+                // Parse raw JSON outputs into CellOutput
+                let outputs: Vec<CellOutput> = raw_outputs
+                    .iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
+
+                // Update document
+                {
+                    let mut doc = page.document.borrow_mut();
+                    if let Some(cell) = doc.cells.get_mut(index) {
+                        cell.outputs = outputs.clone();
+                        cell.execution_count = Some(exec_count);
+                        cell.source = CellSource::Single(source);
                     }
-
-                    // Update widget
-                    {
-                        let widgets = page.cell_widgets.borrow();
-                        if let Some(CellWidget::Code(code)) = widgets.get(index) {
-                            code.set_executing(false);
-                            code.set_execution_count(exec_count);
-                            code.set_outputs(&outputs);
-                        }
-                    }
-
-                    page.mark_modified();
                 }
-                Err(e) => {
-                    let error_output = CellOutput::Error {
-                        ename: "KernelError".to_string(),
-                        evalue: e.clone(),
-                        traceback: vec![],
-                    };
+
+                // Update widget
+                {
+                    let widgets = page.cell_widgets.borrow();
+                    if let Some(CellWidget::Code(code)) = widgets.get(index) {
+                        code.set_executing(false);
+                        code.set_execution_count(exec_count);
+                        code.set_outputs(&outputs);
+                    }
+                }
+
+                page.mark_modified();
+                page.update_kernel_status_label("Kernel: idle");
+                true
+            }
+            Err(e) => {
+                let error_output = CellOutput::Error {
+                    ename: "KernelError".to_string(),
+                    evalue: e.clone(),
+                    traceback: vec![],
+                };
+                {
                     let widgets = page.cell_widgets.borrow();
                     if let Some(CellWidget::Code(code)) = widgets.get(index) {
                         code.set_executing(false);
                         code.set_outputs(&[error_output]);
                     }
                 }
+                page.update_kernel_status_label(&format!("Kernel: error — {e}"));
+                false
             }
-
-            // Refresh kernel status after execution
-            let kernel_state = {
-                let k = page.kernel.try_lock();
-                k.map(|k| format!("{:?}", k.state())).unwrap_or_else(|_| "busy".to_string())
-            };
-            let _ = kernel_state; // just update the label
-            page.update_kernel_status_label("Kernel: idle");
-        });
+        }
     }
 
     /// Execute all code cells in order.
+    ///
+    /// Runs cells sequentially, **awaiting** each cell's execution before
+    /// starting the next, and stops early if the kernel dies. Guarded so a
+    /// second Run-All can't overlap the first. Mirrors the reference
+    /// `RunAllCellsAsync`.
     pub fn run_all(self: &Rc<Self>) {
-        let count = self.document.borrow().cells.len();
+        // Re-entrancy guard: a second Run-All would interleave with the first.
+        if self.run_all_in_progress.get() {
+            return;
+        }
+        self.run_all_in_progress.set(true);
+
         let page = self.clone();
         glib::spawn_future_local(async move {
-            for i in 0..count {
-                let cell_type = page
+            // Auto-start a dead kernel before the sweep (mirrors RunAllCellsAsync).
+            if matches!(page.kernel_state().await, KernelState::Dead) {
+                page.start_kernel().await;
+            }
+
+            let mut i = 0;
+            loop {
+                // Re-read the length each iteration — cells may be edited
+                // between awaits (the reference re-evaluates `Cells.Count`).
+                let count = page.document.borrow().cells.len();
+                if i >= count {
+                    break;
+                }
+                let is_code = page
                     .document
                     .borrow()
                     .cells
                     .get(i)
-                    .map(|c| c.cell_type.clone());
-                if cell_type.as_deref() == Some("code") {
-                    page.run_cell(i);
-                    // Small yield so GTK can process events between cells
-                    glib::timeout_future(std::time::Duration::from_millis(50)).await;
+                    .map(|c| c.cell_type == "code")
+                    .unwrap_or(false);
+                if is_code {
+                    page.set_active_cell(i);
+                    // AWAIT this cell before starting the next one.
+                    let kernel_ok = page.run_cell_async(i).await;
+                    if !kernel_ok {
+                        break; // kernel died / errored — stop early
+                    }
                 }
+                i += 1;
             }
+
+            page.run_all_in_progress.set(false);
         });
     }
 
@@ -812,6 +899,11 @@ impl NotebookPage {
                         let max = page.cell_widgets.borrow().len().saturating_sub(1);
                         if idx < max {
                             page.set_active_cell(idx + 1);
+                        } else {
+                            // Last cell: append a fresh empty code cell and
+                            // advance to it (mirrors RunSelectedAndAdvanceAsync's
+                            // AddCellBelow("code")). `insert_cell` selects it.
+                            page.insert_cell(idx + 1, "code");
                         }
                         glib::Propagation::Stop
                     }

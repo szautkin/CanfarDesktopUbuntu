@@ -48,6 +48,14 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             VerbClass::Read,
         ),
         desc(
+            "list_notebooks",
+            "List recently-opened notebooks from the user's history (most-recent first): each \
+             one's file path and display name. These are on-disk notebooks (not necessarily open); \
+             pass a path to open_notebook to open one.",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+            VerbClass::Read,
+        ),
+        desc(
             "get_notebook",
             "Read a notebook tab: id, title, file path, dirty flag, kernel state, selected cell, and \
              the list of cells (index, type, source, execution count, output count). Use \
@@ -214,6 +222,20 @@ pub async fn dispatch(
     // then opens it through the bridge.
     if name == "create_analysis_notebook" {
         return Some(create_analysis_notebook(services, args).await);
+    }
+
+    // Not a bridge op: reads the on-disk recent-notebooks history (independent of
+    // which tabs are open), mirroring the Windows `ListNotebooksTool`.
+    if name == "list_notebooks" {
+        let recents = crate::services::notebook_store::NotebookStore::new().load();
+        let notebooks: Vec<Value> = recents
+            .iter()
+            .map(|r| json!({ "path": r.path, "name": r.name, "openedAt": r.opened_at.to_rfc3339() }))
+            .collect();
+        return Some(ToolResult::Data(json!({
+            "count": notebooks.len(),
+            "notebooks": notebooks,
+        })));
     }
 
     // Tool names are identical to the bridge ops.

@@ -31,9 +31,6 @@ const KERNEL_HARNESS: &str = include_str!("../../data/kernel_harness.py");
 /// Sentinel that the harness writes after every cell execution.
 const BOUNDARY: &str = "\x04__CANFAR_EXEC_BOUNDARY__\x04";
 
-/// Maximum time we wait for the child to produce the boundary sentinel.
-const EXECUTE_TIMEOUT_SECS: u64 = 300;
-
 /// Grace period given to the Python process after sending `quit` before we
 /// issue a hard kill.
 const SHUTDOWN_GRACE_SECS: u64 = 2;
@@ -147,14 +144,18 @@ impl LocalKernelService {
     /// Send `code` to the kernel for execution and collect all output lines.
     ///
     /// Blocks (asynchronously) until the harness emits the boundary sentinel
-    /// or until [`EXECUTE_TIMEOUT_SECS`] elapses.
+    /// or the child dies. There is deliberately **no** fatal execution
+    /// deadline: a long-running cell must never hard-kill the kernel. The UI
+    /// layer surfaces a soft, configurable timeout *warning*
+    /// (`NotebookSettings.execution_timeout_secs`) and offers Interrupt
+    /// (SIGINT) while execution continues.
     ///
     /// Returns `(outputs, execution_count)` where `outputs` is a `Vec` of
     /// raw `serde_json::Value` objects — one per output line emitted by the
     /// harness.
     ///
     /// Transitions state: `Idle → Busy → Idle` on success, or
-    /// `Idle → Busy → Error(…)` on I/O failure / timeout.
+    /// `Idle → Busy → Error(…)` on genuine I/O failure / unexpected EOF.
     pub async fn execute(
         &mut self,
         code: &str,
@@ -184,29 +185,25 @@ impl LocalKernelService {
             return Err(e);
         }
 
-        // Read output lines until we see the boundary sentinel.
-        let read_result = timeout(
-            Duration::from_secs(EXECUTE_TIMEOUT_SECS),
-            self.read_until_boundary(),
-        )
-        .await;
+        // Read output lines until we see the boundary sentinel. There is
+        // deliberately NO fatal execution deadline here: a long-running cell
+        // must never hard-kill the kernel or force it into `Error`. The UI
+        // layer surfaces a soft, configurable timeout warning
+        // (`NotebookSettings.execution_timeout_secs`) and offers Interrupt
+        // (SIGINT) while we keep waiting for the real result. Genuine kernel
+        // death is still detected via EOF / I/O error inside
+        // `read_until_boundary`. Mirrors the reference
+        // `LocalKernelService.ExecuteAsync`, which has no execution timeout.
+        let read_result = self.read_until_boundary().await;
 
         match read_result {
-            Ok(Ok(outputs)) => {
+            Ok(outputs) => {
                 self.state = KernelState::Idle;
                 Ok((outputs, current_count))
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 self.state = KernelState::Error(e.clone());
                 Err(e)
-            }
-            Err(_elapsed) => {
-                let msg = format!(
-                    "Kernel execution timed out after {} seconds",
-                    EXECUTE_TIMEOUT_SECS
-                );
-                self.state = KernelState::Error(msg.clone());
-                Err(msg)
             }
         }
     }
