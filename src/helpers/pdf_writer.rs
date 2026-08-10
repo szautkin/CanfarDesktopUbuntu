@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn build_surface_rejects_short_buffer() {
         // 4x4 needs 64 bytes; give it 10.
-        assert!(build_surface(4, 4, &vec![0u8; 10]).is_err());
+        assert!(build_surface(4, 4, &[0u8; 10]).is_err());
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         let rgba = sample_rgba(20, 20);
         write_pdf(&path, 20, 20, &rgba).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert!(bytes.len() > 0);
+        assert!(!bytes.is_empty());
         // PDF header.
         assert_eq!(&bytes[..5], b"%PDF-");
         let _ = std::fs::remove_file(&path);
@@ -197,6 +197,6 @@ mod tests {
     #[test]
     fn write_png_rejects_short_buffer() {
         let path = temp_path("png");
-        assert!(write_png(&path, 8, 8, &vec![0u8; 4]).is_err());
+        assert!(write_png(&path, 8, 8, &[0u8; 4]).is_err());
     }
 }

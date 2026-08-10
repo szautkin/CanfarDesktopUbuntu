@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn image_screen_round_trip_with_rotation() {
         // A 30° rotation must round-trip back to the original pixel.
-        let (scale, ox, oy, rot, w, h) = (1.5, 12.0, -7.0, 0.5236_f64, 64, 48);
+        let (scale, ox, oy, rot, w, h) = (1.5, 12.0, -7.0, std::f64::consts::FRAC_PI_6, 64, 48);
         for &(px, py) in &[(0.0, 0.0), (63.0, 47.0), (20.0, 33.0)] {
             let (sx, sy) = image_to_screen(px, py, scale, ox, oy, rot, w, h);
             let (rx, ry) = screen_to_image(sx, sy, scale, ox, oy, rot, w, h);

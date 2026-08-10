@@ -142,17 +142,23 @@ mod tests {
 
     #[test]
     fn is_all_defaults_flips_when_configured() {
-        let mut s = ImageDiscoverySettings::default();
-        s.username = "alice".to_string();
+        let s = ImageDiscoverySettings {
+            username: "alice".to_string(),
+            ..Default::default()
+        };
         assert!(!s.is_all_defaults());
 
-        let mut s2 = ImageDiscoverySettings::default();
-        s2.inspector_image = "images.canfar.net/skaha/astroml:24.07".to_string();
+        let s2 = ImageDiscoverySettings {
+            inspector_image: "images.canfar.net/skaha/astroml:24.07".to_string(),
+            ..Default::default()
+        };
         assert!(!s2.is_all_defaults());
 
         // Empty host is still considered "default".
-        let mut s3 = ImageDiscoverySettings::default();
-        s3.registry_host = String::new();
+        let s3 = ImageDiscoverySettings {
+            registry_host: String::new(),
+            ..Default::default()
+        };
         assert!(s3.is_all_defaults());
     }
 

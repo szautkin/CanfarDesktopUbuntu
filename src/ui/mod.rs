@@ -51,3 +51,19 @@ pub mod vospace_browser;
 pub mod workflows_page;
 
 pub use main_window::build_main_window;
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// A late-bound, optional UI callback owned by one widget.
+///
+/// Widgets are constructed before their host knows what to do with their events,
+/// so the host installs the handler afterwards — hence `RefCell<Option<_>>`.
+/// `Rc` (not `Box`) so a handler can be cloned out and invoked without holding
+/// the borrow across the call, which would panic if the handler re-entered the
+/// widget.
+pub type CallbackSlot<F> = RefCell<Option<Rc<F>>>;
+
+/// A [`CallbackSlot`] shared across clones of a widget handle — the same slot
+/// seen by every closure that captured the widget.
+pub type SharedCallbackSlot<F> = Rc<CallbackSlot<F>>;

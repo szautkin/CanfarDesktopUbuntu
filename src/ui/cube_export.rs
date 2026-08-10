@@ -405,17 +405,14 @@ impl PlateSpec {
             // CubeExportPlate.BuildCaptionOverlay; re-themed for the dark plate.
             if self.overlay.captions_on {
                 let vp = (self.overlay.view_proj)(fw, fh);
-                let ov = cube_axes::build(
-                    self.overlay.nx,
-                    self.overlay.ny,
-                    self.overlay.nz,
-                    &self.overlay.wcs,
-                    &vp,
-                    fwf as f32,
-                    fhf as f32,
-                    0, // slice-plane marker unused in the export overlay
-                    self.overlay.spectral_scale,
-                );
+                let ov = cube_axes::build(&cube_axes::AxesRequest {
+                    dims: (self.overlay.nx, self.overlay.ny, self.overlay.nz),
+                    wcs: &self.overlay.wcs,
+                    view_proj: &vp,
+                    panel: (fwf as f32, fhf as f32),
+                    slice_z: 0, // slice-plane marker unused in the export overlay
+                    spectral_scale: self.overlay.spectral_scale,
+                });
 
                 let _ = cr.save();
                 cr.rectangle(frame_x, frame_y, fwf, fhf);

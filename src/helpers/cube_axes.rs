@@ -5,10 +5,10 @@
 //!
 //! One-to-one port of `Services/CubeViewer/CubeAxesOverlay.cs` (the Windows
 //! analogue of the macOS `CubeAxisCaptions`). The reference builds the camera
-//! matrices itself from az/el/dist; here the composed `view_proj` (= perspective
-//! * look_at, **without** the box/model scale) is supplied by the caller, and we
-//! apply the box scale to the model-space corners exactly as `CubeAxesOverlay`
-//! does inside its local `Project` helper.
+//! matrices itself from az/el/dist; here the composed `view_proj`
+//! (= `perspective * look_at`, **without** the box/model scale) is supplied by
+//! the caller, and we apply the box scale to the model-space corners exactly as
+//! `CubeAxesOverlay` does inside its local `Project` helper.
 //!
 //! The spatial-endpoint formatters (`RA`/`DEC` sexagesimal, galactic degrees)
 //! live here because the Verbinal [`CubeWcs`] surface exposes only the spectral
@@ -62,27 +62,39 @@ pub struct AxesOverlay {
     pub slice_quad: Vec<(f32, f32)>,
 }
 
-/// Build the projected wireframe + captions + slice-plane for the given cube,
-/// WCS, composed camera matrix (`view_proj`), and panel size.
+/// Everything [`build`] needs to lay out the axes box for one frame.
 ///
-/// * `nx`, `ny`, `nz` — rendered volume dimensions (drive the box aspect and
-///   the spectral endpoint channels).
-/// * `wcs` — cube WCS for the captions.
-/// * `view_proj` — `perspective * look_at` (column-major, OpenGL clip space);
-///   the box/model scale is applied here, not baked into this matrix.
-/// * `panel_w`, `panel_h` — panel size in pixels.
-/// * `slice_z` — current channel index for the slice-plane marker.
-pub fn build(
-    nx: usize,
-    ny: usize,
-    nz: usize,
-    wcs: &CubeWcs,
-    view_proj: &Mat4,
-    panel_w: f32,
-    panel_h: f32,
-    slice_z: usize,
-    spectral_scale: f32,
-) -> AxesOverlay {
+/// A struct rather than nine positional arguments: the two `(usize, usize)`
+/// pairs and the `f32` pair are easy to transpose at a call site, and a
+/// transposed width/height silently produces a skewed box instead of an error.
+#[derive(Clone, Copy)]
+pub struct AxesRequest<'a> {
+    /// Rendered volume dimensions `(nx, ny, nz)` — drive the box aspect and the
+    /// spectral endpoint channels.
+    pub dims: (usize, usize, usize),
+    /// Cube WCS for the captions.
+    pub wcs: &'a CubeWcs,
+    /// `perspective * look_at` (column-major, OpenGL clip space); the box/model
+    /// scale is applied inside `build`, not baked into this matrix.
+    pub view_proj: &'a Mat4,
+    /// Panel size in pixels, `(width, height)`.
+    pub panel: (f32, f32),
+    /// Current channel index for the slice-plane marker.
+    pub slice_z: usize,
+    /// Z-axis box stretch (the spectral-scale control).
+    pub spectral_scale: f32,
+}
+
+/// Build the projected wireframe + captions + slice-plane for one frame.
+pub fn build(req: &AxesRequest) -> AxesOverlay {
+    let AxesRequest {
+        dims: (nx, ny, nz),
+        wcs,
+        view_proj,
+        panel: (panel_w, panel_h),
+        slice_z,
+        spectral_scale,
+    } = *req;
     let mut out = AxesOverlay::default();
     if panel_w < 1.0 || panel_h < 1.0 {
         return out;
@@ -381,6 +393,24 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// An [`AxesRequest`] over the identity camera at the reference spectral
+    /// scale — the two constants every test here shares.
+    fn req<'a>(
+        dims: (usize, usize, usize),
+        wcs: &'a CubeWcs,
+        panel: (f32, f32),
+        slice_z: usize,
+    ) -> AxesRequest<'a> {
+        AxesRequest {
+            dims,
+            wcs,
+            view_proj: &IDENTITY,
+            panel,
+            slice_z,
+            spectral_scale: 1.5,
+        }
+    }
+
     const IDENTITY: Mat4 = [
         1.0, 0.0, 0.0, 0.0, //
         0.0, 1.0, 0.0, 0.0, //
@@ -412,7 +442,7 @@ mod tests {
     #[test]
     fn build_wireframe_slice_and_captions() {
         let wcs = CubeWcs::from_header(&HashMap::new());
-        let overlay = build(10, 10, 10, &wcs, &IDENTITY, 200.0, 200.0, 5, 1.5);
+        let overlay = build(&req((10, 10, 10), &wcs, (200.0, 200.0), 5));
         // Identity keeps every corner in front → all 12 edges, 9 captions, quad.
         assert_eq!(overlay.edges.len(), 12);
         assert_eq!(overlay.captions.len(), 9);
@@ -422,7 +452,7 @@ mod tests {
     #[test]
     fn build_empty_on_degenerate_panel() {
         let wcs = CubeWcs::from_header(&HashMap::new());
-        let overlay = build(4, 4, 4, &wcs, &IDENTITY, 0.0, 100.0, 0, 1.5);
+        let overlay = build(&req((4, 4, 4), &wcs, (0.0, 100.0), 0));
         assert!(overlay.edges.is_empty());
         assert!(overlay.captions.is_empty());
         assert!(overlay.slice_quad.is_empty());
@@ -432,7 +462,7 @@ mod tests {
     fn spatial_fallback_captions_without_wcs() {
         // No WCS → "RA"/"DEC" axis names and "px N" endpoint values, "CH N" spectral.
         let wcs = CubeWcs::from_header(&HashMap::new());
-        let overlay = build(8, 6, 4, &wcs, &IDENTITY, 200.0, 200.0, 0, 1.5);
+        let overlay = build(&req((8, 6, 4), &wcs, (200.0, 200.0), 0));
         let texts: Vec<&str> = overlay.captions.iter().map(|c| c.2.as_str()).collect();
         assert!(texts.contains(&"RA"));
         assert!(texts.contains(&"DEC"));

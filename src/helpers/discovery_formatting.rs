@@ -167,7 +167,7 @@ mod tests {
             r_packages: vec!["ggplot2|3.4".into()],
             ..Default::default()
         };
-        assert_eq!(package_count(&m), 2 + 1 + 0 + 3 + 1);
+        assert_eq!(package_count(&m), (2 + 1) + 3 + 1);
         assert_eq!(package_count(&ImageManifest::default()), 0);
     }
 }

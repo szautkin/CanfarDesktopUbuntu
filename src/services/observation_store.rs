@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn filter_is_case_insensitive() {
         let obs = sample_obs();
-        let list = vec![obs];
+        let list = [obs];
         let needle = "cfht";
         let filtered: Vec<_> = list
             .iter()

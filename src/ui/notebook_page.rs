@@ -78,7 +78,7 @@ pub struct NotebookPage {
     pub kernel_status: gtk::Label,
     /// Optional callback invoked whenever the kernel state changes.
     /// The callback receives a short state keyword: "idle", "busy", "starting", "dead", "error".
-    on_state_changed: RefCell<Option<Rc<dyn Fn(&str)>>>,
+    on_state_changed: crate::ui::CallbackSlot<dyn Fn(&str)>,
     /// Optional callback fired when the document transitions to modified — the host
     /// uses it to add a `*` to the tab title and notify the autosave timer.
     on_modified: RefCell<Option<Rc<dyn Fn()>>>,

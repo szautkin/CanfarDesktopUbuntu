@@ -32,6 +32,10 @@
 //! `/run/user/<uid>` doesn't exist (non-systemd, some containers), and
 //! `/tmp/verbinal-mcp-<uid>.sock` as the last resort. The `<uid>` there keeps the
 //! path unique per user on the shared, world-writable `/tmp`.
+//!
+//! Because the uid-derived path deliberately outranks `$XDG_RUNTIME_DIR`, moving
+//! that variable is NOT enough to isolate a second instance — an explicit
+//! [`SOCKET_OVERRIDE_VAR`] names the socket outright and beats every rule above.
 
 use std::path::PathBuf;
 
@@ -41,9 +45,17 @@ const SOCKET_FILE_NAME: &str = "verbinal-mcp.sock";
 /// Prefix for the `/tmp` fallback; the current uid is appended, then `.sock`.
 const TMP_FALLBACK_PREFIX: &str = "verbinal-mcp-";
 
+/// Environment variable naming an explicit socket path, overriding every other
+/// rule. Set it on BOTH the app and the bridge to point them at the same private
+/// socket — used by the integration tests for isolation, and by anyone running a
+/// second instance without disturbing the primary one.
+pub const SOCKET_OVERRIDE_VAR: &str = "VERBINAL_MCP_SOCKET";
+
 /// Returns the deterministic, per-user path to the MCP Unix domain socket.
 ///
 /// Resolution order (see [`resolve_socket_path`] for the pure logic):
+/// 0. `$VERBINAL_MCP_SOCKET` verbatim, when set and non-empty — an explicit
+///    opt-in escape hatch for tests and side-by-side instances.
 /// 1. `/run/user/<uid>/verbinal-mcp.sock` when `/run/user/<uid>` exists — derived
 ///    from the uid, so the server and the (env-stripped) bridge agree without any
 ///    shared environment.
@@ -56,7 +68,28 @@ pub fn socket_path() -> PathBuf {
     let uid = current_uid();
     let run_user_exists = PathBuf::from(format!("/run/user/{uid}")).is_dir();
     let xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-    resolve_socket_path(xdg.as_deref(), uid, run_user_exists)
+    let override_path = std::env::var(SOCKET_OVERRIDE_VAR).ok();
+    resolve_socket_path_with_override(
+        override_path.as_deref(),
+        xdg.as_deref(),
+        uid,
+        run_user_exists,
+    )
+}
+
+/// [`resolve_socket_path`] preceded by the explicit-override check.
+fn resolve_socket_path_with_override(
+    override_path: Option<&str>,
+    xdg: Option<&str>,
+    uid: u32,
+    run_user_exists: bool,
+) -> PathBuf {
+    if let Some(p) = override_path {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    resolve_socket_path(xdg, uid, run_user_exists)
 }
 
 /// Pure path resolution, factored out so the (environment- and
@@ -153,6 +186,37 @@ mod tests {
         assert_eq!(
             resolve_socket_path(Some("/some/custom/dir"), 1000, true),
             PathBuf::from("/run/user/1000/verbinal-mcp.sock")
+        );
+    }
+
+    /// The explicit override beats every other rule — including the uid-derived
+    /// path that otherwise wins. This is the ONLY way to isolate a second
+    /// instance (or an integration test) from the user's live app socket.
+    #[test]
+    fn explicit_override_beats_run_user_and_xdg() {
+        assert_eq!(
+            resolve_socket_path_with_override(
+                Some("/tmp/private-test.sock"),
+                Some("/some/custom/dir"),
+                1000,
+                true
+            ),
+            PathBuf::from("/tmp/private-test.sock")
+        );
+    }
+
+    /// An unset or empty override falls through to the normal resolution order,
+    /// so a stray empty env var can never redirect the socket to `""`.
+    #[test]
+    fn empty_or_absent_override_falls_through() {
+        let expected = PathBuf::from("/run/user/1000/verbinal-mcp.sock");
+        assert_eq!(
+            resolve_socket_path_with_override(None, None, 1000, true),
+            expected
+        );
+        assert_eq!(
+            resolve_socket_path_with_override(Some(""), None, 1000, true),
+            expected
         );
     }
 

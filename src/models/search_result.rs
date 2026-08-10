@@ -638,7 +638,7 @@ fn format_wavelength(raw: &str) -> String {
     match raw.parse::<f64>() {
         Ok(v) => {
             let mag = v.abs();
-            if mag < 0.001 || mag > 1e6 {
+            if !(0.001..=1e6).contains(&mag) {
                 format!("{:.3e}", v)
             } else {
                 format!("{}", v)
@@ -652,7 +652,7 @@ fn format_scientific(raw: &str, decimals: usize) -> String {
     match raw.parse::<f64>() {
         Ok(v) => {
             let mag = v.abs();
-            if mag < 0.001 || mag > 1e6 {
+            if !(0.001..=1e6).contains(&mag) {
                 format!("{:.*e}", decimals, v)
             } else {
                 format!("{}", v)
@@ -925,9 +925,11 @@ mod tests {
 
     #[test]
     fn recent_search_resolver_provenance_roundtrips() {
-        let mut r = RecentSearch::default();
-        r.resolver_service_used = Some("SIMBAD".to_string());
-        r.resolution_epoch = Some("2026-07-08T00:00:00Z".to_string());
+        let r = RecentSearch {
+            resolver_service_used: Some("SIMBAD".to_string()),
+            resolution_epoch: Some("2026-07-08T00:00:00Z".to_string()),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&r).unwrap();
         let back: RecentSearch = serde_json::from_str(&json).unwrap();
         assert_eq!(back.resolver_service_used.as_deref(), Some("SIMBAD"));

@@ -359,7 +359,7 @@ mod tests {
         let mut data = vec![0.0f32; 8];
         // 2x2x2 cube; tag voxel (1,1,1).
         let vol_dims = (2usize, 2usize, 2usize);
-        let idx = (1 * vol_dims.1 + 1) * vol_dims.0 + 1; // = 7
+        let idx = (vol_dims.1 + 1) * vol_dims.0 + 1; // = 7
         data[idx] = 0.75;
         let vol = VolumeData::new(vol_dims.0, vol_dims.1, vol_dims.2, data, "t".into(), None);
         assert_eq!(vol.voxel_count(), 8);

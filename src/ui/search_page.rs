@@ -8,13 +8,7 @@ use crate::models::search_result::{
     ResolverResult, SavedQuery, SearchFormState, SearchResultRow, SearchResults,
 };
 
-// The filter→ADQL converter lives at `src/helpers/filter_to_adql.rs`. It is
-// included here via `#[path]` so this feature compiles without editing
-// `src/helpers/mod.rs`. To integrate it into the helpers module tree, add
-// `pub mod filter_to_adql;` to `src/helpers/mod.rs`, delete this include, and
-// switch the call site to `crate::helpers::filter_to_adql::filters_to_where`.
-#[path = "../helpers/filter_to_adql.rs"]
-mod filter_to_adql;
+use crate::helpers::filter_to_adql;
 use crate::state::AppServices;
 use crate::ui::agent_badge::agent_badge;
 use gtk4::glib;
@@ -2274,7 +2268,7 @@ impl SearchPage {
                         "Data train loaded from cache ({} entries, last updated {})",
                         count, time_label
                     ));
-                    self.services.toast.toast(&format!(
+                    self.services.toast.toast(format!(
                         "Archive unreachable — showing cached filters from {}",
                         time_label
                     ));
@@ -2722,7 +2716,7 @@ async fn save_to_research(
     }
 
     // ── Resolve DataLink ──────────────────────────────────────────────
-    services.toast.toast(&format!(
+    services.toast.toast(format!(
         "Resolving DataLink for {}…",
         short_pub_id(publisher_id)
     ));
@@ -2814,7 +2808,7 @@ async fn save_to_research(
     if let Err(e) = std::fs::create_dir_all(&managed_dir) {
         services
             .toast
-            .toast(&format!("Cannot create storage directory: {}", e));
+            .toast(format!("Cannot create storage directory: {}", e));
         return;
     }
 
@@ -2852,7 +2846,7 @@ async fn save_to_research(
     };
     services
         .toast
-        .toast(&format!("Downloading {}…", display_name));
+        .toast(format!("Downloading {}…", display_name));
 
     // Choose a filename: prefer DataLink's name, fall back to URL extraction,
     // finally to "{obs_id}.fits". Computed up front because the stream writes
@@ -2890,7 +2884,7 @@ async fn save_to_research(
         Err(e) => {
             // Clean up partial managed dir (the helper already removed its .tmp).
             crate::services::delete_managed_dir(&obs_id);
-            services.toast.toast(&format!("Download failed: {}", e));
+            services.toast.toast(format!("Download failed: {}", e));
             return;
         }
     };
@@ -2923,7 +2917,7 @@ async fn save_to_research(
             // Leave the downloaded files on disk — the user can try again
             services
                 .toast
-                .toast(&format!("Saved files, but store write failed: {}", e));
+                .toast(format!("Saved files, but store write failed: {}", e));
         }
     }
 }

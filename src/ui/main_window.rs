@@ -977,7 +977,7 @@ pub fn build_main_window(
 
                     services
                         .toast
-                        .toast(&crate::tr_fmt!("Welcome back, {}!", &display));
+                        .toast(crate::tr_fmt!("Welcome back, {}!", &display));
                 }
             });
         });
@@ -1050,7 +1050,7 @@ pub fn build_main_window(
 
                         services
                             .toast
-                            .toast(&crate::tr_fmt!("Welcome back, {}!", &display));
+                            .toast(crate::tr_fmt!("Welcome back, {}!", &display));
                     }
                     Err(_) => {
                         TokenStorage::clear();
@@ -1101,7 +1101,7 @@ pub fn build_main_window(
             for svc_name in ServiceName::all() {
                 let status = services.health.get(svc_name);
                 let row = adw::ActionRow::builder()
-                    .title(&svc_name.to_string())
+                    .title(svc_name.to_string())
                     .build();
                 row.add_prefix(&gtk::Image::from_icon_name(svc_name.icon_name()));
 
@@ -1783,15 +1783,19 @@ fn build_welcome_page(
     }
 }
 
-/// Build one landing tile. Returns the widget to attach plus, for auth-gated
-/// tiles, a `Fn(bool)` that locks (`true`) / unlocks (`false`) its visuals.
+/// A built landing tile: the widget to attach, plus — for auth-gated tiles only —
+/// a `Fn(locked)` the shell calls on every sign-in/sign-out to dim the tile and
+/// show its lock badge.
+type BuiltTile = (gtk::Widget, Option<Rc<dyn Fn(bool)>>);
+
+/// Build one landing tile.
 fn make_tile(
     spec: &TileSpec,
     view_stack: &adw::ViewStack,
     window: &adw::ApplicationWindow,
     services: &Arc<AppServices>,
     login_btn: &gtk::Button,
-) -> (gtk::Widget, Option<Rc<dyn Fn(bool)>>) {
+) -> BuiltTile {
     let btn = gtk::Button::new();
     btn.add_css_class("flat");
     btn.add_css_class("card");

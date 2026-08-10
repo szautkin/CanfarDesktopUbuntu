@@ -207,8 +207,10 @@ mod tests {
         // This test is best-effort: skip silently on machines without python3.
         if let Some(p) = which("python3") {
             if let Some((major, minor)) = validate_python(&p) {
+                // `validate_python` only PARSES the reported version — any 3.x is
+                // a valid result here. The >= 3.8 requirement is enforced by
+                // `find_python`, which has its own coverage.
                 assert_eq!(major, 3, "expected Python 3, got {}.{}", major, minor);
-                assert!(minor >= 0);
             }
             // If validate returns None the binary exists but is broken; that is
             // still a valid outcome for the test (we just cannot assert more).

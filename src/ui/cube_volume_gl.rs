@@ -36,7 +36,7 @@ fn ensure_gl_loaded() {
                     .map(|sym| *sym)
                     .unwrap_or(std::ptr::null())
             });
-            gl::load_with(|name| epoxy::get_proc_addr(name));
+            gl::load_with(epoxy::get_proc_addr);
             // Keep libepoxy resident for the process lifetime.
             std::mem::forget(library);
         }
@@ -99,7 +99,7 @@ pub struct CubeVolumeGl {
     area: gtk::GLArea,
     state: Rc<RefCell<GlState>>,
     /// Invoked whenever the camera moves, so the axes overlay can redraw in sync.
-    camera_cb: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+    camera_cb: crate::ui::SharedCallbackSlot<dyn Fn()>,
 }
 
 impl CubeVolumeGl {
@@ -295,14 +295,17 @@ impl CubeVolumeGl {
     }
 
     fn fire_camera_changed(&self) {
-        if let Some(cb) = self.camera_cb.borrow().as_ref() {
+        // Clone the handle out before invoking: holding the borrow across the
+        // call would panic if the overlay's redraw re-entered this widget.
+        let cb = self.camera_cb.borrow().clone();
+        if let Some(cb) = cb {
             cb();
         }
     }
 
     /// Register a callback fired whenever the camera moves (for the axes overlay).
     pub fn set_on_camera_changed(&self, cb: impl Fn() + 'static) {
-        *self.camera_cb.borrow_mut() = Some(Box::new(cb));
+        *self.camera_cb.borrow_mut() = Some(Rc::new(cb));
     }
 
     fn setup_interaction(self: &Rc<Self>) {

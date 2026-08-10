@@ -302,6 +302,11 @@ impl PackageQuery {
 /// optional job id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// The success variant is large (a full package manifest), but this enum is a
+// per-image cache record held behind the store — one instance per known image,
+// never passed around hot. Boxing it would add an allocation to every cache read
+// to save stack bytes nobody is short of.
+#[allow(clippy::large_enum_variant)]
 pub enum DiscoveryOutcome {
     Manifest(ImageManifest),
     Failure {

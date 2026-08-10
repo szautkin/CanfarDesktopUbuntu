@@ -142,8 +142,8 @@ impl ProposalsContent {
                             })
                             .await;
                         match result {
-                            Ok(msg) => this.services.toast.toast(&format!("Applied: {msg}")),
-                            Err(e) => this.services.toast.toast(&format!("Apply failed: {e}")),
+                            Ok(msg) => this.services.toast.toast(format!("Applied: {msg}")),
+                            Err(e) => this.services.toast.toast(format!("Apply failed: {e}")),
                         }
                         this.refresh();
                     });

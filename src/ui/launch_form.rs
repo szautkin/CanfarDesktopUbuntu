@@ -1115,11 +1115,9 @@ impl LaunchFormView {
         match result {
             Ok(id) => {
                 self.status_label.set_text("");
-                self.services.toast.toast(&crate::tr_fmt!(
-                    "Launched batch job '{}' ({})",
-                    name,
-                    id
-                ));
+                self.services
+                    .toast
+                    .toast(crate::tr_fmt!("Launched batch job '{}' ({})", name, id));
 
                 // Save to recent launches so the batch job can be relaunched with
                 // its exact command line (cmd/args/replicas) and resources.

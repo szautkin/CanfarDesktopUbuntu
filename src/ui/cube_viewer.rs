@@ -253,7 +253,7 @@ impl CubeViewer {
         let is_3d = self
             .stack
             .visible_child_name()
-            .map_or(true, |n| n == "volume");
+            .is_none_or(|n| n == "volume");
         if is_3d {
             self.gl.render_to_rgba(w, h, transparent)
         } else {
@@ -446,17 +446,14 @@ impl CubeViewer {
                 return;
             }
             let vp = this.gl.view_proj(w, h);
-            let overlay = cube_axes::build(
-                this.vol.nx,
-                this.vol.ny,
-                this.vol.nz,
-                &this.wcs,
-                &vp,
-                w as f32,
-                h as f32,
-                this.current_channel.get(),
-                this.gl.spectral_scale(),
-            );
+            let overlay = cube_axes::build(&cube_axes::AxesRequest {
+                dims: (this.vol.nx, this.vol.ny, this.vol.nz),
+                wcs: &this.wcs,
+                view_proj: &vp,
+                panel: (w as f32, h as f32),
+                slice_z: this.current_channel.get(),
+                spectral_scale: this.gl.spectral_scale(),
+            });
 
             // Slice-plane marker (behind the edges): translucent cyan fill + edge.
             if this.slice_toggle.is_active() && overlay.slice_quad.len() == 4 {
@@ -573,7 +570,7 @@ impl CubeViewer {
         let is_3d = self
             .stack
             .visible_child_name()
-            .map_or(true, |n| n == "volume");
+            .is_none_or(|n| n == "volume");
         if is_3d {
             self.gl.render_to_rgba(w, h, true)
         } else {
@@ -612,7 +609,7 @@ impl CubeViewer {
         let is_3d = self
             .stack
             .visible_child_name()
-            .map_or(true, |n| n == "volume");
+            .is_none_or(|n| n == "volume");
         let gl = self.gl.clone();
         let overlay = crate::ui::cube_export::PlateOverlay {
             captions_on: is_3d && self.captions_toggle.is_active(),
@@ -1156,7 +1153,7 @@ fn fmt_num(v: f64) -> String {
         return "—".to_string();
     }
     let a = v.abs();
-    if a != 0.0 && (a >= 1e5 || a < 1e-3) {
+    if a != 0.0 && !(1e-3..1e5).contains(&a) {
         return format!("{:.3e}", v);
     }
     let s = format!("{:.4}", v);

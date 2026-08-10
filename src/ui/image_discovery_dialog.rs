@@ -36,6 +36,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// One chip in the active-filter bar: its label, and the mutation that clears
+/// just that constraint when the chip's ✕ is clicked.
+type ActiveFilterChip = (String, Box<dyn Fn(&mut PackageQuery)>);
+
 /// Public entry point. Opens the modal discovery dialog over `parent`; when the
 /// user commits, `on_pick` is called with the chosen image id and the window is
 /// closed.
@@ -307,7 +311,7 @@ impl DiscoveryUi {
         }
         let q = self.query.borrow().clone();
 
-        let mut chips: Vec<(String, Box<dyn Fn(&mut PackageQuery)>)> = Vec::new();
+        let mut chips: Vec<ActiveFilterChip> = Vec::new();
         if let Some(fam) = &q.os_family {
             let f = fam.clone();
             chips.push((format!("OS family: {f}"), Box::new(|q| q.os_family = None)));

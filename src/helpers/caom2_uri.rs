@@ -29,7 +29,7 @@ pub fn to_observation_uri(publisher_id: &str) -> Option<String> {
             return None;
         }
         // Strip any trailing /productID.
-        let observation_id = rest.splitn(2, '/').next().unwrap_or("");
+        let observation_id = rest.split('/').next().unwrap_or("");
         if observation_id.is_empty() {
             return None;
         }
@@ -60,7 +60,7 @@ pub fn to_observation_uri(publisher_id: &str) -> Option<String> {
         _ => return None,
     };
 
-    let observation = query.splitn(2, '/').next().unwrap_or("");
+    let observation = query.split('/').next().unwrap_or("");
     if observation.is_empty() {
         return None;
     }

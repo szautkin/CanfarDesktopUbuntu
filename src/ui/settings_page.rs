@@ -565,7 +565,7 @@ impl SettingsPage {
         // Dynamic rows are tracked so a rebuild can remove the previous batch.
         let rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::new(RefCell::new(Vec::new()));
         // Trampoline: a row's Approve/Revoke button re-invokes the refresh.
-        let refresh_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let refresh_slot: crate::ui::SharedCallbackSlot<dyn Fn()> = Rc::new(RefCell::new(None));
 
         let refresh: Rc<dyn Fn()> = {
             let services = self.services.clone();

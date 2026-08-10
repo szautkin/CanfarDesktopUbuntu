@@ -59,6 +59,11 @@ fn split_csv(value: &str) -> Vec<String> {
 }
 
 /// Parse a `.workflow.md` document. Never fails; unrecognized input becomes a warning.
+// `flush_step!` resets the per-step accumulators after pushing. Two of its three
+// expansion sites go on to read those resets; the final one (after the loop)
+// cannot, so that expansion alone leaves them dead. The resets are still correct
+// and required — dropping them would leak one step's state into the next.
+#[allow(unused_assignments)]
 pub fn parse(text: &str) -> WorkflowDoc {
     let lines = normalize(text);
     let mut warnings: Vec<String> = Vec::new();
@@ -153,9 +158,9 @@ pub fn parse(text: &str) -> WorkflowDoc {
             }
             continue;
         }
-        if line.starts_with("> ") {
+        if let Some(quoted) = line.strip_prefix("> ") {
             if description.is_empty() {
-                description = line[2..].trim().to_string();
+                description = quoted.trim().to_string();
             }
             continue;
         }

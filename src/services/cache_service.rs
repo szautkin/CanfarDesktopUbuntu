@@ -135,7 +135,7 @@ impl CacheService {
         let (fresh, max_stale) = key.ttl();
         if age <= fresh {
             Freshness::Fresh
-        } else if max_stale.map_or(true, |ms| age <= ms) {
+        } else if max_stale.is_none_or(|ms| age <= ms) {
             Freshness::Stale
         } else {
             Freshness::Expired

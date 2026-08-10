@@ -506,8 +506,11 @@ mod tests {
     #[test]
     fn edited_endpoint_applies_live() {
         let e = endpoints();
-        let mut cfg = AppConfig::default();
-        cfg.skaha_base = "https://staging.example.net/skaha/".to_string(); // trailing slash trimmed
+        // Trailing slash is trimmed by `apply_from`.
+        let cfg = AppConfig {
+            skaha_base: "https://staging.example.net/skaha/".to_string(),
+            ..Default::default()
+        };
         e.apply_from(&cfg);
         assert_eq!(
             e.sessions_url(),
@@ -522,8 +525,10 @@ mod tests {
 
     #[test]
     fn invalid_endpoint_falls_back_to_default() {
-        let mut cfg = AppConfig::default();
-        cfg.tap_base = "not-a-url".to_string();
+        let cfg = AppConfig {
+            tap_base: "not-a-url".to_string(),
+            ..Default::default()
+        };
         let e = ApiEndpoints::new(cfg);
         assert_eq!(
             e.tap_sync_url(),
@@ -533,10 +538,12 @@ mod tests {
 
     #[test]
     fn reset_endpoints_keeps_other_settings() {
-        let mut cfg = AppConfig::default();
-        cfg.theme = "Dark".to_string();
-        cfg.default_cores = 8;
-        cfg.tap_base = "https://staging.example.net/tap".to_string();
+        let mut cfg = AppConfig {
+            theme: "Dark".to_string(),
+            default_cores: 8,
+            tap_base: "https://staging.example.net/tap".to_string(),
+            ..Default::default()
+        };
         cfg.reset_endpoints();
         assert_eq!(cfg.tap_base, api_endpoint_defaults::TAP_BASE);
         assert_eq!(cfg.theme, "Dark");

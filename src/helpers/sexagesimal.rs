@@ -102,7 +102,7 @@ pub fn format_dec_str(raw: &str) -> String {
 fn split_components(input: &str) -> Vec<&str> {
     input
         .trim()
-        .split(|c| c == ':' || c == ' ')
+        .split([':', ' '])
         .filter(|p| !p.is_empty())
         .collect()
 }

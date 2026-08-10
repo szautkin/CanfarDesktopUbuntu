@@ -265,7 +265,7 @@ async fn apply_discover(services: &AppServices, payload: &Value) -> Result<Strin
         .image_discovery
         .discover_image(services, &image_id, force)
         .await;
-    Ok(discovery_status(&image_id, &outcome)?)
+    discovery_status(&image_id, &outcome)
 }
 
 /// Turn a coordinator [`DiscoveryOutcome`] into a short apply status (`Ok`) or a typed

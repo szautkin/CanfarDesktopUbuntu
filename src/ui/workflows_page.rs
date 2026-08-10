@@ -437,7 +437,7 @@ impl WorkflowsPage {
                     Err(e) => page
                         .services
                         .toast
-                        .toast(&format!("Could not duplicate: {}", e)),
+                        .toast(format!("Could not duplicate: {}", e)),
                 }
             });
         }
@@ -485,7 +485,7 @@ impl WorkflowsPage {
                             return;
                         }
                         if let Err(e) = page.store.delete(&id) {
-                            page.services.toast.toast(&format!("Delete failed: {}", e));
+                            page.services.toast.toast(format!("Delete failed: {}", e));
                             return;
                         }
                         *page.selected_id.borrow_mut() = None;
@@ -653,7 +653,7 @@ impl WorkflowsPage {
                 if let Err(e) = self.store.set_step_done(id, index, done) {
                     self.services
                         .toast
-                        .toast(&format!("Could not update step: {}", e));
+                        .toast(format!("Could not update step: {}", e));
                 }
                 self.reload_and_render();
             }
@@ -670,7 +670,7 @@ impl WorkflowsPage {
                 Err(e) => self
                     .services
                     .toast
-                    .toast(&format!("Could not create local copy: {}", e)),
+                    .toast(format!("Could not create local copy: {}", e)),
             },
             WorkflowSource::VoSpace => { /* read-only source — ignore */ }
         }
@@ -757,7 +757,7 @@ impl WorkflowsPage {
                     .text(&buf.start_iter(), &buf.end_iter(), false)
                     .to_string();
                 if let Err(e) = page.store.update_text(&id, &text) {
-                    page.services.toast.toast(&format!("Save failed: {}", e));
+                    page.services.toast.toast(format!("Save failed: {}", e));
                     return;
                 }
                 *page.editing.borrow_mut() = false;
@@ -787,7 +787,7 @@ impl WorkflowsPage {
             Err(e) => self
                 .services
                 .toast
-                .toast(&format!("Could not create workflow: {}", e)),
+                .toast(format!("Could not create workflow: {}", e)),
         }
     }
 
@@ -822,13 +822,13 @@ impl WorkflowsPage {
                                     .toast(crate::tr_en!("Imported workflow"));
                                 self.reload_and_render();
                             }
-                            Err(e) => self.services.toast.toast(&format!("Import failed: {}", e)),
+                            Err(e) => self.services.toast.toast(format!("Import failed: {}", e)),
                         }
                     }
                     Err(e) => self
                         .services
                         .toast
-                        .toast(&format!("Could not read file: {}", e)),
+                        .toast(format!("Could not read file: {}", e)),
                 }
             }
         }

@@ -21,6 +21,10 @@ const CAP: usize = 256;
 /// (`proposalArrived`, `proposalApplied`, …) matching the C#/macOS event log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+// The shared `Proposal` prefix is the wire contract, not redundancy: each variant
+// serializes to the exact `proposalArrived` / `proposalApplied` / … kind the C#
+// and macOS event logs emit. Dropping the prefix would rename the wire values.
+#[allow(clippy::enum_variant_names)]
 pub enum AgentEventKind {
     ProposalArrived,
     ProposalApplied,

@@ -116,8 +116,8 @@ impl WcsInfo {
     fn sip_poly(c: &[Vec<f64>], u: f64, v: f64) -> f64 {
         let order = c.len().saturating_sub(1);
         let mut sum = 0.0;
-        for p in 0..=order {
-            let row = &c[p];
+        // `p` / `q` are the u / v exponents as well as the coefficient indices.
+        for (p, row) in c.iter().enumerate() {
             for q in 0..=(order - p) {
                 let coeff = row.get(q).copied().unwrap_or(0.0);
                 if coeff != 0.0 {
@@ -407,15 +407,17 @@ fn read_sip_coefficients(header: &HashMap<String, String>, prefix: &str) -> Opti
     let get_f64 =
         |key: &str| -> Option<f64> { header.get(key).and_then(|v| v.trim().parse().ok()) };
     let order = get_f64(&format!("{}_ORDER", prefix))? as usize;
-    if order < 1 || order > 9 {
+    if !(1..=9).contains(&order) {
         return None;
     }
     let mut c = vec![vec![0.0; order + 1]; order + 1];
     let mut any = false;
-    for p in 0..=order {
-        for q in 0..=(order - p) {
+    // `p` / `q` are the u / v exponents as well as the coefficient indices; the
+    // FITS keyword for each term is literally `<prefix>_<p>_<q>`.
+    for (p, row) in c.iter_mut().enumerate() {
+        for (q, cell) in row.iter_mut().enumerate().take(order - p + 1) {
             if let Some(v) = get_f64(&format!("{}_{}_{}", prefix, p, q)) {
-                c[p][q] = v;
+                *cell = v;
                 any = true;
             }
         }

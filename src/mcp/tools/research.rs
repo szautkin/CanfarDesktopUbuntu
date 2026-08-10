@@ -298,7 +298,7 @@ async fn get_observation_notes(services: &AppServices, args: &Value) -> ToolResu
     let notes: Vec<Value> = ObservationNoteStore::new()
         .all()
         .iter()
-        .filter(|n| filter_pub.as_ref().map_or(true, |p| &n.publisher_id == p))
+        .filter(|n| filter_pub.as_ref().is_none_or(|p| &n.publisher_id == p))
         .map(note_summary)
         .collect();
 

@@ -220,7 +220,7 @@ fn build_job_row(
                     })
                     .await;
                 btn.set_sensitive(false);
-                services.toast.toast(&format!("Deleted {}", job_name));
+                services.toast.toast(format!("Deleted {}", job_name));
             });
         });
     }

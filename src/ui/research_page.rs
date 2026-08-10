@@ -742,7 +742,7 @@ impl ResearchPage {
                         gtk::gio::AppLaunchContext::NONE,
                     ) {
                         svc.toast
-                            .toast(&format!("Could not open file manager: {}", e));
+                            .toast(format!("Could not open file manager: {}", e));
                     }
                 } else {
                     svc.toast
@@ -1296,7 +1296,7 @@ impl ResearchPage {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 self.services
                     .toast
-                    .toast(&format!("Cannot create storage directory: {}", e));
+                    .toast(format!("Cannot create storage directory: {}", e));
                 self.show_detail(obs);
                 return;
             }
@@ -1308,9 +1308,7 @@ impl ResearchPage {
         } else {
             publisher_id.clone()
         };
-        self.services
-            .toast
-            .toast(&format!("Downloading {}…", label));
+        self.services.toast.toast(format!("Downloading {}…", label));
 
         let svc = self.services.clone();
         let url_clone = science_url.clone();
@@ -1335,9 +1333,7 @@ impl ResearchPage {
         let file_size = match dl {
             Ok(n) => n,
             Err(e) => {
-                self.services
-                    .toast
-                    .toast(&format!("Download failed: {}", e));
+                self.services.toast.toast(format!("Download failed: {}", e));
                 self.show_detail(obs);
                 return;
             }
@@ -1364,7 +1360,7 @@ impl ResearchPage {
             }
         }
 
-        self.services.toast.toast(&format!("Downloaded {}", label));
+        self.services.toast.toast(format!("Downloaded {}", label));
         // Re-render the detail pane — the Open / Open as Cube actions now appear.
         self.show_detail(&updated);
     }
@@ -1496,14 +1492,16 @@ impl ResearchPage {
                 tokio::task::spawn_blocking(move || {
                     crate::helpers::research_exporter::write_research_bundle_zip(
                         &write_path,
-                        &observations,
-                        &notes,
-                        &saved,
-                        &recent,
-                        options,
-                        now,
-                        &app_version,
-                        &host,
+                        &crate::helpers::research_exporter::BundleRequest {
+                            observations: &observations,
+                            notes: &notes,
+                            saved: &saved,
+                            recent: &recent,
+                            options,
+                            now,
+                            app_version: &app_version,
+                            host_name: &host,
+                        },
                     )
                 })
                 .await

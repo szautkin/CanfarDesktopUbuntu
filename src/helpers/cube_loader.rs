@@ -200,7 +200,7 @@ unsafe fn find_cube_hdu(handle: &FitsHandle) -> Result<Option<i32>, String> {
 #[cfg(feature = "fits")]
 #[inline]
 fn ceil_div(a: usize, b: usize) -> usize {
-    (a + b - 1) / b
+    a.div_ceil(b)
 }
 
 #[cfg(feature = "fits")]

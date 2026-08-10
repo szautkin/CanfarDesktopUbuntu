@@ -46,6 +46,11 @@ pub struct FitsBookmark {
     pub source_file: String,
 }
 
+/// Image A's viewport snapshotted before a blink reframes it:
+/// `(tab, center_x, center_y, zoom)`. Restored verbatim when the blink stops,
+/// so comparing two images never leaves the user somewhere they didn't choose.
+type BlinkRestore = (Rc<FitsTab>, f64, f64, f64);
+
 pub struct FitsViewer {
     widget: gtk::Box,
     notebook: gtk::Notebook,
@@ -105,7 +110,7 @@ pub struct FitsViewer {
     shared_angular_zoom: Rc<Cell<f64>>,
     /// Image A's pre-blink viewport `(tab, center_x, center_y, zoom)`, snapshotted
     /// before a blink reframes it and restored on stop (mirrors `_blinkRestore`).
-    blink_restore: RefCell<Option<(Rc<FitsTab>, f64, f64, f64)>>,
+    blink_restore: RefCell<Option<BlinkRestore>>,
 }
 
 impl FitsViewer {

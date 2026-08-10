@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn older_version_is_not_accepted() {
-        assert!(!is_accepted(Some(CURRENT_VERSION.saturating_sub(1).min(0))));
+        assert!(!is_accepted(Some(0)));
         // An explicit older-than-current value must re-prompt.
         assert!(!is_accepted(Some(0)));
     }

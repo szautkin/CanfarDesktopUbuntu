@@ -32,7 +32,7 @@ fn find_nearest_pow2_index(powers: &[u32], value: u32) -> usize {
     let mut best_idx = 0usize;
     let mut best_diff = u32::MAX;
     for (i, &p) in powers.iter().enumerate() {
-        let diff = if p > value { p - value } else { value - p };
+        let diff = p.abs_diff(value);
         if diff < best_diff {
             best_diff = diff;
             best_idx = i;

@@ -431,7 +431,7 @@ impl VoSpaceBrowser {
                     self.redisplay_sorted();
                     self.status_label
                         .set_text(&crate::tr_fmt!("Cached listing from {}", time_label));
-                    self.services.toast.toast(&crate::tr_fmt!(
+                    self.services.toast.toast(crate::tr_fmt!(
                         "VOSpace unreachable — showing cached listing from {}",
                         time_label
                     ));

@@ -182,7 +182,7 @@ impl SessionListView {
                         .cached_time_label(&CacheKey::Sessions)
                         .unwrap_or_else(|| "unknown".into());
                     self.update_sessions(entry.data);
-                    self.services.toast.toast(&crate::tr_fmt!(
+                    self.services.toast.toast(crate::tr_fmt!(
                         "Sessions unreachable — cached list from {}",
                         time_label
                     ));

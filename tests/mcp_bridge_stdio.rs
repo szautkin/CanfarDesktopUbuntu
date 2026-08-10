@@ -5,14 +5,20 @@
 //! connects to the app's per-user UNIX socket and relays JSON-RPC over the
 //! child's stdio (see `src/mcp/bridge.rs`). Here we stand in for the app: we bind
 //! that socket ourselves, launch the real compiled binary in bridge mode pointed
-//! at a private `XDG_RUNTIME_DIR`, and drive a full `initialize` + `tools/call`
-//! exchange THROUGH the bridge — proving the shipped binary connects to the
-//! socket, relays both directions faithfully, and exits cleanly on stdin EOF.
+//! at a private socket via `$VERBINAL_MCP_SOCKET`, and drive a full
+//! `initialize` then `tools/call` exchange THROUGH the bridge — proving the
+//! shipped binary connects to the socket, relays both directions faithfully,
+//! and exits cleanly on stdin EOF.
+//!
+//! Isolation MUST use `$VERBINAL_MCP_SOCKET`, not `$XDG_RUNTIME_DIR`: the
+//! uid-derived `/run/user/<uid>` path deliberately outranks XDG (see
+//! `src/mcp/socket_path.rs`), so on any systemd host an XDG override would send
+//! the bridge to the developer's own running app instead of our stand-in.
 //!
 //! Unlike the in-process tests in `src/mcp/e2e_tests.rs`, this exercises the
-//! actual `main() -> mcp::bridge::run_stdio_bridge()` entry point and the real
-//! `socket_path()` resolution from `XDG_RUNTIME_DIR`, end to end across a process
-//! boundary. `CARGO_BIN_EXE_verbinal` is provided to integration tests by Cargo.
+//! actual `main() -> mcp::bridge::run_stdio_bridge()` entry point end to end
+//! across a process boundary. `CARGO_BIN_EXE_verbinal` is provided to
+//! integration tests by Cargo.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -24,9 +30,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-/// A private temp dir used as the child's `XDG_RUNTIME_DIR`, so `socket_path()`
-/// inside the bridge resolves to `<dir>/verbinal-mcp.sock` — a socket we own,
-/// never the developer's real per-user one.
+/// A private temp dir holding the socket this test owns — never the developer's
+/// real per-user one.
 fn unique_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("verbinal-bridge-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -78,7 +83,7 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> std::process::ExitS
 #[test]
 fn bridge_binary_relays_full_mcp_exchange_and_exits_on_eof() {
     let dir = unique_dir();
-    let sock = dir.join("verbinal-mcp.sock"); // must match socket_path() under XDG
+    let sock = dir.join("verbinal-mcp.sock");
     let _ = std::fs::remove_file(&sock);
 
     // --- stand in for the running app: bind the control socket and answer MCP ---
@@ -127,7 +132,7 @@ fn bridge_binary_relays_full_mcp_exchange_and_exits_on_eof() {
     let exe = env!("CARGO_BIN_EXE_verbinal");
     let mut child = Command::new(exe)
         .arg("mcp")
-        .env("XDG_RUNTIME_DIR", &dir)
+        .env("VERBINAL_MCP_SOCKET", &sock)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -154,6 +159,8 @@ fn bridge_binary_relays_full_mcp_exchange_and_exits_on_eof() {
     assert_eq!(init["result"]["serverInfo"]["name"], "verbinal");
 
     // tools/call, through the bridge — proves relaying works after initialize too.
+    // The stand-in server above scripts the reply, so this asserts RELAYING, not
+    // the tool catalog (which `src/mcp/e2e_tests.rs` covers against the real router).
     write_frame(
         &mut child_in,
         &json!({

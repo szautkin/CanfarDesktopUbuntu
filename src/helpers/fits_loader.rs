@@ -14,8 +14,8 @@
 //! decompression algorithm ourselves — we only have to navigate to the
 //! right HDU and ask for pixels.
 //!
-//! Before this rewrite we used the `fitsio` safe wrapper's `primary_hdu()`
-//! + `read_image()` path.  That path fails for tile-compressed files
+//! Before this rewrite we used the `fitsio` safe wrapper's
+//! `primary_hdu()` + `read_image()` path.  That path fails for tile-compressed files
 //! because fitsio classifies `ZIMAGE=T` BINTABLEs as tables and refuses
 //! `read_image()` on them.
 
@@ -414,10 +414,13 @@ unsafe fn read_string_key(fptr: *mut sys::fitsfile, key: &str) -> Option<String>
     }
 }
 
+/// A header read two ways: keyword→value for lookup, plus the ordered
+/// `(keyword, value, comment)` cards for verbatim display in the header panel.
 #[cfg(feature = "fits")]
-unsafe fn read_header_all(
-    fptr: *mut sys::fitsfile,
-) -> Result<(HashMap<String, String>, Vec<(String, String, String)>), String> {
+type HeaderPair = (HashMap<String, String>, Vec<(String, String, String)>);
+
+#[cfg(feature = "fits")]
+unsafe fn read_header_all(fptr: *mut sys::fitsfile) -> Result<HeaderPair, String> {
     let mut nkeys: i32 = 0;
     let mut pos: i32 = 0;
     let mut status = 0;

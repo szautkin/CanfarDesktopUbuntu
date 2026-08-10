@@ -8,7 +8,7 @@
 //! * `observations.json` — every saved/downloaded observation (pretty JSON).
 //! * `notes.json`        — every astronomer note (pretty JSON).
 //! * `notes.md`          — one human-readable markdown section per observation
-//!                         that has a note (citation + rating + tags + body).
+//!   that has a note (citation + rating + tags + body).
 //!
 //! ## Why a hand-rolled ZIP writer
 //!
@@ -95,6 +95,25 @@ pub fn write_bundle_zip(
 // subdirectory, all nested under a timestamped base folder inside the zip.
 // ---------------------------------------------------------------------------
 
+/// Everything a bundle build needs: the four data modules, what to include, and
+/// the provenance stamp written into `manifest.json` / `README.md`.
+///
+/// A struct rather than eight-plus positional arguments — the four slices are
+/// adjacent and same-shaped, so a transposed pair would compile and silently
+/// export the wrong module.
+#[derive(Clone, Copy)]
+pub struct BundleRequest<'a> {
+    pub observations: &'a [DownloadedObservation],
+    pub notes: &'a [ObservationNote],
+    pub saved: &'a [SavedQuery],
+    pub recent: &'a [RecentSearch],
+    pub options: BundleOptions,
+    /// Export timestamp — names the bundle folder and stamps the manifest.
+    pub now: DateTime<Utc>,
+    pub app_version: &'a str,
+    pub host_name: &'a str,
+}
+
 /// What a wrapped research bundle should contain. Mirrors the subset of the
 /// Windows `ExportOptions` surfaced by the Research page's export dialog
 /// (file copies are not offered on Linux).
@@ -178,16 +197,17 @@ pub struct WrappedBundle {
 /// README rendering is unit-testable with fabricated data (mirrors the split
 /// between `ExportService` and its inputs). `now` / `app_version` / `host_name`
 /// are injected for deterministic tests.
-pub fn build_wrapped_bundle(
-    observations: &[DownloadedObservation],
-    notes: &[ObservationNote],
-    saved: &[SavedQuery],
-    recent: &[RecentSearch],
-    options: BundleOptions,
-    now: DateTime<Utc>,
-    app_version: &str,
-    host_name: &str,
-) -> WrappedBundle {
+pub fn build_wrapped_bundle(req: &BundleRequest) -> WrappedBundle {
+    let BundleRequest {
+        observations,
+        notes,
+        saved,
+        recent,
+        options,
+        now,
+        app_version,
+        host_name,
+    } = *req;
     let base = bundle_name(now);
 
     // ── Research module ─────────────────────────────────────────────────
@@ -303,25 +323,9 @@ pub fn build_wrapped_bundle(
 /// the summary counts. Blocking disk I/O — call from a blocking thread.
 pub fn write_research_bundle_zip(
     path: &Path,
-    observations: &[DownloadedObservation],
-    notes: &[ObservationNote],
-    saved: &[SavedQuery],
-    recent: &[RecentSearch],
-    options: BundleOptions,
-    now: DateTime<Utc>,
-    app_version: &str,
-    host_name: &str,
+    req: &BundleRequest,
 ) -> Result<BundleSummary, String> {
-    let wrapped = build_wrapped_bundle(
-        observations,
-        notes,
-        saved,
-        recent,
-        options,
-        now,
-        app_version,
-        host_name,
-    );
+    let wrapped = build_wrapped_bundle(req);
     let entries: Vec<(&str, &[u8])> = wrapped
         .entries
         .iter()
@@ -875,6 +879,26 @@ mod tests {
 
     // ── Wrapped bundle (manifest + README + module subdirs) ──────────────
 
+    /// A [`BundleRequest`] with no search modules and the fixed test clock —
+    /// what every wrapped-bundle test here varies is the data and the options.
+    fn req<'a>(
+        observations: &'a [DownloadedObservation],
+        notes: &'a [ObservationNote],
+        options: BundleOptions,
+        app_version: &'a str,
+    ) -> BundleRequest<'a> {
+        BundleRequest {
+            observations,
+            notes,
+            saved: &[],
+            recent: &[],
+            options,
+            now: fixed_now(),
+            app_version,
+            host_name: "test-host",
+        }
+    }
+
     fn opts(include_notes: bool, include_history: bool) -> BundleOptions {
         BundleOptions {
             include_notes,
@@ -895,16 +919,7 @@ mod tests {
         ];
         let notes = vec![note("ivo://x?1", 4, "Nice galaxy", &["galaxy"])];
 
-        let b = build_wrapped_bundle(
-            &observations,
-            &notes,
-            &[],
-            &[],
-            opts(true, false),
-            fixed_now(),
-            "1.2.3",
-            "test-host",
-        );
+        let b = build_wrapped_bundle(&req(&observations, &notes, opts(true, false), "1.2.3"));
 
         // Base folder name is timestamped, and every entry nests under it.
         let base = bundle_name(fixed_now());
@@ -978,16 +993,7 @@ mod tests {
     fn wrapped_bundle_omits_notes_when_disabled() {
         let observations = vec![obs("ivo://x?1", "M31", "CFHT", "obs-1")];
         let notes = vec![note("ivo://x?1", 4, "hidden", &["x"])];
-        let b = build_wrapped_bundle(
-            &observations,
-            &notes,
-            &[],
-            &[],
-            opts(false, true),
-            fixed_now(),
-            "9",
-            "h",
-        );
+        let b = build_wrapped_bundle(&req(&observations, &notes, opts(false, true), "9"));
 
         assert!(entry(&b, "research/observations.json").is_some());
         assert!(entry(&b, "research/notes.json").is_none());
@@ -1020,14 +1026,7 @@ mod tests {
 
         let summary = write_research_bundle_zip(
             &path,
-            &observations,
-            &notes,
-            &[],
-            &[],
-            opts(true, true),
-            fixed_now(),
-            "1.0.0",
-            "host",
+            &req(&observations, &notes, opts(true, true), "1.0.0"),
         )
         .unwrap();
         assert_eq!(summary.observation_count, 1);
