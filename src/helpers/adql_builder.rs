@@ -53,6 +53,35 @@ const FROM_CLAUSE: &str =
 
 const QUALITY_FILTER: &str = "( Plane.quality_flag IS NULL OR Plane.quality_flag != 'junk' )";
 
+/// Significant digits kept in an ADQL numeric literal, matching the reference's
+/// `G10` formatting of every number it emits.
+const ADQL_SIGNIFICANT_DIGITS: usize = 10;
+
+/// Render a number as an ADQL literal.
+///
+/// Unit conversion is lossy in binary: 500 nm becomes
+/// `0.0000005000000000000001` metres, and printing that verbatim put twenty-two
+/// digits into a query where six are meaningful. The ADQL is not internal — the
+/// editor shows it, "Apply filters to ADQL" hands it to the user to edit, and
+/// `search_observations` returns it to an agent — so the noise is read by
+/// people. Rounding to ten significant digits (what the reference's `G10` does)
+/// drops it without touching any value a telescope could distinguish.
+///
+/// A non-finite value would serialise as `NaN`/`inf` and produce a query the TAP
+/// service rejects; it is passed through unchanged so the caller's own guards
+/// decide, rather than being silently turned into a number.
+fn num(v: f64) -> String {
+    if !v.is_finite() {
+        return v.to_string();
+    }
+    // Round-trip through a fixed significant-digit form, then let Display pick
+    // the shortest exact rendering of the rounded value.
+    let rounded: f64 = format!("{:.*e}", ADQL_SIGNIFICANT_DIGITS - 1, v)
+        .parse()
+        .unwrap_or(v);
+    rounded.to_string()
+}
+
 /// Build an ADQL query from the search form state.
 pub fn build(state: &SearchFormState) -> String {
     let mut clauses = vec![QUALITY_FILTER.to_string()];
@@ -111,7 +140,10 @@ fn add_spatial_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         if let Some((ra_lo, ra_hi, dec_lo, dec_hi)) = try_parse_coord_range(target) {
             clauses.push(format!(
                 "INTERSECTS( RANGE_S2D({}, {}, {}, {}), Plane.position_bounds ) = 1",
-                ra_lo, ra_hi, dec_lo, dec_hi
+                num(ra_lo),
+                num(ra_hi),
+                num(dec_lo),
+                num(dec_hi)
             ));
         } else if let Some((ra, dec, radius)) =
             try_parse_coordinate_pair(target, state.search_radius)
@@ -151,7 +183,7 @@ fn add_spatial_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         }
     } else if let Some(ps) = state.pixel_scale_max {
         let deg = unit_converter::to_degrees(ps, &state.pixel_scale_unit).unwrap_or(ps / 3600.0);
-        clauses.push(format!("Plane.position_sampleSize <= {}", deg));
+        clauses.push(format!("Plane.position_sampleSize <= {}", num(deg)));
     }
 }
 
@@ -159,7 +191,9 @@ fn add_spatial_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
 fn circle_clause(ra: f64, dec: f64, radius: f64) -> String {
     format!(
         "INTERSECTS( CIRCLE('ICRS', {}, {}, {}), Plane.position_bounds ) = 1",
-        ra, dec, radius
+        num(ra),
+        num(dec),
+        num(radius)
     )
 }
 
@@ -227,7 +261,9 @@ fn try_parse_angle(token: &str, is_ra: bool) -> Option<f64> {
 fn parse_radius(input: &str) -> f64 {
     let trimmed = input.trim().replace('\'', "arcmin");
     let lower = trimmed.to_ascii_lowercase();
-    let (num, factor) = if let Some(p) = lower.strip_suffix("arcmin") {
+    // Named `value` rather than `num`: `num()` is this module's ADQL number
+    // formatter, and a local that shadows it is a trap for the next edit here.
+    let (value, factor) = if let Some(p) = lower.strip_suffix("arcmin") {
         (p, 1.0 / 60.0)
     } else if let Some(p) = lower.strip_suffix("arcsec") {
         (p, 1.0 / 3600.0)
@@ -236,7 +272,7 @@ fn parse_radius(input: &str) -> f64 {
     } else {
         (lower.as_str(), 1.0)
     };
-    match num.trim().parse::<f64>() {
+    match value.trim().parse::<f64>() {
         Ok(v) => v * factor,
         Err(_) => 0.0,
     }
@@ -253,22 +289,22 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         "Last 24 hours" => {
             clauses.push(format!(
                 "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                now_mjd - 1.0,
-                now_mjd
+                num(now_mjd - 1.0),
+                num(now_mjd)
             ));
         }
         "Last week" => {
             clauses.push(format!(
                 "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                now_mjd - 7.0,
-                now_mjd
+                num(now_mjd - 7.0),
+                num(now_mjd)
             ));
         }
         "Last month" => {
             clauses.push(format!(
                 "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                now_mjd - 30.0,
-                now_mjd
+                num(now_mjd - 30.0),
+                num(now_mjd)
             ));
         }
         _ => {
@@ -314,14 +350,15 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
                     (Some(lo), Some(hi)) => {
                         clauses.push(format!(
                             "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                            lo, hi
+                            num(lo),
+                            num(hi)
                         ));
                     }
                     (Some(lo), None) => {
-                        clauses.push(format!("Plane.time_bounds_lower >= {}", lo));
+                        clauses.push(format!("Plane.time_bounds_lower >= {}", num(lo)));
                     }
                     (None, Some(hi)) => {
-                        clauses.push(format!("Plane.time_bounds_upper <= {}", hi));
+                        clauses.push(format!("Plane.time_bounds_upper <= {}", num(hi)));
                     }
                     _ => {}
                 }
@@ -331,18 +368,18 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
 
     // Integration time (already converted to seconds in build_form_state)
     if let Some(min) = state.integration_time_min {
-        clauses.push(format!("Plane.time_exposure >= {}", min));
+        clauses.push(format!("Plane.time_exposure >= {}", num(min)));
     }
     if let Some(max) = state.integration_time_max {
-        clauses.push(format!("Plane.time_exposure <= {}", max));
+        clauses.push(format!("Plane.time_exposure <= {}", num(max)));
     }
 
     // Time span (already converted to days in build_form_state)
     if let Some(min) = state.time_span_min {
-        clauses.push(format!("Plane.time_bounds_width >= {}", min));
+        clauses.push(format!("Plane.time_bounds_width >= {}", num(min)));
     }
     if let Some(max) = state.time_span_max {
-        clauses.push(format!("Plane.time_bounds_width <= {}", max));
+        clauses.push(format!("Plane.time_bounds_width <= {}", num(max)));
     }
 
     // Data release — full range-operator support (ported AddDateRangeClause with a
@@ -418,10 +455,11 @@ fn add_date_range_clause(range: &ParsedRange, clauses: &mut Vec<String>, column:
 /// given, else an `INTERSECTS(INTERVAL(...))` overlap against the time samples.
 fn push_interval(clauses: &mut Vec<String>, column: Option<&str>, lo: f64, hi: f64) {
     match column {
-        Some(col) => clauses.push(format!("{} >= {} AND {} <= {}", col, lo, col, hi)),
+        Some(col) => clauses.push(format!("{} >= {} AND {} <= {}", col, num(lo), col, num(hi))),
         None => clauses.push(format!(
             "INTERSECTS( INTERVAL( {}, {} ), Plane.time_bounds_samples ) = 1",
-            lo, hi
+            num(lo),
+            num(hi)
         )),
     }
 }
@@ -548,40 +586,52 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
             // Overlap: obs_lower <= query_hi AND query_lo <= obs_upper
             clauses.push(format!(
                 "Plane.energy_bounds_lower <= {} AND {} <= Plane.energy_bounds_upper",
-                hi_m, lo_m
+                num(hi_m),
+                num(lo_m)
             ));
         }
     } else {
-        // Single-bound spectral constraints
+        // One-sided coverage — ALSO overlap, not containment.
+        //
+        // These branches used to ask whether the observation's band *sits
+        // inside* the bound (`energy_bounds_lower >= min`), which is a different
+        // and much narrower question. Searching for coverage above 500 nm then
+        // missed a 400–900 nm observation entirely: it plainly covers 500 nm,
+        // but its band does not start above it. Every such match was dropped
+        // silently, with no hint in the result count that anything was excluded.
+        //
+        // The question the field actually asks is "does this observation reach
+        // here?", so a lower bound tests the observation's UPPER edge and vice
+        // versa. Mirrors `AddSpectralOverlapClause` in the reference.
         if let Some(wmin) = state.wavelength_min {
             if let Some(m) = convert_spectral_to_metres(wmin, &state.wavelength_unit) {
-                clauses.push(format!("Plane.energy_bounds_lower >= {}", m));
+                clauses.push(format!("{} <= Plane.energy_bounds_upper", num(m)));
             }
         }
         if let Some(wmax) = state.wavelength_max {
             if let Some(m) = convert_spectral_to_metres(wmax, &state.wavelength_unit) {
-                clauses.push(format!("Plane.energy_bounds_upper <= {}", m));
+                clauses.push(format!("Plane.energy_bounds_lower <= {}", num(m)));
             }
         }
     }
 
     // Resolving power (dimensionless)
     if let Some(rmin) = state.resolving_power_min {
-        clauses.push(format!("Plane.energy_resolvingPower >= {}", rmin));
+        clauses.push(format!("Plane.energy_resolvingPower >= {}", num(rmin)));
     }
     if let Some(rmax) = state.resolving_power_max {
-        clauses.push(format!("Plane.energy_resolvingPower <= {}", rmax));
+        clauses.push(format!("Plane.energy_resolvingPower <= {}", num(rmax)));
     }
 
     // Bandpass width (convert to meters)
     if let Some(bmin) = state.bandpass_width_min {
         if let Some(m) = convert_spectral_to_metres(bmin, &state.bandpass_width_unit) {
-            clauses.push(format!("Plane.energy_bounds_width >= {}", m));
+            clauses.push(format!("Plane.energy_bounds_width >= {}", num(m)));
         }
     }
     if let Some(bmax) = state.bandpass_width_max {
         if let Some(m) = convert_spectral_to_metres(bmax, &state.bandpass_width_unit) {
-            clauses.push(format!("Plane.energy_bounds_width <= {}", m));
+            clauses.push(format!("Plane.energy_bounds_width <= {}", num(m)));
         }
     }
 
@@ -612,19 +662,19 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
     } else if let Some(ss) = state.spectral_sampling {
         // Legacy numeric fallback (bare value → `<=`).
         if let Some(m) = convert_spectral_to_metres(ss, &state.spectral_sampling_unit) {
-            clauses.push(format!("Plane.energy_sampleSize <= {}", m));
+            clauses.push(format!("Plane.energy_sampleSize <= {}", num(m)));
         }
     }
 
     // Rest frame energy (convert to meters — stored as rest wavelength in CAOM2)
     if let Some(rmin) = state.rest_frame_energy_min {
         if let Some(m) = convert_spectral_to_metres(rmin, &state.rest_frame_energy_unit) {
-            clauses.push(format!("Plane.energy_restwav >= {}", m));
+            clauses.push(format!("Plane.energy_restwav >= {}", num(m)));
         }
     }
     if let Some(rmax) = state.rest_frame_energy_max {
         if let Some(m) = convert_spectral_to_metres(rmax, &state.rest_frame_energy_unit) {
-            clauses.push(format!("Plane.energy_restwav <= {}", m));
+            clauses.push(format!("Plane.energy_restwav <= {}", num(m)));
         }
     }
 }
@@ -720,32 +770,38 @@ fn add_converted_range_clause<F>(
                 range.value2.as_deref().and_then(|s| convert(s, unit)),
             ) {
                 let (lo, hi) = if v1 <= v2 { (v1, v2) } else { (v2, v1) };
-                clauses.push(format!("{} >= {} AND {} <= {}", column, lo, column, hi));
+                clauses.push(format!(
+                    "{} >= {} AND {} <= {}",
+                    column,
+                    num(lo),
+                    column,
+                    num(hi)
+                ));
             }
         }
         RangeOp::GreaterThan => {
             if let Some(v) = convert(&range.value1, unit) {
-                clauses.push(format!("{} > {}", column, v));
+                clauses.push(format!("{} > {}", column, num(v)));
             }
         }
         RangeOp::GreaterThanOrEqual => {
             if let Some(v) = convert(&range.value1, unit) {
-                clauses.push(format!("{} >= {}", column, v));
+                clauses.push(format!("{} >= {}", column, num(v)));
             }
         }
         RangeOp::LessThan => {
             if let Some(v) = convert(&range.value1, unit) {
-                clauses.push(format!("{} < {}", column, v));
+                clauses.push(format!("{} < {}", column, num(v)));
             }
         }
         RangeOp::LessThanOrEqual => {
             if let Some(v) = convert(&range.value1, unit) {
-                clauses.push(format!("{} <= {}", column, v));
+                clauses.push(format!("{} <= {}", column, num(v)));
             }
         }
         RangeOp::Equals => {
             if let Some(v) = convert(&range.value1, unit) {
-                clauses.push(format!("{} = {}", column, v));
+                clauses.push(format!("{} = {}", column, num(v)));
             }
         }
     }
@@ -891,7 +947,113 @@ mod tests {
         state.wavelength_max = Some(700.0);
         state.wavelength_unit = "nm".to_string();
         let adql = build(&state);
-        assert!(adql.contains("energy_bounds_lower >= 4e-7") || adql.contains("0.0000004"));
+        // 400-700 nm in metres, as an overlap test against the observation band.
+        assert!(
+            adql.contains("Plane.energy_bounds_lower <= 0.0000007"),
+            "{adql}"
+        );
+        assert!(
+            adql.contains("0.0000004 <= Plane.energy_bounds_upper"),
+            "{adql}"
+        );
+    }
+
+    /// A one-sided coverage bound asks "does the observation REACH here?", which
+    /// tests the opposite edge of its band.
+    ///
+    /// The containment form this replaced (`energy_bounds_lower >= min`) meant a
+    /// search for coverage above 500 nm silently dropped a 400-900 nm
+    /// observation — one that obviously covers 500 nm — because its band does
+    /// not begin above the bound. Nothing in the result count hinted that
+    /// matches had been excluded.
+    #[test]
+    fn a_converted_value_prints_without_its_binary_noise() {
+        // 500 nm in metres is 0.0000005000000000000001 as an f64. Twenty-two
+        // digits where six are meaningful, in a query the user reads and edits.
+        assert_eq!(num(500e-9), "0.0000005");
+        assert_eq!(num(0.1 / 3600.0), "0.00002777777778");
+        assert_eq!(num(1.0 / 60.0), "0.01666666667");
+    }
+
+    #[test]
+    fn rounding_never_moves_a_value_a_telescope_could_distinguish() {
+        // Ten significant digits on a pixel scale in degrees resolves ~1e-13 deg,
+        // roughly a nanoarcsecond — many orders below any real instrument.
+        for v in [0.5 / 3600.0, 500e-9, 60000.5, 1.0e-12] {
+            let printed: f64 = num(v).parse().expect("a parseable literal");
+            let error = (printed - v).abs();
+            assert!(
+                error <= v.abs() * 1e-9,
+                "{v} printed as {} — relative error {}",
+                num(v),
+                error / v.abs()
+            );
+        }
+    }
+
+    #[test]
+    fn whole_numbers_stay_whole() {
+        // A resolving power of 1000 must not arrive as 1000.0000000 or 1e3.
+        assert_eq!(num(1000.0), "1000");
+        assert_eq!(num(0.0), "0");
+        assert_eq!(num(-90.0), "-90");
+    }
+
+    #[test]
+    fn a_non_finite_value_is_not_disguised_as_a_number() {
+        // These cannot produce a valid ADQL literal. Passing them through keeps
+        // the failure visible instead of inventing a value the caller never had.
+        assert_eq!(num(f64::NAN), "NaN");
+        assert_eq!(num(f64::INFINITY), "inf");
+    }
+
+    #[test]
+    fn a_one_sided_coverage_bound_tests_the_opposite_band_edge() {
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "nm".to_string();
+        state.wavelength_min = Some(500.0);
+        let adql = build(&state);
+        assert!(
+            adql.contains("0.0000005 <= Plane.energy_bounds_upper"),
+            "a lower bound must test the observation's UPPER edge: {adql}"
+        );
+        assert!(
+            !adql.contains("Plane.energy_bounds_lower >="),
+            "containment is the wrong question here: {adql}"
+        );
+
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "nm".to_string();
+        state.wavelength_max = Some(500.0);
+        let adql = build(&state);
+        assert!(
+            adql.contains("Plane.energy_bounds_lower <= 0.0000005"),
+            "an upper bound must test the observation's LOWER edge: {adql}"
+        );
+        assert!(
+            !adql.contains("Plane.energy_bounds_upper <="),
+            "containment is the wrong question here: {adql}"
+        );
+    }
+
+    /// The concrete regression: the clause a 400-900 nm observation must satisfy.
+    #[test]
+    fn a_band_straddling_the_bound_is_not_excluded() {
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "nm".to_string();
+        state.wavelength_min = Some(500.0);
+        let adql = build(&state);
+
+        // The emitted clause is `5e-7 <= Plane.energy_bounds_upper`. For a
+        // 400-900 nm observation that reads 5e-7 <= 9e-7 — true, so it matches.
+        // The old clause was `Plane.energy_bounds_lower >= 5e-7`, i.e.
+        // 4e-7 >= 5e-7 — false, and the observation vanished from the results.
+        let obs_upper_m = 900e-9;
+        let obs_lower_m = 400e-9;
+        let bound_m = 500e-9;
+        assert!(bound_m <= obs_upper_m, "the new clause matches");
+        assert!(obs_lower_m < bound_m, "the old clause did not");
+        assert!(adql.contains("<= Plane.energy_bounds_upper"), "{adql}");
     }
 
     #[test]
@@ -1029,7 +1191,7 @@ mod tests {
         // 5 arcmin == 5/60 deg.
         let deg = 5.0 / 60.0;
         assert!(
-            adql.contains(&format!("CIRCLE('ICRS', 10, 20, {})", deg)),
+            adql.contains(&format!("CIRCLE('ICRS', 10, 20, {})", num(deg))),
             "{}",
             adql
         );
@@ -1146,7 +1308,7 @@ mod tests {
         let a = build(&gt);
         let m = 0.5e-9;
         assert!(
-            a.contains(&format!("Plane.energy_sampleSize > {}", m)),
+            a.contains(&format!("Plane.energy_sampleSize > {}", num(m))),
             "{}",
             a
         );
@@ -1229,7 +1391,8 @@ mod tests {
         assert!(
             adql.contains(&format!(
                 "Plane.position_sampleSize >= {} AND Plane.position_sampleSize <= {}",
-                lo, hi
+                num(lo),
+                num(hi)
             )),
             "{}",
             adql
@@ -1247,7 +1410,7 @@ mod tests {
         let adql = build(&state);
         let deg = 0.5 / 3600.0;
         assert!(
-            adql.contains(&format!("Plane.position_sampleSize = {}", deg)),
+            adql.contains(&format!("Plane.position_sampleSize = {}", num(deg))),
             "{}",
             adql
         );
@@ -1262,7 +1425,7 @@ mod tests {
         // 0.2 arcsec == 0.2/3600 deg.
         let deg = 0.2 / 3600.0;
         assert!(
-            adql.contains(&format!("Plane.position_sampleSize > {}", deg)),
+            adql.contains(&format!("Plane.position_sampleSize > {}", num(deg))),
             "{}",
             adql
         );
