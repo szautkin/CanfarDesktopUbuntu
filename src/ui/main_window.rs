@@ -1619,6 +1619,10 @@ fn build_welcome_page(
 
     let scrolled = gtk::ScrolledWindow::new();
     scrolled.set_vexpand(true);
+    // Never scroll sideways: the tiles reflow to fit the width, so a horizontal
+    // bar would only ever mean the layout failed. Vertical stays automatic for
+    // short windows.
+    scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
     content.set_margin_start(48);
@@ -1748,25 +1752,31 @@ fn build_welcome_page(
         });
     }
 
-    let grid = gtk::Grid::new();
-    grid.set_row_spacing(16);
-    grid.set_column_spacing(16);
-    grid.set_row_homogeneous(true);
-    grid.set_column_homogeneous(true);
-    grid.set_halign(gtk::Align::Center);
+    // A FlowBox, not a fixed 3-column Grid: the grid could not reflow, so on a
+    // narrow window the tiles were clipped rather than rewrapping, and on a short
+    // one the later rows were unreachable. Capped at 3 per line to keep the
+    // intended wide layout, down to 1 when there is no room for more.
+    let tiles = gtk::FlowBox::new();
+    tiles.set_row_spacing(16);
+    tiles.set_column_spacing(16);
+    tiles.set_homogeneous(true);
+    tiles.set_min_children_per_line(1);
+    tiles.set_max_children_per_line(3);
+    // Tiles are buttons; FlowBox selection would add a second, conflicting
+    // notion of "chosen" on top of the button's own activation.
+    tiles.set_selection_mode(gtk::SelectionMode::None);
+    tiles.set_halign(gtk::Align::Center);
 
     let mut lockers: Vec<Rc<dyn Fn(bool)>> = Vec::new();
-    for (i, spec) in specs.iter().enumerate() {
+    for spec in specs.iter() {
         let (widget, locker) = make_tile(spec, view_stack, window, services, login_btn);
         if let Some(locker) = locker {
             lockers.push(locker);
         }
-        let col = (i % 3) as i32;
-        let row = (i / 3) as i32;
-        grid.attach(&widget, col, row, 1, 1);
+        tiles.insert(&widget, -1);
     }
 
-    content.append(&grid);
+    content.append(&tiles);
 
     // Login prompt
     let login_prompt = gtk::Label::new(Some(crate::tr_en!(

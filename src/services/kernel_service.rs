@@ -71,6 +71,9 @@ pub struct LocalKernelService {
     /// Path of the temporary harness `.py` file written at `start()`.
     /// Removed on `cleanup_process` / `Drop`.
     harness_path: Option<PathBuf>,
+    /// The kernel's stderr, read only when it dies unexpectedly — that is the
+    /// one place Python explains why it could not start.
+    stderr: Option<BufReader<tokio::process::ChildStderr>>,
 }
 
 impl LocalKernelService {
@@ -87,6 +90,7 @@ impl LocalKernelService {
             python_path,
             exec_count: 0,
             harness_path: None,
+            stderr: None,
         }
     }
 
@@ -117,7 +121,13 @@ impl LocalKernelService {
             .arg(&harness_path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null()) // harness writes errors as JSON, not to stderr
+            // Capture stderr rather than discarding it. The harness reports cell
+            // errors as JSON on stdout, but anything that kills Python BEFORE the
+            // harness runs — a missing interpreter dependency, an unreadable
+            // harness, an import failure — is only ever explained on stderr. With
+            // it discarded the user just saw "exited unexpectedly" and had nothing
+            // to act on.
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| {
@@ -135,10 +145,12 @@ impl LocalKernelService {
             .stdout
             .take()
             .ok_or_else(|| "Could not capture kernel stdout".to_string())?;
+        let stderr = child.stderr.take();
 
         self.stdin = Some(BufWriter::new(stdin));
         self.reader = Some(BufReader::new(stdout));
         self.process = Some(child);
+        self.stderr = stderr.map(BufReader::new);
         self.harness_path = Some(harness_path);
         self.exec_count = 0;
         self.state = KernelState::Idle;
@@ -302,6 +314,33 @@ impl LocalKernelService {
     /// Uses `std::env::temp_dir()` with a name derived from the current
     /// process ID and a monotonic timestamp to avoid collisions.
     /// The caller is responsible for deleting the file when done.
+    /// Read whatever the dead kernel left on stderr, trimmed to something a user
+    /// can read.
+    ///
+    /// Only called after EOF on stdout, so the child is already gone and this
+    /// cannot block on a live process. A long Python traceback is truncated to
+    /// its tail, which is where the actual cause is.
+    async fn drain_stderr(&mut self) -> Option<String> {
+        use tokio::io::AsyncReadExt;
+        let mut reader = self.stderr.take()?;
+        let mut buf = String::new();
+        reader.read_to_string(&mut buf).await.ok()?;
+        let text = buf.trim();
+        if text.is_empty() {
+            return None;
+        }
+        const MAX: usize = 600;
+        if text.len() <= MAX {
+            return Some(text.to_string());
+        }
+        // Keep the TAIL: a traceback names the real error on its last lines.
+        let tail: String = text
+            .chars()
+            .skip(text.chars().count().saturating_sub(MAX))
+            .collect();
+        Some(format!("…{tail}"))
+    }
+
     fn write_harness_to_temp() -> std::io::Result<PathBuf> {
         use std::io::Write;
 
@@ -360,8 +399,13 @@ impl LocalKernelService {
                 .map_err(|e| format!("Failed to read from kernel stdout: {e}"))?;
 
             if n == 0 {
-                // EOF — the process exited unexpectedly.
-                return Err("Kernel process exited unexpectedly (EOF on stdout)".to_string());
+                // EOF — the process exited unexpectedly. Whatever Python wrote to
+                // stderr is the only diagnosis available, so surface it.
+                let detail = self.drain_stderr().await;
+                return Err(match detail {
+                    Some(msg) => format!("Kernel process exited unexpectedly: {msg}"),
+                    None => "Kernel process exited unexpectedly (EOF on stdout)".to_string(),
+                });
             }
 
             let trimmed = line_buf.trim_end_matches('\n').trim_end_matches('\r');
@@ -399,6 +443,9 @@ impl LocalKernelService {
         self.reader = None;
         // Dropping `Child` with `kill_on_drop(true)` will send SIGKILL.
         self.process = None;
+        // Drop the old stderr too: keeping it would let a LATER kernel death
+        // report the previous kernel's error message.
+        self.stderr = None;
         // Remove the harness temp file; ignore errors (e.g. already gone).
         if let Some(path) = self.harness_path.take() {
             let _ = std::fs::remove_file(&path);
@@ -471,6 +518,36 @@ mod tests {
     }
 
     /// The harness temp-file writer must succeed (it only needs a writable /tmp).
+    /// A harness path must be unique per launch, or one notebook tab's cleanup
+    /// deletes another tab's in-use file. (Each tab owns its own kernel, so this
+    /// is the shape the reference's restart race took here — `&mut self` already
+    /// serialises two starts on ONE service, but not across services.)
+    #[test]
+    fn harness_paths_are_unique_per_launch() {
+        let a = LocalKernelService::write_harness_to_temp().unwrap();
+        let b = LocalKernelService::write_harness_to_temp().unwrap();
+        assert_ne!(a, b, "two launches must not share a harness file");
+        assert!(a.exists() && b.exists());
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
+    /// A kernel that dies before the harness runs explains itself only on
+    /// stderr; that used to be discarded, leaving the user with "exited
+    /// unexpectedly" and nothing to act on.
+    #[tokio::test]
+    async fn an_unstartable_interpreter_reports_why() {
+        // A path that is not an interpreter at all: spawn itself fails, which is
+        // the error the user must see.
+        let mut svc =
+            LocalKernelService::new(PathBuf::from("/nonexistent/python-that-is-not-there"));
+        let err = svc.start().await.expect_err("this cannot start");
+        assert!(
+            err.contains("Failed to spawn"),
+            "the failure should name what went wrong: {err}"
+        );
+    }
+
     #[test]
     fn write_harness_to_temp_succeeds() {
         let path = LocalKernelService::write_harness_to_temp()
