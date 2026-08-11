@@ -4,6 +4,16 @@ use gtk4::{self as gtk};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+/// How far the viewer can zoom, as a scale factor (1.0 = 1 image pixel per
+/// screen pixel).
+///
+/// One range for every path that can change the zoom. There were three — the
+/// canvas clamped 0.01–100, the scroll wheel 0.1–50, and `set_fits_view`
+/// advertised 0.05–20 — so "how far can I zoom" had a different answer
+/// depending on whether you dragged, typed, or asked over MCP, and the
+/// advertised limit was the one that matched nothing.
+pub const ZOOM_SCALE_RANGE: (f64, f64) = (0.01, 100.0);
+
 /// View transform for zoom and pan
 #[derive(Clone)]
 struct ViewTransform {
@@ -26,6 +36,7 @@ impl Default for ViewTransform {
 /// by pixel so images with different WCS line up on the same sky point. A single
 /// instance is shared (via `Rc`) by every tab's canvas.
 #[derive(Default)]
+
 pub struct SharedSky {
     /// Live hover position `(ra, dec)`, written by whichever canvas owns the pointer.
     pub hover: Option<(f64, f64)>,
@@ -253,7 +264,7 @@ impl FitsCanvas {
 
     /// Set the zoom scale and redraw. Offset is not changed.
     pub fn set_zoom(&self, scale: f64) {
-        self.transform.borrow_mut().scale = scale.clamp(0.01, 100.0);
+        self.transform.borrow_mut().scale = scale.clamp(ZOOM_SCALE_RANGE.0, ZOOM_SCALE_RANGE.1);
         self.drawing_area.queue_draw();
     }
 
@@ -648,7 +659,7 @@ impl FitsCanvas {
                 // else the image centre), keeping that point fixed on screen.
                 let s0 = t.scale;
                 let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
-                let s1 = (s0 * factor).clamp(0.1, 50.0);
+                let s1 = (s0 * factor).clamp(ZOOM_SCALE_RANGE.0, ZOOM_SCALE_RANGE.1);
                 let anchor = (*crosshair_placed.borrow())
                     .or(*local_hover.borrow())
                     .unwrap_or((w as f64 / 2.0, h as f64 / 2.0));

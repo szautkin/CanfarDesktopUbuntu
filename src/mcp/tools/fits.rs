@@ -60,7 +60,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type":"object",
                 "properties": {
-                    "zoom": { "type":"number", "minimum":5, "maximum":2000, "description":"Zoom percent (100 = 1:1)" },
+                    "zoom": {
+                        "type":"number",
+                        "minimum": crate::ui::fits_canvas::ZOOM_SCALE_RANGE.0 * 100.0,
+                        "maximum": crate::ui::fits_canvas::ZOOM_SCALE_RANGE.1 * 100.0,
+                        "description":"Zoom percent (100 = 1:1)"
+                    },
                     "centerX": { "type":"number", "description":"Image x-pixel to centre the viewport on" },
                     "centerY": { "type":"number", "description":"Image y-pixel to centre the viewport on" },
                     "stretch": { "type":"string", "enum":["linear","log","sqrt","squared","asinh","histogram"] },
@@ -485,6 +490,37 @@ mod tests {
         assert!(payload["hasParityFlip"].is_null());
         // The raw header values are still reported — they were read, after all.
         assert_eq!(payload["cType1"], "RA---TAN");
+    }
+
+    #[test]
+    fn the_zoom_range_advertised_is_the_zoom_range_enforced() {
+        // Three ranges disagreed: the canvas clamped 1–10000%, the scroll wheel
+        // 10–5000%, and this tool advertised 5–2000%. "How far can I zoom" had a
+        // different answer depending on whether you dragged, typed or asked over
+        // MCP — and the advertised one matched neither.
+        use crate::ui::fits_canvas::ZOOM_SCALE_RANGE;
+
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "set_fits_view")
+            .expect("the tool is declared")
+            .input_schema;
+        let zoom = &schema["properties"]["zoom"];
+
+        // The tool speaks percent; the canvas stores a scale factor.
+        assert_eq!(zoom["minimum"].as_f64(), Some(ZOOM_SCALE_RANGE.0 * 100.0));
+        assert_eq!(zoom["maximum"].as_f64(), Some(ZOOM_SCALE_RANGE.1 * 100.0));
+    }
+
+    #[test]
+    fn the_zoom_range_spans_one_to_one() {
+        // 100% — one image pixel per screen pixel — has to be reachable, or the
+        // most useful zoom level of all is outside the range.
+        use crate::ui::fits_canvas::ZOOM_SCALE_RANGE;
+        assert!(
+            ZOOM_SCALE_RANGE.0 < 1.0 && ZOOM_SCALE_RANGE.1 > 1.0,
+            "{ZOOM_SCALE_RANGE:?}"
+        );
     }
 
     #[test]
