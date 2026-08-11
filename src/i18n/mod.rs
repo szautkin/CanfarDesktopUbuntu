@@ -83,8 +83,14 @@ static FMT_PAIRS: &[(&str, &str)] = &[
     ("Runtime: Rust {}\nPlatform: {}\nFramework: GTK4 + libadwaita",
      "Environnement d’exécution : Rust {}\nPlateforme : {}\nCadre : GTK4 + libadwaita"),
     ("reachable — {} ({} ms)",                      "accessible — {} ({} ms)"),
+    ("host up, service failed — HTTP {} ({} ms)",
+     "hôte accessible, service en échec — HTTP {} ({} ms)"),
     ("unreachable — {}",                            "inaccessible — {}"),
     ("Sessions unreachable — cached list from {}",  "Sessions inaccessibles — liste en cache du {}"),
+    ("Renewing session '{}'…",                      "Renouvellement de la session « {} »…"),
+    ("Renew failed: {}",                            "Échec du renouvellement : {}"),
+    ("'{}' renewed. Its expiry has been extended.",
+     "« {} » renouvelée. Sa date d’expiration a été prolongée."),
     ("{} session",                                  "{} session"),
     ("{} sessions",                                 "{} sessions"),
     ("refresh in {}s",                              "actualisation dans {} s"),
@@ -315,6 +321,86 @@ macro_rules! tr {
 
 #[cfg(test)]
 mod tests {
+    /// Every `tr_fmt!` template in the codebase must have a French pair.
+    ///
+    /// `FMT_PAIRS` asks contributors to add one when they introduce a template,
+    /// but nothing enforced it — so a missed pair silently shipped English into
+    /// the French UI, which no test and no compiler could see. A source scan is
+    /// the only place this is visible: the templates are macro arguments, not
+    /// values any runtime check can enumerate.
+    #[test]
+    fn every_tr_fmt_template_has_a_french_translation() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let have: std::collections::HashSet<&str> = FMT_PAIRS.iter().map(|(en, _)| *en).collect();
+
+        let mut missing: Vec<String> = Vec::new();
+        let mut scanned = 0usize;
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                // Skip this file: it CONTAINS the table, so its own literals
+                // would match the scan and drown the result.
+                if path.ends_with("i18n/mod.rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (start, _) in text.match_indices("tr_fmt!(") {
+                    let rest = &text[start + "tr_fmt!(".len()..];
+                    let rest = rest.trim_start();
+                    // Only a directly-quoted template can be checked; a variable
+                    // template is out of scope for a source scan.
+                    let Some(body) = rest.strip_prefix('"') else {
+                        continue;
+                    };
+                    // Find the closing quote, honouring escapes.
+                    let mut end = None;
+                    let bytes = body.as_bytes();
+                    let mut i = 0;
+                    while i < bytes.len() {
+                        match bytes[i] {
+                            b'\\' => i += 2,
+                            b'"' => {
+                                end = Some(i);
+                                break;
+                            }
+                            _ => i += 1,
+                        }
+                    }
+                    let Some(end) = end else { continue };
+                    let template = &body[..end];
+                    scanned += 1;
+                    // Rust source escapes; FMT_PAIRS holds the decoded literal.
+                    let decoded = template.replace("\\n", "\n").replace("\\\"", "\"");
+                    if !have.contains(decoded.as_str()) {
+                        missing.push(format!("{}: {decoded:?}", path.display()));
+                    }
+                }
+            }
+        }
+
+        assert!(scanned > 0, "found no tr_fmt! call sites — did src/ move?");
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "tr_fmt! template(s) with no French pair in FMT_PAIRS — French users \
+             would see English here: {missing:#?}"
+        );
+    }
+
     use super::*;
 
     #[test]
