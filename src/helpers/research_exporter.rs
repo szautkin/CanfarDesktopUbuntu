@@ -673,6 +673,14 @@ fn iso_or_raw(s: &str) -> String {
 
 /// Write `entries` (name, bytes) to `path` as a store-only (method 0) ZIP.
 ///
+/// **Bounded by design, and the bound is real.** The whole archive is assembled
+/// in memory and the header fields are 32-bit, so this is fit for the bundle's
+/// JSON and markdown — kilobytes — and NOT for the observations' FITS files.
+/// Packing those needs a streaming writer and ZIP64 first; without both, a
+/// multi-gigabyte member either exhausts RAM or wraps the size field and yields
+/// an archive that unpacks to garbage. That is why `includeFiles` is refused
+/// rather than attempted.
+///
 /// Each entry is stored uncompressed with its CRC-32; a central directory and
 /// end-of-central-directory record follow. Atomic-ish: writes the whole archive
 /// in one `std::fs::write`.

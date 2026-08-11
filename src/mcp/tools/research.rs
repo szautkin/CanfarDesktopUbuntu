@@ -245,7 +245,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 `path` (the full .zip path) or `destFolder` (a folder to write \
                 research-bundle-<date>.zip into). Non-destructive: queues for the user to apply, \
                 then writes the archive (creating parent folders). Set includeNotes / \
-                includeSearchHistory to false to omit those sections. Set uploadToVospace to also \
+                includeSearchHistory to false to omit those sections. The bundle carries METADATA, \
+                not the FITS files themselves — each observation's publisher id, filename and size \
+                are recorded, which is what download_observation needs to re-fetch it. Set \
+                uploadToVospace to also \
                 publish the .zip to Verbinal-Exports/ in the user's VOSpace for collaborators \
                 (requires sign-in). Packing the downloaded FITS files themselves (includeFiles) is \
                 not supported yet."
@@ -630,11 +633,18 @@ fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolR
     // `includeFiles` is still unimplemented. Refuse it loudly rather than
     // ignoring it: an export that silently omits the data files the caller
     // asked for is worse than one that says it cannot.
+    // Refused rather than attempted: the bundle writer assembles the whole
+    // archive in memory with 32-bit sizes, so a FITS cube would either exhaust
+    // RAM or silently wrap past the ZIP 4 GB limit and produce an archive that
+    // unpacks to garbage. A corrupt bundle is worse than an honest refusal —
+    // and worse still because it would not be noticed until someone opened it.
     if crate::mcp::tools::bool_arg(args, "includeFiles") {
         return ToolResult::Failed(
-            "includeFiles is not supported yet (packing the downloaded FITS files). \
-             Re-run without it; the bundle still records each observation's filename \
-             and size."
+            "includeFiles is not supported: the bundle writer cannot yet stream \
+             files, so a multi-gigabyte FITS would exceed the ZIP size limit. \
+             Re-run without it — the bundle records each observation's publisher \
+             id, filename and size, which is enough to re-fetch the data with \
+             download_observation."
                 .to_string(),
         );
     }
