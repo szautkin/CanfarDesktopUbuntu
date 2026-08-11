@@ -3513,6 +3513,12 @@ fn build_observation_column() -> (
         crate::tr_en!("Observation ID"),
         crate::tr_en!("e.g. jw01345*"),
     );
+    // An id is an identifier, not a phrase: a bare value matches exactly, so say
+    // so — the `*` in the placeholder is otherwise the only hint that partial
+    // ids need one.
+    observation_id.set_tooltip_text(Some(crate::tr_en!(
+        "Matches the observation ID exactly (case-insensitive). Use * as a wildcard, e.g. jw01345*"
+    )));
     col.append(&w);
     let (w, pi_name) = labeled_entry(crate::tr_en!("PI Name"), crate::tr_en!("e.g. Smith"));
     col.append(&w);

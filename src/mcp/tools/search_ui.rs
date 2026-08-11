@@ -79,7 +79,7 @@ fn no_args() -> Value {
 /// documented surface and the accepted surface cannot diverge.
 fn form_properties() -> Value {
     json!({
-        "observationId": {"type": "string", "description": "Observation ID. Substring match."},
+        "observationId": {"type": "string", "description": "Observation ID — an EXACT match (case-insensitive). Use `*` as a wildcard for a prefix or partial id, e.g. `jw01345*`."},
         "piName": {"type": "string", "description": "Principal investigator name."},
         "proposalId": {"type": "string", "description": "Proposal / program ID."},
         "proposalTitle": {"type": "string", "description": "Words from the proposal title."},

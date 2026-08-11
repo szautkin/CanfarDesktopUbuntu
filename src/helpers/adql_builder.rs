@@ -105,7 +105,7 @@ pub fn build(state: &SearchFormState) -> String {
 // ---------------------------------------------------------------------------
 
 fn add_observation_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
-    add_text_like(clauses, "Observation.observationID", &state.observation_id);
+    add_identifier_clause(clauses, "Observation.observationID", &state.observation_id);
     add_text_like(clauses, "Observation.proposal_pi", &state.proposal_pi);
     add_text_like(clauses, "Observation.proposal_id", &state.proposal_id);
     add_text_like(clauses, "Observation.proposal_title", &state.proposal_title);
@@ -848,6 +848,32 @@ fn add_text_like(clauses: &mut Vec<String>, column: &str, value: &str) {
     }
 }
 
+/// Match an IDENTIFIER column: exact by default, wildcard only when asked.
+///
+/// An observation ID is a name, not a phrase. Searching for `1234567p` should
+/// return that observation — not it plus `11234567p`, `1234567pq` and anything
+/// else containing those digits, which is what the substring match this used to
+/// share with the free-text fields produced. The reference draws the same line:
+/// `LIKE` only when the value carries a `*`, otherwise `=`.
+///
+/// Still case-insensitive, since collections differ on capitalisation.
+fn add_identifier_clause(clauses: &mut Vec<String>, column: &str, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if trimmed.contains('*') {
+        let pattern = escape_like(trimmed).replace('*', "%");
+        clauses.push(format!("lower({}) LIKE lower('{}')", column, pattern));
+    } else {
+        clauses.push(format!(
+            "lower({}) = lower('{}')",
+            column,
+            escape_sql(trimmed)
+        ));
+    }
+}
+
 /// Add an IN clause for comma-separated multi-select values.
 fn add_in_clause(clauses: &mut Vec<String>, column: &str, value: &str) {
     let trimmed = value.trim();
@@ -1129,6 +1155,69 @@ mod tests {
         // the failure visible instead of inventing a value the caller never had.
         assert_eq!(num(f64::NAN), "NaN");
         assert_eq!(num(f64::INFINITY), "inf");
+    }
+
+    #[test]
+    fn an_observation_id_matches_exactly_not_as_a_substring() {
+        // An id is an identifier. Searching for 1234567p returned it PLUS
+        // 11234567p, 1234567pq and anything else containing those characters,
+        // because it shared the free-text substring helper with PI name and
+        // proposal title.
+        let mut state = SearchFormState::new();
+        state.observation_id = "1234567p".to_string();
+        let adql = build(&state);
+        assert!(
+            adql.contains("lower(Observation.observationID) = lower('1234567p')"),
+            "{adql}"
+        );
+        assert!(
+            !adql.contains("'%1234567p%'"),
+            "a substring match would also return neighbouring ids: {adql}"
+        );
+    }
+
+    #[test]
+    fn a_star_asks_for_a_wildcard_match() {
+        // The field's own placeholder is `jw01345*`, so this path has to work.
+        let mut state = SearchFormState::new();
+        state.observation_id = "jw01345*".to_string();
+        let adql = build(&state);
+        assert!(
+            adql.contains("lower(Observation.observationID) LIKE lower('jw01345%')"),
+            "{adql}"
+        );
+    }
+
+    #[test]
+    fn the_free_text_fields_still_match_substrings() {
+        // Only the identifier changed. Searching a PI surname or a few words of
+        // a proposal title must keep working the way people expect.
+        let mut state = SearchFormState::new();
+        state.proposal_pi = "Smith".to_string();
+        state.proposal_title = "dust".to_string();
+        let adql = build(&state);
+        // The value keeps its case inside the literal; `lower()` around both
+        // sides is what makes the comparison insensitive.
+        assert!(
+            adql.contains("lower(Observation.proposal_pi) LIKE lower('%Smith%')"),
+            "{adql}"
+        );
+        assert!(
+            adql.contains("lower(Observation.proposal_title) LIKE lower('%dust%')"),
+            "{adql}"
+        );
+    }
+
+    #[test]
+    fn a_quote_in_an_observation_id_cannot_break_out_of_the_literal() {
+        let mut state = SearchFormState::new();
+        state.observation_id = "abc' OR '1'='1".to_string();
+        let adql = build(&state);
+        assert!(
+            !adql.contains("OR '1'='1'"),
+            "the quote must be escaped, not closed: {adql}"
+        );
+        assert!(adql.contains("''"), "escaped as a doubled quote: {adql}");
     }
 
     #[test]
