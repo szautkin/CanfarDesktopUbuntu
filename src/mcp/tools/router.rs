@@ -20,7 +20,6 @@ use serde_json::Value;
 
 use super::{read, write, ToolContext, ToolDescriptor, ToolResult, ToolRouter, VerbClass};
 use crate::mcp::audit::{payload_hash, AuditRecord, AuditSink, RingAuditSink};
-use crate::mcp::budget::ProposalBudget;
 use crate::mcp::tools::proposals::InMemoryProposalStore;
 use crate::state::AppServices;
 
@@ -29,9 +28,6 @@ use crate::state::AppServices;
 pub struct McpToolRouter {
     services: Arc<AppServices>,
     proposals: Arc<InMemoryProposalStore>,
-    /// Runaway-loop backstop: caps how many proposals an external agent may have
-    /// pending at once.
-    budget: ProposalBudget,
     /// PII-safe per-dispatch audit ring (payloads stored only as SHA-256 hashes).
     audit: Arc<RingAuditSink>,
 }
@@ -41,7 +37,6 @@ impl McpToolRouter {
         McpToolRouter {
             services,
             proposals,
-            budget: ProposalBudget::default(),
             audit: Arc::new(RingAuditSink::default()),
         }
     }
@@ -458,13 +453,15 @@ impl ToolRouter for McpToolRouter {
             // auto-apply above and never accumulate.)
             let mut result = result;
             if let ToolResult::Proposed(p) = &result {
-                if ctx.is_external() && self.proposals.pending_count() > self.budget.cap() {
+                if ctx.is_external()
+                    && self.proposals.pending_count() > self.services.proposal_budget.cap()
+                {
                     let id = p.id.clone();
                     self.proposals
                         .resolve(&id, super::proposals::ProposalState::Withdrawn);
                     result = ToolResult::Failed(format!(
                         "proposal budget exhausted (cap {}); apply or reject a pending proposal first",
-                        self.budget.cap()
+                        self.services.proposal_budget.cap()
                     ));
                 }
             }

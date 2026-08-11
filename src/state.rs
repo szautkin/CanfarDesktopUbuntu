@@ -46,6 +46,11 @@ pub struct AppServices {
     /// Live "follow the agent" flag: when true, an external agent tool call
     /// navigates the UI to the relevant module. Read by the router.
     pub mcp_follow_activity: Arc<std::sync::atomic::AtomicBool>,
+    /// Cap on simultaneously-pending agent proposals. Immutable policy, held
+    /// here rather than on the router so the router's enforcement and the
+    /// `get_current_view` snapshot an agent self-throttles against are
+    /// guaranteed to quote the same number.
+    pub proposal_budget: crate::mcp::budget::ProposalBudget,
     pub endpoints: Arc<ApiEndpoints>,
     pub token: RwLock<Option<String>>,
     pub username: RwLock<Option<String>>,
@@ -106,6 +111,7 @@ impl AppServices {
                 crate::services::mcp_settings_service::McpSettingsService::new()
                     .follow_activity_enabled(),
             )),
+            proposal_budget: crate::mcp::budget::ProposalBudget::default(),
             endpoints,
             token: RwLock::new(None),
             username: RwLock::new(None),
