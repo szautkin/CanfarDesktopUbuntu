@@ -39,8 +39,6 @@ pub struct ResearchBundle {
     pub observations_json: String,
     pub notes_json: String,
     pub notes_md: String,
-    pub observation_count: usize,
-    pub note_count: usize,
 }
 
 /// Render the JSON + markdown payload from in-memory data. Pure — no I/O.
@@ -61,8 +59,6 @@ pub fn build_bundle(
         observations_json,
         notes_json,
         notes_md,
-        observation_count: observations.len(),
-        note_count: notes.len(),
     }
 }
 
@@ -871,10 +867,11 @@ mod tests {
         let notes = vec![note("ivo://x?1", 4, "Nice galaxy", &["galaxy"])];
         let bundle = build_bundle(&observations, &notes, fixed_now());
 
-        assert_eq!(bundle.observation_count, 2);
-        assert_eq!(bundle.note_count, 1);
-        // JSON is valid and round-trips the publisher id.
+        // Both observations are present — the counts used to be carried on the
+        // bundle, but nothing read them, and asserting on the payload itself is
+        // the stronger claim anyway.
         assert!(bundle.observations_json.contains("ivo://x?1"));
+        assert!(bundle.observations_json.contains("ivo://x?2"));
         assert!(bundle.notes_json.contains("Nice galaxy"));
         let _: serde_json::Value = serde_json::from_str(&bundle.observations_json).unwrap();
         let _: serde_json::Value = serde_json::from_str(&bundle.notes_json).unwrap();
