@@ -215,6 +215,51 @@ pub struct DataLinkFile {
     pub description: String,
 }
 
+impl DataLinkResult {
+    /// The science products — DataLink rows with `#this` semantics.
+    ///
+    /// This is the list `artifactIndex` addresses, in both `get_data_links` and
+    /// `download_observation`. Keeping it in one place is load-bearing: if the
+    /// tool that reports the index and the tool that consumes it disagreed
+    /// about which rows count, an agent asking for "the second science file"
+    /// would silently download a thumbnail.
+    pub fn direct_files(&self) -> Vec<&DataLinkFile> {
+        self.files.iter().filter(|f| f.is_science_data()).collect()
+    }
+
+    /// Preview-image URLs (`#preview` rows with an image content type).
+    pub fn preview_urls(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter(|f| f.is_preview())
+            .map(|f| f.url.clone())
+            .collect()
+    }
+
+    /// Thumbnail URLs (`#thumbnail` rows).
+    pub fn thumbnail_urls(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter(|f| f.is_thumbnail())
+            .map(|f| f.url.clone())
+            .collect()
+    }
+
+    /// Rows in none of the above buckets — `#auxiliary`, `#derivation`, and
+    /// anything else a collection publishes.
+    ///
+    /// The reference discards these while parsing. We keep them: they are real
+    /// artifacts, and dropping a row because it is unfamiliar loses data the
+    /// user may want. They are deliberately NOT part of `direct_files`, so
+    /// including them cannot shift an `artifactIndex`.
+    pub fn other_files(&self) -> Vec<&DataLinkFile> {
+        self.files
+            .iter()
+            .filter(|f| !f.is_science_data() && !f.is_preview() && !f.is_thumbnail())
+            .collect()
+    }
+}
+
 impl DataLinkFile {
     pub fn is_science_data(&self) -> bool {
         self.semantics == "#this"
@@ -1084,5 +1129,84 @@ mod tests {
         assert!(cols.len() > 10);
         assert!(cols[0].visible);
         assert_eq!(cols[0].key, "collection");
+    }
+
+    /// A DataLink row set in the order CADC really returns them: the thumbnail
+    /// and preview rows come FIRST, ahead of the science data.
+    fn mixed_datalink() -> DataLinkResult {
+        let row = |sem: &str, url: &str, ct: &str| DataLinkFile {
+            url: url.to_string(),
+            semantics: sem.to_string(),
+            content_type: ct.to_string(),
+            size: Some(1024),
+            description: String::new(),
+        };
+        DataLinkResult {
+            publisher_id: "ivo://cadc.nrc.ca/CFHT?1".to_string(),
+            download_url: None,
+            files: vec![
+                row("#thumbnail", "https://x/thumb.png", "image/png"),
+                row("#preview", "https://x/prev.png", "image/png"),
+                row("#this", "https://x/science.fits", "application/fits"),
+                row("#this", "https://x/science_mom0.fits", "application/fits"),
+                row("#auxiliary", "https://x/weight.fits", "application/fits"),
+            ],
+        }
+    }
+
+    #[test]
+    fn artifact_index_zero_is_the_first_science_file_not_the_first_row() {
+        // The bug this guards: previews and thumbnails sharing the indexed list.
+        // With the raw rows, index 0 is a THUMBNAIL — so an agent asking to
+        // download "the first artifact" got a PNG instead of the science frame.
+        let dl = mixed_datalink();
+        let direct = dl.direct_files();
+        assert_eq!(direct.len(), 2, "only the #this rows are science files");
+        assert_eq!(direct[0].url, "https://x/science.fits");
+        assert_eq!(direct[1].url, "https://x/science_mom0.fits");
+    }
+
+    #[test]
+    fn previews_and_thumbnails_are_reported_separately() {
+        let dl = mixed_datalink();
+        assert_eq!(dl.preview_urls(), vec!["https://x/prev.png".to_string()]);
+        assert_eq!(dl.thumbnail_urls(), vec!["https://x/thumb.png".to_string()]);
+    }
+
+    #[test]
+    fn an_unfamiliar_semantics_row_is_kept_out_of_the_way() {
+        // The reference discards these while parsing. Keeping them loses no
+        // data, and because they are not in direct_files they cannot shift an
+        // artifactIndex.
+        let dl = mixed_datalink();
+        let other = dl.other_files();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].semantics, "#auxiliary");
+        assert!(
+            !dl.direct_files()
+                .iter()
+                .any(|f| f.semantics == "#auxiliary"),
+            "an auxiliary row must never occupy an artifactIndex slot"
+        );
+    }
+
+    #[test]
+    fn a_mislabelled_preview_is_not_treated_as_an_image() {
+        // A #preview row whose content type is not an image is a data product
+        // wearing the wrong label; rendering it as a picture would fail. It
+        // falls through to the other bucket rather than the preview list.
+        let dl = DataLinkResult {
+            publisher_id: "ivo://x?1".to_string(),
+            download_url: None,
+            files: vec![DataLinkFile {
+                url: "https://x/not-an-image.fits".to_string(),
+                semantics: "#preview".to_string(),
+                content_type: "application/fits".to_string(),
+                size: None,
+                description: String::new(),
+            }],
+        };
+        assert!(dl.preview_urls().is_empty());
+        assert_eq!(dl.other_files().len(), 1);
     }
 }

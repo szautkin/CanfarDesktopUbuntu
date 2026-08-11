@@ -52,7 +52,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "type": "object",
                 "properties": {
                     "publisherId": {"type": "string", "description": "Publisher DID, e.g. ivo://cadc.nrc.ca/CFHT?1234567p"},
-                    "artifactIndex": {"type": "integer", "minimum": 0, "description": "0-based index into the observation's resolved DataLink artifacts"}
+                    "artifactIndex": {"type": "integer", "minimum": 0, "description": "0-based index into `directFiles` from get_data_links — the SCIENCE products only, so previews and thumbnails never shift it"}
                 },
                 "required": ["publisherId"],
                 "additionalProperties": false

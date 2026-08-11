@@ -48,19 +48,25 @@ pub async fn download_observation(
         .resolve(publisher_id, token.as_deref())
         .await;
 
-    // Pick the artifact: an explicit index addresses the resolved list; otherwise
-    // the #this science row, and failing that the synthesised package URL.
+    // Pick the artifact: an explicit index addresses the SCIENCE files, in the
+    // order `get_data_links` reports them under `directFiles`; otherwise the
+    // first science row, and failing that the synthesised package URL.
+    //
+    // Indexing `direct_files()` rather than the raw row list is what keeps the
+    // two tools honest — a preview or thumbnail row ahead of the science data
+    // would otherwise shift every index the agent was given.
     let (url, filename) = match (&resolved, artifact_index) {
         (Ok(dl), Some(index)) => {
-            let file = dl.files.get(index).ok_or_else(|| {
+            let direct = dl.direct_files();
+            let file = direct.get(index).ok_or_else(|| {
                 format!(
-                    "artifactIndex {index} is out of range — this observation resolved {} artifact(s)",
-                    dl.files.len()
+                    "artifactIndex {index} is out of range — this observation resolved {} science artifact(s)",
+                    direct.len()
                 )
             })?;
             (file.url.clone(), Some(file.filename()))
         }
-        (Ok(dl), None) => match dl.files.iter().find(|f| f.is_science_data()) {
+        (Ok(dl), None) => match dl.direct_files().first() {
             Some(f) => (f.url.clone(), Some(f.filename())),
             None => (
                 dl.download_url

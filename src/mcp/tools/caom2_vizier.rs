@@ -67,9 +67,14 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "get_data_links".to_string(),
-            description: "Get the downloadable DataLink artifacts (access url, semantics, \
-                content-type, byte size) for one observation by its publisher id. Only HTTPS \
-                links are returned."
+            description: "Get the DataLink artifacts for one observation by its publisher id, split \
+                into `directFiles` (the science products), `previews` and `thumbnails` (image URLs), \
+                plus `downloadUrl` for the whole package. Each entry's 0-based position in \
+                `directFiles` is its `artifactIndex` for download_observation — use it to fetch a \
+                SPECIFIC product (e.g. the science cube, a moment map _mom0/1/2, or the integrated \
+                spectrum _spec) instead of the default first one; previews and thumbnails are NOT \
+                indexed. `otherFiles` appears only when the observation publishes artifacts outside \
+                those three kinds. Only HTTPS links are returned."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -87,26 +92,29 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "vizier_cone_search".to_string(),
-            description: "Cone-search a VizieR catalogue at CDS (public, no auth). `ra`/`dec` are \
-                in degrees (ICRS), `radius_deg` is the cone radius in degrees. `catalog` is the \
-                VizieR identifier exactly (e.g. I/355/gaiadr3 — the default — V/97/catalog, \
-                B/vsx/vsx). Override `ra_column`/`dec_column` if the catalogue uses names other \
-                than RAJ2000/DEJ2000. Returns parsed rows plus a `probablyTruncated` hint when the \
-                row count hit `max_rec`."
+            description: "Cone-search a VizieR catalogue at CDS. The standard pattern for catalogue \
+                cross-matches against any of VizieR's holdings (Clement+2001 variables-in-globular- \
+                clusters as V/97, OGLE, ASAS-SN, ZTF, …). Public, no auth. `catalogue` is the VizieR \
+                identifier exactly (V/97/catalog, B/vsx/vsx, I/355/gaiadr3 — the default). \
+                `radiusArcsec` is in ARCSECONDS for typical cluster work; the tool converts to \
+                degrees internally. Position columns default to RAJ2000/DEJ2000 — override \
+                `raColumn`/`decColumn` if the catalogue uses different names. Returns parsed rows \
+                plus a `probablyTruncated` hint when the row count hit `maxRec`."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "ra": { "type": "number", "description": "Cone-centre RA in degrees (ICRS)." },
-                    "dec": { "type": "number", "description": "Cone-centre Dec in degrees (ICRS)." },
-                    "radiusDeg": {
+                    "raDeg": { "type": "number", "description": "Cone-centre RA in degrees (ICRS)." },
+                    "decDeg": { "type": "number", "description": "Cone-centre Dec in degrees (ICRS)." },
+                    "radiusArcsec": {
                         "type": "number",
                         "minimum": 0,
-                        "description": "Cone radius in degrees."
+                        "description": "Cone radius in ARCSECONDS (not degrees)."
                     },
-                    "catalog": {
+                    "catalogue": {
                         "type": "string",
-                        "description": "VizieR catalogue identifier. Default: I/355/gaiadr3 (Gaia DR3)."
+                        "minLength": 1,
+                        "description": "VizieR catalogue identifier, e.g. V/97/catalog. Default: I/355/gaiadr3 (Gaia DR3)."
                     },
                     "raColumn": {
                         "type": "string",
@@ -123,7 +131,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "description": "Row cap; default 500."
                     }
                 },
-                "required": ["ra", "dec", "radiusDeg"],
+                "required": ["catalogue", "raDeg", "decDeg", "radiusArcsec"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Read,
@@ -202,43 +210,89 @@ async fn get_data_links(services: &AppServices, args: &Value) -> ToolResult {
         Ok(res) => {
             // The service already filters access_url to HTTPS-only, so every
             // surviving file is safe to advertise.
-            let files: Vec<Value> = res
-                .files
-                .iter()
-                .map(|f| {
-                    json!({
-                        "url": f.url,
-                        "semantics": f.semantics,
-                        "contentType": f.content_type,
-                        "sizeBytes": f.size,
-                        "description": f.description,
-                        "filename": f.filename(),
-                    })
+            //
+            // Split into the reference's three buckets. This is not cosmetic:
+            // `artifactIndex` addresses `directFiles`, so if previews and
+            // thumbnails shared that list — as they did when this returned one
+            // flat `files` array — index 1 could name a thumbnail in one app and
+            // a science frame in the other.
+            let view = |f: &crate::models::search_result::DataLinkFile| {
+                json!({
+                    "url": f.url,
+                    "contentType": f.content_type,
+                    "description": f.description,
+                    "filename": f.filename(),
+                    // Beyond the reference's DataLinkFileView, and both free:
+                    // the raw semantics tag, and the size an agent needs to
+                    // decide whether a download is worth starting.
+                    "semantics": f.semantics,
+                    "sizeBytes": f.size,
                 })
-                .collect();
-            ToolResult::Data(json!({
+            };
+
+            let direct: Vec<Value> = res.direct_files().into_iter().map(view).collect();
+            let previews = res.preview_urls();
+            let thumbnails = res.thumbnail_urls();
+            let other: Vec<Value> = res.other_files().into_iter().map(view).collect();
+
+            let mut payload = json!({
                 "publisherId": res.publisher_id,
                 "downloadUrl": res.download_url,
-                "fileCount": files.len(),
-                "files": files,
-            }))
+                "directFileCount": direct.len(),
+                "directFiles": direct,
+                "previewCount": previews.len(),
+                "previews": previews,
+                "thumbnailCount": thumbnails.len(),
+                "thumbnails": thumbnails,
+            });
+            // Only surfaced when non-empty: the reference drops these rows, so
+            // an always-present empty array would suggest a bucket that
+            // normally has content.
+            if !other.is_empty() {
+                payload["otherFileCount"] = json!(other.len());
+                payload["otherFiles"] = json!(other);
+            }
+            ToolResult::Data(payload)
         }
         Err(e) => ToolResult::Failed(format!("DataLink resolve failed for '{pid}': {e}")),
     }
 }
 
-async fn vizier_cone_search(args: &Value) -> ToolResult {
-    let (ra, dec, radius_deg) = match (
-        num_arg(args, "ra"),
-        num_arg(args, "dec"),
-        num_arg(args, "radius_deg"),
-    ) {
-        (Some(ra), Some(dec), Some(r)) => (ra, dec, r),
-        _ => return ToolResult::Failed("ra, dec and radius_deg are required numbers".to_string()),
+/// Resolve the cone radius to DEGREES from whichever unit the caller supplied.
+///
+/// The reference takes `radiusArcsec`; Verbinal shipped `radiusDeg`. Reading one
+/// as the other is not a naming annoyance but a 3600× error — an agent asking
+/// for a 10-arcsecond cone would have searched 10 degrees of sky, hammering
+/// VizieR and burying the intended match in an unrelated catalogue dump. Each
+/// name is therefore read with its own unit and never used as a fallback for
+/// the other's value.
+fn cone_radius_deg(args: &Value) -> Result<f64, String> {
+    let (radius, unit, name) = match num_arg(args, "radiusArcsec") {
+        Some(arcsec) => (arcsec / 3600.0, "arcsec", "radiusArcsec"),
+        None => match num_arg(args, "radiusDeg") {
+            Some(deg) => (deg, "deg", "radiusDeg"),
+            None => return Err("radiusArcsec is required (a number, in arcseconds)".to_string()),
+        },
     };
-    if radius_deg < 0.0 {
-        return ToolResult::Failed("radius_deg must be >= 0".to_string());
+    if radius < 0.0 {
+        return Err(format!("{name} must be >= 0 {unit}"));
     }
+    Ok(radius)
+}
+
+async fn vizier_cone_search(args: &Value) -> ToolResult {
+    let (ra, dec) = match (
+        num_arg(args, "raDeg").or_else(|| num_arg(args, "ra")),
+        num_arg(args, "decDeg").or_else(|| num_arg(args, "dec")),
+    ) {
+        (Some(ra), Some(dec)) => (ra, dec),
+        _ => return ToolResult::Failed("raDeg and decDeg are required numbers".to_string()),
+    };
+
+    let radius_deg = match cone_radius_deg(args) {
+        Ok(r) => r,
+        Err(e) => return ToolResult::Failed(e),
+    };
 
     let max_rec = args
         .get("max_rec")
@@ -248,7 +302,9 @@ async fn vizier_cone_search(args: &Value) -> ToolResult {
         return ToolResult::Failed(format!("max_rec must be between 1 and {MAX_REC_CAP}"));
     }
 
-    let catalog = opt_str_arg(args, "catalog").unwrap_or_else(|| DEFAULT_CATALOG.to_string());
+    let catalog = opt_str_arg(args, "catalogue")
+        .or_else(|| opt_str_arg(args, "catalog"))
+        .unwrap_or_else(|| DEFAULT_CATALOG.to_string());
     let ra_column = opt_str_arg(args, "ra_column").unwrap_or_else(|| DEFAULT_RA_COLUMN.to_string());
     let dec_column =
         opt_str_arg(args, "dec_column").unwrap_or_else(|| DEFAULT_DEC_COLUMN.to_string());
@@ -271,7 +327,7 @@ async fn vizier_cone_search(args: &Value) -> ToolResult {
             // Hitting the cap means the server likely had more matches.
             let probably_truncated = row_count as i64 >= max_rec;
             ToolResult::Data(json!({
-                "catalog": catalog,
+                "catalogue": catalog,
                 "headers": res.headers,
                 "rows": res.rows,
                 "rowCount": row_count,
@@ -342,20 +398,45 @@ fn observation_to_json(o: &CAOM2Observation) -> Value {
     });
     let planes: Vec<Value> = o.planes.iter().map(plane_to_json).collect();
 
+    // The reference's Caom2ObservationSummary is FLAT: proposalId, targetName,
+    // telescopeName and friends sit at the top level. Ours groups them into
+    // nested objects, which carries more (keywords, target.moving, the
+    // telescope's geolocation, the whole environment block) but leaves an agent
+    // reading `targetName` with nothing.
+    //
+    // Both are emitted. The flat scalars ARE the contract; the nested objects
+    // are the detail the flat form cannot express. Each nested value is read
+    // through the same Option chain that fills its flat twin, so the two can
+    // never disagree.
+    let proposal_field = |f: fn(&crate::models::caom2::Caom2Proposal) -> Option<String>| {
+        o.proposal.as_ref().and_then(f)
+    };
+
     json!({
         "collection": o.collection,
         "observationId": o.observation_id,
         "observationType": o.observation_type,
         "intent": o.intent,
-        "sequenceNumber": o.sequence_number,
         "algorithm": o.algorithm,
+        "metaRelease": o.meta_release,
+        "proposalId": proposal_field(|p| p.id.clone()),
+        "proposalPi": proposal_field(|p| p.pi.clone()),
+        "proposalProject": proposal_field(|p| p.project.clone()),
+        "proposalTitle": proposal_field(|p| p.title.clone()),
+        "targetName": o.target.as_ref().and_then(|t| t.name.clone()),
+        "targetType": o.target.as_ref().and_then(|t| t.kind.clone()),
+        "targetRedshift": o.target.as_ref().and_then(|t| t.redshift),
+        "telescopeName": o.telescope.as_ref().and_then(|t| t.name.clone()),
+        "instrumentName": o.instrument.as_ref().and_then(|i| i.name.clone()),
+        "planeCount": planes.len(),
+        "planes": planes,
+        // Beyond the reference's record.
+        "sequenceNumber": o.sequence_number,
         "proposal": proposal,
         "target": target,
         "telescope": telescope,
         "instrument": instrument,
         "environment": environment,
-        "planeCount": planes.len(),
-        "planes": planes,
     })
 }
 
@@ -426,9 +507,45 @@ mod tests {
             .find(|d| d.name == "vizier_cone_search")
             .unwrap();
         let required = d.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "ra"));
-        assert!(required.iter().any(|v| v == "dec"));
-        assert!(required.iter().any(|v| v == "radiusDeg"));
+        for name in ["catalogue", "raDeg", "decDeg", "radiusArcsec"] {
+            assert!(
+                required.iter().any(|v| v == name),
+                "the reference requires `{name}`"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cone_radius_is_read_in_the_unit_its_name_declares() {
+        // The 3600x trap: the reference takes arcseconds, Verbinal shipped
+        // degrees. Reading one as the other turns a 10-arcsecond cross-match
+        // into a 10-DEGREE sweep of the sky.
+        assert_eq!(
+            cone_radius_deg(&json!({ "radiusArcsec": 3600.0 })).unwrap(),
+            1.0
+        );
+        assert_eq!(cone_radius_deg(&json!({ "radiusDeg": 1.0 })).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn the_declared_radius_argument_wins_when_both_are_sent() {
+        // A client sending both is most likely a reference-written one carrying
+        // our older name along; the documented argument decides, and it must not
+        // be silently reinterpreted in the other unit.
+        let r = cone_radius_deg(&json!({ "radiusArcsec": 3600.0, "radiusDeg": 5.0 })).unwrap();
+        assert_eq!(r, 1.0);
+    }
+
+    #[test]
+    fn a_missing_or_negative_radius_is_refused() {
+        assert!(cone_radius_deg(&json!({})).is_err());
+        assert!(cone_radius_deg(&json!({ "radiusArcsec": -1.0 })).is_err());
+        assert!(cone_radius_deg(&json!({ "radiusDeg": -1.0 })).is_err());
+        // Zero is a degenerate but legal cone, not an error.
+        assert_eq!(
+            cone_radius_deg(&json!({ "radiusArcsec": 0.0 })).unwrap(),
+            0.0
+        );
     }
 
     #[test]
