@@ -25,7 +25,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-const STRETCH_NAMES: &[&str] = &["Linear", "Log", "Sqrt", "Squared", "Asinh"];
+/// Stretch curves the cube offers, in shader-index order.
+///
+/// One list: it populates the dropdown, `set_cube_view` advertises it, and
+/// `set_stretch_by_name` parses it. `StretchMode::from_index` maps a position
+/// here to the shader mode, so the ORDER is load-bearing — reordering these
+/// would silently apply a different curve than the one named.
+pub const STRETCH_NAMES: &[&str] = &["Linear", "Log", "Sqrt", "Squared", "Asinh"];
 
 pub struct CubeViewer {
     pub widget: gtk::Box,
@@ -48,6 +54,7 @@ pub struct CubeViewer {
     window_lo: gtk::Scale,
     window_hi: gtk::Scale,
     colormap: gtk::DropDown,
+    stretch: gtk::DropDown,
     colorbar_area: gtk::DrawingArea,
     colorbar_lo: gtk::Label,
     colorbar_hi: gtk::Label,
@@ -162,6 +169,7 @@ impl CubeViewer {
             window_lo: ctl.window_lo.clone(),
             window_hi: ctl.window_hi.clone(),
             colormap: ctl.colormap.clone(),
+            stretch: ctl.stretch.clone(),
             colorbar_area: ctl.colorbar_area.clone(),
             colorbar_lo: ctl.colorbar_lo.clone(),
             colorbar_hi: ctl.colorbar_hi.clone(),
@@ -334,6 +342,110 @@ impl CubeViewer {
     }
 
     /// The cube's display name (its tab title).
+    /// The colormap currently applied, by name.
+    pub fn colormap_name(&self) -> String {
+        cube_colormaps::NAMES
+            .get(self.colormap.selected() as usize)
+            .copied()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The stretch curve currently applied, by name.
+    pub fn stretch_name(&self) -> String {
+        STRETCH_NAMES
+            .get(self.stretch.selected() as usize)
+            .copied()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The display window, normalised 0..1.
+    pub fn window(&self) -> (f64, f64) {
+        (self.window_lo.value(), self.window_hi.value())
+    }
+
+    /// Whether the WCS axis captions are shown.
+    pub fn captions_visible(&self) -> bool {
+        self.captions_toggle.is_active()
+    }
+
+    /// Whether the slice-plane marker is shown in the volume.
+    pub fn slice_plane_visible(&self) -> bool {
+        self.slice_toggle.is_active()
+    }
+
+    /// Set the colormap by name, as the dropdown does.
+    ///
+    /// Drives the WIDGET rather than the renderer directly: its handler is what
+    /// applies the change to the volume, the slice and the colorbar together,
+    /// and it leaves the control showing what is actually in effect. An agent
+    /// changing the view behind a stale dropdown would be worse than no control
+    /// at all. `false` when the name is not one this build offers.
+    pub fn set_colormap_by_name(&self, name: &str) -> bool {
+        let Some(index) = cube_colormaps::NAMES
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        self.colormap.set_selected(index as u32);
+        true
+    }
+
+    /// Set the stretch curve by name. See [`Self::set_colormap_by_name`].
+    pub fn set_stretch_by_name(&self, name: &str) -> bool {
+        let Some(index) = STRETCH_NAMES
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        self.stretch.set_selected(index as u32);
+        true
+    }
+
+    /// Move the display window. Values are normalised 0..1; the sliders clamp.
+    ///
+    /// A window whose low is above its high renders nothing, so the two are
+    /// ordered before they are applied rather than left to produce a blank
+    /// volume the caller cannot explain.
+    pub fn set_window(&self, lo: Option<f64>, hi: Option<f64>) {
+        let mut low = lo.unwrap_or_else(|| self.window_lo.value());
+        let mut high = hi.unwrap_or_else(|| self.window_hi.value());
+        if low > high {
+            std::mem::swap(&mut low, &mut high);
+        }
+        self.window_lo.set_value(low);
+        self.window_hi.set_value(high);
+    }
+
+    /// Apply a window preset: `minmax` (full range) or `p99` (1st–99th
+    /// percentile), the two buttons the controls offer.
+    pub fn set_window_preset(&self, preset: &str) -> bool {
+        match preset.trim().to_ascii_lowercase().as_str() {
+            "minmax" => {
+                self.set_window(Some(0.0), Some(1.0));
+                true
+            }
+            "p99" => {
+                self.set_window(Some(0.01), Some(0.99));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Show or hide the WCS axis captions overlay.
+    pub fn set_captions_visible(&self, on: bool) {
+        self.captions_toggle.set_active(on);
+    }
+
+    /// Show or hide the slice-plane marker in the volume.
+    pub fn set_slice_plane_visible(&self, on: bool) {
+        self.slice_toggle.set_active(on);
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

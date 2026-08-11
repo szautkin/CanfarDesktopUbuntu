@@ -284,6 +284,50 @@ impl CubeTabHost {
                 }
                 v.gl().set_camera(az, el, dist);
 
+                // Display controls the panel offers and MCP could not reach:
+                // colormap, stretch, the window levels and their presets, and
+                // the two overlay toggles. Every one of them is a control the
+                // user can change, so "100% UI coverage" was not true for the
+                // cube until now.
+                if let Some(name) =
+                    crate::mcp::tools::arg(args, "colormap").and_then(|x| x.as_str())
+                {
+                    if !v.set_colormap_by_name(name) {
+                        return Err(format!("unknown colormap '{name}'"));
+                    }
+                }
+                if let Some(name) = crate::mcp::tools::arg(args, "stretch").and_then(|x| x.as_str())
+                {
+                    if !v.set_stretch_by_name(name) {
+                        return Err(format!("unknown stretch '{name}'"));
+                    }
+                }
+                if let Some(preset) =
+                    crate::mcp::tools::arg(args, "windowPreset").and_then(|x| x.as_str())
+                {
+                    if !v.set_window_preset(preset) {
+                        return Err(format!(
+                            "unknown windowPreset '{preset}' — use 'minmax' or 'p99'"
+                        ));
+                    }
+                }
+                {
+                    let lo = crate::mcp::tools::arg(args, "windowLo").and_then(|x| x.as_f64());
+                    let hi = crate::mcp::tools::arg(args, "windowHi").and_then(|x| x.as_f64());
+                    if lo.is_some() || hi.is_some() {
+                        v.set_window(lo, hi);
+                    }
+                }
+                if let Some(on) =
+                    crate::mcp::tools::arg(args, "showCaptions").and_then(|x| x.as_bool())
+                {
+                    v.set_captions_visible(on);
+                }
+                if let Some(on) =
+                    crate::mcp::tools::arg(args, "showSlicePlane").and_then(|x| x.as_bool())
+                {
+                    v.set_slice_plane_visible(on);
+                }
                 if let Some(x) = crate::mcp::tools::arg(args, "steps").and_then(|x| x.as_f64()) {
                     v.gl().set_steps(x as f32);
                 }
@@ -775,6 +819,7 @@ impl CubeTabHost {
 fn view_json(v: &CubeViewer) -> serde_json::Value {
     let (az, el, dist) = v.gl().camera();
     let (nx, ny, nz) = v.dims();
+    let (window_lo, window_hi) = v.window();
     serde_json::json!({
         "az": az,
         "el": el,
@@ -784,6 +829,15 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
         "channel": v.current_channel(),
         "unit": v.value_unit(),
         "dims": { "nx": nx, "ny": ny, "nz": nz },
+        // Read back everything `set_cube_view` can change. A control an agent
+        // can set but not read leaves it unable to tell what it changed FROM,
+        // so it cannot restore the user's view afterwards.
+        "colormap": v.colormap_name(),
+        "stretch": v.stretch_name(),
+        "windowLo": window_lo,
+        "windowHi": window_hi,
+        "showCaptions": v.captions_visible(),
+        "showSlicePlane": v.slice_plane_visible(),
     })
 }
 

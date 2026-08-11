@@ -64,7 +64,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "set_cube_view".into(),
             description:
-                "Update any subset of the active cube's 3D volume view — orbit az/el, dolly dist, camera reset, quality steps, spectral (Z) stretch, opacity density, MIP / render mode, background preset, idle auto-orbit, and slice-plane channel. Returns the resulting view."
+                "Update any subset of the active cube's view — every control the panel exposes. \
+                 Display: colormap, stretch, window levels (windowLo/windowHi, or windowPreset \
+                 minmax/p99), background preset. Camera: orbit az/el, dolly dist, camera reset, \
+                 idle auto-orbit. Volume: quality steps, spectral (Z) stretch, opacity density, \
+                 MIP / render mode. Overlays: showCaptions, showSlicePlane. Plus the slice-plane \
+                 channel. Returns the resulting view."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -93,6 +98,30 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "mip": { "type": "boolean", "description": "Max-intensity projection on/off." },
                     "renderMode": { "type": "string", "description": "Volume render mode: \"emission\" or \"max-intensity\" (alias for the MIP toggle)." },
                     "background": { "type": "string", "enum": ["dark", "black", "light"], "description": "3D background preset." },
+                    "colormap": {
+                        "type": "string",
+                        "enum": crate::helpers::cube_colormaps::NAMES,
+                        "description": "Colour map applied to both the volume and the slice view."
+                    },
+                    "stretch": {
+                        "type": "string",
+                        "enum": crate::ui::cube_viewer::STRETCH_NAMES,
+                        "description": "Display stretch curve."
+                    },
+                    "windowLo": {
+                        "type": "number", "minimum": 0, "maximum": 1,
+                        "description": "Display window low cut, normalised 0..1."
+                    },
+                    "windowHi": {
+                        "type": "number", "minimum": 0, "maximum": 1,
+                        "description": "Display window high cut, normalised 0..1."
+                    },
+                    "windowPreset": {
+                        "type": "string", "enum": ["minmax", "p99"],
+                        "description": "Window shortcut: full range, or the 1st-99th percentile."
+                    },
+                    "showCaptions": { "type": "boolean", "description": "WCS axis-caption overlay." },
+                    "showSlicePlane": { "type": "boolean", "description": "Slice-plane marker in the volume." },
                     "autoOrbit": { "type": "boolean", "description": "Idle auto-orbit on/off." },
                     "channel": { "type": "integer", "minimum": 0, "description": "Slice-plane channel index." }
                 },
@@ -270,6 +299,72 @@ mod tests {
     /// rather than refused — the caller believed it had set something it had
     /// not. Reading them from the same constants the clamps use is what keeps
     /// the two honest.
+    /// Every display control the cube panel offers must be reachable over MCP,
+    /// and readable back.
+    ///
+    /// Colormap, stretch, the window levels and the two overlay toggles are all
+    /// controls the user can change; none of them was declared or parsed, so
+    /// "100% UI coverage" was not true for the cube. A control an agent can set
+    /// but not read is only half-useful too — it cannot tell what it changed
+    /// FROM, so it cannot put the user's view back.
+    #[test]
+    fn every_cube_display_control_is_settable() {
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "set_cube_view")
+            .expect("the tool is declared")
+            .input_schema;
+        let props = &schema["properties"];
+
+        for control in [
+            "colormap",
+            "stretch",
+            "windowLo",
+            "windowHi",
+            "windowPreset",
+            "showCaptions",
+            "showSlicePlane",
+        ] {
+            assert!(
+                props.get(control).is_some(),
+                "`{control}` is a control the panel offers but the tool does not"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cube_enums_are_the_lists_the_viewer_parses() {
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "set_cube_view")
+            .expect("the tool is declared")
+            .input_schema;
+        let names = |key: &str| -> Vec<String> {
+            schema["properties"][key]["enum"]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{key}` should declare an enum"))
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+
+        assert_eq!(
+            names("colormap"),
+            crate::helpers::cube_colormaps::NAMES.to_vec()
+        );
+        assert_eq!(
+            names("stretch"),
+            crate::ui::cube_viewer::STRETCH_NAMES.to_vec()
+        );
+        // The stretch list is indexed into `StretchMode::from_index`, so its
+        // length has to match the mode count — an extra name would select
+        // Linear, silently applying a curve the caller did not ask for.
+        assert_eq!(
+            crate::ui::cube_viewer::STRETCH_NAMES.len(),
+            crate::helpers::cube_slice::StretchMode::ALL.len()
+        );
+    }
+
     #[test]
     fn the_volume_bounds_advertised_are_the_bounds_enforced() {
         let schema = descriptors()

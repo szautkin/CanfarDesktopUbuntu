@@ -1979,6 +1979,26 @@ fn colormap_to_index(c: ColorMap) -> u32 {
 
 // ─── String <-> enum helpers for the MCP FITS tools ──────────────────────────
 
+/// Canonical stretch names, in the order the toolbar offers them.
+///
+/// `set_fits_view` advertises this list and `stretch_from_str` parses it, so it
+/// is defined once. A hand-written copy in the schema is a promise that a
+/// rename here would quietly break: the tool would keep offering a value the
+/// viewer no longer understands, and the call would fail with "unknown stretch".
+pub const STRETCH_NAMES: [&str; 6] = ["linear", "log", "sqrt", "squared", "asinh", "histogram"];
+
+/// Canonical colormap names, same contract as [`STRETCH_NAMES`].
+pub const COLORMAP_NAMES: [&str; 8] = [
+    "grayscale",
+    "inverted",
+    "heat",
+    "viridis",
+    "plasma",
+    "inferno",
+    "magma",
+    "coolwarm",
+];
+
 fn stretch_name(s: Stretch) -> &'static str {
     match s {
         Stretch::Linear => "linear",
@@ -2037,5 +2057,83 @@ fn header_str(header: &std::collections::HashMap<String, String>, key: &str) -> 
         None
     } else {
         Some(v.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        colormap_from_str, colormap_name, stretch_from_str, stretch_name, COLORMAP_NAMES,
+        STRETCH_NAMES,
+    };
+
+    #[test]
+    fn every_advertised_stretch_parses_and_comes_back_unchanged() {
+        // `set_fits_view` advertises these names and the viewer parses them. A
+        // name the parser rejects would be an option the tool offers and then
+        // refuses; a name that parses to something with a DIFFERENT canonical
+        // spelling would round-trip wrong, so get_fits_view would report a
+        // stretch the caller never set.
+        for name in STRETCH_NAMES {
+            let parsed = stretch_from_str(name)
+                .unwrap_or_else(|| panic!("`{name}` is advertised but does not parse"));
+            assert_eq!(stretch_name(parsed), name, "`{name}` does not round-trip");
+        }
+    }
+
+    #[test]
+    fn every_advertised_colormap_parses_and_comes_back_unchanged() {
+        for name in COLORMAP_NAMES {
+            let parsed = colormap_from_str(name)
+                .unwrap_or_else(|| panic!("`{name}` is advertised but does not parse"));
+            assert_eq!(colormap_name(parsed), name, "`{name}` does not round-trip");
+        }
+    }
+
+    #[test]
+    fn each_advertised_name_selects_a_different_mode() {
+        // Two names mapping to one mode would mean the list claims a choice the
+        // viewer cannot make — and one mode would be unreachable.
+        // Compared by canonical NAME, not by enum value: the modes are
+        // production types that do not derive Hash/Eq, and adding those purely
+        // for a test would be the wrong way round. Two names collapsing to one
+        // mode yield the same canonical name, which is what this catches.
+        let modes: std::collections::HashSet<&str> = STRETCH_NAMES
+            .iter()
+            .filter_map(|n| stretch_from_str(n))
+            .map(stretch_name)
+            .collect();
+        assert_eq!(
+            modes.len(),
+            STRETCH_NAMES.len(),
+            "a stretch name is a duplicate"
+        );
+
+        let maps: std::collections::HashSet<&str> = COLORMAP_NAMES
+            .iter()
+            .filter_map(|n| colormap_from_str(n))
+            .map(colormap_name)
+            .collect();
+        assert_eq!(
+            maps.len(),
+            COLORMAP_NAMES.len(),
+            "a colormap name is a duplicate"
+        );
+    }
+
+    #[test]
+    fn the_parser_is_more_forgiving_than_the_advertised_list() {
+        // The tool advertises one canonical spelling each, but a human or an
+        // agent may send a common variant; those are accepted and normalised
+        // rather than refused.
+        assert_eq!(stretch_from_str("SQUARE"), stretch_from_str("squared"));
+        assert_eq!(stretch_from_str("histeq"), stretch_from_str("histogram"));
+        assert_eq!(
+            colormap_from_str("greyscale"),
+            colormap_from_str("grayscale")
+        );
+        // And nonsense is still refused, rather than silently defaulting.
+        assert!(stretch_from_str("rainbow").is_none());
+        assert!(colormap_from_str("nonsense").is_none());
     }
 }
