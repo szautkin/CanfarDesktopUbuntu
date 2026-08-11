@@ -399,6 +399,36 @@ Time: ~2 h
         assert_eq!(doc.steps[0].view.as_deref(), Some("search"));
     }
 
+    /// Every `Tool:` hint in the SHIPPED templates must name a tool that really
+    /// exists.
+    ///
+    /// The templates are what a new user follows first, so a hint naming a tool
+    /// this build does not have sends them looking for something that was never
+    /// there. Validated against the live router, which is itself pinned to the
+    /// reference's manifest — so this also catches a template that drifts when a
+    /// tool is renamed.
+    #[test]
+    fn shipped_templates_only_reference_real_tools_and_views() {
+        let known_tools: Vec<String> =
+            crate::mcp::tools::router::McpToolRouter::canonical_descriptors()
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
+
+        let store = crate::services::workflow_store::WorkflowStore::new();
+        let built_ins = store.list_built_in();
+        assert!(!built_ins.is_empty(), "there should be shipped templates");
+
+        for info in built_ins {
+            let problems = validate(&info.doc, KNOWN_VIEWS, &known_tools);
+            assert!(
+                problems.is_empty(),
+                "shipped template {:?} has validation problems: {problems:?}",
+                info.doc.title
+            );
+        }
+    }
+
     #[test]
     fn validate_flags_unknown_view_and_tool() {
         let text = "# T\n- [ ] **S**\n      View: nope\n      Tool: madeup\n";

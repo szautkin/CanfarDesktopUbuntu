@@ -15,7 +15,7 @@
 
 use crate::helpers::workflow_format::{self, KNOWN_VIEWS};
 use crate::models::workflow::{WorkflowInfo, WorkflowSource, WorkflowStep};
-use crate::services::workflow_store::WorkflowStore;
+use crate::services::workflow_store::{WorkflowStore, VOSPACE_PREFIX};
 use crate::state::AppServices;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -54,6 +54,16 @@ pub struct WorkflowsPage {
     suppress: RefCell<bool>,
     /// Invoked with a `View:` key when a step's "Go to …" button is clicked.
     on_navigate: NavigateCb,
+    /// The `vos:<user>/workflows/` listing, refreshed on demand. Empty until the
+    /// user signs in and the first refresh completes.
+    vospace_entries: RefCell<Vec<crate::services::workflow_store::VoSpaceWorkflowEntry>>,
+    /// Bodies fetched from VOSpace, keyed by store id.
+    ///
+    /// `render_detail` is synchronous, but a VOSpace workflow needs a network
+    /// round trip — so selecting one kicks off a fetch that fills this and
+    /// re-renders. Caching also means re-selecting a workflow the user already
+    /// looked at is instant.
+    vospace_cache: RefCell<std::collections::HashMap<String, WorkflowInfo>>,
 }
 
 impl WorkflowsPage {
@@ -167,6 +177,8 @@ impl WorkflowsPage {
             editing: RefCell::new(false),
             suppress: RefCell::new(false),
             on_navigate: Rc::new(RefCell::new(None)),
+            vospace_entries: RefCell::new(Vec::new()),
+            vospace_cache: RefCell::new(std::collections::HashMap::new()),
         });
 
         // Toolbar wiring
@@ -228,6 +240,13 @@ impl WorkflowsPage {
 
         // Initial population.
         page.rebuild_lists();
+
+        // Load the shared VOSpace tier in the background: the built-in and local
+        // sections must render immediately rather than waiting on the network.
+        {
+            let p = page.clone();
+            glib::spawn_future_local(async move { p.refresh_vospace().await });
+        }
         page.render_detail();
 
         page
@@ -277,6 +296,19 @@ impl WorkflowsPage {
             }
         }
 
+        // VOSpace section — shared protocols, read-only. Only shown once a
+        // refresh has run: an empty section before the user signs in would read
+        // as "you have published nothing" rather than "not loaded".
+        let entries = self.vospace_entries.borrow();
+        if !entries.is_empty() {
+            self.list_box
+                .append(&section_header(crate::tr_en!("VOSpace")));
+            for entry in entries.iter() {
+                self.list_box.append(&vospace_row(entry));
+            }
+        }
+        drop(entries);
+
         // Restore selection (id → row via widget name).
         let sel = self.selected_id.borrow().clone();
         if let Some(id) = sel {
@@ -307,6 +339,129 @@ impl WorkflowsPage {
     // -----------------------------------------------------------------------
 
     /// Rebuild the right-side pane from `selected_id` + `editing`.
+    /// Refresh the VOSpace listing.
+    ///
+    /// Silent when signed out — the section simply stays hidden, since a shared
+    /// folder the user cannot reach is not an error worth interrupting them for.
+    async fn refresh_vospace(self: &Rc<Self>) {
+        let Some(token) = self.services.get_token().await else {
+            return;
+        };
+        let Some(username) = self.services.get_username().await else {
+            return;
+        };
+        let store = WorkflowStore::new();
+        let entries = store
+            .list_vospace(&self.services.vospace, &token, &username)
+            .await;
+        *self.vospace_entries.borrow_mut() = entries;
+        self.rebuild_lists();
+    }
+
+    /// Fetch one VOSpace workflow's body, then re-render the detail pane.
+    ///
+    /// The selection is re-checked on completion: the user may have clicked
+    /// something else while the download was in flight, and overwriting their
+    /// new selection with a stale one is worse than showing nothing.
+    fn fetch_vospace_detail(self: &Rc<Self>, path: String) {
+        let page = self.clone();
+        glib::spawn_future_local(async move {
+            let (Some(token), Some(username)) = (
+                page.services.get_token().await,
+                page.services.get_username().await,
+            ) else {
+                return;
+            };
+            let store = WorkflowStore::new();
+            let fetched = store
+                .fetch_vospace(&page.services.vospace, &token, &username, &path)
+                .await;
+            match fetched {
+                Ok(info) => {
+                    let id = info.id.clone();
+                    page.vospace_cache.borrow_mut().insert(id.clone(), info);
+                    if page.selected_id.borrow().as_deref() == Some(id.as_str()) {
+                        page.render_detail();
+                    }
+                }
+                Err(e) => {
+                    page.services
+                        .toast
+                        .toast(crate::tr_fmt!("Could not load workflow: {}", e));
+                }
+            }
+        });
+    }
+
+    /// Publish the selected local workflow to `vos:<user>/workflows/`.
+    ///
+    /// Offers to reset progress first, checked by default: publishing shares a
+    /// protocol for others to follow, not a record of one run.
+    async fn publish_selected(self: &Rc<Self>, info: WorkflowInfo) {
+        let (Some(token), Some(username)) = (
+            self.services.get_token().await,
+            self.services.get_username().await,
+        ) else {
+            self.services
+                .toast
+                .toast(crate::tr_en!("Sign in to CADC to publish a workflow"));
+            return;
+        };
+
+        let root = self.widget.root().and_downcast::<gtk::Window>();
+        let dialog = adw::MessageDialog::new(
+            root.as_ref(),
+            Some(crate::tr_en!("Publish to VOSpace?")),
+            None,
+        );
+        let reset = gtk::CheckButton::with_label(crate::tr_en!("Reset step progress"));
+        reset.set_active(true);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let target = gtk::Label::new(Some(&crate::tr_fmt!(
+            "Uploads to vos:{}/workflows/",
+            username
+        )));
+        target.set_wrap(true);
+        target.set_xalign(0.0);
+        body.append(&target);
+        body.append(&reset);
+        dialog.set_extra_child(Some(&body));
+        dialog.add_response("cancel", crate::tr_en!("Cancel"));
+        dialog.add_response("publish", crate::tr_en!("Publish"));
+        dialog.set_response_appearance("publish", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("publish"));
+
+        if dialog.choose_future().await != "publish" {
+            return;
+        }
+
+        let store = WorkflowStore::new();
+        match store
+            .publish_to_vospace(
+                &self.services.vospace,
+                &token,
+                &username,
+                &info,
+                reset.is_active(),
+            )
+            .await
+        {
+            Ok(remote) => {
+                self.services
+                    .toast
+                    .toast(crate::tr_fmt!("Published to vos:{}", remote));
+                // The new file must appear in the sidebar without a manual
+                // refresh, or the user cannot tell the publish worked.
+                self.refresh_vospace().await;
+            }
+            Err(e) => {
+                self.services
+                    .toast
+                    .toast(crate::tr_fmt!("Publish failed: {}", e));
+            }
+        }
+    }
+
     fn render_detail(self: &Rc<Self>) {
         while let Some(child) = self.detail_container.first_child() {
             self.detail_container.remove(&child);
@@ -320,7 +475,24 @@ impl WorkflowsPage {
                 return;
             }
         };
-        let info = match self.store.get(&id) {
+        // A VOSpace workflow lives behind a network fetch, so it resolves from
+        // the cache; a miss schedules the fetch and shows a placeholder rather
+        // than falling through to "vanished".
+        let resolved = if let Some(path) = id.strip_prefix(VOSPACE_PREFIX) {
+            match self.vospace_cache.borrow().get(&id).cloned() {
+                Some(info) => Some(info),
+                None => {
+                    self.fetch_vospace_detail(path.to_string());
+                    self.detail_container
+                        .append(&hint_label(crate::tr_en!("Loading from VOSpace…")));
+                    self.detail_stack.set_visible_child_name("detail");
+                    return;
+                }
+            }
+        } else {
+            self.store.get(&id)
+        };
+        let info = match resolved {
             Some(i) => i,
             None => {
                 // The workflow vanished (e.g. deleted) — reset to empty.
@@ -444,6 +616,27 @@ impl WorkflowsPage {
         actions.append(&dup_btn);
 
         if local {
+            // Publish to VOSpace — local only: a built-in is already shared, and a
+            // VOSpace workflow is where a publish would go.
+            let publish_btn = make_icon_button(
+                "send-to-symbolic",
+                crate::tr_en!("Publish"),
+                crate::tr_en!("Share this workflow via your VOSpace"),
+                None,
+            );
+            {
+                let page = Rc::clone(self);
+                let published = info.clone();
+                publish_btn.connect_clicked(move |_| {
+                    let page = Rc::clone(&page);
+                    let published = published.clone();
+                    glib::spawn_future_local(async move {
+                        page.publish_selected(published).await;
+                    });
+                });
+            }
+            actions.append(&publish_btn);
+
             // Edit toggle
             let edit_btn = make_icon_button(
                 "document-edit-symbolic",
@@ -877,6 +1070,46 @@ fn hint_row(text: &str) -> gtk::ListBoxRow {
 
 /// A selectable workflow row: title, "{done}/{n} done" caption, and tag chips.
 /// The workflow id is stored as the row's widget name for later lookup.
+/// A sidebar row for a VOSpace workflow, which is listed by filename only —
+/// its title lives inside the file, and fetching every one to build a list
+/// would make opening the page wait on the network.
+fn vospace_row(entry: &crate::services::workflow_store::VoSpaceWorkflowEntry) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(true);
+    row.set_activatable(true);
+    row.set_widget_name(&entry.id);
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    vbox.set_margin_start(12);
+    vbox.set_margin_end(12);
+    vbox.set_margin_top(6);
+    vbox.set_margin_bottom(6);
+
+    let title = gtk::Label::new(Some(
+        entry
+            .name
+            .strip_suffix(crate::helpers::workflow_format::FILE_EXTENSION)
+            .unwrap_or(&entry.name),
+    ));
+    title.add_css_class("heading");
+    title.set_halign(gtk::Align::Start);
+    title.set_xalign(0.0);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    vbox.append(&title);
+
+    vbox.append(&chip(crate::tr_en!("VOSpace"), "accent"));
+    row.set_child(Some(&vbox));
+    row
+}
+
+/// A dim, centred one-line message for a transient detail-pane state.
+fn hint_label(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.add_css_class("dim-label");
+    label.set_margin_top(24);
+    label
+}
+
 fn workflow_row(info: &WorkflowInfo) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_selectable(true);
@@ -929,13 +1162,51 @@ fn chip(text: &str, css: &str) -> gtk::Label {
 fn set_preview_text(label: &gtk::Label, text: &str) {
     let doc = workflow_format::parse(text);
     let n = doc.steps.len();
-    label.set_text(&format!(
-        "Preview: “{}” — {} step{}, {} done",
+    let mut out = crate::tr_fmt!(
+        "Preview: “{}” — {} step(s), {} done",
         doc.title,
         n,
-        if n == 1 { "" } else { "s" },
         doc.done_count(),
-    ));
+    );
+
+    // Validate as the user types. `validate` existed but nothing called it, so a
+    // typo'd `View:` or `Tool:` only surfaced later as a dead deep-link or a
+    // tool-name hint that resolves to nothing.
+    let problems =
+        workflow_format::validate(&doc, workflow_format::KNOWN_VIEWS, &known_tool_names());
+    if problems.is_empty() {
+        label.remove_css_class("error");
+    } else {
+        label.add_css_class("error");
+        // Cap the list: a malformed paste can produce a problem per line, and a
+        // preview label that grows without bound pushes the editor off screen.
+        const MAX_SHOWN: usize = 5;
+        for p in problems.iter().take(MAX_SHOWN) {
+            out.push('\n');
+            out.push_str(p);
+        }
+        if problems.len() > MAX_SHOWN {
+            out.push('\n');
+            out.push_str(&crate::tr_fmt!(
+                "…and {} more problem(s)",
+                problems.len() - MAX_SHOWN
+            ));
+        }
+    }
+    label.set_text(&out);
+}
+
+/// Every tool name an agent could actually call, for validating a step's
+/// `Tool:` hints.
+///
+/// Taken from the live router rather than a hand-maintained list: that set is
+/// already pinned against the reference's manifest, so a workflow can never
+/// name a tool this build does not have, and the list cannot drift.
+fn known_tool_names() -> Vec<String> {
+    crate::mcp::tools::router::McpToolRouter::canonical_descriptors()
+        .into_iter()
+        .map(|d| d.name)
+        .collect()
 }
 
 /// Build a standard `Icon + Label` button (mirrors `research_page`).
