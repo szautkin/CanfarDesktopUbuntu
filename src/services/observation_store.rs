@@ -376,7 +376,14 @@ impl ObservationStore {
         // corruption on crash or NFS partial writes.
         let tmp = self.data_path.with_extension("json.tmp");
         std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &self.data_path).map_err(|e| e.to_string())
+        std::fs::rename(&tmp, &self.data_path).map_err(|e| e.to_string())?;
+        // Announced from the single write path, so no mutation added later can
+        // forget and leave the Research page showing a stale library.
+        crate::helpers::store_events::record_change(
+            crate::helpers::store_events::Store::Observations,
+            "",
+        );
+        Ok(())
     }
 
     /// Peek the on-disk envelope's `schema_version` without deserializing the
@@ -577,6 +584,28 @@ mod tests {
         assert_eq!(format_bytes(1024), "1.0 KB");
         assert_eq!(format_bytes(1_048_576), "1.0 MB");
         assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+    }
+
+    #[test]
+    fn a_write_announces_itself() {
+        // The Research page follows this signal, so an agent applying
+        // download_observation or delete_downloaded_observation shows up without
+        // the user navigating away and back.
+        use crate::helpers::store_events::{current_seq, Store};
+
+        let temp = TempStore::new();
+        let store = temp.store();
+        let before = current_seq(Store::Observations);
+
+        store.save(sample_obs()).expect("save");
+        let after_save = current_seq(Store::Observations);
+        assert!(after_save > before, "save must signal");
+
+        store.remove("1").expect("remove");
+        assert!(
+            current_seq(Store::Observations) > after_save,
+            "remove must signal"
+        );
     }
 
     /// The no-prune contract, pinned.

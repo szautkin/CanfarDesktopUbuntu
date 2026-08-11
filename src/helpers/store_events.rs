@@ -27,6 +27,8 @@ pub enum Store {
     SavedQueries,
     /// Recent-search history, keyed by its `searchedAt` stamp.
     RecentSearches,
+    /// The Research library of downloaded/bookmarked observations.
+    Observations,
 }
 
 /// The last change to one store.

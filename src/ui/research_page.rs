@@ -58,6 +58,10 @@ fn badge_from_stamp(
 // ---------------------------------------------------------------------------
 
 /// The Research page — shows all locally saved CADC observations in a
+/// How often the page checks whether the observation store changed underneath
+/// it. One mutex read per tick; it reloads only when the sequence moved.
+const LIBRARY_POLL_MS: u64 = 1500;
+
 /// master-detail layout: the list is on the left, the currently selected
 /// observation's full metadata, preview image, and action buttons are on
 /// the right.  Matches the Windows CanfarDesktop layout.
@@ -66,6 +70,18 @@ pub struct ResearchPage {
     services: Arc<AppServices>,
     /// The currently displayed list (may be filtered).
     current_list: Rc<RefCell<Vec<DownloadedObservation>>>,
+    /// Publisher id of the observation whose detail pane is open.
+    ///
+    /// Tracked by IDENTITY, not row index: a reload re-filters and re-sorts, so
+    /// index 3 afterwards is rarely the record the user was reading. Without
+    /// this, every reload — including the one fired on each navigation back to
+    /// this page — closed the detail pane and sent the user back to the list.
+    selected_publisher_id: RefCell<Option<String>>,
+    /// True while `rebuild_rows` re-selects, so the row-deselected handler that
+    /// fires as the old rows are removed does not clear the tracked selection.
+    restoring_selection: RefCell<bool>,
+    /// Observation-store sequence this page has already reflected.
+    last_library_seq: RefCell<u64>,
     list_box: gtk::ListBox,
     filter_entry: gtk::SearchEntry,
     count_label: gtk::Label,
@@ -256,6 +272,13 @@ impl ResearchPage {
             widget,
             services,
             current_list: Rc::new(RefCell::new(Vec::new())),
+            selected_publisher_id: RefCell::new(None),
+            restoring_selection: RefCell::new(false),
+            // Seeded with what has already happened, so opening the page does
+            // not replay an old change as if it were new.
+            last_library_seq: RefCell::new(crate::helpers::store_events::current_seq(
+                crate::helpers::store_events::Store::Observations,
+            )),
             list_box,
             filter_entry,
             count_label,
@@ -308,12 +331,20 @@ impl ResearchPage {
             let p = Rc::clone(&page);
             page.list_box
                 .connect_row_selected(move |_, row_opt| match row_opt {
-                    None => p.clear_detail(),
+                    None => {
+                        // Only a deliberate deselection forgets the selection;
+                        // a rebuild restores it instead (see `rebuild_rows`).
+                        if !*p.restoring_selection.borrow() {
+                            *p.selected_publisher_id.borrow_mut() = None;
+                        }
+                        p.clear_detail();
+                    }
                     Some(row) => {
                         let idx = row.index() as usize;
                         let list = p.current_list.borrow();
                         if let Some(obs) = list.get(idx).cloned() {
                             drop(list);
+                            *p.selected_publisher_id.borrow_mut() = Some(obs.publisher_id.clone());
                             p.show_detail(&obs);
                         }
                     }
@@ -327,6 +358,7 @@ impl ResearchPage {
                 let list = p.current_list.borrow();
                 if let Some(obs) = list.get(idx).cloned() {
                     drop(list);
+                    *p.selected_publisher_id.borrow_mut() = Some(obs.publisher_id.clone());
                     p.show_detail(&obs);
                 }
             });
@@ -335,7 +367,39 @@ impl ResearchPage {
         // Initial load
         page.reload();
 
+        // Follow library changes made elsewhere: an agent applying
+        // download_observation, delete_downloaded_observation or a note update
+        // writes the store directly, and the page would otherwise keep showing
+        // the previous library until the user navigated away and back. Safe to
+        // do now that a reload keeps the open observation selected. Weak, so the
+        // timer dies with the page.
+        {
+            let weak = Rc::downgrade(&page);
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(LIBRARY_POLL_MS),
+                move || match weak.upgrade() {
+                    Some(page) => {
+                        page.follow_library_changes();
+                        glib::ControlFlow::Continue
+                    }
+                    None => glib::ControlFlow::Break,
+                },
+            );
+        }
+
         page
+    }
+
+    /// Reload when the observation store changed underneath the page.
+    fn follow_library_changes(self: &Rc<Self>) {
+        let seq = crate::helpers::store_events::current_seq(
+            crate::helpers::store_events::Store::Observations,
+        );
+        if seq <= *self.last_library_seq.borrow() {
+            return;
+        }
+        *self.last_library_seq.borrow_mut() = seq;
+        self.reload();
     }
 
     /// Return the root widget to embed in the view stack.
@@ -416,14 +480,24 @@ impl ResearchPage {
         self.rebuild_rows(&filtered);
     }
 
+    /// Rebuild the list, keeping the user on the observation they were reading.
+    ///
+    /// The selection is restored by publisher id, not row index — a reload
+    /// re-filters and re-sorts, so the row that was at index 3 is rarely the
+    /// same record. This used to clear the detail pane unconditionally, and
+    /// `main_window` reloads on every navigation INTO this page, so returning to
+    /// Research always dropped you back at the list.
     fn rebuild_rows(&self, observations: &[DownloadedObservation]) {
-        // Clear existing rows and reset the detail pane to the empty state.
+        // Removing rows fires row-deselected; flag it so that handler does not
+        // read it as the user deliberately closing the detail pane.
+        *self.restoring_selection.borrow_mut() = true;
         while let Some(child) = self.list_box.first_child() {
             self.list_box.remove(&child);
         }
-        self.clear_detail();
 
         if observations.is_empty() {
+            *self.restoring_selection.borrow_mut() = false;
+            self.clear_detail();
             self.content_stack.set_visible_child_name("empty");
             self.count_label.set_text(crate::tr_en!("No observations"));
             return;
@@ -441,6 +515,23 @@ impl ResearchPage {
             let row = self.build_row(obs);
             self.list_box.append(&row);
         }
+
+        // Re-select the previously open observation if it survived the reload.
+        let previously_open = self.selected_publisher_id.borrow().clone();
+        match selection_index_after_rebuild(previously_open.as_deref(), observations) {
+            Some(index) => {
+                if let Some(row) = self.list_box.row_at_index(index as i32) {
+                    self.list_box.select_row(Some(&row));
+                }
+            }
+            // Either nothing was open, or it was deleted / filtered out — the
+            // detail pane must not keep showing a record that is no longer here.
+            None => {
+                *self.selected_publisher_id.borrow_mut() = None;
+                self.clear_detail();
+            }
+        }
+        *self.restoring_selection.borrow_mut() = false;
     }
 
     /// Reset the right-side detail pane to the empty placeholder.
@@ -1596,6 +1687,22 @@ impl ResearchPage {
     }
 }
 
+/// Which row to select after a rebuild, given what was open before.
+///
+/// By IDENTITY, never by row index: a reload re-filters and re-sorts, so the row
+/// that was at index 3 is rarely the record the user was reading. `None` means
+/// nothing was open, or what was open is gone — deleted, or filtered out by the
+/// current search — and the detail pane must stop showing it.
+fn selection_index_after_rebuild(
+    previously_open: Option<&str>,
+    observations: &[DownloadedObservation],
+) -> Option<usize> {
+    let publisher_id = previously_open?;
+    observations
+        .iter()
+        .position(|o| o.publisher_id == publisher_id)
+}
+
 /// Build a standard `Icon + Label` button used in the detail pane action bar.
 fn make_icon_button(icon: &str, label: &str, tooltip: &str, css: Option<&str>) -> gtk::Button {
     let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -1692,6 +1799,61 @@ async fn confirm_delete(widget: &impl IsA<gtk::Widget>, target_name: &str) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn obs_with(publisher_id: &str) -> DownloadedObservation {
+        DownloadedObservation {
+            publisher_id: publisher_id.to_string(),
+            ..blank_obs()
+        }
+    }
+
+    #[test]
+    fn the_open_observation_survives_a_reorder() {
+        // The bug this replaces: the selection was dropped on every rebuild, and
+        // main_window reloads on each navigation INTO this page — so coming back
+        // to Research always returned you to the list. Restoring by row index
+        // would be no better, because a reload re-filters and re-sorts.
+        let before = [
+            obs_with("ivo://a"),
+            obs_with("ivo://b"),
+            obs_with("ivo://c"),
+        ];
+        assert_eq!(
+            selection_index_after_rebuild(Some("ivo://b"), &before),
+            Some(1)
+        );
+
+        // Same records, different order — the index moves, the record does not.
+        let after = [
+            obs_with("ivo://c"),
+            obs_with("ivo://b"),
+            obs_with("ivo://a"),
+        ];
+        assert_eq!(
+            selection_index_after_rebuild(Some("ivo://b"), &after),
+            Some(1)
+        );
+        let after = [obs_with("ivo://b"), obs_with("ivo://a")];
+        assert_eq!(
+            selection_index_after_rebuild(Some("ivo://b"), &after),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn an_observation_that_is_gone_stops_being_shown() {
+        // Deleted, or filtered out by the current search. Either way the detail
+        // pane must not keep displaying a record the list no longer contains.
+        let list = [obs_with("ivo://a"), obs_with("ivo://c")];
+        assert_eq!(selection_index_after_rebuild(Some("ivo://b"), &list), None);
+        assert_eq!(selection_index_after_rebuild(Some("ivo://b"), &[]), None);
+    }
+
+    #[test]
+    fn nothing_open_stays_nothing_open() {
+        let list = [obs_with("ivo://a")];
+        assert_eq!(selection_index_after_rebuild(None, &list), None);
+    }
 
     fn blank_obs() -> DownloadedObservation {
         DownloadedObservation {
