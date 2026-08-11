@@ -615,6 +615,39 @@ impl WorkflowsPage {
         }
         actions.append(&dup_btn);
 
+        // Copy prompt for agent — the bridge between this page and the assistant.
+        // Without it the user has to describe the workflow to their agent in
+        // prose, which loses the ids the MCP tools actually need.
+        let prompt_btn = make_icon_button(
+            "edit-copy-symbolic",
+            crate::tr_en!("Copy prompt"),
+            crate::tr_en!("Copy an instruction that tells your AI agent to follow this workflow"),
+            None,
+        );
+        {
+            let page = Rc::clone(self);
+            let id = info.id.clone();
+            let title = info.doc.title.clone();
+            prompt_btn.connect_clicked(move |btn| {
+                // Names the exact tools and the id, so the agent can read the
+                // steps and check them off rather than guessing at either.
+                let prompt = crate::tr_fmt!(
+                    "Follow my workflow “{}” in Verbinal: call get_workflow(id: \"{}\") to read the \
+                     steps, work through them in order using the tools each step names, mark each \
+                     finished step with set_workflow_step(id: \"{}\", index, done: true), and stop \
+                     to ask me at any judgment call.",
+                    title,
+                    id,
+                    id,
+                );
+                btn.clipboard().set_text(&prompt);
+                page.services
+                    .toast
+                    .toast(crate::tr_en!("Prompt copied — paste it to your AI assistant"));
+            });
+        }
+        actions.append(&prompt_btn);
+
         if local {
             // Publish to VOSpace — local only: a built-in is already shared, and a
             // VOSpace workflow is where a publish would go.
@@ -705,8 +738,12 @@ impl WorkflowsPage {
             empty.set_wrap(true);
             container.append(&empty);
         } else {
+            // The FIRST not-done step is "current" — without it every incomplete
+            // step looks identical and the user has to re-read the list to find
+            // where they were.
+            let current = info.doc.steps.iter().position(|s| !s.done);
             for step in &info.doc.steps {
-                let card = self.build_step_card(&info.id, step);
+                let card = self.build_step_card(&info.id, step, current == Some(step.index));
                 container.append(&card);
             }
         }
@@ -724,9 +761,17 @@ impl WorkflowsPage {
     }
 
     /// Build a single check-off step card.
-    fn build_step_card(self: &Rc<Self>, workflow_id: &str, step: &WorkflowStep) -> gtk::Widget {
+    fn build_step_card(
+        self: &Rc<Self>,
+        workflow_id: &str,
+        step: &WorkflowStep,
+        is_current: bool,
+    ) -> gtk::Widget {
         let frame = gtk::Frame::new(None);
         frame.add_css_class("card");
+        if is_current {
+            frame.add_css_class("current-step");
+        }
 
         let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         hbox.set_margin_start(12);
@@ -774,7 +819,9 @@ impl WorkflowsPage {
             let tools_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             tools_box.set_halign(gtk::Align::Start);
             for tool in &step.tools {
-                tools_box.append(&chip(tool, "badge-fits"));
+                // Clickable: the chip names a tool the user will paste into their
+                // agent, so copying it should not mean retyping it by hand.
+                tools_box.append(&tool_chip(tool));
             }
             vbox.append(&tools_box);
         }
@@ -1150,6 +1197,24 @@ fn workflow_row(info: &WorkflowInfo) -> gtk::ListBoxRow {
 }
 
 /// A small pill label with the given badge CSS class.
+/// A tool-name chip that copies itself to the clipboard when clicked.
+///
+/// The name exists to be handed to an agent, so the affordance is the point;
+/// a plain label made the user retype it.
+fn tool_chip(tool: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("flat");
+    button.set_tooltip_text(Some(&crate::tr_fmt!("Copy “{}” to the clipboard", tool)));
+    button.set_child(Some(&chip(tool, "badge-fits")));
+    {
+        let tool = tool.to_string();
+        button.connect_clicked(move |b| {
+            b.clipboard().set_text(&tool);
+        });
+    }
+    button
+}
+
 fn chip(text: &str, css: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.add_css_class(css);

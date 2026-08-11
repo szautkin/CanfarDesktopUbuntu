@@ -95,6 +95,9 @@ static FMT_PAIRS: &[(&str, &str)] = &[
     ("Uploads to vos:{}/workflows/",                "Téléversement vers vos:{}/workflows/"),
     ("Published to vos:{}",                         "Publié vers vos:{}"),
     ("Publish failed: {}",                          "Échec de la publication : {}"),
+    ("Copy “{}” to the clipboard",                  "Copier « {} » dans le presse-papiers"),
+    ("Follow my workflow “{}” in Verbinal: call get_workflow(id: \"{}\") to read the steps, work through them in order using the tools each step names, mark each finished step with set_workflow_step(id: \"{}\", index, done: true), and stop to ask me at any judgment call.",
+     "Suis mon flux de travail « {} » dans Verbinal : appelle get_workflow(id: \"{}\") pour lire les étapes, exécute-les dans l’ordre en utilisant les outils nommés à chaque étape, marque chaque étape terminée avec set_workflow_step(id: \"{}\", index, done: true), et arrête-toi pour me demander à chaque décision de jugement."),
     ("'{}' renewed. Its expiry has been extended.",
      "« {} » renouvelée. Sa date d’expiration a été prolongée."),
     ("{} session",                                  "{} session"),
@@ -325,8 +328,61 @@ macro_rules! tr {
     };
 }
 
+/// Decode a Rust string-literal body into the value the compiler produces.
+///
+/// Handles the escapes that appear in this codebase's templates: `\n`, `\t`,
+/// `\"`, `\\`, and the line continuation `\` + newline + leading whitespace.
+#[cfg(test)]
+fn decode_rust_string_literal(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            // Line continuation: swallow the newline and the indent that follows.
+            Some('\n') => {
+                while chars.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
+                    chars.next();
+                }
+            }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_literal_decoder_matches_what_rustc_produces() {
+        // The guard compares a decoded SOURCE literal against the compiled value
+        // in FMT_PAIRS, so its decoder has to agree with rustc — otherwise the
+        // guard either misses a gap or fails on a correct template.
+        assert_eq!(decode_rust_string_literal(r"a\nb"), "a\nb");
+        assert_eq!(decode_rust_string_literal(r#"say \"hi\""#), "say \"hi\"");
+        assert_eq!(decode_rust_string_literal(r"back\\slash"), "back\\slash");
+
+        // Line continuation: the newline AND the following indent disappear,
+        // which is what makes a wrapped template equal its one-line form.
+        let wrapped = "one \\\n            two";
+        assert_eq!(decode_rust_string_literal(wrapped), "one two");
+
+        // An unrecognised escape is left intact rather than silently dropped.
+        assert_eq!(decode_rust_string_literal(r"\q"), r"\q");
+    }
+
     /// Every `tr_fmt!` template in the codebase must have a French pair.
     ///
     /// `FMT_PAIRS` asks contributors to add one when they introduce a template,
@@ -388,8 +444,13 @@ mod tests {
                     let Some(end) = end else { continue };
                     let template = &body[..end];
                     scanned += 1;
-                    // Rust source escapes; FMT_PAIRS holds the decoded literal.
-                    let decoded = template.replace("\\n", "\n").replace("\\\"", "\"");
+                    // Decode the Rust source literal to the value the compiler
+                    // sees, which is what FMT_PAIRS holds. Line continuations
+                    // (`\` + newline + indent) matter most: they are idiomatic
+                    // throughout this codebase, and a decoder that ignored them
+                    // would fail every wrapped template — a guard that cries wolf
+                    // gets worked around instead of obeyed.
+                    let decoded = decode_rust_string_literal(template);
                     if !have.contains(decoded.as_str()) {
                         missing.push(format!("{}: {decoded:?}", path.display()));
                     }
