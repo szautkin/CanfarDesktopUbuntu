@@ -17,9 +17,31 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Id prefix for read-only bundled templates (`builtin:<slug>`).
+/// One `.workflow.md` found in the user's VOSpace workflows folder.
+///
+/// Deliberately not a `WorkflowInfo`: listing yields names only, and building a
+/// half-populated `WorkflowInfo` with an empty body would be indistinguishable
+/// from a workflow that genuinely has no steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoSpaceWorkflowEntry {
+    /// Store id (`vospace:workflows/<name>`).
+    pub id: String,
+    /// VOSpace path relative to the user's home.
+    pub path: String,
+    /// Bare filename, for display.
+    pub name: String,
+}
+
 pub const BUILTIN_PREFIX: &str = "builtin:";
 /// Id prefix for user working copies on disk (`local:<slug>`).
 pub const LOCAL_PREFIX: &str = "local:";
+/// Id prefix for a workflow stored in the user's VOSpace, e.g.
+/// `vospace:alice/workflows/m31-run.workflow.md`. The remainder is the VOSpace
+/// path relative to the user's home, so it round-trips straight back to
+/// `download_bytes` without a second lookup.
+pub const VOSPACE_PREFIX: &str = "vospace:";
+/// The VOSpace folder shared workflows live in, relative to the user's home.
+pub const VOSPACE_FOLDER: &str = "workflows";
 
 /// The 7 bundled templates in a fixed slug order, embedded at compile time.
 /// The order here is authoritative for `list_built_in`.
@@ -123,6 +145,101 @@ impl WorkflowStore {
 
     /// Resolve any id (`builtin:<slug>` or `local:<slug>`) to its info, or
     /// `None` if unknown / missing / an unrecognized prefix.
+    /// List the `.workflow.md` files in `vos:<user>/workflows/`.
+    ///
+    /// Metadata only — the body is fetched lazily by [`fetch_vospace`] when the
+    /// user selects one, because listing a folder should not pull every file.
+    /// A missing folder is an empty list, not an error: most users have never
+    /// published anything.
+    pub async fn list_vospace(
+        &self,
+        vospace: &crate::services::VoSpaceService,
+        token: &str,
+        username: &str,
+    ) -> Vec<VoSpaceWorkflowEntry> {
+        let nodes = match vospace.list_nodes(token, username, VOSPACE_FOLDER).await {
+            Ok(n) => n,
+            Err(_) => return Vec::new(),
+        };
+        nodes
+            .into_iter()
+            .filter(|n| n.name.ends_with(FILE_EXTENSION))
+            .map(|n| VoSpaceWorkflowEntry {
+                id: format!("{VOSPACE_PREFIX}{VOSPACE_FOLDER}/{}", n.name),
+                path: format!("{VOSPACE_FOLDER}/{}", n.name),
+                name: n.name,
+            })
+            .collect()
+    }
+
+    /// Download and parse one VOSpace workflow.
+    ///
+    /// The result is [`WorkflowSource::VoSpace`], which the page renders
+    /// read-only: the file belongs to the shared folder, and editing in place
+    /// would silently change what collaborators see. "Use this workflow" copies
+    /// it to the local tier first.
+    pub async fn fetch_vospace(
+        &self,
+        vospace: &crate::services::VoSpaceService,
+        token: &str,
+        username: &str,
+        path: &str,
+    ) -> Result<WorkflowInfo, String> {
+        let bytes = vospace
+            .download_bytes(token, username, path)
+            .await
+            .map_err(|e| format!("could not download {path}: {e}"))?;
+        let text =
+            String::from_utf8(bytes).map_err(|_| format!("{path} is not valid UTF-8 text"))?;
+        let doc = workflow_format::parse(&text);
+        Ok(WorkflowInfo {
+            id: format!("{VOSPACE_PREFIX}{path}"),
+            source: WorkflowSource::VoSpace,
+            doc,
+            raw_text: text,
+        })
+    }
+
+    /// Upload a workflow to `vos:<user>/workflows/<slug>.workflow.md`.
+    ///
+    /// `reset_progress` clears every step's check-off first — the common case,
+    /// since publishing shares a protocol for others to follow, not a record of
+    /// one run. Uses the byte-preserving [`workflow_format::with_step_done`], so
+    /// a Windows-authored file keeps its CRLF line endings.
+    pub async fn publish_to_vospace(
+        &self,
+        vospace: &crate::services::VoSpaceService,
+        token: &str,
+        username: &str,
+        info: &WorkflowInfo,
+        reset_progress: bool,
+    ) -> Result<String, String> {
+        let mut text = info.raw_text.clone();
+        if reset_progress {
+            for i in 0..info.doc.steps.len() {
+                // A step that will not flip is not a reason to abort the publish;
+                // the remaining steps still reset.
+                if let Ok(next) = workflow_format::with_step_done(&text, i, false) {
+                    text = next;
+                }
+            }
+        }
+
+        // The folder usually exists; the upload below is the real test, so a
+        // failure here is deliberately ignored rather than aborting.
+        let _ = vospace.create_folder(token, username, VOSPACE_FOLDER).await;
+
+        let remote = format!(
+            "{VOSPACE_FOLDER}/{}{FILE_EXTENSION}",
+            slugify(&info.doc.title)
+        );
+        vospace
+            .upload_file(token, username, &remote, text.into_bytes(), "text/markdown")
+            .await
+            .map_err(|e| format!("could not upload {remote}: {e}"))?;
+        Ok(remote)
+    }
+
     pub fn get(&self, id: &str) -> Option<WorkflowInfo> {
         if let Some(slug) = id.strip_prefix(BUILTIN_PREFIX) {
             return BUILT_INS
@@ -284,7 +401,12 @@ fn slug_of(path: &Path) -> String {
 /// `-`, collapse runs of `-` (dropping empties), and clamp to 60 chars. An
 /// all-punctuation / empty name becomes `"workflow"`. Mirrors
 /// `WorkflowStore.Slugify` in C#.
-fn slugify(name: &str) -> String {
+/// The filename-safe slug for a workflow title.
+///
+/// Public because publishing derives the VOSpace filename from it, and a
+/// second implementation would let the local and remote copies of one workflow
+/// disagree about their own name.
+pub fn slugify(name: &str) -> String {
     let mut mapped = String::new();
     for c in name.trim().to_lowercase().chars() {
         mapped.push(if c.is_alphanumeric() { c } else { '-' });
@@ -331,6 +453,45 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_vospace_id_round_trips_to_the_path_it_names() {
+        // The id embeds the VOSpace path so selecting an entry can fetch it
+        // without a second listing. Stripping the prefix must yield exactly the
+        // path that was listed.
+        let entry_path = "workflows/m31-run.workflow.md";
+        let id = format!("{VOSPACE_PREFIX}{entry_path}");
+        assert_eq!(id.strip_prefix(VOSPACE_PREFIX), Some(entry_path));
+        // And it must not collide with the other two tiers.
+        assert!(!id.starts_with(LOCAL_PREFIX));
+        assert!(!id.starts_with(BUILTIN_PREFIX));
+    }
+
+    #[test]
+    fn publishing_names_the_file_from_the_title_slug() {
+        // The published filename has to match what the local tier would produce,
+        // or one workflow ends up under two different names.
+        assert_eq!(slugify("M31 Deep Field Run"), "m31-deep-field-run");
+        assert_eq!(slugify("  Spaces  &  Symbols!  "), "spaces-symbols");
+        // A title with nothing usable still yields a valid filename.
+        assert_eq!(slugify("***"), "workflow");
+        // Long titles are capped so the path stays sane.
+        assert!(slugify(&"x".repeat(200)).len() <= 60);
+    }
+
+    #[test]
+    fn resetting_progress_before_publish_clears_every_step_and_keeps_the_bytes() {
+        // Publishing shares a protocol for others to follow, not a record of one
+        // run — so the checkboxes reset. The rest of the file must be untouched,
+        // including CRLF line endings from a Windows-authored workflow.
+        let text = "# T\r\n\r\n## Steps\r\n\r\n- [x] **A** — first\r\n- [x] **B** — second\r\n";
+        let mut out = text.to_string();
+        for i in 0..2 {
+            out = workflow_format::with_step_done(&out, i, false).unwrap();
+        }
+        assert_eq!(out, text.replace("- [x]", "- [ ]"));
+        assert!(out.contains("\r\n"), "CRLF line endings must survive");
+    }
+
     use super::*;
 
     /// Per-test unique temp dir seed, so parallel tests never share state.

@@ -76,17 +76,20 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "save_workflow".to_string(),
-            description: "Create a NEW local workflow from markdown-checklist text (e.g. turn the \
+            description: "Create a NEW workflow from markdown-checklist text (e.g. turn the \
                 current conversation's plan into a reusable protocol). Format: `# Title`, \
                 `> description`, `Tags: a, b`, then steps as `- [ ] **Step title** — what to do` \
                 with optional indented `Tool: name1, name2`, `View: search`, `Note: hint` lines. \
+                `location` defaults to `local` (a private working copy); pass `vospace` to publish \
+                it to vos:<user>/workflows/ for collaborators, which requires being signed in. \
                 Queues for the user to apply."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "minLength": 1, "description": "Display name for the new workflow." },
-                    "text": { "type": "string", "minLength": 1, "description": "Full .workflow.md content." }
+                    "text": { "type": "string", "minLength": 1, "description": "Full .workflow.md content." },
+                    "location": { "type": "string", "enum": ["local", "vospace"], "description": "Where to save it: `local` (default) is the user's private working copy; `vospace` publishes it to vos:<user>/workflows/ where collaborators can see it." }
                 },
                 "required": ["name", "text"],
                 "additionalProperties": false
@@ -249,8 +252,25 @@ fn propose_save_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
                 .to_string(),
         );
     }
-    let payload = json!({ "name": name, "text": text });
-    let summary = format!("Save workflow \"{}\" ({} steps)", name, doc.steps.len());
+    let location = match str_arg(args, "location").as_str() {
+        "" | "local" => "local".to_string(),
+        "vospace" => "vospace".to_string(),
+        other => {
+            return ToolResult::Failed(format!(
+                "location must be `local` or `vospace`, got {other:?}"
+            ))
+        }
+    };
+    let payload = json!({ "name": name, "text": text, "location": location });
+    let summary = if location == "vospace" {
+        format!(
+            "Publish workflow \"{}\" to VOSpace ({} steps)",
+            name,
+            doc.steps.len()
+        )
+    } else {
+        format!("Save workflow \"{}\" ({} steps)", name, doc.steps.len())
+    };
     let p = proposals.enqueue("save_workflow", &summary, false, payload);
     ToolResult::Proposed(p)
 }
@@ -375,8 +395,39 @@ fn propose_delete_workflow(args: &Value, proposals: &Arc<InMemoryProposalStore>)
 /// `Some(Ok(msg))` / `Some(Err(e))` when this family owns the kind, or `None` so
 /// the router can try another family. `_services` is unused — workflows live in
 /// local files, not behind an authenticated service.
+/// Publish workflow text straight to `vos:<user>/workflows/`.
+///
+/// Progress is NOT reset here, unlike the UI's Publish action: an agent that
+/// composed this text chose exactly what it wants shared, and silently flipping
+/// its checkboxes would publish something it never wrote.
+async fn publish_workflow_to_vospace(
+    services: &AppServices,
+    name: &str,
+    text: &str,
+) -> Result<String, String> {
+    let token = services
+        .get_token()
+        .await
+        .ok_or_else(|| "publishing to VOSpace requires being signed in to CADC".to_string())?;
+    let username = services
+        .get_username()
+        .await
+        .ok_or_else(|| "no signed-in username — sign in to CADC first".to_string())?;
+
+    let info = crate::models::workflow::WorkflowInfo {
+        id: String::new(),
+        source: crate::models::workflow::WorkflowSource::VoSpace,
+        doc: workflow_format::parse(text),
+        raw_text: text.to_string(),
+    };
+    let remote = WorkflowStore::new()
+        .publish_to_vospace(&services.vospace, &token, &username, &info, false)
+        .await?;
+    Ok(format!("Published workflow '{name}' to vos:{remote}"))
+}
+
 pub async fn apply(
-    _services: &AppServices,
+    services: &AppServices,
     proposal: &PendingProposal,
 ) -> Option<Result<String, String>> {
     let payload = &proposal.payload;
@@ -391,9 +442,13 @@ pub async fn apply(
             if name.is_empty() {
                 return Some(Err("save_workflow payload missing name".to_string()));
             }
-            WorkflowStore::new()
-                .save_new(&name, &text)
-                .map(|info| format!("Saved workflow '{}' ({})", name, info.id))
+            if str_arg(payload, "location") == "vospace" {
+                publish_workflow_to_vospace(services, &name, &text).await
+            } else {
+                WorkflowStore::new()
+                    .save_new(&name, &text)
+                    .map(|info| format!("Saved workflow '{}' ({})", name, info.id))
+            }
         }
         "use_workflow" => {
             let name = str_arg(payload, "name");
@@ -520,6 +575,58 @@ fn source_str(source: WorkflowSource) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn save_workflow_rejects_an_unknown_location() {
+        // A typo must fail loudly rather than silently defaulting to `local` —
+        // an agent that meant to publish would otherwise believe it had.
+        let store = Arc::new(InMemoryProposalStore::new());
+        let args = json!({
+            "name": "Test",
+            "text": "# T\n\n## Steps\n\n- [ ] **A** — do it\n",
+            "location": "cloud"
+        });
+        match propose_save_workflow(&args, &store) {
+            ToolResult::Failed(m) => assert!(m.contains("local"), "{m}"),
+            _ => panic!("expected a failure for an unknown location"),
+        }
+    }
+
+    #[test]
+    fn save_workflow_defaults_to_local_and_says_so_in_the_summary() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        let text = "# T\n\n## Steps\n\n- [ ] **A** — do it\n";
+        match propose_save_workflow(&json!({ "name": "Test", "text": text }), &store) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["location"], "local");
+                // The summary is what the user reads before approving, so it must
+                // distinguish a private save from a publish.
+                assert!(p.summary.starts_with("Save workflow"), "{}", p.summary);
+                assert!(!p.summary.contains("VOSpace"), "{}", p.summary);
+            }
+            _ => panic!("expected a queued proposal"),
+        }
+    }
+
+    #[test]
+    fn publishing_says_vospace_in_the_summary_the_user_approves() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        let text = "# T\n\n## Steps\n\n- [ ] **A** — do it\n";
+        match propose_save_workflow(
+            &json!({ "name": "Test", "text": text, "location": "vospace" }),
+            &store,
+        ) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["location"], "vospace");
+                assert!(
+                    p.summary.contains("VOSpace"),
+                    "sharing with collaborators must be visible in the summary: {}",
+                    p.summary
+                );
+            }
+            _ => panic!("expected a queued proposal"),
+        }
+    }
+
     use super::*;
     use std::collections::HashSet;
 
