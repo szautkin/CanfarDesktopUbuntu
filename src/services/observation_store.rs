@@ -161,10 +161,19 @@ impl ObservationStore {
 
     /// Load all observations from disk.
     ///
-    /// Performs a load-time cleanup: entries with a non-empty `local_path`
-    /// whose file no longer exists are purged from the returned list (and
-    /// the JSON file is rewritten to reflect the cleanup).  Bookmarked-only
-    /// entries (empty `local_path`) are always kept.
+    /// **Nothing is pruned.** A record whose `local_path` no longer resolves is
+    /// returned unchanged: the file may sit on an unmounted volume or a
+    /// disconnected /arc mount, and the record carries metadata — target,
+    /// instrument, notes, provenance — that the file itself does not. Dropping
+    /// it at load time would destroy that permanently, and `save` writes the
+    /// loaded list straight back, so the loss would be committed on the next
+    /// write. The UI shows a "file missing" affordance and offers a re-download
+    /// instead. This matches the reference's explicit no-prune contract.
+    ///
+    /// (This doc comment previously described the opposite — a load-time purge
+    /// of records with missing files — while the code correctly refused to do
+    /// it. Restated because the next person to trust the comment over the code
+    /// would have "fixed" the code into exactly the data loss above.)
     ///
     /// Returns an empty list on any parse or I/O error — but, crucially, a
     /// corrupt file is *quarantined* (renamed to a `.corrupt-<n>` sibling)
@@ -545,6 +554,46 @@ mod tests {
         assert_eq!(format_bytes(1024), "1.0 KB");
         assert_eq!(format_bytes(1_048_576), "1.0 MB");
         assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+    }
+
+    /// The no-prune contract, pinned.
+    ///
+    /// A record pointing at a path that does not exist must survive a load —
+    /// and, because `save` writes the loaded list back, must survive a
+    /// save/reload cycle too. The doc comment on `load` used to promise the
+    /// opposite, so a maintainer trusting it would have "restored" a purge that
+    /// permanently discards the target, instrument, notes and provenance of
+    /// every observation sitting on an unmounted volume.
+    #[test]
+    fn a_record_whose_file_is_missing_survives_load_and_save() {
+        let temp = TempStore::new();
+        let store = temp.store();
+
+        let mut obs = sample_obs();
+        obs.local_path = "/nonexistent/volume/never-mounted.fits".into();
+        assert!(
+            !std::path::Path::new(&obs.local_path).exists(),
+            "the fixture must really be missing for this to prove anything"
+        );
+        store.save(obs.clone()).expect("save");
+
+        let loaded = store.load();
+        assert_eq!(loaded.len(), 1, "the record must not be pruned on load");
+        assert_eq!(loaded[0].target_name, "M31", "its metadata is intact");
+
+        // The dangerous half: `save` rewrites whatever `load` returned, so a
+        // prune at load time would be committed to disk on the next write.
+        let mut second = sample_obs();
+        second.id = "2".into();
+        second.local_path = String::new(); // a bookmark-only record
+        store.save(second).expect("save");
+
+        let after = store.load();
+        assert_eq!(after.len(), 2, "the missing-file record survived a rewrite");
+        assert!(
+            after.iter().any(|o| o.id == "1"),
+            "the record with the missing file is still there"
+        );
     }
 
     fn sample_obs() -> DownloadedObservation {
