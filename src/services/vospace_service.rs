@@ -11,6 +11,60 @@ pub struct VoSpaceService {
     endpoints: Arc<ApiEndpoints>,
 }
 
+/// Result of a bounded download: the bytes actually fetched, whether the file
+/// continued past them, and the declared total when the server sent one.
+pub struct LimitedDownload {
+    pub bytes: Vec<u8>,
+    /// True when the file had more data past `max_bytes`.
+    pub truncated: bool,
+    /// `Content-Length`, when the server declared it. `None` for chunked
+    /// responses — the caller then knows a size only if the read finished.
+    pub total_bytes: Option<u64>,
+}
+
+/// Accumulates streamed chunks up to a byte ceiling.
+///
+/// Split out from the transport so the truncation rule can be tested without a
+/// network: the boundary cases (a file that ends exactly at the limit versus one
+/// that continues past it) are precisely where an off-by-one hides, and they are
+/// invisible in an integration test against a live VOSpace.
+struct BoundedReader {
+    buf: Vec<u8>,
+    max_bytes: usize,
+    saw_more: bool,
+}
+
+impl BoundedReader {
+    fn new(max_bytes: usize) -> Self {
+        BoundedReader {
+            buf: Vec::with_capacity(max_bytes.min(64 * 1024)),
+            max_bytes,
+            saw_more: false,
+        }
+    }
+
+    /// Fold one chunk in. Returns `true` once the caller should stop reading.
+    ///
+    /// A buffer that lands exactly ON the limit does NOT stop: the file may end
+    /// there, and only the next read (a chunk, or end-of-stream) distinguishes
+    /// "exactly max_bytes long" from "truncated". This mirrors the reference's
+    /// probe-one-more-byte step.
+    fn push(&mut self, chunk: &[u8]) -> bool {
+        self.buf.extend_from_slice(chunk);
+        if self.buf.len() > self.max_bytes {
+            self.buf.truncate(self.max_bytes);
+            self.saw_more = true;
+            return true;
+        }
+        false
+    }
+
+    /// The bytes read and whether anything followed them.
+    fn finish(self) -> (Vec<u8>, bool) {
+        (self.buf, self.saw_more)
+    }
+}
+
 impl VoSpaceService {
     pub fn new(client: Client, endpoints: Arc<ApiEndpoints>) -> Self {
         VoSpaceService { client, endpoints }
@@ -186,6 +240,47 @@ impl VoSpaceService {
         Ok(bytes.to_vec())
     }
 
+    /// Download at most `max_bytes` of a file, stopping the transfer there.
+    ///
+    /// [`Self::download_bytes`] buffers the entire response, which is the wrong
+    /// shape for a bounded read: `read_vospace_file` asking for 64 KB of a
+    /// multi-gigabyte cube would pull the whole cube into memory before slicing
+    /// off the front. This streams instead and drops the connection as soon as
+    /// it has enough, so the cost is bounded by what the caller asked for.
+    pub async fn download_bytes_limited(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+        max_bytes: usize,
+    ) -> Result<LimitedDownload, ApiError> {
+        let url = self.endpoints.vospace_files_url(username, path);
+        let resp = self.client.get(&url).bearer_auth(token).send().await?;
+        let mut resp = check_response(resp).await?;
+
+        // Declared up front by most servers; the only way a bounded read can
+        // report how much it did NOT fetch.
+        let total_bytes = resp.content_length();
+
+        let mut reader = BoundedReader::new(max_bytes);
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?
+        {
+            if reader.push(&chunk) {
+                break;
+            }
+        }
+
+        let (bytes, truncated) = reader.finish();
+        Ok(LimitedDownload {
+            bytes,
+            truncated,
+            total_bytes,
+        })
+    }
+
     /// Download a file to a local path.
     pub async fn download_file(
         &self,
@@ -256,5 +351,77 @@ impl VoSpaceService {
         self.delete_node(token, username, old_path).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Feed chunks through a reader the way the transport loop does, stopping
+    /// when it says to.
+    fn read_all(chunks: &[&[u8]], max_bytes: usize) -> (Vec<u8>, bool) {
+        let mut reader = BoundedReader::new(max_bytes);
+        for chunk in chunks {
+            if reader.push(chunk) {
+                break;
+            }
+        }
+        reader.finish()
+    }
+
+    #[test]
+    fn a_short_file_is_returned_whole_and_untruncated() {
+        let (bytes, truncated) = read_all(&[b"hello ", b"world"], 1024);
+        assert_eq!(bytes, b"hello world");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn a_file_ending_exactly_on_the_limit_is_not_truncated() {
+        // The boundary that matters: 11 bytes read with an 11-byte ceiling is a
+        // COMPLETE file. Reporting it as truncated would send the caller back
+        // for a second read that returns nothing.
+        let (bytes, truncated) = read_all(&[b"hello world"], 11);
+        assert_eq!(bytes.len(), 11);
+        assert!(!truncated, "the file ended exactly at the limit");
+    }
+
+    #[test]
+    fn one_byte_past_the_limit_is_truncated() {
+        let (bytes, truncated) = read_all(&[b"hello world!"], 11);
+        assert_eq!(bytes, b"hello world");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn the_limit_holds_across_chunk_boundaries() {
+        // The realistic case: the ceiling falls inside a chunk, not on its edge.
+        let (bytes, truncated) = read_all(&[b"aaaa", b"bbbb", b"cccc"], 6);
+        assert_eq!(bytes, b"aaaabb");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn reading_stops_as_soon_as_the_limit_is_passed() {
+        // The whole point of streaming: later chunks are never pulled. A reader
+        // that kept consuming would defeat the bound on a huge file.
+        let mut reader = BoundedReader::new(4);
+        assert!(!reader.push(b"ab"), "still under the limit");
+        assert!(reader.push(b"cdef"), "past the limit — stop now");
+    }
+
+    #[test]
+    fn a_zero_limit_reads_nothing_but_still_reports_more() {
+        let (bytes, truncated) = read_all(&[b"data"], 0);
+        assert!(bytes.is_empty());
+        assert!(truncated);
+    }
+
+    #[test]
+    fn an_empty_file_is_empty_and_untruncated() {
+        let (bytes, truncated) = read_all(&[], 1024);
+        assert!(bytes.is_empty());
+        assert!(!truncated);
     }
 }

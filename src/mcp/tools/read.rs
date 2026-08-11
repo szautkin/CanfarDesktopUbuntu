@@ -470,31 +470,13 @@ async fn list_storage(services: &crate::state::AppServices, args: &Value) -> Too
 // ---------------------------------------------------------------------------
 
 fn list_observations(services: &crate::state::AppServices) -> ToolResult {
+    // Rendered through the shared summary so this list and
+    // `get_downloaded_observation` cannot describe the same record differently.
     let items: Vec<Value> = services
         .observation_store
         .load()
-        .into_iter()
-        .map(|o| {
-            json!({
-                "id": o.id,
-                "publisherId": o.publisher_id,
-                "collection": o.collection,
-                "observationId": o.observation_id,
-                "targetName": o.target_name,
-                "instrument": o.instrument,
-                "filter": o.filter,
-                "ra": o.ra,
-                "dec": o.dec,
-                "startDate": o.start_date,
-                "calLevel": o.cal_level,
-                "bookmarked": o.is_bookmarked(),
-                "hasFits": o.has_fits(),
-                "localPath": o.local_path,
-                "fileSize": o.file_size,
-                "sizeDisplay": o.formatted_size(),
-                "downloadedAt": o.downloaded_at,
-            })
-        })
+        .iter()
+        .map(super::research::observation_summary)
         .collect();
     ToolResult::Data(json!({ "count": items.len(), "observations": items }))
 }

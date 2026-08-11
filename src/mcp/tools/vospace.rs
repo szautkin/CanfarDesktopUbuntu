@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
 use crate::mcp::tools::{
-    opt_bool, opt_str_array, opt_u64, str_arg, ToolDescriptor, ToolResult, VerbClass,
+    opt_bool, opt_str_array, opt_u64, round_dp, str_arg, ToolDescriptor, ToolResult, VerbClass,
 };
 use crate::models::vospace_node::NodeType;
 use crate::services::api_error::ApiError;
@@ -94,8 +94,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         read_tool(
             "get_storage_quota",
-            "Report the user's VOSpace/ARC storage quota: total and used bytes (and GB), the \
-             usage percentage, and whether usage is in the warning band (>90%).",
+            "Report the user's VOSpace/ARC storage quota: bytes used vs total, GB, and percent used.",
             json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
         write_tool(
@@ -274,51 +273,58 @@ async fn read_file(services: &AppServices, args: &Value) -> ToolResult {
         None => DEFAULT_READ_BYTES,
     };
 
-    let bytes = match services
+    // Bounded at the transport, not after the fact: asking for 64 KB of a
+    // multi-gigabyte cube must not pull the cube into memory first.
+    let download = match services
         .vospace
-        .download_bytes(&token, &username, &path)
+        .download_bytes_limited(&token, &username, &path, max_bytes)
         .await
     {
-        Ok(b) => b,
+        Ok(d) => d,
         Err(e) => return ToolResult::Failed(format!("could not read file {}: {}", path, e)),
     };
+    let slice = download.bytes.as_slice();
 
-    let total = bytes.len();
-    let truncated = total > max_bytes;
-    let slice = &bytes[..total.min(max_bytes)];
-
-    // base64 explicitly requested, or a utf8 request over bytes that aren't valid
-    // UTF-8 (true binary, or a slice that cut a multi-byte char) — fall back so the
-    // caller still gets the data rather than an error.
-    if encoding == "base64" {
-        return ToolResult::Data(json!({
+    // `content` carries the payload under BOTH encodings, as in the reference —
+    // an agent written against the Windows app reads that one key and would find
+    // nothing under a base64-specific name. `totalBytes` is the one addition: the
+    // reference streams blind and cannot report it, but when the server declares
+    // a Content-Length it tells the caller how much a truncated read left behind.
+    let render = |encoding: &str, content: Value, note: Option<&str>| {
+        let mut payload = json!({
             "path": path,
-            "encoding": "base64",
-            "contentBase64": base64::engine::general_purpose::STANDARD.encode(slice),
-            "bytesReturned": slice.len(),
-            "totalBytes": total,
-            "truncated": truncated,
-        }));
+            "encoding": encoding,
+            "content": content,
+            "bytesRead": slice.len(),
+            "truncated": download.truncated,
+        });
+        if let Some(total) = download.total_bytes {
+            payload["totalBytes"] = json!(total);
+        }
+        if let Some(note) = note {
+            payload["note"] = json!(note);
+        }
+        ToolResult::Data(payload)
+    };
+
+    let as_base64 = || json!(base64::engine::general_purpose::STANDARD.encode(slice));
+
+    if encoding == "base64" {
+        return render("base64", as_base64(), None);
     }
 
     match std::str::from_utf8(slice) {
-        Ok(text) => ToolResult::Data(json!({
-            "path": path,
-            "encoding": "utf8",
-            "content": text,
-            "bytesReturned": slice.len(),
-            "totalBytes": total,
-            "truncated": truncated,
-        })),
-        Err(_) => ToolResult::Data(json!({
-            "path": path,
-            "encoding": "base64",
-            "note": "content is not valid UTF-8; returned as base64",
-            "contentBase64": base64::engine::general_purpose::STANDARD.encode(slice),
-            "bytesReturned": slice.len(),
-            "totalBytes": total,
-            "truncated": truncated,
-        })),
+        Ok(text) => render("utf8", json!(text), None),
+        // The reference errors here. We return the bytes as base64 instead: a
+        // bounded read routinely cuts a multi-byte character in half, and
+        // refusing an otherwise-good slice of a UTF-8 file over its last two
+        // bytes would be a worse answer than one that says what it did. The
+        // caller is told plainly via `encoding` and `note`.
+        Err(_) => render(
+            "base64",
+            as_base64(),
+            Some("content is not valid UTF-8 (or the read cut a character); returned as base64"),
+        ),
     }
 }
 
@@ -328,14 +334,17 @@ async fn read_get_quota(services: &AppServices) -> ToolResult {
         Err(e) => return ToolResult::Failed(e),
     };
     match services.storage.get_quota(&token, &username).await {
+        // Field names and rounding follow the reference's `GetStorageQuotaTool`
+        // record exactly (2dp on the GB figures, 1dp on the percentage). No
+        // `isWarning`: a threshold is a UI decision, and an agent that wants one
+        // can compare `usagePercent` against its own.
         Ok(q) => ToolResult::Data(json!({
             "quotaBytes": q.quota_bytes,
             "usedBytes": q.used_bytes,
-            "quotaGb": q.quota_gb(),
-            "usedGb": q.used_gb(),
-            "usagePercent": q.usage_percent(),
-            "isWarning": q.is_warning(),
-            "lastUpdate": q.last_update,
+            "quotaGb": round_dp(q.quota_gb(), 2),
+            "usedGb": round_dp(q.used_gb(), 2),
+            "usagePercent": round_dp(q.usage_percent(), 1),
+            "lastModified": q.last_update,
         })),
         Err(e) => ToolResult::Failed(format!("could not read quota: {}", e)),
     }

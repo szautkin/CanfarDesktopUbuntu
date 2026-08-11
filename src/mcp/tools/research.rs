@@ -854,7 +854,16 @@ fn observation_label(obs: &DownloadedObservation) -> String {
 }
 
 /// Compact JSON view of a downloaded observation (mirrors the C# `ObservationSummary`).
-fn observation_summary(obs: &DownloadedObservation) -> Value {
+///
+/// The single source of truth for how an observation appears on the wire —
+/// `get_downloaded_observation` and `list_downloaded_observations` both render
+/// through it, so the two can never drift apart again.
+///
+/// "Compact" is a deliberate constraint inherited from the reference: every
+/// field is read straight off the record, and none of them touches the
+/// filesystem. A `hasFits`-style existence check would cost one stat per row,
+/// which on a /arc mount is one network round trip per observation.
+pub(super) fn observation_summary(obs: &DownloadedObservation) -> Value {
     let filename = if obs.local_path.is_empty() {
         String::new()
     } else {
@@ -1172,5 +1181,99 @@ mod tests {
         assert_eq!(summary["filename"], "x.fits");
         assert_eq!(summary["fileSizeBytes"], 2048);
         assert_eq!(summary["targetName"], "M31");
+    }
+
+    /// Build a fully populated record for wire-shape assertions.
+    fn sample_observation() -> DownloadedObservation {
+        DownloadedObservation {
+            id: "local-1".into(),
+            publisher_id: "ivo://cadc/CFHT?9".into(),
+            collection: "CFHT".into(),
+            observation_id: "obs-9".into(),
+            target_name: "M31".into(),
+            instrument: "MegaCam".into(),
+            filter: "g".into(),
+            ra: "10.6".into(),
+            dec: "41.2".into(),
+            start_date: "2020-01-01".into(),
+            cal_level: "2".into(),
+            local_path: "/data/x.fits".into(),
+            file_size: 2048,
+            downloaded_at: "2024-01-01T00:00:00Z".into(),
+            thumbnail_url: String::new(),
+            preview_url: String::new(),
+            local_preview_path: String::new(),
+            agent_attribution: None,
+        }
+    }
+
+    /// Every field of the reference's `ObservationSummary` record, camelCased by
+    /// its serializer (`JsonNamingPolicy.CamelCase`). Transcribed from
+    /// `Mcp/Tools/Read/ResearchReadTools.cs`.
+    const REFERENCE_SUMMARY_FIELDS: &[&str] = &[
+        "id",
+        "publisherId",
+        "collection",
+        "observationId",
+        "targetName",
+        "instrument",
+        "filter",
+        "ra",
+        "dec",
+        "startDate",
+        "calLevel",
+        "filename",
+        "fileSizeBytes",
+        "downloadedAt",
+    ];
+
+    #[test]
+    fn the_summary_carries_every_field_the_reference_promises() {
+        let summary = observation_summary(&sample_observation());
+        let obj = summary.as_object().expect("an object");
+        for field in REFERENCE_SUMMARY_FIELDS {
+            assert!(
+                obj.contains_key(*field),
+                "the reference's ObservationSummary has `{field}`; an agent written \
+                 against the Windows app will look for it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_summary_adds_nothing_beyond_one_documented_extra() {
+        // Divergence is only allowed deliberately. `bookmarkedOnly` earns its
+        // place: it disambiguates an empty `filename` (never downloaded) from a
+        // record whose path lost its basename. Anything ELSE appearing here is
+        // drift — most likely a field that quietly probes the filesystem, which
+        // is exactly what the compact view exists to avoid.
+        let summary = observation_summary(&sample_observation());
+        let allowed: HashSet<&str> = REFERENCE_SUMMARY_FIELDS
+            .iter()
+            .copied()
+            .chain(["bookmarkedOnly"])
+            .collect();
+
+        for key in summary.as_object().expect("an object").keys() {
+            assert!(
+                allowed.contains(key.as_str()),
+                "`{key}` is not in the reference's ObservationSummary — add it to \
+                 the documented extras only if it is free of filesystem access"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bookmark_reports_no_file_rather_than_a_stray_path() {
+        // A metadata-only record has no file: the reference derives `filename`
+        // from an empty LocalPath as "", and the size stays 0.
+        let mut obs = sample_observation();
+        obs.local_path = String::new();
+        obs.file_size = 0;
+
+        let summary = observation_summary(&obs);
+        assert_eq!(summary["filename"], "");
+        assert_eq!(summary["fileSizeBytes"], 0);
+        assert_eq!(summary["bookmarkedOnly"], true);
     }
 }

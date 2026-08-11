@@ -128,7 +128,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "imageId": {
+                    "image": {
                         "type": "string",
                         "minLength": 1,
                         "description": "Full image reference to probe, e.g. \
@@ -139,7 +139,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "description": "Bypass the cache and re-probe even if a manifest already exists."
                     }
                 },
-                "required": ["imageId"],
+                "required": ["image"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Write,
@@ -219,12 +219,28 @@ fn find_images(services: &AppServices, args: &Value) -> ToolResult {
     ))
 }
 
+/// The image reference to probe.
+///
+/// The reference declares this argument as `image`, and that is the name agents
+/// are written against. Verbinal shipped it as `imageId` first, so that spelling
+/// is still accepted — an older client should not start failing over a rename it
+/// never saw. The same accessor reads the proposal payload, so propose and apply
+/// can never disagree about which key holds the image.
+fn image_arg(args: &Value) -> String {
+    let image = str_arg(args, "image");
+    if image.is_empty() {
+        str_arg(args, "imageId")
+    } else {
+        image
+    }
+}
+
 /// Enqueue a NON-destructive `discover_image_packages` proposal. The real probe runs in
 /// [`apply`] via the coordinator once the proposal is accepted.
 fn propose_discover(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
-    let image_id = str_arg(args, "image_id");
+    let image_id = image_arg(args);
     if image_id.is_empty() {
-        return ToolResult::Failed("image_id is required".to_string());
+        return ToolResult::Failed("image is required".to_string());
     }
     let force = bool_arg(args, "force");
     let summary = if force {
@@ -233,7 +249,7 @@ fn propose_discover(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Too
         format!("Discover packages installed in '{}'", image_id)
     };
     // Payload echoes the args so the applier can reconstruct the call verbatim.
-    let payload = json!({ "imageId": image_id, "force": force });
+    let payload = json!({ "image": image_id, "force": force });
     let p = proposals.enqueue("discover_image_packages", &summary, false, payload);
     ToolResult::Proposed(p)
 }
@@ -256,9 +272,9 @@ pub async fn apply(
 }
 
 async fn apply_discover(services: &AppServices, payload: &Value) -> Result<String, String> {
-    let image_id = str_arg(payload, "image_id");
+    let image_id = image_arg(payload);
     if image_id.is_empty() {
-        return Err("discover_image_packages payload missing image_id".to_string());
+        return Err("discover_image_packages payload missing image".to_string());
     }
     let force = bool_arg(payload, "force");
     let outcome = services
@@ -604,12 +620,12 @@ mod tests {
     #[test]
     fn propose_discover_default_not_force() {
         let store = Arc::new(InMemoryProposalStore::new());
-        match propose_discover(&json!({ "imageId": "img:a" }), &store) {
+        match propose_discover(&json!({ "image": "img:a" }), &store) {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.kind, "discover_image_packages");
                 assert!(!p.destructive, "discovery is non-destructive");
                 assert_eq!(p.summary, "Discover packages installed in 'img:a'");
-                assert_eq!(p.payload["imageId"], "img:a");
+                assert_eq!(p.payload["image"], "img:a");
                 assert_eq!(p.payload["force"], false);
             }
             _ => panic!("expected Proposed"),
@@ -618,9 +634,49 @@ mod tests {
     }
 
     #[test]
+    fn the_declared_image_argument_is_the_one_the_tool_reads() {
+        // The reference names this argument `image`, and its schema is
+        // `additionalProperties: false` — so an agent sends exactly that. When
+        // ours declared `imageId`, every reference-written call failed with
+        // "image is required". Bind the declaration to the reader.
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "discover_image_packages")
+            .expect("the tool is declared")
+            .input_schema;
+        let required = schema["required"].as_array().expect("a required list");
+        assert_eq!(required.len(), 1);
+        let declared = required[0].as_str().unwrap();
+        assert_eq!(
+            declared, "image",
+            "must match the reference's argument name"
+        );
+
+        let store = Arc::new(InMemoryProposalStore::new());
+        assert!(
+            matches!(
+                propose_discover(&json!({ declared: "img:a" }), &store),
+                ToolResult::Proposed(_)
+            ),
+            "the declared argument name must be the one the tool actually reads"
+        );
+    }
+
+    #[test]
+    fn the_original_image_id_spelling_still_works() {
+        // Back-compat: Verbinal shipped `imageId` before the rename, so a client
+        // written against that must not break.
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_discover(&json!({ "imageId": "img:a" }), &store) {
+            ToolResult::Proposed(p) => assert_eq!(p.payload["image"], "img:a"),
+            _ => panic!("expected Proposed"),
+        }
+    }
+
+    #[test]
     fn propose_discover_force_changes_summary_and_payload() {
         let store = Arc::new(InMemoryProposalStore::new());
-        match propose_discover(&json!({ "imageId": "img:a", "force": true }), &store) {
+        match propose_discover(&json!({ "image": "img:a", "force": true }), &store) {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.summary, "Re-probe packages installed in 'img:a'");
                 assert_eq!(p.payload["force"], true);

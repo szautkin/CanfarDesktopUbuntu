@@ -145,6 +145,24 @@ pub fn opt_str_array(args: &Value, key: &str) -> Option<Vec<String>> {
     })
 }
 
+/// Round a float to `decimals` places for the wire.
+///
+/// Derived quantities (GB, percentages) are computed in full precision and
+/// rounded only on output, matching the reference's `Math.Round(x, n)` at each
+/// tool boundary. Without it a quota reads `23.847263918273544` — noise that
+/// costs tokens and invites an agent to quote a precision the number does not
+/// have.
+///
+/// Non-finite inputs pass through untouched: `NaN`/`inf` cannot be rounded
+/// meaningfully, and `json!` renders them as `null`, which is the honest answer.
+pub fn round_dp(value: f64, decimals: u32) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    let factor = 10_f64.powi(decimals as i32);
+    (value * factor).round() / factor
+}
+
 /// Apply an approved proposal by dispatching to the family that owns its `kind`.
 /// Each service-backed family exposes `apply(...) -> Option<Result<..>>`; the base
 /// write tools handle the rest (and error on a truly unknown kind).
@@ -563,5 +581,22 @@ mod arg_tests {
     fn string_arguments_are_trimmed() {
         let args = json!({ "path": "  data/run1  " });
         assert_eq!(str_arg(&args, "path"), "data/run1");
+    }
+
+    #[test]
+    fn rounding_matches_the_precision_each_tool_promises() {
+        // The reference rounds quota figures to 2dp and the percentage to 1dp.
+        assert_eq!(round_dp(23.847263918273544, 2), 23.85);
+        assert_eq!(round_dp(66.66666666666667, 1), 66.7);
+        assert_eq!(round_dp(5.0, 2), 5.0);
+    }
+
+    #[test]
+    fn rounding_leaves_a_non_finite_value_alone() {
+        // A zero quota yields 0/0. Multiplying NaN by a factor and rounding
+        // would still be NaN, but going through the branch makes the intent
+        // explicit: serde renders it as null, which is the honest answer.
+        assert!(round_dp(f64::NAN, 2).is_nan());
+        assert_eq!(round_dp(f64::INFINITY, 2), f64::INFINITY);
     }
 }
