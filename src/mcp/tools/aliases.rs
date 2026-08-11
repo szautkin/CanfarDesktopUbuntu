@@ -228,12 +228,6 @@ mod tests {
     /// moment its tool lands; `advertised_names_match_the_reference` fails if a
     /// name here is actually implemented, so a stale entry cannot linger.
     const NOT_YET_PORTED: &[&str] = &[
-        // Phase 3 — FITS + Cube MCP full UI coverage (CanfarDesktop 27a4889).
-        "set_cube_transfer",
-        "show_cube_spectrum",
-        "get_cube_channel_profile",
-        "switch_cube_tab",
-        "list_recent_cubes",
         // Phase 5 — research download tools.
         "download_observation",
         "download_observations_bulk",

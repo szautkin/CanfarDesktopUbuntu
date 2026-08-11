@@ -42,6 +42,32 @@ pub struct CubeMetadata {
     pub render_nz: usize,
 }
 
+/// Map an index in the FILE's coordinate space onto the resident array, which
+/// may have been strided down before upload.
+///
+/// A large cube is decimated to fit the GPU, but the UI, the WCS and every
+/// caller work in native pixels. Bounds-checking or indexing against the
+/// resident array directly makes valid native coordinates look out-of-range —
+/// the reference shipped exactly that bug. The `min` guards the last row/column
+/// when the stride does not divide evenly.
+///
+/// Returns 0 for a degenerate (zero-length) axis rather than dividing by zero.
+pub fn native_to_resident(native_index: usize, native_len: usize, resident_len: usize) -> usize {
+    if native_len == 0 || resident_len == 0 {
+        return 0;
+    }
+    (native_index * resident_len / native_len).min(resident_len - 1)
+}
+
+/// The inverse: which FILE index a resident slot stands for. Used to label a
+/// strided channel with its true world value.
+pub fn resident_to_native(resident_index: usize, resident_len: usize, native_len: usize) -> usize {
+    if resident_len == 0 || native_len == 0 {
+        return 0;
+    }
+    (resident_index * native_len / resident_len).min(native_len - 1)
+}
+
 impl CubeMetadata {
     /// Physical value at a normalized display position `t ∈ [0,1]` — maps through
     /// the display cut (NOT the full extremes), so colorbar/hover labels are correct.
@@ -339,6 +365,56 @@ fn fbm(noise: &[f32], x: f32, y: f32, z: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_to_resident_spans_the_whole_resident_axis() {
+        // A 1000-pixel axis strided to 250: the first and last native pixels must
+        // land on the first and last resident slots, and nothing may exceed the
+        // array bounds.
+        assert_eq!(native_to_resident(0, 1000, 250), 0);
+        assert_eq!(native_to_resident(999, 1000, 250), 249);
+        for n in 0..1000 {
+            assert!(native_to_resident(n, 1000, 250) < 250);
+        }
+    }
+
+    #[test]
+    fn native_to_resident_is_identity_when_nothing_was_strided() {
+        for n in 0..64 {
+            assert_eq!(native_to_resident(n, 64, 64), n);
+        }
+    }
+
+    #[test]
+    fn native_to_resident_clamps_an_uneven_stride() {
+        // 10 → 3 does not divide evenly; the last native index must still be in
+        // range rather than running one past the end.
+        assert_eq!(native_to_resident(9, 10, 3), 2);
+        assert_eq!(
+            native_to_resident(10, 10, 3),
+            2,
+            "an over-range input is clamped"
+        );
+    }
+
+    #[test]
+    fn resident_to_native_labels_a_strided_channel_with_a_file_channel() {
+        // 250 resident channels standing for 1000 native ones: slot 0 is channel 0
+        // and the last slot names a channel near the end, never past it.
+        assert_eq!(resident_to_native(0, 250, 1000), 0);
+        assert_eq!(resident_to_native(249, 250, 1000), 996);
+        for r in 0..250 {
+            assert!(resident_to_native(r, 250, 1000) < 1000);
+        }
+    }
+
+    #[test]
+    fn degenerate_axes_do_not_divide_by_zero() {
+        assert_eq!(native_to_resident(5, 0, 10), 0);
+        assert_eq!(native_to_resident(5, 10, 0), 0);
+        assert_eq!(resident_to_native(5, 0, 10), 0);
+        assert_eq!(resident_to_native(5, 10, 0), 0);
+    }
+
     use super::*;
 
     #[test]

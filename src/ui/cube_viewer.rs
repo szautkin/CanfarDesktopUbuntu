@@ -15,7 +15,7 @@ use crate::helpers::cube_colormaps;
 use crate::helpers::cube_slice::StretchMode;
 use crate::helpers::cube_wcs::CubeWcs;
 use crate::helpers::transfer_function::TransferFunctionModel;
-use crate::models::volume_data::VolumeData;
+use crate::models::volume_data::{native_to_resident, resident_to_native, VolumeData};
 use crate::ui::cube_slice_view::CubeSliceView;
 use crate::ui::cube_volume_gl::CubeVolumeGl;
 use gtk4::glib;
@@ -59,6 +59,19 @@ pub struct CubeViewer {
     tf_start: Cell<(f64, f64)>,
     /// Bounded polling for GL realize/availability.
     probe_tries: Cell<u32>,
+}
+
+/// One channel of a probed spectrum.
+///
+/// `normalized` is the display-space value in `[0,1]`; `physical` maps it back
+/// through the display cut into the cube's own units. Both are `None` for a
+/// blanked (NaN) voxel — a distinction a plain `f32` cannot carry, and one that
+/// must survive to the wire rather than becoming a fabricated zero.
+pub struct SpectrumSample {
+    pub normalized: Option<f32>,
+    pub physical: Option<f64>,
+    /// The channel index in the FILE, not in the strided resident volume.
+    pub native_channel: usize,
 }
 
 impl CubeViewer {
@@ -227,23 +240,136 @@ impl CubeViewer {
     /// value in `[0,1]` (`None` for a blank/NaN voxel) and `physical` is that value
     /// mapped back through the cube metadata (`None` without metadata or on NaN).
     /// Returns `None` when `(x, y)` is outside the cube footprint.
-    pub fn spectrum_at(&self, x: usize, y: usize) -> Option<Vec<(Option<f32>, Option<f64>)>> {
-        if x >= self.vol.nx || y >= self.vol.ny {
+    /// The spectrum through one spaxel, addressed in **native cube pixels**.
+    ///
+    /// A large cube is strided down before upload, so the in-memory volume is
+    /// smaller than the file. Callers (and the UI's own readouts) work in native
+    /// pixels, so bounds-checking against the strided array rejected perfectly
+    /// valid coordinates — the reference hit exactly this. Native coordinates are
+    /// mapped onto the resident array here instead.
+    ///
+    /// Each entry is `(normalized, physical, native_channel)`; a blanked voxel
+    /// (NaN) yields `None` for both values rather than a fabricated zero.
+    pub fn spectrum_at(&self, x: usize, y: usize) -> Option<Vec<SpectrumSample>> {
+        let (native_x, native_y, native_z) = self.native_dims();
+        if x >= native_x || y >= native_y {
             return None;
         }
+        let ax = native_to_resident(x, native_x, self.vol.nx);
+        let ay = native_to_resident(y, native_y, self.vol.ny);
+
         let meta = self.vol.meta.as_ref();
         Some(
             (0..self.vol.nz)
                 .map(|z| {
-                    let v = self.vol.sample(x, y, z);
+                    // Report the NATIVE channel this sample stands for, so the
+                    // spectral axis lines up with the file rather than the stride.
+                    let native_channel = resident_to_native(z, self.vol.nz, native_z);
+                    let v = self.vol.sample(ax, ay, z);
                     if v.is_nan() {
-                        (None, None)
+                        SpectrumSample {
+                            normalized: None,
+                            physical: None,
+                            native_channel,
+                        }
                     } else {
-                        (Some(v), meta.map(|m| m.value_at_normalized(v as f64)))
+                        SpectrumSample {
+                            normalized: Some(v),
+                            physical: meta.map(|m| m.value_at_normalized(v as f64)),
+                            native_channel,
+                        }
                     }
                 })
                 .collect(),
         )
+    }
+
+    /// The cube's dimensions as they are in the FILE, which may exceed the
+    /// resident (strided) volume.
+    pub fn native_dims(&self) -> (usize, usize, usize) {
+        match self.vol.meta.as_ref() {
+            Some(m) => (m.nx, m.ny, m.nz),
+            None => (self.vol.nx, self.vol.ny, self.vol.nz),
+        }
+    }
+
+    /// True when the resident volume was strided below the file's dimensions.
+    pub fn is_downsampled(&self) -> bool {
+        self.vol
+            .meta
+            .as_ref()
+            .map(|m| m.is_downsampled())
+            .unwrap_or(false)
+    }
+
+    /// Replace the opacity transfer curve's control points.
+    ///
+    /// Points are sorted and the endpoints pinned to x=0 and x=1, so a caller
+    /// cannot leave the ramp with an undefined span. Returns the applied points.
+    pub fn set_transfer_points(&self, mut points: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(first) = points.first_mut() {
+            first.0 = 0.0;
+        }
+        if let Some(last) = points.last_mut() {
+            last.0 = 1.0;
+        }
+        self.transfer.borrow_mut().points = points;
+        self.apply_transfer();
+        self.transfer_area.queue_draw();
+        self.transfer.borrow().points.clone()
+    }
+
+    /// Restore the renderer's default opacity ramp.
+    pub fn reset_transfer(&self) -> Vec<(f32, f32)> {
+        self.transfer.borrow_mut().reset();
+        self.apply_transfer();
+        self.transfer_area.queue_draw();
+        self.transfer.borrow().points.clone()
+    }
+
+    /// The current transfer-curve control points.
+    pub fn transfer_points(&self) -> Vec<(f32, f32)> {
+        self.transfer.borrow().points.clone()
+    }
+
+    /// The cube's display name (its tab title).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The 2D slice view, which owns the on-screen spectrum panel.
+    pub fn slice(&self) -> &Rc<CubeSliceView> {
+        &self.slice
+    }
+
+    /// The cube's spectral WCS, for world-value labels.
+    pub fn wcs(&self) -> &Rc<CubeWcs> {
+        &self.wcs
+    }
+
+    /// Mean of each resident channel — the scrubber's waveform, and what
+    /// `get_cube_channel_profile` reports. Blank voxels are excluded from the
+    /// mean rather than counted as zero; a wholly blank channel yields `None`.
+    pub fn channel_profile(&self) -> Vec<(usize, Option<f64>)> {
+        let (_, _, native_z) = self.native_dims();
+        (0..self.vol.nz)
+            .map(|z| {
+                let mut sum = 0.0f64;
+                let mut n = 0usize;
+                for y in 0..self.vol.ny {
+                    for x in 0..self.vol.nx {
+                        let v = self.vol.sample(x, y, z);
+                        if !v.is_nan() {
+                            sum += v as f64;
+                            n += 1;
+                        }
+                    }
+                }
+                let native_channel = resident_to_native(z, self.vol.nz, native_z);
+                (native_channel, (n > 0).then(|| sum / n as f64))
+            })
+            .collect()
     }
 
     /// Render the currently displayed view (3D volume or 2D slice) to straight

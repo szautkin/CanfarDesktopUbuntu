@@ -306,6 +306,136 @@ impl CubeTabHost {
                 Ok(view_json(&v))
             }
             // Sample the spectrum through voxel column (x, y) across all channels.
+            "switch_cube_tab" => {
+                let index = crate::mcp::tools::arg(args, "index")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| "index is required".to_string())?
+                    as usize;
+                let count = self.tab_view.n_pages() as usize;
+                if count == 0 {
+                    return Err("no cubes are open".to_string());
+                }
+                if index >= count {
+                    return Err(format!(
+                        "no cube tab at index {index} ({count} open) — list_open_tabs shows them"
+                    ));
+                }
+                let page = self.tab_view.nth_page(index as i32);
+                self.tab_view.set_selected_page(&page);
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                Ok(json!({ "index": index, "name": v.name(), "count": count }))
+            }
+            "list_recent_cubes" => {
+                let entries: Vec<serde_json::Value> = self
+                    .recents
+                    .list()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        json!({
+                            "index": i,
+                            "path": p.to_string_lossy(),
+                            "name": p.file_name().map(|n| n.to_string_lossy().to_string()),
+                            // A recent entry can outlive its file (unmounted volume,
+                            // deleted scratch); say so rather than making the caller
+                            // discover it by failing to open.
+                            "exists": p.exists(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "count": entries.len(), "cubes": entries }))
+            }
+            "set_cube_transfer" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let reset = crate::mcp::tools::arg(args, "reset")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let points = if reset {
+                    v.reset_transfer()
+                } else {
+                    let raw = crate::mcp::tools::arg(args, "points")
+                        .and_then(|p| p.as_array())
+                        .ok_or_else(|| {
+                            "pass `points` (at least 2 control points), or reset: true".to_string()
+                        })?;
+                    if raw.len() < 2 {
+                        return Err("a transfer curve needs at least 2 control points".to_string());
+                    }
+                    let mut parsed = Vec::with_capacity(raw.len());
+                    for (i, p) in raw.iter().enumerate() {
+                        let x = p.get("x").and_then(|v| v.as_f64());
+                        let y = p.get("y").and_then(|v| v.as_f64());
+                        let (Some(x), Some(y)) = (x, y) else {
+                            return Err(format!("point {i} needs numeric x and y"));
+                        };
+                        if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                            return Err(format!(
+                                "point {i} is ({x}, {y}); both must be within 0..1"
+                            ));
+                        }
+                        parsed.push((x as f32, y as f32));
+                    }
+                    v.set_transfer_points(parsed)
+                };
+                Ok(json!({
+                    "points": points
+                        .iter()
+                        .map(|(x, y)| json!({ "x": x, "y": y }))
+                        .collect::<Vec<_>>(),
+                }))
+            }
+            "show_cube_spectrum" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                if crate::mcp::tools::arg(args, "close")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    v.slice().hide_spectrum();
+                    return Ok(json!({ "visible": false }));
+                }
+                let x = crate::mcp::tools::arg(args, "x")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| "x is required (or close: true)".to_string())?
+                    as usize;
+                let y = crate::mcp::tools::arg(args, "y")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| "y is required (or close: true)".to_string())?
+                    as usize;
+                if !v.slice().show_spectrum_at(x, y) {
+                    let (nx, ny, _) = v.native_dims();
+                    return Err(format!("spaxel ({x}, {y}) is outside the {nx}x{ny} cube"));
+                }
+                Ok(json!({ "visible": true, "x": x, "y": y }))
+            }
+            "get_cube_channel_profile" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let profile: Vec<serde_json::Value> = v
+                    .channel_profile()
+                    .into_iter()
+                    .map(|(channel, mean)| {
+                        json!({
+                            "channel": channel,
+                            "mean": mean,
+                            "spectral": v.wcs().channel_to_physical(channel as f64)
+                                .map(|(value, unit)| json!({ "value": value, "unit": unit })),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "channels": profile.len(),
+                    "downsampled": v.is_downsampled(),
+                    "currentChannel": v.current_channel(),
+                    "profile": profile,
+                }))
+            }
             "probe_cube_spectrum" => {
                 let v = self
                     .active_viewer()
@@ -321,17 +451,29 @@ impl CubeTabHost {
                 let spectrum = v
                     .spectrum_at(x, y)
                     .ok_or_else(|| format!("pixel ({x}, {y}) is outside the cube"))?;
+                // A blanked voxel reports null flux and is counted, rather than
+                // being dropped or fabricated as zero — a caller integrating the
+                // spectrum has to know how much of it was masked.
+                let blanked = spectrum.iter().filter(|s| s.normalized.is_none()).count();
                 let samples: Vec<serde_json::Value> = spectrum
                     .iter()
-                    .enumerate()
-                    .map(|(z, (normalized, physical))| {
-                        json!({ "channel": z, "value": normalized, "physical": physical })
+                    .map(|s| {
+                        json!({
+                            // The channel in the FILE, not in the strided volume.
+                            "channel": s.native_channel,
+                            "value": s.normalized,
+                            "physical": s.physical,
+                            "spectral": v.wcs().channel_to_physical(s.native_channel as f64)
+                                .map(|(value, unit)| json!({ "value": value, "unit": unit })),
+                        })
                     })
                     .collect();
                 Ok(json!({
                     "x": x,
                     "y": y,
                     "channels": spectrum.len(),
+                    "blankedChannels": blanked,
+                    "downsampled": v.is_downsampled(),
                     "unit": v.value_unit(),
                     "spectrum": samples,
                 }))

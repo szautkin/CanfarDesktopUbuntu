@@ -571,6 +571,45 @@ impl CubeSliceView {
         }
     }
 
+    /// Open the on-screen spectrum panel at a **native cube spaxel**.
+    ///
+    /// The click path goes through display coordinates; this is the programmatic
+    /// (MCP) entry point, so it takes cube pixels directly. Returns false when the
+    /// spaxel is outside the cube. Distinct from `probe_cube_spectrum`, which only
+    /// returns data — this is what the USER sees.
+    pub fn show_spectrum_at(&self, x: usize, y: usize) -> bool {
+        let (native_x, native_y) = match self.vol.meta.as_ref() {
+            Some(m) => (m.nx, m.ny),
+            None => (self.vol.nx, self.vol.ny),
+        };
+        if x >= native_x || y >= native_y {
+            return false;
+        }
+        let vx = crate::models::volume_data::native_to_resident(x, native_x, self.vol.nx);
+        let vy = crate::models::volume_data::native_to_resident(y, native_y, self.vol.ny);
+        let spectrum = extract_spectrum(&self.vol, vx, vy);
+        {
+            let mut st = self.state.borrow_mut();
+            st.probe = Some((x, y));
+            st.spectrum = spectrum;
+        }
+        self.spectrum_title
+            .set_text(&crate::tr_fmt!("Spectrum at ({}, {})", x, y));
+        self.spectrum_revealer.set_reveal_child(true);
+        self.spectrum_area.queue_draw();
+        true
+    }
+
+    /// Close the spectrum panel.
+    pub fn hide_spectrum(&self) {
+        self.spectrum_revealer.set_reveal_child(false);
+    }
+
+    /// Whether the spectrum panel is currently open.
+    pub fn spectrum_visible(&self) -> bool {
+        self.spectrum_revealer.reveals_child()
+    }
+
     fn probe_at(&self, px: f64, py: f64) {
         let Some((dx, dy)) = self.map_to_pixel(px, py) else {
             return;

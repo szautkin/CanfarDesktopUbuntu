@@ -25,6 +25,11 @@ const TOOLS: &[&str] = &[
     "set_cube_view",
     "probe_cube_spectrum",
     "export_cube_figure",
+    "set_cube_transfer",
+    "show_cube_spectrum",
+    "get_cube_channel_profile",
+    "switch_cube_tab",
+    "list_recent_cubes",
 ];
 
 pub fn descriptors() -> Vec<ToolDescriptor> {
@@ -118,7 +123,93 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             }),
             verb: VerbClass::Write,
             agent_safe: true,
+        },        ToolDescriptor {
+            name: "switch_cube_tab".into(),
+            description: "Bring one of the open cube tabs to the front by its 0-based index (see \
+                          list_open_tabs). Every other cube tool acts on the ACTIVE tab, so this is how \
+                          you choose which cube they address."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": { "index": { "type":"integer", "minimum":0, "description":"0-based cube tab index" } },
+                "required": ["index"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
         },
+        ToolDescriptor {
+            name: "list_recent_cubes".into(),
+            description: "List the cubes the user has opened recently, newest first, with each path and \
+                          whether the file is still present (a recent entry can outlive its file on an \
+                          unmounted volume). Feed a path to open_cube."
+                .into(),
+            input_schema: json!({ "type":"object", "properties": {}, "additionalProperties": false }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "set_cube_transfer".into(),
+            description: "Edit the 3D volume's opacity transfer curve — the control that decides which \
+                          value ranges are transparent and which are solid. Pass `points` (x = normalized \
+                          value 0..1, y = opacity 0..1; at least two, order does not matter — they are \
+                          sorted and the endpoints pinned to x=0 and x=1), or `reset: true` for the \
+                          default ramp. Returns the applied curve. Live-applied."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "points": {
+                        "type":"array", "minItems":2,
+                        "items": {
+                            "type":"object",
+                            "properties": {
+                                "x": {"type":"number","minimum":0,"maximum":1},
+                                "y": {"type":"number","minimum":0,"maximum":1}
+                            },
+                            "required":["x","y"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "reset": { "type":"boolean", "description":"Restore the default opacity ramp" }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "show_cube_spectrum".into(),
+            description: "Open the on-screen spectrum panel at a spaxel, as a click in the slice view \
+                          does — this is what the USER sees, whereas probe_cube_spectrum only returns \
+                          data. Coordinates are NATIVE cube pixels. Pass `close: true` to hide the panel. \
+                          Live-applied."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "x": { "type":"integer", "minimum":0, "description":"Native cube pixel x" },
+                    "y": { "type":"integer", "minimum":0, "description":"Native cube pixel y" },
+                    "close": { "type":"boolean", "description":"Hide the panel instead of opening it" }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "get_cube_channel_profile".into(),
+            description: "The channel-scrubber waveform: the mean value of every spectral channel, with \
+                          each channel's world value from the spectral WCS. Blank (NaN) voxels are \
+                          excluded from each mean rather than counted as zero, and a wholly blank channel \
+                          reports a null mean. Channel numbers are NATIVE (file) channels even when the \
+                          resident volume was strided down — `downsampled` says whether that happened."
+                .into(),
+            input_schema: json!({ "type":"object", "properties": {}, "additionalProperties": false }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+
     ]
 }
 
