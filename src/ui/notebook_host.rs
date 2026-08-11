@@ -66,6 +66,30 @@ pub struct NotebookTabHost {
     font_provider: gtk::CssProvider,
 }
 
+/// Push the open notebook tabs + active index into the MCP view state.
+///
+/// See `fits_viewer::publish_fits_tabs` — `list_open_tabs` had no publisher, so
+/// it reported nothing regardless of what was open. An unsaved notebook has no
+/// path, so it is listed by its title rather than dropped.
+fn publish_notebook_tabs(tab_view: &gtk::Notebook, pages: &Rc<RefCell<Vec<Rc<NotebookPage>>>>) {
+    let paths: Vec<String> = pages
+        .borrow()
+        .iter()
+        .map(|p| {
+            p.file_path
+                .borrow()
+                .as_ref()
+                .map(|x| x.display().to_string())
+                .unwrap_or_else(|| p.title())
+        })
+        .collect();
+    let active = tab_view
+        .current_page()
+        .map(|i| i as usize)
+        .filter(|i| *i < paths.len());
+    crate::mcp::view_state::set_open_notebooks(paths, active);
+}
+
 impl NotebookTabHost {
     /// Create a new, empty tab host and resolve Python.
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
@@ -525,6 +549,8 @@ impl NotebookTabHost {
                 } else {
                     h.update_kernel_dot("dead");
                 }
+                // The active index moved, so the MCP tab snapshot is stale.
+                publish_notebook_tabs(&h.tab_view, &h.pages);
             });
         }
 
@@ -958,6 +984,7 @@ impl NotebookTabHost {
         self.pages.borrow_mut().push(page.clone());
         self.tab_labels.borrow_mut().push(tab_label.clone());
         self.autosave_paths.borrow_mut().push(autosave_path);
+        publish_notebook_tabs(&self.tab_view, &self.pages);
 
         // Wire kernel state callback to update the host's dot
         {

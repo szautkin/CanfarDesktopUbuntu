@@ -50,6 +50,23 @@ pub struct CubeTabHost {
     services: Arc<AppServices>,
 }
 
+/// Push the open cube tabs + active index into the MCP view state.
+///
+/// See `fits_viewer::publish_fits_tabs` — `list_open_tabs` had no publisher at
+/// all, so it reported nothing regardless of what was open.
+fn publish_cube_tabs(tab_view: &adw::TabView, viewers: &Rc<RefCell<Vec<Rc<CubeViewer>>>>) {
+    let paths: Vec<String> = viewers
+        .borrow()
+        .iter()
+        .map(|v| v.name().to_string())
+        .collect();
+    let active = tab_view
+        .selected_page()
+        .map(|p| tab_view.page_position(&p) as usize)
+        .filter(|i| *i < paths.len());
+    crate::mcp::view_state::set_open_cubes(paths, active);
+}
+
 impl CubeTabHost {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
         // ── Root ─────────────────────────────────────────────────────────────
@@ -173,8 +190,15 @@ impl CubeTabHost {
                     .borrow_mut()
                     .retain(|v| v.widget().clone().upcast::<gtk::Widget>() != child);
                 view.close_page_finish(page, true);
+                publish_cube_tabs(view, &viewers);
                 glib::Propagation::Stop
             });
+        }
+        // Selection changes move the ACTIVE index, which `list_open_tabs` reports.
+        {
+            let viewers = host.viewers.clone();
+            host.tab_view
+                .connect_selected_page_notify(move |view| publish_cube_tabs(view, &viewers));
         }
         // Page count → toggle empty state (and refresh recents when emptied).
         {
@@ -646,6 +670,7 @@ impl CubeTabHost {
                     page.set_tooltip(&path_for_viewer.display().to_string());
                     this.viewers.borrow_mut().push(viewer);
                     this.tab_view.set_selected_page(&page);
+                    publish_cube_tabs(&this.tab_view, &this.viewers);
                     this.recents.add(&path_for_viewer);
                     this.refresh_recents();
                 }

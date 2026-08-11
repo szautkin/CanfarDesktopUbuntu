@@ -33,6 +33,14 @@ pub struct ViewSnapshot {
     pub open_fits_paths: Vec<String>,
     pub open_notebooks: Vec<String>,
     pub open_cubes: Vec<String>,
+    /// 0-based index of the ACTIVE tab in each list, when one is open.
+    ///
+    /// `list_open_tabs` has to report this: `blink_fits_tabs` requires a partner
+    /// tab DIFFERENT from the active one, and every other viewer tool acts on
+    /// whichever tab is active — without it an agent is guessing.
+    pub active_fits: Option<usize>,
+    pub active_notebook: Option<usize>,
+    pub active_cube: Option<usize>,
 }
 
 static STATE: Lazy<RwLock<ViewSnapshot>> = Lazy::new(|| RwLock::new(ViewSnapshot::default()));
@@ -135,16 +143,22 @@ pub fn set_search_focus(ra: Option<f64>, dec: Option<f64>) {
     s.search_focus_dec = dec;
 }
 
-pub fn set_open_fits(paths: Vec<String>) {
-    STATE.write().unwrap().open_fits_paths = paths;
+pub fn set_open_fits(paths: Vec<String>, active: Option<usize>) {
+    let mut s = STATE.write().unwrap();
+    s.open_fits_paths = paths;
+    s.active_fits = active;
 }
 
-pub fn set_open_notebooks(paths: Vec<String>) {
-    STATE.write().unwrap().open_notebooks = paths;
+pub fn set_open_notebooks(paths: Vec<String>, active: Option<usize>) {
+    let mut s = STATE.write().unwrap();
+    s.open_notebooks = paths;
+    s.active_notebook = active;
 }
 
-pub fn set_open_cubes(paths: Vec<String>) {
-    STATE.write().unwrap().open_cubes = paths;
+pub fn set_open_cubes(paths: Vec<String>, active: Option<usize>) {
+    let mut s = STATE.write().unwrap();
+    s.open_cubes = paths;
+    s.active_cube = active;
 }
 
 /// A snapshot of the current view state (for `get_current_view` / `list_open_tabs`).

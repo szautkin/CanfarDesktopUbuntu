@@ -24,7 +24,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "list_open_tabs".into(),
-            description: "The FITS files, notebooks, and cubes currently open in the app.".into(),
+            description: "The FITS files, notebooks and cubes currently open. `fitsTabs` / `cubeTabs` / \
+                          `notebookTabs` carry each tab's 0-based index, display name and whether it is \
+                          ACTIVE — switch_fits_tab, switch_cube_tab and blink_fits_tabs all address a tab \
+                          by that index, and blink needs a partner different from the active one."
+                .into(),
             input_schema: empty.clone(),
             verb: VerbClass::Read,
             agent_safe: true,
@@ -87,10 +91,34 @@ pub async fn dispatch(
         }
         "list_open_tabs" => {
             let snap = view_state::capture();
+            // Each list is reported BOTH flat (the long-standing shape) and as
+            // structured tabs carrying the index, display name and active flag —
+            // switch_fits_tab / switch_cube_tab / blink_fits_tabs all address a
+            // tab by index, and blink needs to know which one is already active.
+            let tabs = |paths: &[String], active: Option<usize>| -> Vec<serde_json::Value> {
+                paths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        json!({
+                            "index": i,
+                            "path": p,
+                            "name": std::path::Path::new(p)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| p.clone()),
+                            "active": active == Some(i),
+                        })
+                    })
+                    .collect()
+            };
             Some(ToolResult::Data(json!({
                 "fits": snap.open_fits_paths,
                 "notebooks": snap.open_notebooks,
                 "cubes": snap.open_cubes,
+                "fitsTabs": tabs(&snap.open_fits_paths, snap.active_fits),
+                "notebookTabs": tabs(&snap.open_notebooks, snap.active_notebook),
+                "cubeTabs": tabs(&snap.open_cubes, snap.active_cube),
             })))
         }
         "navigate_to" => {

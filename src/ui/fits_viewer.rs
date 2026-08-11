@@ -817,6 +817,8 @@ impl FitsViewer {
                         v.sync_toolbar_to_tab(&tab);
                         v.update_hdu_and_banner(&tab);
                     }
+                    // The active index changed, so the MCP snapshot is stale.
+                    v.publish_open_tabs();
                 });
         }
 
@@ -1339,10 +1341,16 @@ impl FitsViewer {
                             if let Some(tab_label_widget) = notebook.tab_label(&page) {
                                 if tab_label_widget.eq(&tab_box_clone) {
                                     notebook.remove_page(Some(i));
-                                    let mut t = tabs.borrow_mut();
-                                    if (i as usize) < t.len() {
-                                        t.remove(i as usize);
+                                    {
+                                        let mut t = tabs.borrow_mut();
+                                        if (i as usize) < t.len() {
+                                            t.remove(i as usize);
+                                        }
                                     }
+                                    // Closing a NON-active tab does not fire
+                                    // switch-page, so republish here too or the
+                                    // MCP tab list keeps the closed file.
+                                    publish_fits_tabs(&notebook, &tabs);
                                     break;
                                 }
                             }
@@ -1351,6 +1359,7 @@ impl FitsViewer {
                 });
 
                 self.tabs.borrow_mut().push(tab.clone());
+                self.publish_open_tabs();
 
                 // Sync toolbar + extension selector + WCS banner to the new tab
                 self.sync_toolbar_to_tab(&tab);
@@ -1805,6 +1814,11 @@ impl FitsViewer {
     }
 
     /// Basenames of every open tab (for the blink target picker).
+    /// Push the open-tab list + active index into the MCP view state.
+    fn publish_open_tabs(&self) {
+        publish_fits_tabs(&self.notebook, &self.tabs);
+    }
+
     fn tab_names(&self) -> Vec<String> {
         self.tabs
             .borrow()
@@ -1876,6 +1890,27 @@ impl FitsViewer {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /// The file-name portion of a path string (falls back to the whole string).
+/// Push the open FITS tabs + active index into the MCP view state.
+///
+/// `list_open_tabs` reads that snapshot, and its setters had NO callers — so the
+/// tool answered with empty arrays no matter how many files were open, an
+/// advertised tool that always lied. Free-standing rather than a method because
+/// the tab-close closure captures only the notebook and the tab list, not the
+/// viewer (capturing the viewer there would be a reference cycle through a
+/// widget the viewer owns).
+fn publish_fits_tabs(notebook: &gtk::Notebook, tabs: &Rc<RefCell<Vec<Rc<FitsTab>>>>) {
+    let paths: Vec<String> = tabs
+        .borrow()
+        .iter()
+        .map(|t| t.source_file().to_string())
+        .collect();
+    let active = notebook
+        .current_page()
+        .map(|i| i as usize)
+        .filter(|i| *i < paths.len());
+    crate::mcp::view_state::set_open_fits(paths, active);
+}
+
 fn basename(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
