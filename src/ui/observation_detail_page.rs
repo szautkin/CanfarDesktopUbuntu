@@ -619,6 +619,21 @@ fn build_files(
             .as_ref()
             .and_then(|i| i.name.clone())
             .unwrap_or_default(),
+        proposal_id: obs
+            .proposal
+            .as_ref()
+            .and_then(|p| p.id.clone())
+            .unwrap_or_default(),
+        proposal_pi: obs
+            .proposal
+            .as_ref()
+            .and_then(|p| p.pi.clone())
+            .unwrap_or_default(),
+        proposal_title: obs
+            .proposal
+            .as_ref()
+            .and_then(|p| p.title.clone())
+            .unwrap_or_default(),
     };
 
     if obs.planes.is_empty() {
@@ -754,6 +769,11 @@ struct ObsMeta {
     observation_id: String,
     target_name: String,
     instrument: String,
+    /// Citation handle from the CAOM2 proposal block. CADC assigns no
+    /// per-observation DOI, so this is what the exported `notes.md` cites.
+    proposal_id: String,
+    proposal_pi: String,
+    proposal_title: String,
 }
 
 /// Download an artifact into the managed Research library, register the science
@@ -891,6 +911,22 @@ async fn download_artifact(
 /// Uses a deterministic id derived from the publisher DID, so re-downloading (or a
 /// prior Search-page save) updates the same record rather than duplicating it, and
 /// preserves any previously-cached preview. Best-effort; returns whether it saved.
+/// Prefer a freshly-read value, falling back to a previously saved record.
+///
+/// The store replaces the whole record by id, so a field this download does not
+/// know about would be blanked without this — silently losing metadata a prior
+/// save had captured.
+fn carry_forward(
+    fresh: &str,
+    existing: Option<&crate::services::DownloadedObservation>,
+    field: impl Fn(&crate::services::DownloadedObservation) -> &String,
+) -> String {
+    if !fresh.is_empty() {
+        return fresh.to_string();
+    }
+    existing.map(|o| field(o).clone()).unwrap_or_default()
+}
+
 async fn register_in_research(
     services: &Arc<AppServices>,
     meta: &ObsMeta,
@@ -952,6 +988,19 @@ async fn register_in_research(
         local_path: local_path.to_string(),
         file_size,
         downloaded_at: chrono::Utc::now().to_rfc3339(),
+        // Citation handle: prefer what CAOM2 just told us, and fall back to a
+        // prior save (the same carry-forward the other metadata uses, since the
+        // store replaces the whole record by id).
+        proposal_id: carry_forward(&meta.proposal_id, existing.as_ref(), |o| &o.proposal_id),
+        proposal_pi: carry_forward(&meta.proposal_pi, existing.as_ref(), |o| &o.proposal_pi),
+        proposal_title: carry_forward(&meta.proposal_title, existing.as_ref(), |o| {
+            &o.proposal_title
+        }),
+        // Not in the CAOM2 document we parse; a Search-page save supplies it.
+        data_release: existing
+            .as_ref()
+            .map(|o| o.data_release.clone())
+            .unwrap_or_default(),
         thumbnail_url: if thumbnail_url.is_empty() {
             existing
                 .as_ref()

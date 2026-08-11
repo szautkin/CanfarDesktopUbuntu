@@ -530,6 +530,24 @@ fn render_observation_section(obs: &DownloadedObservation, note: &ObservationNot
     if !obs.cal_level.is_empty() {
         md.push_str(&format!("- **Calibration level:** {}\n", obs.cal_level));
     }
+    // The citation handle. The "How to cite" section below names the proposal
+    // as the closest citable identifier and says it is recorded here — for a
+    // long time it was not, because the record model had no such fields.
+    if !obs.proposal_id.is_empty() {
+        md.push_str(&format!("- **Proposal:** {}\n", obs.proposal_id));
+    }
+    if !obs.proposal_pi.is_empty() {
+        md.push_str(&format!("- **PI:** {}\n", obs.proposal_pi));
+    }
+    if !obs.proposal_title.is_empty() {
+        md.push_str(&format!("- **Proposal title:** {}\n", obs.proposal_title));
+    }
+    if !obs.data_release.is_empty() {
+        md.push_str(&format!(
+            "- **Data release:** {}\n",
+            iso_or_raw(&obs.data_release)
+        ));
+    }
     if !obs.downloaded_at.is_empty() {
         md.push_str(&format!(
             "- **Downloaded:** {}\n",
@@ -759,6 +777,10 @@ mod tests {
             preview_url: String::new(),
             local_preview_path: String::new(),
             agent_attribution: None,
+            proposal_id: "20AC99".into(),
+            proposal_pi: "Doe".into(),
+            proposal_title: "A survey of things".into(),
+            data_release: "2022-01-01T00:00:00Z".into(),
         }
     }
 
@@ -817,6 +839,85 @@ mod tests {
         assert!(md.contains("`spiral`, `deep`"));
         assert!(md.contains("### Notes"));
         assert!(md.contains("Whirlpool"));
+    }
+
+    #[test]
+    fn the_bundle_delivers_the_citation_it_tells_the_user_to_make() {
+        // notes.md's "How to cite" section names the proposal (id / PI / title)
+        // as the closest citable handle and states it is recorded per
+        // observation. It said that while the record model had no such fields,
+        // so the bundle asked the user to cite something it never carried.
+        let obs = vec![obs("ivo://x?1", "M31", "CFHT", "1234567p")];
+        let notes = vec![note("ivo://x?1", 4, "Good seeing.", &["deep"])];
+        let md = render_notes_markdown(&obs, &notes, fixed_now());
+
+        assert!(md.contains("- **Proposal:** 20AC99"), "{md}");
+        assert!(md.contains("- **PI:** Doe"), "{md}");
+        assert!(
+            md.contains("- **Proposal title:** A survey of things"),
+            "{md}"
+        );
+        assert!(md.contains("- **Data release:**"), "{md}");
+    }
+
+    #[test]
+    fn the_bundle_readme_points_at_a_citation_that_is_really_there() {
+        // The README's "How to cite" guidance names the proposal as the closest
+        // citable handle and says it is recorded per observation in notes.md.
+        // Assert the promise and the payload together — they lived in separate
+        // functions, which is how the guidance came to describe fields that did
+        // not exist.
+        let observations = vec![obs("ivo://x?1", "M31", "CFHT", "1234567p")];
+        let notes = vec![note("ivo://x?1", 4, "Good seeing.", &["deep"])];
+        let bundle = build_wrapped_bundle(&BundleRequest {
+            observations: &observations,
+            notes: &notes,
+            saved: &[],
+            recent: &[],
+            options: BundleOptions {
+                include_notes: true,
+                include_search_history: false,
+            },
+            now: fixed_now(),
+            app_version: "1.3.1",
+            host_name: "test-host",
+        });
+
+        let text_of = |suffix: &str| -> String {
+            let (_, bytes) = bundle
+                .entries
+                .iter()
+                .find(|(path, _)| path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("the bundle should contain {suffix}"));
+            String::from_utf8_lossy(bytes).into_owned()
+        };
+
+        let readme = text_of("README.md");
+        assert!(readme.contains("citable handle"), "{readme}");
+        assert!(readme.contains("notes.md"), "{readme}");
+
+        let notes_md = text_of("research/notes.md");
+        assert!(notes_md.contains("- **Proposal:** 20AC99"), "{notes_md}");
+        assert!(notes_md.contains("- **PI:** Doe"), "{notes_md}");
+    }
+
+    #[test]
+    fn a_record_without_citation_data_omits_the_block_rather_than_showing_blanks() {
+        // Records saved before these fields existed load as empty strings. An
+        // empty "- **PI:** " line would look like missing data in the archive.
+        let mut bare = obs("ivo://x?2", "M51", "JWST", "jw001");
+        bare.proposal_id = String::new();
+        bare.proposal_pi = String::new();
+        bare.proposal_title = String::new();
+        bare.data_release = String::new();
+        let notes = vec![note("ivo://x?2", 3, "Fine.", &[])];
+        let md = render_notes_markdown(&[bare], &notes, fixed_now());
+
+        assert!(!md.contains("**Proposal:**"), "{md}");
+        assert!(!md.contains("**PI:**"), "{md}");
+        assert!(!md.contains("**Data release:**"), "{md}");
+        // The rest of the section is unaffected.
+        assert!(md.contains("M51"), "{md}");
     }
 
     #[test]

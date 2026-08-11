@@ -1267,6 +1267,10 @@ mod tests {
             preview_url: String::new(),
             local_preview_path: String::new(),
             agent_attribution: None,
+            proposal_id: String::new(),
+            proposal_pi: String::new(),
+            proposal_title: String::new(),
+            data_release: String::new(),
         };
         let list = vec![obs];
         assert!(find_observation(&list, "local-1").is_some());
@@ -1300,6 +1304,10 @@ mod tests {
             preview_url: String::new(),
             local_preview_path: String::new(),
             agent_attribution: None,
+            proposal_id: String::new(),
+            proposal_pi: String::new(),
+            proposal_title: String::new(),
+            data_release: String::new(),
         }
     }
 

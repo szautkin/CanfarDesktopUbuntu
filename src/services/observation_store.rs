@@ -75,6 +75,29 @@ pub struct DownloadedObservation {
     /// Mirrors `DownloadedObservation.AgentAttribution` in the Windows reference.
     #[serde(default)]
     pub agent_attribution: Option<String>,
+
+    // ── Citation handle ─────────────────────────────────────────────────────
+    //
+    // CADC assigns no DOI or bibcode to an individual observation, so the
+    // originating proposal is the closest citable handle — which is exactly what
+    // the exported `notes.md` tells the user to cite. It said so while these
+    // fields did not exist, so the bundle promised a citation it never carried.
+    //
+    // All four are `#[serde(default)]`: records saved before they existed load
+    // as empty, and an empty field is simply omitted from the citation block.
+    /// Proposal / program id (CAOM2 `Observation.proposal_id`).
+    #[serde(default)]
+    pub proposal_id: String,
+    /// Principal investigator (CAOM2 `Observation.proposal_pi`).
+    #[serde(default)]
+    pub proposal_pi: String,
+    /// Proposal title (CAOM2 `Observation.proposal_title`).
+    #[serde(default)]
+    pub proposal_title: String,
+    /// Data-release date (CAOM2 `Plane.dataRelease`) — when the data became, or
+    /// becomes, public. Part of citing a proprietary-period observation.
+    #[serde(default)]
+    pub data_release: String,
 }
 
 impl DownloadedObservation {
@@ -616,6 +639,10 @@ mod tests {
             preview_url: String::new(),
             local_preview_path: String::new(),
             agent_attribution: None,
+            proposal_id: String::new(),
+            proposal_pi: String::new(),
+            proposal_title: String::new(),
+            data_release: String::new(),
         }
     }
 

@@ -3356,6 +3356,12 @@ fn build_downloaded_observation(
         thumbnail_url,
         preview_url,
         local_preview_path,
+        // Citation handle. These four come straight off the result row, so a
+        // search-page save carries everything `notes.md` needs to cite it.
+        proposal_id: pick(&["Proposal ID"]),
+        proposal_pi: pick(&["PI Name"]),
+        proposal_title: pick(&["Proposal Title"]),
+        data_release: pick(&["Data Release"]),
         // UI-initiated saves from the Search page have no agent provenance.
         agent_attribution: None,
     }
