@@ -18,13 +18,19 @@ use std::sync::Arc;
 
 pub fn descriptors() -> Vec<ToolDescriptor> {
     let empty = json!({"type":"object","properties":{},"additionalProperties":false});
+    // NOTE ON `hdu`: this is a CFITSIO-native 1-based absolute number (1 = the
+    // primary HDU), where the Windows reference — and astropy — index from 0.
+    // The divergence is spelled out in the description rather than papered over,
+    // because silently shifting by one would mis-read every multi-extension
+    // file. Aligning the convention needs a header-only reader first: our loader
+    // requires an image HDU, and an MEF's primary usually has none.
     let with_hdu = json!({
         "type":"object",
         "properties": {
-            "path": { "type":"string", "description":"Local filesystem path to a FITS file" },
-            "hdu": { "type":"integer", "minimum":1, "description":"1-based HDU number (default: the first image HDU)" }
+            "localPath": { "type":"string", "description":"Local filesystem path to a FITS file" },
+            "hdu": { "type":"integer", "minimum":1, "description":"1-BASED HDU number: 1 is the primary HDU, 2 the first extension (note: astropy and the Windows app index from 0, so add one). Defaults to the first HDU containing an image." }
         },
-        "required": ["path"], "additionalProperties": false
+        "required": ["localPath"], "additionalProperties": false
     });
     vec![
         ToolDescriptor {
@@ -275,12 +281,13 @@ fn load_from_disk(_path: &str, _hdu: Option<i64>) -> Result<crate::models::FitsI
     Err("fits feature not built".into())
 }
 
+/// The local FITS path. Declared as `localPath` (the reference's name); `path`
+/// is still accepted, since Verbinal shipped that spelling first.
 fn require_path(args: &Value) -> Result<String, String> {
-    args.get("path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "path is required".to_string())
+    let from = |key: &str| super::opt_str_arg(args, key).filter(|s: &String| !s.is_empty());
+    from("localPath")
+        .or_else(|| from("path"))
+        .ok_or_else(|| "localPath is required".to_string())
 }
 
 fn get_fits_header(args: &Value) -> Result<Value, String> {
@@ -293,56 +300,216 @@ fn get_fits_header(args: &Value) -> Result<Value, String> {
         .map(|(k, v, c)| json!({ "keyword": k, "value": v, "comment": c }))
         .collect();
     Ok(json!({
-        "path": path,
+        "localPath": path,
         "hdu": hdu,
-        "width": data.width,
-        "height": data.height,
         "count": cards.len(),
         "cards": cards,
+        // Beyond the reference's record: free here (the image is already
+        // loaded) and it saves an agent a second call to size the frame.
+        "width": data.width,
+        "height": data.height,
     }))
 }
 
+/// Key names follow the reference's `Output` record exactly, including its
+/// unusual capitalisation: .NET's camelCase policy lowercases only the leading
+/// capital, so `CType1` → `cType1` and `CrPix1` → `crPix1`, while `Cd1_1` →
+/// `cd1_1`. They look inconsistent because they are — but they are what an agent
+/// written against the Windows app reads.
+///
+/// Every key is present in every response, `null` where a value does not apply.
+/// The derived three used to vanish when the solution was invalid, so a client
+/// could not tell "no WCS" from "a field I forgot to handle".
 fn get_fits_wcs(args: &Value) -> Result<Value, String> {
     let path = require_path(args)?;
     let hdu = args.get("hdu").and_then(|v| v.as_i64());
     let data = load_from_disk(&path, hdu)?;
-    let base = json!({ "path": path, "hdu": hdu, "width": data.width, "height": data.height });
-    let mut out = base;
-    match data.wcs.as_ref() {
-        Some(w) => {
-            let valid = w.is_valid();
-            out["is_valid"] = json!(valid);
-            out["is_approximate"] = json!(w.is_approximate);
-            out["solution_kind"] = json!(w.solution_kind());
-            out["ctype1"] = json!(w.ctype1);
-            out["ctype2"] = json!(w.ctype2);
-            out["projection"] = json!(format!("{:?}", w.proj()));
-            out["crpix1"] = json!(w.crpix1);
-            out["crpix2"] = json!(w.crpix2);
-            out["crval1"] = json!(w.crval1);
-            out["crval2"] = json!(w.crval2);
-            out["cd1_1"] = json!(w.cd1_1);
-            out["cd1_2"] = json!(w.cd1_2);
-            out["cd2_1"] = json!(w.cd2_1);
-            out["cd2_2"] = json!(w.cd2_2);
-            if valid {
-                out["pixel_scale_arcsec"] = json!(w.pixel_scale_arcsec());
-                out["north_angle"] = json!(w.north_angle());
-                out["has_parity_flip"] = json!(w.has_parity_flip());
-            }
-        }
-        None => {
-            out["is_valid"] = json!(false);
-            out["is_approximate"] = json!(false);
-            out["solution_kind"] = json!("none");
+    Ok(wcs_payload(
+        &path,
+        hdu,
+        data.width,
+        data.height,
+        data.wcs.as_ref(),
+    ))
+}
+
+/// The `get_fits_wcs` payload, split from the file read so the shape can be
+/// tested without a FITS fixture on disk.
+fn wcs_payload(
+    path: &str,
+    hdu: Option<i64>,
+    width: usize,
+    height: usize,
+    wcs: Option<&crate::models::fits_image::WcsInfo>,
+) -> Value {
+    let mut out = json!({
+        "localPath": path,
+        "hdu": hdu,
+        "width": width,
+        "height": height,
+        "isValid": false,
+        "isApproximate": false,
+        "solutionKind": "none",
+        "cType1": Value::Null,
+        "cType2": Value::Null,
+        "projection": Value::Null,
+        "crPix1": Value::Null,
+        "crPix2": Value::Null,
+        "crVal1": Value::Null,
+        "crVal2": Value::Null,
+        "cd1_1": Value::Null,
+        "cd1_2": Value::Null,
+        "cd2_1": Value::Null,
+        "cd2_2": Value::Null,
+        "pixelScaleArcsec": Value::Null,
+        "northAngle": Value::Null,
+        "hasParityFlip": Value::Null,
+    });
+    if let Some(w) = wcs {
+        let valid = w.is_valid();
+        out["isValid"] = json!(valid);
+        out["isApproximate"] = json!(w.is_approximate);
+        out["solutionKind"] = json!(w.solution_kind());
+        out["cType1"] = json!(w.ctype1);
+        out["cType2"] = json!(w.ctype2);
+        out["projection"] = json!(format!("{:?}", w.proj()));
+        out["crPix1"] = json!(w.crpix1);
+        out["crPix2"] = json!(w.crpix2);
+        out["crVal1"] = json!(w.crval1);
+        out["crVal2"] = json!(w.crval2);
+        out["cd1_1"] = json!(w.cd1_1);
+        out["cd1_2"] = json!(w.cd1_2);
+        out["cd2_1"] = json!(w.cd2_1);
+        out["cd2_2"] = json!(w.cd2_2);
+        // The reference leaves the derived quantities null unless the solution
+        // is valid — an angle computed from a degenerate CD matrix is noise.
+        if valid {
+            out["pixelScaleArcsec"] = json!(w.pixel_scale_arcsec());
+            out["northAngle"] = json!(w.north_angle());
+            out["hasParityFlip"] = json!(w.has_parity_flip());
         }
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every field of the reference's `get_fits_wcs` Output record, camelCased
+    /// by its serializer. Transcribed from `Read/VoSpaceFitsReadTools.cs`.
+    const REFERENCE_WCS_FIELDS: &[&str] = &[
+        "localPath",
+        "hdu",
+        "isValid",
+        "isApproximate",
+        "cType1",
+        "cType2",
+        "projection",
+        "crPix1",
+        "crPix2",
+        "crVal1",
+        "crVal2",
+        "cd1_1",
+        "cd1_2",
+        "cd2_1",
+        "cd2_2",
+        "pixelScaleArcsec",
+        "northAngle",
+        "hasParityFlip",
+    ];
+
+    /// A WCS with a plain 1"/pixel scale and no rotation.
+    fn sample_wcs() -> crate::models::fits_image::WcsInfo {
+        crate::models::fits_image::WcsInfo {
+            crpix1: 512.0,
+            crpix2: 512.0,
+            crval1: 10.68,
+            crval2: 41.27,
+            cd1_1: -1.0 / 3600.0,
+            cd1_2: 0.0,
+            cd2_1: 0.0,
+            cd2_2: 1.0 / 3600.0,
+            ctype1: "RA---TAN".into(),
+            ctype2: "DEC--TAN".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_wcs_payload_carries_every_field_the_reference_promises() {
+        let payload = wcs_payload("/data/a.fits", Some(1), 1024, 1024, Some(&sample_wcs()));
+        let obj = payload.as_object().expect("an object");
+        for field in REFERENCE_WCS_FIELDS {
+            assert!(obj.contains_key(*field), "`{field}` is missing");
+        }
+        assert_eq!(payload["isValid"], true);
+        assert_eq!(payload["cType1"], "RA---TAN");
+        assert_eq!(payload["crPix1"], 512.0);
+        // Not `path`, `is_valid`, `ctype1`, `crpix1` — the snake_case names this
+        // tool used to emit, which no reference-written client reads.
+        for leaked in ["path", "is_valid", "ctype1", "crpix1", "pixel_scale_arcsec"] {
+            assert!(
+                !obj.contains_key(leaked),
+                "`{leaked}` is the old internal name"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_without_wcs_still_reports_the_full_shape() {
+        // Keys must not vanish: a client could not otherwise tell "no WCS
+        // solution" from "a field the server forgot".
+        let payload = wcs_payload("/data/a.fits", None, 64, 64, None);
+        let obj = payload.as_object().expect("an object");
+        for field in REFERENCE_WCS_FIELDS {
+            assert!(obj.contains_key(*field), "`{field}` vanished without a WCS");
+        }
+        assert_eq!(payload["isValid"], false);
+        assert!(payload["cType1"].is_null());
+        assert!(payload["pixelScaleArcsec"].is_null());
+    }
+
+    #[test]
+    fn an_invalid_solution_leaves_the_derived_values_null() {
+        // A degenerate CD matrix has no meaningful scale or North angle, so the
+        // reference reports null rather than a number computed from noise.
+        let mut wcs = sample_wcs();
+        wcs.cd1_1 = 0.0;
+        wcs.cd1_2 = 0.0;
+        wcs.cd2_1 = 0.0;
+        wcs.cd2_2 = 0.0;
+
+        let payload = wcs_payload("/data/a.fits", Some(1), 64, 64, Some(&wcs));
+        assert_eq!(payload["isValid"], false);
+        assert!(payload["pixelScaleArcsec"].is_null());
+        assert!(payload["northAngle"].is_null());
+        assert!(payload["hasParityFlip"].is_null());
+        // The raw header values are still reported — they were read, after all.
+        assert_eq!(payload["cType1"], "RA---TAN");
+    }
+
+    #[test]
+    fn the_declared_path_argument_is_the_one_the_tool_reads() {
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "get_fits_wcs")
+            .expect("the tool is declared")
+            .input_schema;
+        assert_eq!(schema["required"][0], "localPath");
+
+        assert_eq!(
+            require_path(&json!({ "localPath": "/data/a.fits" })).unwrap(),
+            "/data/a.fits"
+        );
+        // Back-compat with the spelling Verbinal shipped first.
+        assert_eq!(
+            require_path(&json!({ "path": "/data/a.fits" })).unwrap(),
+            "/data/a.fits"
+        );
+        assert!(require_path(&json!({})).is_err());
+        assert!(require_path(&json!({ "localPath": "   " })).is_err());
+    }
 
     #[test]
     fn descriptors_unique_and_agent_safe() {
