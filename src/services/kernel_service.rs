@@ -74,6 +74,10 @@ pub struct LocalKernelService {
     /// The kernel's stderr, read only when it dies unexpectedly — that is the
     /// one place Python explains why it could not start.
     stderr: Option<BufReader<tokio::process::ChildStderr>>,
+    /// Where to forward each output as it arrives, so the UI can render a long
+    /// cell's stdout live instead of showing nothing until the cell finishes.
+    /// Set for the duration of one `execute_streaming` call.
+    output_sink: Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
 }
 
 impl LocalKernelService {
@@ -91,6 +95,7 @@ impl LocalKernelService {
             exec_count: 0,
             harness_path: None,
             stderr: None,
+            output_sink: None,
         }
     }
 
@@ -173,6 +178,24 @@ impl LocalKernelService {
     ///
     /// Transitions state: `Idle → Busy → Idle` on success, or
     /// `Idle → Busy → Error(…)` on genuine I/O failure / unexpected EOF.
+    /// Like [`execute`](Self::execute), but forwards every output through `sink`
+    /// as the kernel emits it.
+    ///
+    /// The complete output list is still returned, so the caller stores exactly
+    /// what it would have stored otherwise; the sink is purely for showing
+    /// progress. The sink is cleared before returning — including on the error
+    /// path — so a later run can never publish into a closed channel.
+    pub async fn execute_streaming(
+        &mut self,
+        code: &str,
+        sink: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) -> Result<(Vec<serde_json::Value>, u32), String> {
+        self.output_sink = Some(sink);
+        let result = self.execute(code).await;
+        self.output_sink = None;
+        result
+    }
+
     pub async fn execute(&mut self, code: &str) -> Result<(Vec<serde_json::Value>, u32), String> {
         if self.state != KernelState::Idle {
             return Err(format!(
@@ -420,7 +443,16 @@ impl LocalKernelService {
             }
 
             match serde_json::from_str::<serde_json::Value>(trimmed) {
-                Ok(v) => outputs.push(v),
+                Ok(v) => {
+                    // Publish before storing, so the UI shows this line now
+                    // rather than when the whole cell finishes. A closed
+                    // receiver (the cell's widget went away mid-run) is not an
+                    // error — the execution still completes and is recorded.
+                    if let Some(sink) = self.output_sink.as_ref() {
+                        let _ = sink.send(v.clone());
+                    }
+                    outputs.push(v);
+                }
                 Err(e) => {
                     // Emit a synthetic error output rather than aborting.
                     outputs.push(serde_json::json!({
@@ -582,6 +614,54 @@ mod tests {
 
         svc.shutdown();
         assert_eq!(*svc.state(), KernelState::Dead);
+    }
+
+    /// Streaming must deliver each output as the kernel emits it AND still return
+    /// the complete list — the sink is for showing progress, not a replacement
+    /// for the stored result.
+    ///
+    /// Requires Python 3, so `#[ignore]` like its siblings; run with
+    /// `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn streaming_publishes_each_output_and_still_returns_them_all() {
+        let mut svc = LocalKernelService::new(PathBuf::from("/usr/bin/python3"));
+        svc.start().await.expect("kernel should start");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (outputs, _) = svc
+            .execute_streaming("print('a'); print('b')", tx)
+            .await
+            .expect("execute should succeed");
+
+        let mut streamed = Vec::new();
+        while let Ok(v) = rx.try_recv() {
+            streamed.push(v);
+        }
+        assert!(!streamed.is_empty(), "the sink received nothing");
+        assert_eq!(
+            streamed.len(),
+            outputs.len(),
+            "every returned output should also have been published"
+        );
+
+        svc.shutdown();
+    }
+
+    /// A closed receiver must not fail the execution: the cell's widget can go
+    /// away mid-run (tab closed), and the run still has to complete and record.
+    #[tokio::test]
+    #[ignore]
+    async fn a_dropped_output_receiver_does_not_fail_the_run() {
+        let mut svc = LocalKernelService::new(PathBuf::from("/usr/bin/python3"));
+        svc.start().await.expect("kernel should start");
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(rx);
+        let result = svc.execute_streaming("print('ignored')", tx).await;
+        assert!(result.is_ok(), "a dropped receiver must not fail the run");
+
+        svc.shutdown();
     }
 
     /// Verify that executing code with a deliberate error produces an error

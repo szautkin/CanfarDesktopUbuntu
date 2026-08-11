@@ -308,11 +308,39 @@ impl NotebookPage {
         let code_str = source.clone();
         let page = self.clone();
 
+        // ── Live output ──────────────────────────────────────────────────
+        // The kernel runs on the tokio pool and cannot touch widgets, so it
+        // publishes each output through a channel that the GTK main loop drains.
+        // Without this a cell that prints as it works showed NOTHING until it
+        // finished — indistinguishable, to the user, from a hung kernel.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        {
+            let page = self.clone();
+            glib::spawn_future_local(async move {
+                // Clear once, on the first output: re-running a cell should not
+                // blank its previous result until there is something to replace it.
+                let mut cleared = false;
+                while let Some(raw) = rx.recv().await {
+                    let Ok(output) = serde_json::from_value::<CellOutput>(raw) else {
+                        continue;
+                    };
+                    let widgets = page.cell_widgets.borrow();
+                    if let Some(CellWidget::Code(code)) = widgets.get(index) {
+                        if !cleared {
+                            code.clear_outputs();
+                            cleared = true;
+                        }
+                        code.append_output(&output);
+                    }
+                }
+            });
+        }
+
         // Run the blocking kernel call on the tokio thread pool
         let result = services
             .spawn(async move {
                 let mut k = kernel.lock().await;
-                k.execute(&code_str).await
+                k.execute_streaming(&code_str, tx).await
             })
             .await;
 

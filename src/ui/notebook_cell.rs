@@ -155,13 +155,29 @@ impl CodeCellWidget {
     }
 
     /// Render `outputs` into the output area, replacing any previous content.
+    /// Replace the cell's rendered outputs.
     pub fn set_outputs(&self, outputs: &[CellOutput]) {
-        // Clear existing children
+        self.clear_outputs();
+        for output in outputs {
+            self.append_output(output);
+        }
+    }
+
+    /// Remove every rendered output.
+    pub fn clear_outputs(&self) {
         while let Some(child) = self.output_box.first_child() {
             self.output_box.remove(&child);
         }
+        self.output_box.set_visible(false);
+    }
 
-        for output in outputs {
+    /// Render ONE output and append it.
+    ///
+    /// Split out of `set_outputs` so a long-running cell can show each line as
+    /// the kernel produces it, instead of leaving the user staring at nothing
+    /// until the whole cell finishes.
+    pub fn append_output(&self, output: &CellOutput) {
+        {
             match output {
                 CellOutput::Stream { name, text } => {
                     let label = gtk::Label::new(Some(&text.joined()));
@@ -202,7 +218,7 @@ impl CodeCellWidget {
             }
         }
 
-        self.output_box.set_visible(!outputs.is_empty());
+        self.output_box.set_visible(true);
     }
 
     /// Render a single MIME-bundle output (image → picture, else plain text).
