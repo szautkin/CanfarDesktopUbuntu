@@ -57,6 +57,18 @@ const INTENTS: [&str; 3] = ["", "science", "calibration"];
 /// literals used to sit 350 lines apart, and adding a choice to one would have
 /// silently given the wrong page size.
 const ROWS_PER_PAGE: [usize; 5] = [25, 50, 100, 250, 500];
+
+/// Width of one results column, in pixels.
+///
+/// The header strip and the data rows are now in SEPARATE scroll areas, kept in
+/// step by a shared horizontal adjustment — so this width has to be identical on
+/// both sides or the labels sit visibly off their columns. It was three separate
+/// literals; one constant is what makes the alignment structural rather than a
+/// coincidence.
+const RESULT_COLUMN_WIDTH: i32 = 100;
+
+/// Gap after each results column, applied on both sides for the same reason.
+const RESULT_COLUMN_GAP: i32 = 4;
 /// Index of the default page size (100) in [`ROWS_PER_PAGE`].
 const DEFAULT_ROWS_PER_PAGE: usize = 2;
 const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
@@ -218,6 +230,8 @@ pub struct SearchPage {
     adql_editor: gtk::TextView,
     // --- Results ---
     results_panel: gtk::Box,
+    /// Column headers, in a strip pinned above the scrolled rows.
+    header_panel: gtk::Box,
     results_count_label: gtk::Label,
     page_label: gtk::Label,
     /// "Apply filters to ADQL" button — shown only while client-side column
@@ -490,9 +504,27 @@ impl SearchPage {
         let results_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         results_panel.set_margin_start(12);
         results_panel.set_margin_end(12);
-        results_panel.set_margin_top(12);
         results_panel.set_margin_bottom(12);
         results_scroll.set_child(Some(&results_panel));
+
+        // Column headers live ABOVE the scrolled body so they stay put while the
+        // rows move — with 41 columns and up to 10,000 rows, scrolling used to
+        // leave the reader with a grid of unlabelled values.
+        //
+        // They still have to track the body SIDEWAYS, so the strip is its own
+        // ScrolledWindow sharing the body's horizontal adjustment: one object,
+        // so the two cannot fall out of step. Its own scrollbars are off —
+        // vertically it must not move at all, and horizontally the body's bar is
+        // the one to use.
+        let header_scroll = gtk::ScrolledWindow::new();
+        header_scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
+        header_scroll.set_hadjustment(Some(&results_scroll.hadjustment()));
+        let header_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        header_panel.set_margin_start(12);
+        header_panel.set_margin_end(12);
+        header_panel.set_margin_top(12);
+        header_scroll.set_child(Some(&header_panel));
+        results_tab.append(&header_scroll);
         results_tab.append(&results_scroll);
 
         // Pagination
@@ -692,6 +724,7 @@ impl SearchPage {
             max_records,
             adql_editor,
             results_panel,
+            header_panel,
             results_count_label,
             page_label,
             apply_filters_btn,
@@ -1475,6 +1508,9 @@ impl SearchPage {
         // focusing a destroyed entry after a rebuild would do nothing visible
         // and silently swallow the user's next keystroke.
         self.filter_entries.borrow_mut().clear();
+        while let Some(child) = self.header_panel.first_child() {
+            self.header_panel.remove(&child);
+        }
         while let Some(child) = self.results_panel.first_child() {
             self.results_panel.remove(&child);
         }
@@ -1532,8 +1568,8 @@ impl SearchPage {
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         for col in vis_columns.iter() {
             let col_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
-            col_box.set_size_request(100, -1);
-            col_box.set_margin_end(4);
+            col_box.set_size_request(RESULT_COLUMN_WIDTH, -1);
+            col_box.set_margin_end(RESULT_COLUMN_GAP);
 
             // Clickable header label for sorting
             let sort_indicator = if sort_col.as_deref() == Some(&col.key) {
@@ -1619,8 +1655,8 @@ impl SearchPage {
 
             header_row.append(&col_box);
         }
-        self.results_panel.append(&header_row);
-        self.results_panel
+        self.header_panel.append(&header_row);
+        self.header_panel
             .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         // Data rows
@@ -1653,9 +1689,9 @@ impl SearchPage {
                     let cell_btn = gtk::Button::new();
                     cell_btn.set_child(Some(&inner));
                     cell_btn.add_css_class("flat");
-                    cell_btn.set_size_request(100, -1);
+                    cell_btn.set_size_request(RESULT_COLUMN_WIDTH, -1);
                     cell_btn.set_halign(gtk::Align::Start);
-                    cell_btn.set_margin_end(4);
+                    cell_btn.set_margin_end(RESULT_COLUMN_GAP);
                     cell_btn.set_tooltip_text(Some(&format!("Narrow to: {}", raw)));
 
                     let filters_rc = self.column_filters.clone();
@@ -1673,10 +1709,10 @@ impl SearchPage {
                 } else {
                     let label = gtk::Label::new(Some(&formatted));
                     label.add_css_class("caption");
-                    label.set_size_request(100, -1);
+                    label.set_size_request(RESULT_COLUMN_WIDTH, -1);
                     label.set_halign(gtk::Align::Start);
                     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                    label.set_margin_end(4);
+                    label.set_margin_end(RESULT_COLUMN_GAP);
                     label.set_selectable(true);
                     row_box.append(&label);
                 }
@@ -3919,6 +3955,54 @@ mod stream_download_tests {
         // Guards against >100% if Content-Length under-reports the body.
         let s = format_download_progress("X", 2048, Some(1024));
         assert!(s.contains("100%"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod results_layout_tests {
+    use super::{RESULT_COLUMN_GAP, RESULT_COLUMN_WIDTH};
+
+    #[test]
+    fn the_header_and_the_rows_size_their_columns_identically() {
+        // They live in SEPARATE scroll areas now — the header pinned above, the
+        // rows scrolling under it — kept in step only by a shared horizontal
+        // adjustment. If the two sides sized columns differently the labels
+        // would sit visibly off the values they name, and further right the
+        // error would compound across 41 columns.
+        //
+        // A source scan, because the widths are set on GTK widgets this test
+        // cannot build: it proves both sides read the same constants.
+        let source = include_str!("mod.rs");
+        let width_uses = source
+            .matches("set_size_request(RESULT_COLUMN_WIDTH, -1)")
+            .count();
+        let gap_uses = source.matches("set_margin_end(RESULT_COLUMN_GAP)").count();
+
+        // One header cell, plus the two row-cell forms (narrowable button and
+        // plain label).
+        assert!(
+            width_uses >= 3,
+            "expected the header and both row-cell forms to use the shared width, found {width_uses}"
+        );
+        assert!(
+            gap_uses >= 3,
+            "expected the header and both row-cell forms to use the shared gap, found {gap_uses}"
+        );
+        // Split so this guard does not match ITSELF — the scan reads the file
+        // it lives in, and the first version failed on its own assertion text.
+        let literal_width = format!("set_size_request({}, -1)", RESULT_COLUMN_WIDTH);
+        assert!(
+            !source.contains(&literal_width),
+            "a literal column width has come back; it will drift from the header's"
+        );
+    }
+
+    #[test]
+    fn a_column_is_wide_enough_to_read() {
+        // Narrower than this and the ellipsis eats every value; the point of the
+        // grid is to compare cells at a glance.
+        assert!(RESULT_COLUMN_WIDTH >= 60, "{RESULT_COLUMN_WIDTH}");
+        assert!(RESULT_COLUMN_GAP >= 0, "{RESULT_COLUMN_GAP}");
     }
 }
 
