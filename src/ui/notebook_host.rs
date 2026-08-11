@@ -1519,6 +1519,48 @@ impl NotebookTabHost {
         toolbar_row.set_subtitle(crate::tr_en!("Reopen settings with Ctrl+comma"));
         toolbar_row.set_active(cur.show_toolbar);
         ui_group.add(&toolbar_row);
+
+        // Diagnostics: the kernel log is the only durable record of a start
+        // failure or an unexplained kernel death, so give the user a way to reach
+        // it without knowing the platform's data directory.
+        let log_row = adw::ActionRow::new();
+        log_row.set_title(crate::tr_en!("Kernel log"));
+        log_row.set_subtitle(crate::tr_en!(
+            "Diagnostics for kernel start failures and unexpected exits"
+        ));
+        let log_btn = gtk::Button::with_label(crate::tr_en!("Open folder"));
+        log_btn.set_valign(gtk::Align::Center);
+        log_btn.add_css_class("flat");
+        {
+            let h = self.clone();
+            log_btn.connect_clicked(move |_| {
+                match crate::helpers::notebook_logger::log_dir() {
+                    Some(dir) => {
+                        // Create it first: the folder does not exist until
+                        // something is logged, and opening a missing path just
+                        // fails silently.
+                        let _ = std::fs::create_dir_all(&dir);
+                        let uri = format!("file://{}", dir.display());
+                        gtk::gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            None::<&gtk::gio::AppLaunchContext>,
+                        )
+                        .unwrap_or_else(|e| {
+                            h.services
+                                .toast
+                                .toast(format!("Could not open the log folder: {e}"));
+                        });
+                    }
+                    None => h
+                        .services
+                        .toast
+                        .toast(crate::tr_en!("No log folder is available on this system")),
+                }
+            });
+        }
+        log_row.add_suffix(&log_btn);
+        ui_group.add(&log_row);
+
         content.append(&ui_group);
 
         let scrolled = gtk::ScrolledWindow::new();

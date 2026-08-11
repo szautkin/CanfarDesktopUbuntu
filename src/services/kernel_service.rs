@@ -116,6 +116,11 @@ impl LocalKernelService {
 
         self.state = KernelState::Starting;
 
+        crate::helpers::notebook_logger::info(&format!(
+            "Kernel start: python={:?}",
+            self.python_path
+        ));
+
         // Write the harness to a temp file so Python can load it.
         let harness_path = Self::write_harness_to_temp()
             .map_err(|e| format!("Failed to write kernel harness: {e}"))?;
@@ -136,10 +141,12 @@ impl LocalKernelService {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| {
-                format!(
+                let msg = format!(
                     "Failed to spawn Python kernel at {:?}: {e}",
                     self.python_path
-                )
+                );
+                crate::helpers::notebook_logger::error(&msg);
+                msg
             })?;
 
         let stdin = child
@@ -425,10 +432,14 @@ impl LocalKernelService {
                 // EOF — the process exited unexpectedly. Whatever Python wrote to
                 // stderr is the only diagnosis available, so surface it.
                 let detail = self.drain_stderr().await;
-                return Err(match detail {
+                let err = match detail {
                     Some(msg) => format!("Kernel process exited unexpectedly: {msg}"),
                     None => "Kernel process exited unexpectedly (EOF on stdout)".to_string(),
-                });
+                };
+                // The one failure a user cannot reproduce on demand: log it so a
+                // bug report can carry the traceback instead of a paraphrase.
+                crate::helpers::notebook_logger::warn(&err);
+                return Err(err);
             }
 
             let trimmed = line_buf.trim_end_matches('\n').trim_end_matches('\r');

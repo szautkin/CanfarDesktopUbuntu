@@ -30,6 +30,7 @@ pub mod image_parser;
 pub mod legal_terms;
 pub mod manifest_parser;
 pub mod notebook_autosave;
+pub mod notebook_logger;
 pub mod notebook_parser;
 pub mod notebook_undo;
 pub mod pdf_writer;
