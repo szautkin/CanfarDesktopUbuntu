@@ -349,7 +349,17 @@ impl CubeTabHost {
                 let v = self
                     .active_viewer()
                     .ok_or_else(|| "no cube open".to_string())?;
-                Ok(json!({ "index": index, "name": v.name(), "count": count }))
+                let name = v.name();
+                Ok(crate::mcp::tools::with_tab_switch_outcome(
+                    // `name` is kept alongside the reference's `activeName`: it
+                    // is the key every other cube payload uses for the same
+                    // thing, and dropping it would make this one tool the odd
+                    // one out.
+                    json!({ "name": name }),
+                    index,
+                    count,
+                    name,
+                ))
             }
             "list_recent_cubes" => {
                 let entries: Vec<serde_json::Value> = self
@@ -369,7 +379,9 @@ impl CubeTabHost {
                         })
                     })
                     .collect();
-                Ok(json!({ "count": entries.len(), "cubes": entries }))
+                // `recents` is the reference's key; `cubes` is ours, kept so
+                // existing callers keep working.
+                Ok(json!({ "count": entries.len(), "recents": entries.clone(), "cubes": entries }))
             }
             "set_cube_transfer" => {
                 let v = self
@@ -421,7 +433,9 @@ impl CubeTabHost {
                     .unwrap_or(false)
                 {
                     v.slice().hide_spectrum();
-                    return Ok(json!({ "visible": false }));
+                    // `panelOpen` is the reference's field name; `visible` is
+                    // kept because it is what our own callers already read.
+                    return Ok(json!({ "panelOpen": false, "visible": false }));
                 }
                 let x = crate::mcp::tools::arg(args, "x")
                     .and_then(|v| v.as_u64())
@@ -435,7 +449,7 @@ impl CubeTabHost {
                     let (nx, ny, _) = v.native_dims();
                     return Err(format!("spaxel ({x}, {y}) is outside the {nx}x{ny} cube"));
                 }
-                Ok(json!({ "visible": true, "x": x, "y": y }))
+                Ok(json!({ "panelOpen": true, "visible": true, "x": x, "y": y }))
             }
             "get_cube_channel_profile" => {
                 let v = self

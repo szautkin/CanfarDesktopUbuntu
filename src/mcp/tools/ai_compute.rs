@@ -11,7 +11,7 @@
 //! `run_code_output` is a plain read. An empty configured compute image disables
 //! run_code / start_compute.
 //!
-//! Unlike the C# tool (which only submits and returns an execution_id),
+//! Unlike the C# tool (which only submits and returns an executionId),
 //! `run_code`'s applier both SUBMITS and briefly POLLS the out file, so an
 //! auto-applied call returns the actual status / exit / stdout / stderr when the
 //! watcher answers quickly; if it's still running, it returns the execution id to
@@ -69,7 +69,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
              automatically on the user's account). Auto-applies when the user has auto-apply on; otherwise \
              queues for their approval. On apply it submits the code and briefly polls for the result: it \
              returns status (ok/error/timeout), exit code, stdout and stderr when the run finishes quickly, \
-             or an execution_id to fetch later with run_code_output. Requires an AI compute image set in \
+             or an executionId to fetch later with run_code_output. Requires an AI compute image set in \
              Settings ▸ AI compute.",
             json!({
                 "type": "object",
@@ -84,15 +84,15 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         read_tool(
             "run_code_output",
-            "Fetch the result of a previous run_code by its execution_id (job_ref). Returns ready=false while \
+            "Fetch the result of a previous run_code by its executionId. Returns ready=false while \
              the code is still running (poll again); when ready, returns status (ok/error/timeout), exit code, \
              stdout, stderr, and any artifacts. If several polls stay not-ready, (re)submit with run_code.",
             json!({
                 "type": "object",
                 "properties": {
-                    "jobRef": { "type": "string", "minLength": 1, "description": "The execution_id returned by run_code." }
+                    "executionId": { "type": "string", "minLength": 1, "description": "The executionId returned by run_code." }
                 },
-                "required": ["jobRef"],
+                "required": ["executionId"],
                 "additionalProperties": false
             }),
         ),
@@ -161,7 +161,7 @@ fn propose_run_code(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Too
     let (cores, ram) = svc.resolve_resources();
 
     let summary = format!(
-        "Run {language} on {} (image {}, {cores}c/{ram}g). execution_id {id}.",
+        "Run {language} on {} (image {}, {cores}c/{ram}g). executionId {id}.",
         RunCodeContract::SESSION_NAME,
         svc.settings().image,
     );
@@ -206,15 +206,25 @@ fn propose_stop_compute(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
 
 /// `run_code_output` (read) — fetch a previous run's result by job_ref.
 async fn run_code_output(services: &AppServices, args: &Value) -> ToolResult {
-    let id = str_arg(args, "jobRef");
+    // The reference declares this argument as `executionId`; `jobRef` is the
+    // name Verbinal shipped and is still accepted.
+    let id = {
+        let from_ref = str_arg(args, "executionId");
+        if from_ref.is_empty() {
+            str_arg(args, "jobRef")
+        } else {
+            from_ref
+        }
+    };
     if id.is_empty() {
-        return ToolResult::Failed("jobRef (execution_id) is required".to_string());
+        return ToolResult::Failed("executionId is required".to_string());
     }
     let svc = AIComputeService::new();
     match svc.fetch_out(services, &id).await {
         Ok(Some(result)) => ToolResult::Data(result_json(&id, &result)),
         Ok(None) => ToolResult::Data(json!({
             "ready": false,
+            "executionId": id,
             "jobRef": id,
             "note": "No result yet — the code may still be running (or the compute session is still \
                      starting). Poll again; if it stays not-ready, call run_code again.",
@@ -268,8 +278,8 @@ async fn apply_run_code(services: &AppServices, payload: &Value) -> Result<Strin
         }
     }
     Ok(format!(
-        "Submitted to {} (execution_id {job_ref}). Not ready yet — fetch it with \
-         run_code_output(jobRef: \"{job_ref}\").",
+        "Submitted to {} (executionId {job_ref}). Not ready yet — fetch it with \
+         run_code_output(executionId: \"{job_ref}\").",
         RunCodeContract::SESSION_NAME
     ))
 }
@@ -301,6 +311,9 @@ async fn apply_stop_compute(services: &AppServices) -> Result<String, String> {
 fn result_json(id: &str, r: &RunCodeResult) -> Value {
     json!({
         "ready": true,
+        // `executionId` is the reference's name; `jobRef` is ours and is kept
+        // because our own descriptions and the Skaha job vocabulary use it.
+        "executionId": id,
         "jobRef": id,
         "status": r.status,
         "exitCode": r.exit_code,
@@ -456,7 +469,8 @@ mod tests {
         };
         let v = result_json("id1", &r);
         assert_eq!(v["ready"], json!(true));
-        assert_eq!(v["jobRef"], json!("id1"));
+        assert_eq!(v["executionId"], json!("id1"));
+        assert_eq!(v["jobRef"], json!("id1"), "our original name is kept too");
         assert_eq!(v["stdout"], json!("hi"));
         assert_eq!(v["artifacts"], json!(["out/plot.png"]));
     }

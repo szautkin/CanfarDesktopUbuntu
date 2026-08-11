@@ -877,7 +877,18 @@ impl FitsViewer {
                 let tab = self
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
-                Ok(self.fits_view_state(&tab))
+                let state = self.fits_view_state(&tab);
+                let active_name = state
+                    .get("fileName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(crate::mcp::tools::with_tab_switch_outcome(
+                    state,
+                    index,
+                    count,
+                    &active_name,
+                ))
             }
             "blink_fits_tabs" => self.blink_command(args),
             "get_fits_view" => {

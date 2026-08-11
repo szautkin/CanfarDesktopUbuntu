@@ -5,7 +5,7 @@
 //! wire layer is testable with a `NullRouter` while the real catalog binds to
 //! `AppServices` separately.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -161,6 +161,33 @@ pub fn round_dp(value: f64, decimals: u32) -> f64 {
     }
     let factor = 10_f64.powi(decimals as i32);
     (value * factor).round() / factor
+}
+
+/// Stamp the reference's tab-switch outcome onto a viewer's state payload.
+///
+/// The reference answers `switch_fits_tab` / `switch_cube_tab` with
+/// `{switched, index, count, activeName, message}` and nothing else; our viewers
+/// answer with the newly-active tab's full state, which saves the agent a
+/// follow-up read. Both go out: the outcome keys are the contract, the state is
+/// the useful part. None of the four collides with a viewer state key.
+///
+/// Shared by the FITS and cube hosts so the two cannot describe the same event
+/// differently.
+pub fn with_tab_switch_outcome(
+    mut state: Value,
+    index: usize,
+    count: usize,
+    active_name: &str,
+) -> Value {
+    state["switched"] = Value::Bool(true);
+    state["index"] = json!(index);
+    state["count"] = json!(count);
+    state["activeName"] = json!(active_name);
+    // The reference carries a nullable note for the refusal path. A refusal here
+    // is a typed error rather than a payload, so it is always null on success —
+    // present so the key set does not change shape between apps.
+    state["message"] = Value::Null;
+    state
 }
 
 /// Apply an approved proposal by dispatching to the family that owns its `kind`.
@@ -598,5 +625,32 @@ mod arg_tests {
         // explicit: serde renders it as null, which is the honest answer.
         assert!(round_dp(f64::NAN, 2).is_nan());
         assert_eq!(round_dp(f64::INFINITY, 2), f64::INFINITY);
+    }
+
+    #[test]
+    fn a_tab_switch_reports_the_reference_outcome_alongside_the_state() {
+        // The viewer's own state is the useful part; the outcome keys are what a
+        // reference-written agent checks. Both have to survive.
+        let state = json!({ "fileName": "m31.fits", "zoomPercent": 100 });
+        let out = with_tab_switch_outcome(state, 1, 3, "m31.fits");
+
+        assert_eq!(out["switched"], true);
+        assert_eq!(out["index"], 1);
+        assert_eq!(out["count"], 3);
+        assert_eq!(out["activeName"], "m31.fits");
+        assert!(out["message"].is_null());
+        assert_eq!(out["zoomPercent"], 100, "the viewer state must survive");
+    }
+
+    #[test]
+    fn the_outcome_wins_over_a_colliding_state_key() {
+        // Neither viewer emits a top-level `index` or `count` today. If one ever
+        // does, this pins the resolution: the switch outcome is authoritative,
+        // because it describes the operation the caller just performed. The
+        // viewer would need to rename its field, and this test says so.
+        let state = json!({ "index": 99, "count": 99 });
+        let out = with_tab_switch_outcome(state, 1, 3, "x");
+        assert_eq!(out["index"], 1);
+        assert_eq!(out["count"], 3);
     }
 }
