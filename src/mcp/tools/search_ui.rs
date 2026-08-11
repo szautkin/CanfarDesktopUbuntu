@@ -244,8 +244,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         write_tool(
             "export_search_results",
-            "Write the FULL result set (not just the visible page) to a local CSV or TSV file. No \
-             file picker — defaults to ~/Downloads/Verbinal/search_results_<timestamp>.<ext>.",
+            "Write the FULL result set to a local CSV or TSV file: every row (not just the visible \
+             page), every column (not just the visible ones), and the RAW values as TAP returned \
+             them — decimal degrees, not the grid's sexagesimal — so the file is ready for astropy \
+             or TOPCAT. Headers are the TAP column names. No file picker; defaults to \
+             ~/Downloads/Verbinal/search_results_<timestamp>.<ext>.",
             json!({
                 "type": "object",
                 "properties": {

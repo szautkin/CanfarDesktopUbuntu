@@ -59,6 +59,56 @@ fn split_facet(joined: &str) -> Vec<String> {
         .collect()
 }
 
+/// Render search results as delimited text — EVERY column, RAW values.
+///
+/// Deliberately not "what the grid shows". This file is opened in astropy,
+/// TOPCAT or a spreadsheet, and display formatting destroys exactly what makes
+/// it useful: sexagesimal in place of decimal degrees, rounded magnitudes,
+/// "3.4 MB" instead of a byte count. It also used to export only the visible
+/// columns, so hiding one to read the table more comfortably silently removed
+/// that data from every later export.
+///
+/// Matches the reference's `ExportResultsCsv` / `ExportResultsTsv`, which write
+/// `Results.Columns` and `row.Get(c)` untouched. Free-standing (not a method) so
+/// the quoting rules can be tested without a window.
+fn delimited_export(
+    results: &crate::models::search_result::SearchResults,
+    delimiter: &str,
+) -> String {
+    let quote = |value: &str| -> String {
+        if delimiter == "\t" {
+            // A TSV has no quoting convention; a literal tab inside a value
+            // would silently add a column, so it becomes a space.
+            return value.replace('\t', " ");
+        }
+        // A newline inside a value splits the record in two if left bare — it
+        // must be quoted alongside commas and quotes.
+        if value.contains(',') || value.contains('"') || value.contains('\n') {
+            format!("\"{}\"", value.replace('"', "\"\""))
+        } else {
+            value.to_string()
+        }
+    };
+
+    let mut out = String::new();
+    // Header: the TAP column names, so the file's columns match the ADQL that
+    // produced them and can be re-queried.
+    let headers: Vec<String> = results.columns.iter().map(|c| quote(c)).collect();
+    out.push_str(&headers.join(delimiter));
+    out.push('\n');
+
+    for row in &results.rows {
+        let cells: Vec<String> = results
+            .columns
+            .iter()
+            .map(|column| quote(row.get(column)))
+            .collect();
+        out.push_str(&cells.join(delimiter));
+        out.push('\n');
+    }
+    out
+}
+
 /// Position of `value` in a dropdown table, or 0 (the first entry) when absent.
 fn dropdown_index(table: &[&str], value: &str) -> u32 {
     table.iter().position(|v| *v == value).unwrap_or(0) as u32
@@ -1886,81 +1936,12 @@ impl SearchPage {
         self.status_label.set_text(crate::tr_en!("Query saved"));
     }
 
-    fn export_csv(&self) -> String {
-        let store = self.results_store.borrow();
-        let Some(results) = &*store else {
-            return String::new();
-        };
-        let columns = {
-            let s2 = self.results_store.borrow();
-            match &*s2 {
-                Some(r) => build_columns_from_headers(&r.columns),
-                None => default_columns(),
-            }
-        };
-        let visible: Vec<_> = columns.iter().filter(|c| c.visible).collect();
-
-        let mut csv = String::new();
-        // Header
-        let headers: Vec<&str> = visible.iter().map(|c| c.display_name.as_str()).collect();
-        csv.push_str(&headers.join(","));
-        csv.push('\n');
-        // Rows
-        for row in &results.rows {
-            let cells: Vec<String> = visible
-                .iter()
-                .map(|col| {
-                    let raw = row.get(&col.header);
-                    let formatted = format_cell(raw, col.format);
-                    if formatted.contains(',') || formatted.contains('"') {
-                        format!("\"{}\"", formatted.replace('"', "\"\""))
-                    } else {
-                        formatted
-                    }
-                })
-                .collect();
-            csv.push_str(&cells.join(","));
-            csv.push('\n');
-        }
-        csv
-    }
-
+    /// Export the result set as delimited text — EVERY column, RAW values.
     fn export_delimited(&self, delimiter: &str) -> String {
-        let store = self.results_store.borrow();
-        let Some(results) = &*store else {
-            return String::new();
-        };
-        let columns = match &*store {
-            Some(r) => build_columns_from_headers(&r.columns),
-            None => default_columns(),
-        };
-        let visible: Vec<_> = columns.iter().filter(|c| self.is_col_visible(c)).collect();
-
-        let mut out = String::new();
-        // Header
-        let headers: Vec<&str> = visible.iter().map(|c| c.display_name.as_str()).collect();
-        out.push_str(&headers.join(delimiter));
-        out.push('\n');
-        // Rows
-        for row in &results.rows {
-            let cells: Vec<String> = visible
-                .iter()
-                .map(|col| {
-                    let raw = row.get(&col.header);
-                    let formatted = format_cell(raw, col.format);
-                    if delimiter == "," && (formatted.contains(',') || formatted.contains('"')) {
-                        format!("\"{}\"", formatted.replace('"', "\"\""))
-                    } else if delimiter == "\t" {
-                        formatted.replace('\t', " ")
-                    } else {
-                        formatted
-                    }
-                })
-                .collect();
-            out.push_str(&cells.join(delimiter));
-            out.push('\n');
+        match &*self.results_store.borrow() {
+            Some(results) => delimited_export(results, delimiter),
+            None => String::new(),
         }
-        out
     }
 
     async fn export_to_file(
@@ -3759,5 +3740,94 @@ mod stream_download_tests {
         // Guards against >100% if Content-Length under-reports the body.
         let s = format_download_progress("X", 2048, Some(1024));
         assert!(s.contains("100%"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::delimited_export;
+    use crate::models::search_result::{SearchResultRow, SearchResults};
+    use std::collections::HashMap;
+
+    fn results(columns: &[&str], rows: &[&[&str]]) -> SearchResults {
+        SearchResults {
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            rows: rows
+                .iter()
+                .map(|cells| {
+                    let mut values = HashMap::new();
+                    for (col, cell) in columns.iter().zip(cells.iter()) {
+                        values.insert(col.to_string(), cell.to_string());
+                    }
+                    SearchResultRow { values }
+                })
+                .collect(),
+            query: None,
+        }
+    }
+
+    #[test]
+    fn values_are_exported_raw_not_as_the_grid_displays_them() {
+        // The grid renders RA as sexagesimal; the file must carry the decimal
+        // degrees TAP returned, or the export cannot be used for analysis.
+        let r = results(
+            &["RA (J2000.0)", "Int. Time"],
+            &[&["10.684708333", "1200.0"]],
+        );
+        let csv = delimited_export(&r, ",");
+        assert!(csv.contains("10.684708333"), "{csv}");
+        assert!(!csv.contains("00:42:"), "no sexagesimal in the file: {csv}");
+        assert!(csv.contains("1200.0"), "{csv}");
+    }
+
+    #[test]
+    fn every_column_is_exported_not_just_the_visible_ones() {
+        // Hiding a column to read the table more comfortably used to remove it
+        // from every later export — a silent data loss the user never asked for.
+        let r = results(
+            &["Obs. ID", "Quality", "Provenance Name"],
+            &[&["1234567p", "good", "MegaPipe"]],
+        );
+        let csv = delimited_export(&r, ",");
+        let header = csv.lines().next().unwrap();
+        assert_eq!(header, "Obs. ID,Quality,Provenance Name");
+        assert!(csv.contains("MegaPipe"), "{csv}");
+    }
+
+    #[test]
+    fn a_value_containing_the_delimiter_is_quoted() {
+        let r = results(&["Proposal Title"], &[&["Dust, gas, and stars"]]);
+        let csv = delimited_export(&r, ",");
+        assert!(csv.contains("\"Dust, gas, and stars\""), "{csv}");
+    }
+
+    #[test]
+    fn quotes_and_newlines_inside_a_value_do_not_break_the_record() {
+        // A bare newline splits one row into two, which shifts every column
+        // after it — the reader sees corrupt data rather than an error.
+        let r = results(&["Note"], &[&["He said \"hi\"\nthen left"]]);
+        let csv = delimited_export(&r, ",");
+        let body = csv.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert!(body.starts_with('"'), "the value must be quoted: {csv}");
+        assert!(body.contains("\"\"hi\"\""), "quotes are doubled: {csv}");
+    }
+
+    #[test]
+    fn a_tab_inside_a_tsv_value_becomes_a_space() {
+        // TSV has no quoting convention, so an embedded tab would silently add
+        // a column.
+        let r = results(&["Target Name"], &[&["M31\tandromeda"]]);
+        let tsv = delimited_export(&r, "\t");
+        let row = tsv.lines().nth(1).unwrap();
+        assert_eq!(row, "M31 andromeda");
+        assert_eq!(row.matches('\t').count(), 0, "{tsv}");
+    }
+
+    #[test]
+    fn a_missing_cell_exports_as_empty_and_keeps_the_columns_aligned() {
+        let mut r = results(&["A", "B"], &[&["1", "2"]]);
+        r.rows[0].values.remove("B");
+        let csv = delimited_export(&r, ",");
+        assert_eq!(csv.lines().nth(1).unwrap(), "1,");
     }
 }
