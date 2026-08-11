@@ -229,8 +229,6 @@ mod tests {
     /// name here is actually implemented, so a stale entry cannot linger.
     const NOT_YET_PORTED: &[&str] = &[
         // Phase 3 — FITS + Cube MCP full UI coverage (CanfarDesktop 27a4889).
-        "blink_fits_tabs",
-        "switch_fits_tab",
         "set_cube_transfer",
         "show_cube_spectrum",
         "get_cube_channel_profile",

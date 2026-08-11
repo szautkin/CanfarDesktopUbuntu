@@ -104,6 +104,10 @@ pub struct FitsViewer {
     /// Persistent sync-zoom toggle (mirrors Windows `IsSyncZoomEnabled`): when on,
     /// every tab is re-zoomed to a shared angular field as it becomes active.
     sync_zoom_enabled: Rc<Cell<bool>>,
+    /// The sync-zoom toolbar toggle. Held so MCP can flip it through the SAME
+    /// handler a click fires, rather than setting the flag behind the button's
+    /// back and leaving the UI showing the opposite state.
+    sync_fov_btn: gtk::ToggleButton,
     /// Shared angular zoom in arcsec per screen pixel (mirrors Windows
     /// `SharedAngularZoom`), captured from the active tab and re-applied to each
     /// tab on activation. `0.0` = unset.
@@ -509,6 +513,7 @@ impl FitsViewer {
             suppress_sync: Rc::new(RefCell::new(false)),
             suppress_page_switch: Rc::new(RefCell::new(false)),
             sync_zoom_enabled: Rc::new(Cell::new(false)),
+            sync_fov_btn: sync_fov_btn.clone(),
             shared_angular_zoom: Rc::new(Cell::new(0.0)),
             blink_restore: RefCell::new(None),
         });
@@ -855,6 +860,24 @@ impl FitsViewer {
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         match op {
+            "switch_fits_tab" => {
+                let index = crate::mcp::tools::arg(args, "index")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| "index is required".to_string())?
+                    as usize;
+                let count = self.tabs.borrow().len();
+                if index >= count {
+                    return Err(format!(
+                        "no FITS tab at index {index} ({count} open) — list_open_tabs shows them"
+                    ));
+                }
+                self.notebook.set_current_page(Some(index as u32));
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                Ok(self.fits_view_state(&tab))
+            }
+            "blink_fits_tabs" => self.blink_command(args),
             "get_fits_view" => {
                 let tab = self
                     .current_tab()
@@ -883,23 +906,90 @@ impl FitsViewer {
                         colormap_from_str(c).ok_or_else(|| format!("unknown colormap '{c}'"))?,
                     );
                 }
-                if let Some(v) = crate::mcp::tools::arg(args, "min_cut").and_then(|v| v.as_f64()) {
+                if let Some(v) = crate::mcp::tools::arg(args, "minCut").and_then(|v| v.as_f64()) {
                     tab.set_vmin(v);
                 }
-                if let Some(v) = crate::mcp::tools::arg(args, "max_cut").and_then(|v| v.as_f64()) {
+                if let Some(v) = crate::mcp::tools::arg(args, "maxCut").and_then(|v| v.as_f64()) {
                     tab.set_vmax(v);
                 }
                 if let Some(z) = crate::mcp::tools::arg(args, "zoom").and_then(|v| v.as_f64()) {
                     tab.set_zoom(z / 100.0);
                 }
-                if let Some(n) = crate::mcp::tools::arg(args, "north_up").and_then(|v| v.as_bool())
-                {
+                if let Some(n) = crate::mcp::tools::arg(args, "northUp").and_then(|v| v.as_bool()) {
                     tab.set_north_up(n);
+                }
+                // HDU switch (image HDUs only — get_fits_view lists them).
+                if let Some(h) = crate::mcp::tools::arg(args, "hdu").and_then(|v| v.as_u64()) {
+                    let hdus = tab.hdus();
+                    let h = h as usize;
+                    if h >= hdus.len() {
+                        return Err(format!(
+                            "hdu {h} is out of range — this file has {} HDU(s)",
+                            hdus.len()
+                        ));
+                    }
+                    if !hdus[h].is_image {
+                        return Err(format!(
+                            "HDU {h} carries no image data; get_fits_view lists which are images"
+                        ));
+                    }
+                    self.switch_hdu(h);
+                }
+                // Crosshair by DISPLAY PIXEL — works with no WCS at all, unlike
+                // fits_goto_coordinate. Both halves are required together: one
+                // alone would silently place the marker on an axis the caller
+                // never specified.
+                let chx = crate::mcp::tools::arg(args, "crosshairX").and_then(|v| v.as_f64());
+                let chy = crate::mcp::tools::arg(args, "crosshairY").and_then(|v| v.as_f64());
+                match (chx, chy) {
+                    (Some(x), Some(y)) => {
+                        let d = tab.data();
+                        if x < 0.0 || y < 0.0 || x >= d.width as f64 || y >= d.height as f64 {
+                            return Err(format!(
+                                "crosshair ({x}, {y}) is outside the {}x{} image",
+                                d.width, d.height
+                            ));
+                        }
+                        tab.canvas().set_crosshair(Some((x, y)));
+                        tab.publish_current_crosshair();
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err("crosshairX and crosshairY must be passed together".to_string())
+                    }
+                }
+                if crate::mcp::tools::arg(args, "clearCrosshair")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    tab.clear_crosshair();
+                }
+                // Cross-tab toolbar toggles. Driven through the BUTTONS so their
+                // `toggled` handlers run — setting the backing flag directly would
+                // leave the toolbar showing the opposite of what is in effect.
+                if let Some(v) = crate::mcp::tools::arg(args, "syncZoom").and_then(|v| v.as_bool())
+                {
+                    self.sync_fov_btn.set_active(v);
+                }
+                if let Some(v) =
+                    crate::mcp::tools::arg(args, "linkedCrosshair").and_then(|v| v.as_bool())
+                {
+                    self.link_btn.set_active(v);
+                }
+                if let Some(v) =
+                    crate::mcp::tools::arg(args, "showHeaderPanel").and_then(|v| v.as_bool())
+                {
+                    self.header_btn.set_active(v);
+                }
+                if let Some(v) =
+                    crate::mcp::tools::arg(args, "showBookmarksPanel").and_then(|v| v.as_bool())
+                {
+                    self.coords_btn.set_active(v);
                 }
                 // Centre is applied after zoom so the pan maths uses the new scale.
                 let (cur_cx, cur_cy) = tab.viewport_center();
-                let cx = crate::mcp::tools::arg(args, "center_x").and_then(|v| v.as_f64());
-                let cy = crate::mcp::tools::arg(args, "center_y").and_then(|v| v.as_f64());
+                let cx = crate::mcp::tools::arg(args, "centerX").and_then(|v| v.as_f64());
+                let cy = crate::mcp::tools::arg(args, "centerY").and_then(|v| v.as_f64());
                 if cx.is_some() || cy.is_some() {
                     tab.set_viewport_center(cx.unwrap_or(cur_cx), cy.unwrap_or(cur_cy));
                 }
@@ -910,12 +1000,10 @@ impl FitsViewer {
                 let tab = self
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
-                let x = args
-                    .get("x")
+                let x = crate::mcp::tools::arg(args, "x")
                     .and_then(|v| v.as_i64())
                     .ok_or_else(|| "x is required".to_string())?;
-                let y = args
-                    .get("y")
+                let y = crate::mcp::tools::arg(args, "y")
                     .and_then(|v| v.as_i64())
                     .ok_or_else(|| "y is required".to_string())?;
                 if x < 0 || y < 0 {
@@ -928,10 +1016,17 @@ impl FitsViewer {
                         data.width, data.height
                     )
                 })?;
-                let mut out = json!({ "x": x, "y": y, "value": value, "has_wcs": false });
+                let mut out = json!({ "x": x, "y": y, "hasWcs": data.wcs.is_some() });
+                // A blanked pixel (NaN/Inf in the data) OMITS `value` rather than
+                // emitting a null or a NaN: NaN is not representable in JSON, and
+                // serializing one used to fail the whole call.
+                if value.is_finite() {
+                    out["value"] = json!(value);
+                } else {
+                    out["blanked"] = json!(true);
+                }
                 if let Some(w) = data.wcs.as_ref() {
                     let (ra, dec) = w.pixel_to_sky(x as f64, y as f64);
-                    out["has_wcs"] = json!(true);
                     out["ra"] = json!(ra);
                     out["dec"] = json!(dec);
                 }
@@ -944,12 +1039,10 @@ impl FitsViewer {
                 let tab = self
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
-                let ra = args
-                    .get("ra")
+                let ra = crate::mcp::tools::arg(args, "ra")
                     .and_then(|v| v.as_f64())
                     .ok_or_else(|| "ra is required".to_string())?;
-                let dec = args
-                    .get("dec")
+                let dec = crate::mcp::tools::arg(args, "dec")
                     .and_then(|v| v.as_f64())
                     .ok_or_else(|| "dec is required".to_string())?;
                 let data = tab.data();
@@ -972,9 +1065,9 @@ impl FitsViewer {
                             "moved": true,
                             "ra": ra,
                             "dec": dec,
-                            "pixel_x": px,
-                            "pixel_y": py,
-                            "in_bounds": in_bounds,
+                            "pixelX": px,
+                            "pixelY": py,
+                            "inBounds": in_bounds,
                         }))
                     }
                     None => Ok(json!({
@@ -990,8 +1083,7 @@ impl FitsViewer {
                 Ok(json!({ "count": items.len(), "bookmarks": *items }))
             }
             "save_fits_bookmark" => {
-                let name = args
-                    .get("name")
+                let name = crate::mcp::tools::arg(args, "name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
@@ -1035,8 +1127,7 @@ impl FitsViewer {
                 Ok(serde_json::to_value(&bm).unwrap_or_else(|_| json!({})))
             }
             "delete_fits_bookmark" => {
-                let name = args
-                    .get("name")
+                let name = crate::mcp::tools::arg(args, "name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
@@ -1063,23 +1154,60 @@ impl FitsViewer {
         let crosshair = tab.crosshair_world_pos();
         json!({
             "loaded": true,
-            "file_name": file_name,
-            "source_path": tab.source_file(),
-            "hdu_name": header_str(&data.header, "EXTNAME"),
+            "fileName": file_name,
+            "sourcePath": tab.source_file(),
+            "hduName": header_str(&data.header, "EXTNAME"),
             "width": data.width,
             "height": data.height,
-            "zoom_percent": tab.zoom_scale() * 100.0,
-            "center_x": cx,
-            "center_y": cy,
+            "zoomPercent": tab.zoom_scale() * 100.0,
+            "centerX": cx,
+            "centerY": cy,
             "stretch": stretch_name(tab.stretch()),
             "colormap": colormap_name(tab.colormap()),
-            "min_cut": tab.vmin(),
-            "max_cut": tab.vmax(),
-            "north_up": tab.is_north_up(),
-            "has_wcs": has_wcs,
-            "crosshair_placed": tab.crosshair_pixel_pos().is_some(),
-            "crosshair_ra": crosshair.map(|(ra, _)| ra),
-            "crosshair_dec": crosshair.map(|(_, dec)| dec),
+            "minCut": tab.vmin(),
+            "maxCut": tab.vmax(),
+            "northUp": tab.is_north_up(),
+            "hasWcs": has_wcs,
+            "crosshairPlaced": tab.crosshair_pixel_pos().is_some(),
+            "crosshairRa": crosshair.map(|(ra, _)| ra),
+            "crosshairDec": crosshair.map(|(_, dec)| dec),
+            // The crosshair's DISPLAY PIXEL too: an image with no WCS has no sky
+            // position, but the marker still has a place on the detector.
+            "crosshairX": tab.crosshair_pixel_pos().map(|(x, _)| x),
+            "crosshairY": tab.crosshair_pixel_pos().map(|(_, y)| y),
+            // HDU list + which one is displayed, so a caller can pick a valid
+            // `hdu` for set_fits_view without guessing.
+            "hdus": tab
+                .hdus()
+                .iter()
+                .enumerate()
+                .map(|(i, h)| json!({
+                    "index": i,
+                    "label": h.label(),
+                    "isImage": h.is_image,
+                }))
+                .collect::<Vec<_>>(),
+            "hdu": tab.hdu_index(),
+            // Pixel units + the true data range, so a caller can choose sane
+            // minCut/maxCut values rather than guessing at the scale.
+            "pixelUnit": header_str(&data.header, "BUNIT"),
+            "dataMin": tab.data_min(),
+            "dataMax": tab.data_max(),
+            // WCS quality: an approximate solution means sync/blink alignment is
+            // only indicative.
+            "pixelScaleArcsec": tab.angular_scale_arcsec(),
+            "northAngleDeg": tab.north_up_angle(),
+            "wcsApproximate": data.wcs.as_ref().map(|w| w.is_approximate),
+            // Cross-tab toggles + panels, mirroring the toolbar.
+            "syncZoom": self.sync_zoom_enabled.get(),
+            "linkedCrosshair": self.link_btn.is_active(),
+            "showHeaderPanel": self.header_btn.is_active(),
+            "showBookmarksPanel": self.coords_btn.is_active(),
+            "blink": self.blink_state(),
+            // Which tab this is, so a reader can correlate with list_open_tabs.
+            "tabIndex": self.notebook.current_page().unwrap_or(0),
+            "tabCount": self.tabs.borrow().len(),
+            "status": self.status_label.text().to_string(),
         })
     }
 
@@ -1499,6 +1627,69 @@ impl FitsViewer {
     }
 
     /// Stop an active cross-fade blink and drop the overlay.
+    /// Drive the blink comparison over MCP: start against a partner tab, adjust
+    /// the fade interval, pause/resume, or stop.
+    ///
+    /// Everything goes through `blink_btn`, the same toggle a click drives, so the
+    /// toolbar can never show "blinking" while the blink is stopped.
+    fn blink_command(&self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let action = crate::mcp::tools::str_arg(args, "action");
+        if !matches!(action.as_str(), "start" | "stop" | "pause" | "resume") {
+            return Err("action must be start, stop, pause, or resume".to_string());
+        }
+
+        // Interval applies with ANY action, matching the reference.
+        if let Some(ms) = crate::mcp::tools::arg(args, "intervalMs").and_then(|v| v.as_u64()) {
+            if !(500..=5000).contains(&ms) {
+                return Err(format!("intervalMs must be between 500 and 5000, got {ms}"));
+            }
+            self.blink_interval_ms.set(ms);
+        }
+
+        match action.as_str() {
+            "start" => {
+                let partner = crate::mcp::tools::arg(args, "withTabIndex")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| {
+                        "start requires withTabIndex (a fitsTabs index from list_open_tabs)"
+                            .to_string()
+                    })? as usize;
+                let count = self.tabs.borrow().len();
+                if partner >= count {
+                    return Err(format!("no FITS tab at index {partner} ({count} open)"));
+                }
+                let active = self.notebook.current_page().unwrap_or(0) as usize;
+                if partner == active {
+                    return Err(
+                        "withTabIndex must be a DIFFERENT tab than the active one".to_string()
+                    );
+                }
+                self.blink_target.set(partner);
+                self.blink_paused.set(false);
+                self.blink_btn.set_active(true);
+            }
+            "stop" => self.blink_btn.set_active(false),
+            "pause" => self.blink_paused.set(true),
+            "resume" => self.blink_paused.set(false),
+            _ => unreachable!("action was validated above"),
+        }
+        Ok(self.blink_state())
+    }
+
+    /// The blink state as `blink_fits_tabs` reports it.
+    fn blink_state(&self) -> serde_json::Value {
+        let active = *self.blink_active.borrow();
+        let partner = active
+            .then(|| self.tab_name(self.blink_target.get()))
+            .flatten();
+        serde_json::json!({
+            "active": active,
+            "paused": self.blink_paused.get(),
+            "partnerTab": partner,
+            "intervalMs": self.blink_interval_ms.get(),
+        })
+    }
+
     fn stop_blink(&self) {
         *self.blink_active.borrow_mut() = false;
         if let Some(c) = self.blink_canvas.borrow_mut().take() {

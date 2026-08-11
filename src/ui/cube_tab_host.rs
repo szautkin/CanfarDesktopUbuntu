@@ -211,8 +211,7 @@ impl CubeTabHost {
             // Load a cube path (reuses the tabbed loader; returns immediately while
             // the decode runs on a worker thread).
             "open_cube" => {
-                let path = args
-                    .get("path")
+                let path = crate::mcp::tools::arg(args, "path")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "open_cube requires a 'path' string".to_string())?;
@@ -243,8 +242,7 @@ impl CubeTabHost {
                 // Camera: reset first (as ApplyCubeView does), then apply any
                 // az/el/dist overrides on top. set_camera re-applies the interactive
                 // clamps (el ±1.4, dist 0.5–8) so an agent can't push an invalid pose.
-                if args
-                    .get("reset_camera")
+                if crate::mcp::tools::arg(args, "reset_camera")
                     .and_then(|x| x.as_bool())
                     .unwrap_or(false)
                 {
@@ -266,7 +264,7 @@ impl CubeTabHost {
                     v.gl().set_steps(x as f32);
                 }
                 if let Some(x) =
-                    crate::mcp::tools::arg(args, "spectral_scale").and_then(|x| x.as_f64())
+                    crate::mcp::tools::arg(args, "spectralScale").and_then(|x| x.as_f64())
                 {
                     v.gl().set_spectral_scale(x as f32);
                 }
@@ -279,7 +277,7 @@ impl CubeTabHost {
                 if let Some(on) = crate::mcp::tools::arg(args, "mip").and_then(|x| x.as_bool()) {
                     v.gl().set_mip(on);
                 } else if let Some(mode) =
-                    crate::mcp::tools::arg(args, "render_mode").and_then(|x| x.as_str())
+                    crate::mcp::tools::arg(args, "renderMode").and_then(|x| x.as_str())
                 {
                     let on = mode.to_ascii_lowercase().contains("max")
                         || mode.eq_ignore_ascii_case("mip");
@@ -298,7 +296,7 @@ impl CubeTabHost {
                     v.gl().set_background(rgb);
                 }
                 if let Some(on) =
-                    crate::mcp::tools::arg(args, "auto_orbit").and_then(|x| x.as_bool())
+                    crate::mcp::tools::arg(args, "autoOrbit").and_then(|x| x.as_bool())
                 {
                     v.gl().set_auto_orbit(on);
                 }
@@ -312,13 +310,11 @@ impl CubeTabHost {
                 let v = self
                     .active_viewer()
                     .ok_or_else(|| "no cube open".to_string())?;
-                let x = args
-                    .get("x")
+                let x = crate::mcp::tools::arg(args, "x")
                     .and_then(|x| x.as_u64())
                     .ok_or_else(|| "probe_cube_spectrum requires an integer 'x'".to_string())?
                     as usize;
-                let y = args
-                    .get("y")
+                let y = crate::mcp::tools::arg(args, "y")
                     .and_then(|x| x.as_u64())
                     .ok_or_else(|| "probe_cube_spectrum requires an integer 'y'".to_string())?
                     as usize;
@@ -355,31 +351,26 @@ impl CubeTabHost {
                 let v = self
                     .active_viewer()
                     .ok_or_else(|| "no cube open".to_string())?;
-                let scale = args
-                    .get("scale")
+                let scale = crate::mcp::tools::arg(args, "scale")
                     .and_then(|x| x.as_u64())
                     .unwrap_or(1)
                     .clamp(1, 4) as i32;
-                let base_w = args
-                    .get("width")
+                let base_w = crate::mcp::tools::arg(args, "width")
                     .and_then(|x| x.as_u64())
                     .unwrap_or(1024)
                     .clamp(16, 4096) as i32;
-                let base_h = args
-                    .get("height")
+                let base_h = crate::mcp::tools::arg(args, "height")
                     .and_then(|x| x.as_u64())
                     .unwrap_or(768)
                     .clamp(16, 4096) as i32;
                 let width = (base_w * scale).clamp(16, 8192);
                 let height = (base_h * scale).clamp(16, 8192);
-                let transparent = args
-                    .get("transparent")
+                let transparent = crate::mcp::tools::arg(args, "transparent")
                     .and_then(|x| x.as_bool())
                     .unwrap_or(false);
 
                 // ── File-path export (PNG / PDF) ──────────────────────────────────
-                if let Some(path_str) = args
-                    .get("path")
+                if let Some(path_str) = crate::mcp::tools::arg(args, "path")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                 {
@@ -392,8 +383,7 @@ impl CubeTabHost {
                         .and_then(|e| e.to_str())
                         .map(|s| s.to_ascii_lowercase());
                     // Format: explicit `format` wins; else infer from the extension.
-                    let fmt = args
-                        .get("format")
+                    let fmt = crate::mcp::tools::arg(args, "format")
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim().to_ascii_lowercase())
                         .unwrap_or_else(|| ext.clone().unwrap_or_else(|| "png".to_string()));
@@ -435,7 +425,7 @@ impl CubeTabHost {
                     "height": height,
                     "scale": scale,
                     "transparent": transparent,
-                    "image_base64": image_base64,
+                    "imageBase64": image_base64,
                 }))
             }
             _ => Err(format!("cube viewer op '{op}' is not supported")),
@@ -609,7 +599,7 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
         "el": el,
         "dist": dist,
         "steps": v.gl().steps(),
-        "spectral_scale": v.gl().spectral_scale(),
+        "spectralScale": v.gl().spectral_scale(),
         "channel": v.current_channel(),
         "unit": v.value_unit(),
         "dims": { "nx": nx, "ny": ny, "nz": nz },

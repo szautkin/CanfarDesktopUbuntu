@@ -446,7 +446,11 @@ mod arg_tests {
                     continue;
                 }
                 checked += 1;
-                if text.contains("args.get(") {
+                // Whitespace-insensitive: `args.get(` and the rustfmt-wrapped
+                // `args\n    .get(` are the same bug, and the naive substring
+                // check missed the second form entirely.
+                let squashed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+                if squashed.contains("args.get(") {
                     offenders.push(path.display().to_string());
                 }
             }
@@ -460,6 +464,98 @@ mod arg_tests {
             offenders.is_empty(),
             "viewer host(s) read tool arguments with `args.get(...)`, which only \
              matches one spelling; use `crate::mcp::tools::arg(args, ..)`: {offenders:?}"
+        );
+    }
+
+    /// Viewer hosts must emit camelCase JSON keys, like every other tool payload.
+    ///
+    /// The hosts BUILD tool results, so a snake_case key there reaches the wire
+    /// just as surely as one in `mcp::tools` — and is just as invisible, since no
+    /// test can see a GTK host's output. Scanned for the same reason as above.
+    #[test]
+    fn viewer_hosts_emit_camel_case_payload_keys() {
+        /// Quoted strings immediately followed by `:` — i.e. JSON keys — that are
+        /// written snake_case.
+        fn snake_keys(line: &str) -> Vec<String> {
+            let chars: Vec<char> = line.chars().collect();
+            let mut found = Vec::new();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i] != '"' {
+                    i += 1;
+                    continue;
+                }
+                let start = i + 1;
+                let mut j = start;
+                while j < chars.len() && chars[j] != '"' {
+                    j += 1;
+                }
+                if j >= chars.len() {
+                    break;
+                }
+                let key: String = chars[start..j].iter().collect();
+                let is_key = chars.get(j + 1) == Some(&':');
+                let snake = key.contains('_')
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit());
+                if is_key && snake {
+                    found.push(key);
+                }
+                i = j + 1;
+            }
+            found
+        }
+
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+        let mut offenders: Vec<String> = Vec::new();
+        let mut stack = vec![ui];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                if !text.contains("handle_viewer_command") {
+                    continue;
+                }
+                for key in text.lines().flat_map(snake_keys) {
+                    offenders.push(format!("{}: {key}", path.display()));
+                }
+                // `payload["some_key"] = ..` never matches the `"key":` shape but
+                // reaches the wire just the same.
+                for line in text.lines() {
+                    for (i, _) in line.match_indices("\"] =") {
+                        let head = &line[..i];
+                        if let Some(open) = head.rfind('"') {
+                            let key = &head[open + 1..];
+                            let snake = key.contains('_')
+                                && key.chars().all(|c| {
+                                    c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit()
+                                });
+                            if snake {
+                                offenders.push(format!("{}: {key}", path.display()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        offenders.sort();
+        offenders.dedup();
+        assert!(
+            offenders.is_empty(),
+            "viewer host(s) emit snake_case JSON keys; the reference emits camelCase: {offenders:?}"
         );
     }
 

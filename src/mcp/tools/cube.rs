@@ -134,8 +134,8 @@ pub async fn dispatch(
     // Tool name == bridge op; the host matches these verbatim.
     let result = match view_state::viewer_command("cube", name, args.clone()).await {
         Ok(v) => {
-            // A figure export returns { image_base64: ".." } → surface as an image.
-            match v.get("image_base64").and_then(|b| b.as_str()) {
+            // A figure export returns { imageBase64: ".." } → surface as an image.
+            match v.get("imageBase64").and_then(|b| b.as_str()) {
                 Some(b64) => ToolResult::Image {
                     data_base64: b64.to_string(),
                     mime: "image/png".into(),

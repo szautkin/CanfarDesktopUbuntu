@@ -40,11 +40,16 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "set_fits_view".into(),
-            description: "Steer the active FITS tab: zoom (percent, 100 = 1:1), viewport centre \
-                          (center_x/center_y in image pixels), stretch (linear|log|sqrt|squared|asinh|histogram), \
-                          colormap (grayscale|inverted|heat|viridis|plasma|inferno|magma|coolwarm), black/white cut \
-                          levels (min_cut/max_cut in physical pixel units), North-Up, or reset. Only the fields you \
-                          pass change. Returns the resulting view state. Live-applied."
+            description: "Steer the 2D FITS viewer's ACTIVE tab — every control the UI exposes. \
+                          Display: stretch, colormap, black/white cut levels (minCut/maxCut in physical pixel \
+                          units — read the current data range from get_fits_view), zoom (percent, 100 = 1:1), \
+                          North-Up, reset. HDU: `hdu` switches the displayed extension (image HDUs only — \
+                          get_fits_view lists them). Crosshair: crosshairX/Y places it at a 0-based display \
+                          pixel (works WITHOUT a WCS; fits_goto_coordinate is the RA/Dec route), \
+                          clearCrosshair removes it. Navigation: centerX/Y pans the viewport to a display \
+                          pixel. Cross-tab: syncZoom and linkedCrosshair (the toolbar toggles). Panels: \
+                          showHeaderPanel (header + image info), showBookmarksPanel (saved coordinates). \
+                          Only the fields you pass change. Returns the resulting view state. Live-applied."
                 .into(),
             input_schema: json!({
                 "type":"object",
@@ -57,7 +62,15 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "minCut": { "type":"number" },
                     "maxCut": { "type":"number" },
                     "northUp": { "type":"boolean" },
-                    "reset": { "type":"boolean", "description":"Reset stretch + zoom/pan to defaults" }
+                    "reset": { "type":"boolean", "description":"Reset stretch + zoom/pan to defaults" },
+                    "hdu": { "type":"integer", "minimum":0, "description":"Switch the displayed HDU/extension (image HDUs only; get_fits_view lists them)" },
+                    "crosshairX": { "type":"integer", "minimum":0, "description":"Place the crosshair at this 0-based display pixel (pass with crosshairY; works without a WCS)" },
+                    "crosshairY": { "type":"integer", "minimum":0, "description":"Place the crosshair at this 0-based display pixel (pass with crosshairX)" },
+                    "clearCrosshair": { "type":"boolean", "description":"Remove the placed crosshair" },
+                    "syncZoom": { "type":"boolean", "description":"The sync-zoom toolbar toggle: match angular extent across tabs" },
+                    "linkedCrosshair": { "type":"boolean", "description":"The linked-crosshair toolbar toggle: share the crosshair across tabs by sky position" },
+                    "showHeaderPanel": { "type":"boolean", "description":"Show/hide the header + image-info panel" },
+                    "showBookmarksPanel": { "type":"boolean", "description":"Show/hide the saved-coordinates panel" }
                 },
                 "additionalProperties": false
             }),
@@ -68,7 +81,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             name: "probe_fits_pixel".into(),
             description: "Read the pixel value and sky coordinate (RA/Dec, if the FITS has WCS) at a 0-based image \
                           pixel (x, y) of the active FITS tab. The value carries its physical unit in `unit` (the \
-                          FITS BUNIT) when present. Errors if no FITS is open or (x, y) is out of range."
+                          FITS BUNIT) when present. A BLANKED pixel (NaN/Inf in the data) omits `value` \
+                          entirely and sets `blanked: true` — do not read a missing value as zero. Errors \
+                          if no FITS is open or (x, y) is out of range."
                 .into(),
             input_schema: json!({
                 "type":"object",
@@ -136,6 +151,45 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "switch_fits_tab".into(),
+            description: "Bring one of the open FITS tabs to the front by its 0-based index (see \
+                          list_open_tabs). Every other FITS tool acts on the ACTIVE tab, so this is how \
+                          you choose which file they address. Returns the newly active tab's view state."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "index": { "type":"integer", "minimum":0, "description":"0-based FITS tab index from list_open_tabs" }
+                },
+                "required": ["index"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "blink_fits_tabs".into(),
+            description: "Blink-compare two open FITS tabs for the user: a WCS-aligned fade between the \
+                          ACTIVE tab and a partner. action `start` (withTabIndex = the partner's 0-based \
+                          index from list_open_tabs; both images need a valid WCS), `pause` / `resume` \
+                          (freeze the fade on the current frame), or `stop` (restores the active tab's \
+                          pre-blink zoom and centre). intervalMs (500–5000) sets the fade cycle speed and \
+                          applies with any action. Returns the blink state. Live-applied."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "action": { "type":"string", "enum":["start","stop","pause","resume"] },
+                    "withTabIndex": { "type":"integer", "minimum":0, "description":"Partner tab index; required for `start`" },
+                    "intervalMs": { "type":"integer", "minimum":500, "maximum":5000, "description":"Fade cycle length in milliseconds" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "get_fits_header".into(),
             description: "Read the FITS header cards (keyword/value/comment) of one HDU in a local FITS file on \
                           disk. Stateless — no open viewer required."
@@ -170,7 +224,9 @@ pub async fn dispatch(
         | "fits_goto_coordinate"
         | "list_fits_bookmarks"
         | "save_fits_bookmark"
-        | "delete_fits_bookmark" => Some(to_tool_result(
+        | "delete_fits_bookmark"
+        | "switch_fits_tab"
+        | "blink_fits_tabs" => Some(to_tool_result(
             viewer_command("fits", name, args.clone()).await,
         )),
         // Stateless ops — read the file directly, NOT through the bridge.
@@ -185,11 +241,11 @@ pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<Stri
     None
 }
 
-/// Map a JSON result into a `ToolResult`, promoting an `image_base64` payload to
+/// Map a JSON result into a `ToolResult`, promoting an `imageBase64` payload to
 /// a PNG image (per the family contract; unused by the current FITS ops).
 fn to_tool_result(r: Result<Value, String>) -> ToolResult {
     match r {
-        Ok(v) => match v.get("image_base64").and_then(|x| x.as_str()) {
+        Ok(v) => match v.get("imageBase64").and_then(|x| x.as_str()) {
             Some(b64) => ToolResult::Image {
                 data_base64: b64.to_string(),
                 mime: "image/png".into(),

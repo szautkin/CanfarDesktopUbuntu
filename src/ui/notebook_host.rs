@@ -567,13 +567,13 @@ impl NotebookTabHost {
                             .as_ref()
                             .map(|x| x.display().to_string());
                         json!({
-                            "notebook_id": fp.clone().unwrap_or_else(|| format!("notebook-{i}")),
+                            "notebookId": fp.clone().unwrap_or_else(|| format!("notebook-{i}")),
                             "title": p.title(),
-                            "file_path": fp,
-                            "is_active": active == Some(i as u32),
-                            "is_dirty": p.is_modified(),
-                            "cell_count": p.cell_count(),
-                            "kernel_state": kernel_keyword(&p.current_kernel_status_label()),
+                            "filePath": fp,
+                            "isActive": active == Some(i as u32),
+                            "isDirty": p.is_modified(),
+                            "cellCount": p.cell_count(),
+                            "kernelState": kernel_keyword(&p.current_kernel_status_label()),
                         })
                     })
                     .collect();
@@ -601,8 +601,8 @@ impl NotebookTabHost {
                 Ok(json!({
                     "index": idx,
                     "type": cell.cell_type,
-                    "execution_count": cell.execution_count,
-                    "output_count": outputs.len(),
+                    "executionCount": cell.execution_count,
+                    "outputCount": outputs.len(),
                     "outputs": outputs,
                 }))
             }
@@ -619,15 +619,15 @@ impl NotebookTabHost {
                     .unwrap_or_else(|| "python3".to_string());
                 Ok(json!({
                     "state": kernel_keyword(&label),
-                    "status_text": label,
-                    "kernel_name": kernel_name,
+                    "statusText": label,
+                    "kernelName": kernel_name,
                 }))
             }
 
             "add_cell" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 let cell_type = norm_cell_type(
-                    crate::mcp::tools::arg(args, "cell_type")
+                    crate::mcp::tools::arg(args, "cellType")
                         .or_else(|| crate::mcp::tools::arg(args, "type")),
                 );
                 let count = page.cell_count();
@@ -640,8 +640,7 @@ impl NotebookTabHost {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 let idx =
                     arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
-                let source = args
-                    .get("source")
+                let source = crate::mcp::tools::arg(args, "source")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "source is required".to_string())?;
                 if idx >= page.cell_count() {
@@ -666,8 +665,7 @@ impl NotebookTabHost {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 let idx =
                     arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
-                let ct = args
-                    .get("cell_type")
+                let ct = crate::mcp::tools::arg(args, "cell_type")
                     .or_else(|| crate::mcp::tools::arg(args, "type"))
                     .and_then(|v| v.as_str());
                 let ct = match ct {
@@ -761,8 +759,7 @@ impl NotebookTabHost {
 
             "save_notebook" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
-                let path = args
-                    .get("path")
+                let path = crate::mcp::tools::arg(args, "path")
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty());
@@ -776,8 +773,7 @@ impl NotebookTabHost {
             }
 
             "open_notebook" => {
-                let path = args
-                    .get("path")
+                let path = crate::mcp::tools::arg(args, "path")
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
@@ -1701,9 +1697,9 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
         CellOutput::Stream { name, text } => {
             let (t, tr) = cap(&text.joined(), TEXT_CAP);
             json!({
-                "output_type": "stream", "name": name, "text": t, "text_truncated": tr,
-                "is_error": false, "error_name": "", "traceback": "", "traceback_truncated": false,
-                "has_image": false, "has_html": false,
+                "outputType": "stream", "name": name, "text": t, "textTruncated": tr,
+                "isError": false, "errorName": "", "traceback": "", "tracebackTruncated": false,
+                "hasImage": false, "hasHtml": false,
             })
         }
         CellOutput::ExecuteResult {
@@ -1713,18 +1709,18 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
         } => {
             let (t, tr) = cap(&data.plain_text().unwrap_or_default(), TEXT_CAP);
             json!({
-                "output_type": "execute_result", "execution_count": execution_count,
-                "text": t, "text_truncated": tr, "is_error": false, "error_name": "",
-                "traceback": "", "traceback_truncated": false,
-                "has_image": data.has_image(), "has_html": data.text_html.is_some(),
+                "outputType": "execute_result", "executionCount": execution_count,
+                "text": t, "textTruncated": tr, "isError": false, "errorName": "",
+                "traceback": "", "tracebackTruncated": false,
+                "hasImage": data.has_image(), "hasHtml": data.text_html.is_some(),
             })
         }
         CellOutput::DisplayData { data, .. } => {
             let (t, tr) = cap(&data.plain_text().unwrap_or_default(), TEXT_CAP);
             json!({
-                "output_type": "display_data", "text": t, "text_truncated": tr,
-                "is_error": false, "error_name": "", "traceback": "", "traceback_truncated": false,
-                "has_image": data.has_image(), "has_html": data.text_html.is_some(),
+                "outputType": "display_data", "text": t, "textTruncated": tr,
+                "isError": false, "errorName": "", "traceback": "", "tracebackTruncated": false,
+                "hasImage": data.has_image(), "hasHtml": data.text_html.is_some(),
             })
         }
         CellOutput::Error {
@@ -1735,9 +1731,9 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
             let (t, tr) = cap(evalue, TEXT_CAP);
             let (tb, tbtr) = cap(&traceback.join("\n"), TEXT_CAP);
             json!({
-                "output_type": "error", "text": t, "text_truncated": tr,
-                "is_error": true, "error_name": ename, "traceback": tb, "traceback_truncated": tbtr,
-                "has_image": false, "has_html": false,
+                "outputType": "error", "text": t, "textTruncated": tr,
+                "isError": true, "errorName": ename, "traceback": tb, "tracebackTruncated": tbtr,
+                "hasImage": false, "hasHtml": false,
             })
         }
     }
@@ -1763,22 +1759,22 @@ fn notebook_state_json(page: &Rc<NotebookPage>, id: &str) -> serde_json::Value {
                 "index": i,
                 "type": cell.cell_type,
                 "source": src,
-                "source_truncated": trunc,
-                "execution_count": cell.execution_count,
-                "output_count": cell.outputs.len(),
+                "sourceTruncated": trunc,
+                "executionCount": cell.execution_count,
+                "outputCount": cell.outputs.len(),
             })
         })
         .collect();
     json!({
         "loaded": true,
-        "notebook_id": id,
+        "notebookId": id,
         "title": page.title(),
-        "file_path": file_path,
-        "is_dirty": page.is_modified(),
-        "kernel_state": kernel_keyword(&label),
-        "kernel_status_text": label,
-        "selected_index": page.active_cell_index(),
-        "cell_count": doc.cells.len(),
+        "filePath": file_path,
+        "isDirty": page.is_modified(),
+        "kernelState": kernel_keyword(&label),
+        "kernelStatusText": label,
+        "selectedIndex": page.active_cell_index(),
+        "cellCount": doc.cells.len(),
         "cells": cells,
     })
 }

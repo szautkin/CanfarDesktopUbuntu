@@ -266,7 +266,7 @@ pub async fn dispatch(
 
     match view_state::viewer_command("notebook", op, args.clone()).await {
         Ok(v) => {
-            if let Some(b64) = v.get("image_base64").and_then(|x| x.as_str()) {
+            if let Some(b64) = v.get("imageBase64").and_then(|x| x.as_str()) {
                 Some(ToolResult::Image {
                     data_base64: b64.to_string(),
                     mime: "image/png".to_string(),
