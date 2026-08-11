@@ -70,8 +70,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 candidatesToProbe — up to 10 known-but-not-yet-discovered images to probe next; (6) \
                 allDiscovered — every image the cache knows about; (7) knownPackageCount — distinct \
                 package names across the cache; (8) partialMatches — ranked near-misses \
-                {imageID, score(0-1)}, populated ONLY when imageIDs is empty AND you supplied \
-                constraints. When imageIDs is empty but candidatesToProbe is non-empty, the answer is \
+                {imageID, score(0-1), missing[]}, populated ONLY when imageIDs is empty AND you \
+                supplied constraints; `missing` names the constraints that image failed, so you \
+                can relax or re-target the query rather than guessing. When imageIDs is empty but candidatesToProbe is non-empty, the answer is \
                 \"unknown — here's what to probe next.\""
                 .to_string(),
             input_schema: json!({
@@ -338,14 +339,14 @@ fn build_query(args: &Value) -> PackageQuery {
 /// * `matched`  — strict AND-match ids, already ranked by the store (score desc, id asc).
 /// * `known`    — every image the cache knows about (sorted; success + failure attempts).
 /// * `successful` — ids with a usable manifest (the store's empty-query result).
-/// * `partials` — `(id, satisfied_terms)` near-misses (empty unless we asked for them).
+/// * `partials` — ranked near-misses (empty unless we asked for them).
 /// * `known_package_count` — distinct package names across the cache.
 fn shape_find_output(
     query: &PackageQuery,
     matched: Vec<String>,
     known: Vec<String>,
     successful: Vec<String>,
-    partials: Vec<(String, u32)>,
+    partials: Vec<crate::services::manifest_store::PartialMatch>,
     known_package_count: usize,
 ) -> Value {
     let match_count = matched.len();
@@ -373,10 +374,12 @@ fn shape_find_output(
         let total = query.total_terms().max(1) as f64;
         partials
             .into_iter()
-            .map(|(id, score)| (id, round4(score as f64 / total)))
-            .filter(|(_, frac)| *frac >= PARTIAL_MIN_SCORE)
+            .map(|p| (round4(p.satisfied_terms as f64 / total), p))
+            .filter(|(frac, _)| *frac >= PARTIAL_MIN_SCORE)
             .take(PARTIAL_LIMIT)
-            .map(|(id, frac)| json!({ "imageID": id, "score": frac }))
+            // `missing` names the constraints this image failed — the difference
+            // between "0.67, keep looking" and "0.67, it lacks cfitsio".
+            .map(|(frac, p)| json!({ "imageID": p.image_id, "score": frac, "missing": p.missing }))
             .collect()
     } else {
         Vec::new()
@@ -547,6 +550,16 @@ mod tests {
         assert_eq!(ids(&out, "allDiscovered"), known);
     }
 
+    /// A near-miss fixture. `missing` is left empty: these tests exercise the
+    /// ranking and threshold, and the labels come from PackageQuery's own tests.
+    fn pm(id: &str, satisfied_terms: u32) -> crate::services::manifest_store::PartialMatch {
+        crate::services::manifest_store::PartialMatch {
+            image_id: id.to_string(),
+            satisfied_terms,
+            missing: Vec::new(),
+        }
+    }
+
     #[test]
     fn partials_only_when_matched_empty_and_query_non_empty() {
         // total_terms = 6 packages → fractions 5/6≈0.833, 4/6≈0.667, 2/6≈0.333.
@@ -559,9 +572,9 @@ mod tests {
             s(&["img:near", "img:other", "img:low"]),
             s(&["img:near", "img:other", "img:low"]),
             vec![
-                ("img:near".to_string(), 5),
-                ("img:other".to_string(), 4),
-                ("img:low".to_string(), 2), // below 0.5 → filtered out
+                pm("img:near", 5),
+                pm("img:other", 4),
+                pm("img:low", 2), // below 0.5 → filtered out
             ],
             3,
         );
@@ -581,7 +594,7 @@ mod tests {
             s(&["img:hit"]),
             s(&["img:hit"]),
             s(&["img:hit"]),
-            vec![("img:fake".to_string(), 1)],
+            vec![pm("img:fake", 1)],
             1,
         );
         assert_eq!(ids(&out, "imageIDs"), s(&["img:hit"]));
@@ -595,7 +608,7 @@ mod tests {
             Vec::new(),
             s(&["img:x"]),
             s(&["img:x"]),
-            vec![("img:x".to_string(), 3)],
+            vec![pm("img:x", 3)],
             5,
         );
         assert_eq!(out["partialMatches"].as_array().unwrap().len(), 0);

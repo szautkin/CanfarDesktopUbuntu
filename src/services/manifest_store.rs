@@ -16,6 +16,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// One near-miss image: how much of the query it satisfies, and what it lacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialMatch {
+    pub image_id: String,
+    /// Count of satisfied constraint terms (the caller turns this into a 0..1
+    /// fraction against the query's total).
+    pub satisfied_terms: u32,
+    /// Labels of the constraints this image does NOT satisfy, in query order.
+    pub missing: Vec<String>,
+}
+
 /// In-memory mirror of the on-disk cache, hydrated lazily.
 #[derive(Default)]
 struct Inner {
@@ -130,25 +141,36 @@ impl JsonManifestStore {
         hits.into_iter().map(|(id, _)| id).collect()
     }
 
-    /// Ranked partial matches: `(image_id, score)` for every successful manifest
-    /// that satisfies at least one term of `q`, best score first (ties by image
-    /// id). An empty query returns nothing (there is no partial coverage to rank).
-    pub fn search_partial(&self, q: &PackageQuery) -> Vec<(String, u32)> {
+    /// Ranked partial matches for every successful manifest that satisfies at
+    /// least one term of `q`, best score first (ties by image id). An empty
+    /// query returns nothing (there is no partial coverage to rank).
+    pub fn search_partial(&self, q: &PackageQuery) -> Vec<PartialMatch> {
         let mut inner = self.lock();
         self.ensure_hydrated(&mut inner);
         if q.is_empty() {
             return Vec::new();
         }
-        let mut results: Vec<(String, u32)> = Vec::new();
+        let mut results: Vec<PartialMatch> = Vec::new();
         for (id, outcome) in inner.loaded.iter() {
             if let DiscoveryOutcome::Manifest(m) = &outcome.outcome {
-                let score = q.score(m);
-                if score > 0 {
-                    results.push((id.clone(), score));
+                let satisfied_terms = q.score(m);
+                if satisfied_terms > 0 {
+                    results.push(PartialMatch {
+                        image_id: id.clone(),
+                        satisfied_terms,
+                        // Computed here, where the manifest is still in hand.
+                        // The caller only sees ids, so it could not work out
+                        // WHICH constraints failed on its own.
+                        missing: q.unmet(m),
+                    });
                 }
             }
         }
-        sort_ranked(&mut results);
+        results.sort_by(|a, b| {
+            b.satisfied_terms
+                .cmp(&a.satisfied_terms)
+                .then_with(|| a.image_id.cmp(&b.image_id))
+        });
         results
     }
 
@@ -451,9 +473,9 @@ mod tests {
         // Partial: both a:1 and b:1 have astropy; a:1 outscores b:1.
         let partial = store.search_partial(&py_query(&["astropy", "numpy"]));
         assert_eq!(partial.len(), 2);
-        assert_eq!(partial[0].0, "a:1");
-        assert!(partial[0].1 > partial[1].1);
-        assert_eq!(partial[1].0, "b:1");
+        assert_eq!(partial[0].image_id, "a:1");
+        assert!(partial[0].satisfied_terms > partial[1].satisfied_terms);
+        assert_eq!(partial[1].image_id, "b:1");
 
         // Failures appear in known_images but never in search results.
         assert_eq!(

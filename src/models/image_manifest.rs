@@ -229,51 +229,66 @@ impl PackageQuery {
             && self.r.is_none()
     }
 
-    /// `(satisfied, total)` individual constraint terms for `m`. Each package name and each
-    /// capability counts as one term; the OS/python/R filters each count as one term when
-    /// populated.
-    fn tally(&self, m: &ImageManifest) -> (u32, u32) {
-        let mut satisfied = 0u32;
-        let mut total = 0u32;
+    /// Every individual constraint term against `m`, as `(label, satisfied)`.
+    ///
+    /// One walk feeds both the score and the "what's missing" list, so a count
+    /// can never disagree with the names it summarises. Each package name and
+    /// each capability is one term; the OS/python/R filters are one term each
+    /// when populated.
+    ///
+    /// The labels are the ones the reference reports: bare `osFamily` /
+    /// `osVersion`, and `kind:name` for the rest. Its package labels name the
+    /// specific family (`dpkg:`, `rpm:`, `python:`) because its query is
+    /// per-family; ours matches one list across every family, so `package:` is
+    /// the honest label for the term that was actually asked.
+    fn terms(&self, m: &ImageManifest) -> Vec<(String, bool)> {
+        let mut terms: Vec<(String, bool)> = Vec::new();
 
         if let Some(fam) = &self.os_family {
-            total += 1;
-            if opt_eq_ignore_case(&m.os_family, fam) {
-                satisfied += 1;
-            }
+            terms.push((
+                "osFamily".to_string(),
+                opt_eq_ignore_case(&m.os_family, fam),
+            ));
         }
         if let Some(ver) = &self.os_version {
-            total += 1;
-            if opt_eq_ignore_case(&m.os_version, ver) {
-                satisfied += 1;
-            }
+            terms.push((
+                "osVersion".to_string(),
+                opt_eq_ignore_case(&m.os_version, ver),
+            ));
         }
         for pkg in &self.packages {
-            total += 1;
-            if m.contains_package(pkg) {
-                satisfied += 1;
-            }
+            terms.push((format!("package:{pkg}"), m.contains_package(pkg)));
         }
         for cap in &self.capabilities {
-            total += 1;
-            if m.has_capability(cap) {
-                satisfied += 1;
-            }
+            terms.push((format!("capability:{cap}"), m.has_capability(cap)));
         }
         if let Some(want) = self.python {
-            total += 1;
-            if m.has_python() == want {
-                satisfied += 1;
-            }
+            terms.push(("hasPython".to_string(), m.has_python() == want));
         }
         if let Some(want) = self.r {
-            total += 1;
-            if m.has_r() == want {
-                satisfied += 1;
-            }
+            terms.push(("hasR".to_string(), m.has_r() == want));
         }
 
-        (satisfied, total)
+        terms
+    }
+
+    /// `(satisfied, total)` individual constraint terms for `m`.
+    fn tally(&self, m: &ImageManifest) -> (u32, u32) {
+        let terms = self.terms(m);
+        let satisfied = terms.iter().filter(|(_, ok)| *ok).count() as u32;
+        (satisfied, terms.len() as u32)
+    }
+
+    /// The labels of the constraints `m` does NOT satisfy, in query order.
+    ///
+    /// This is what turns a bare score into something actionable: "0.67" tells
+    /// an agent to keep looking, `["package:cfitsio"]` tells it what to look for.
+    pub fn unmet(&self, m: &ImageManifest) -> Vec<String> {
+        self.terms(m)
+            .into_iter()
+            .filter(|(_, ok)| !*ok)
+            .map(|(label, _)| label)
+            .collect()
     }
 
     /// True when the manifest satisfies every populated constraint.
@@ -461,6 +476,58 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn unmet_names_exactly_the_constraints_that_failed() {
+        let m = ubuntu_manifest();
+        let q = PackageQuery {
+            packages: vec!["numpy".to_string(), "casacore".to_string()],
+            capabilities: vec![capability::GPU.to_string(), "fitsio".to_string()],
+            os_family: Some("almalinux".to_string()),
+            os_version: Some("22.04".to_string()),
+            r: Some(false),
+            ..Default::default()
+        };
+        // Satisfied: numpy, gpu, osVersion. Unmet: the rest, in query order.
+        assert_eq!(
+            q.unmet(&m),
+            vec![
+                "osFamily".to_string(),
+                "package:casacore".to_string(),
+                "capability:fitsio".to_string(),
+                "hasR".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_unmet_count_always_agrees_with_the_score() {
+        // Both come from one walk over the terms, so they cannot drift apart —
+        // a score of 3/6 must be accompanied by exactly 3 named gaps.
+        let m = ubuntu_manifest();
+        let q = PackageQuery {
+            packages: vec!["numpy".to_string(), "casacore".to_string()],
+            capabilities: vec![capability::GPU.to_string(), "fitsio".to_string()],
+            os_family: Some("almalinux".to_string()),
+            os_version: Some("22.04".to_string()),
+            r: Some(false),
+            ..Default::default()
+        };
+        let total = q.total_terms();
+        assert_eq!(q.unmet(&m).len() as u32, total - q.score(&m));
+    }
+
+    #[test]
+    fn a_fully_satisfied_query_has_nothing_missing() {
+        let m = ubuntu_manifest();
+        let q = PackageQuery {
+            packages: vec!["numpy".to_string()],
+            os_family: Some("ubuntu".to_string()),
+            ..Default::default()
+        };
+        assert!(q.unmet(&m).is_empty());
+        assert!(q.matches(&m));
     }
 
     #[test]
