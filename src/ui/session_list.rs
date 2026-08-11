@@ -1,3 +1,4 @@
+use crate::models::session::INTERACTIVE_SESSION_TYPES;
 use crate::models::Session;
 use crate::state::AppServices;
 use crate::ui::card_header::card_header;
@@ -20,16 +21,16 @@ const AUTO_REFRESH_SECS: u32 = 15;
 /// visible list alone would have filtered by whatever sat at that index in the
 /// stale copies.
 const SESSION_FILTER_TYPES: [&str; 6] = [
-    "All",
-    "notebook",
-    "desktop",
-    "carta",
-    "contributed",
-    "firefly",
+    SESSION_FILTER_ALL,
+    INTERACTIVE_SESSION_TYPES[0],
+    INTERACTIVE_SESSION_TYPES[1],
+    INTERACTIVE_SESSION_TYPES[2],
+    INTERACTIVE_SESSION_TYPES[3],
+    INTERACTIVE_SESSION_TYPES[4],
 ];
 
 /// The `All` entry — no filter, rather than a type named "All".
-const SESSION_FILTER_ALL: &str = SESSION_FILTER_TYPES[0];
+const SESSION_FILTER_ALL: &str = "All";
 
 /// Which session type the filter dropdown's `index` selects, or `None` for
 /// "All" — and for an index the list does not have, which is the safe reading:
@@ -505,6 +506,25 @@ mod tests {
         // Safer than hiding sessions the user has running.
         assert_eq!(selected_session_filter(SESSION_FILTER_TYPES.len()), None);
         assert_eq!(selected_session_filter(999), None);
+    }
+
+    #[test]
+    fn the_filter_offers_exactly_the_interactive_types() {
+        use crate::models::session::INTERACTIVE_SESSION_TYPES;
+
+        // Built from the shared list, so a type added to the launcher shows up
+        // here automatically rather than being unfilterable.
+        assert_eq!(
+            SESSION_FILTER_TYPES.len(),
+            INTERACTIVE_SESSION_TYPES.len() + 1,
+            "the filter is `All` plus every interactive type"
+        );
+        for session_type in INTERACTIVE_SESSION_TYPES {
+            assert!(
+                SESSION_FILTER_TYPES.contains(&session_type),
+                "{session_type}"
+            );
+        }
     }
 
     #[test]

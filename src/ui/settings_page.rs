@@ -1,5 +1,6 @@
 use crate::config::{api_endpoint_defaults as dflt, AppConfig};
 use crate::helpers::registry_credential_test::{test_registry_credentials, CredTestResult};
+use crate::models::session::INTERACTIVE_SESSION_TYPES;
 use crate::services::ai_compute_service::AIComputeService;
 use crate::services::image_discovery_settings_service::ImageDiscoverySettingsService;
 use crate::services::mcp_settings_service::{McpSettingsService, PortalDefaultsService};
@@ -187,12 +188,11 @@ impl SettingsPage {
         // Default session type (AppConfig).
         let type_row = adw::ComboRow::new();
         type_row.set_title(crate::tr_en!("Session Type"));
-        let types =
-            gtk::StringList::new(&["notebook", "desktop", "carta", "contributed", "firefly"]);
+        let types = gtk::StringList::new(&INTERACTIVE_SESSION_TYPES);
         type_row.set_model(Some(&types));
 
         let current_type = self.config.borrow().default_session_type.clone();
-        let type_names = ["notebook", "desktop", "carta", "contributed", "firefly"];
+        let type_names = INTERACTIVE_SESSION_TYPES;
         let type_idx = type_names
             .iter()
             .position(|&t| t == current_type)

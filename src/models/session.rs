@@ -1,5 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+/// Skaha session types the user can launch INTERACTIVELY, in the order the UI
+/// offers them.
+///
+/// These strings go to Skaha verbatim, so they are identifiers, never display
+/// labels. They live here rather than in a page because three surfaces need the
+/// same list — the launch form builds its dropdown from it, Settings writes one
+/// of them into `default_session_type`, and the session strip filters by it.
+/// Settings kept its own copy, so a type added to the launcher alone could have
+/// been saved as a default the launcher then failed to preselect.
+pub const INTERACTIVE_SESSION_TYPES: [&str; 5] =
+    ["notebook", "desktop", "carta", "contributed", "firefly"];
+
+/// Everything the Advanced tab can submit: the interactive types plus batch.
+pub const LAUNCHABLE_SESSION_TYPES: [&str; 6] = [
+    "notebook",
+    "desktop",
+    "carta",
+    "contributed",
+    "firefly",
+    "headless",
+];
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SkahaSessionResponse {
     pub id: String,
@@ -94,6 +116,77 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_advanced_tab_offers_everything_the_interactive_list_does_plus_batch() {
+        // The two lists differ on purpose — only the Advanced tab submits batch
+        // jobs — but it must not silently LOSE an interactive type when one is
+        // added to the shared list.
+        for session_type in INTERACTIVE_SESSION_TYPES {
+            assert!(
+                LAUNCHABLE_SESSION_TYPES.contains(&session_type),
+                "`{session_type}` can be launched interactively but not from Advanced"
+            );
+        }
+        assert!(
+            LAUNCHABLE_SESSION_TYPES.contains(&"headless"),
+            "the Advanced tab is the only route to a batch job"
+        );
+        assert!(
+            !INTERACTIVE_SESSION_TYPES.contains(&"headless"),
+            "a batch job is not an interactive session and has no Open URL"
+        );
+    }
+
+    #[test]
+    fn a_session_type_is_a_skaha_identifier_not_a_display_label() {
+        // These strings go to Skaha verbatim. A translated or capitalised label
+        // here would be rejected by the platform.
+        for session_type in LAUNCHABLE_SESSION_TYPES {
+            assert_eq!(
+                session_type,
+                session_type.to_lowercase(),
+                "`{session_type}` is sent to Skaha as-is"
+            );
+            assert!(
+                !session_type.contains(' '),
+                "`{session_type}` is sent to Skaha as-is"
+            );
+        }
+    }
+
+    #[test]
+    fn is_headless_agrees_with_the_launchable_list() {
+        // `is_headless` decides whether a session gets a card and counts toward
+        // the interactive cap, so it has to recognise the exact string the
+        // launcher submits.
+        let mut session = Session::from(SkahaSessionResponse {
+            id: "1".to_string(),
+            userid: None,
+            image: None,
+            session_type: Some("headless".to_string()),
+            status: None,
+            name: None,
+            start_time: None,
+            expiry_time: None,
+            connect_url: None,
+            requested_ram: None,
+            requested_cpu_cores: None,
+            requested_gpu_cores: None,
+            ram_in_use: None,
+            cpu_cores_in_use: None,
+            is_fixed_resources: None,
+        });
+        assert!(session.is_headless());
+
+        for interactive in INTERACTIVE_SESSION_TYPES {
+            session.session_type = interactive.to_string();
+            assert!(
+                !session.is_headless(),
+                "`{interactive}` is interactive and must render as a card"
+            );
+        }
+    }
 
     /// A session must compare unequal when anything the card SHOWS changes.
     ///
