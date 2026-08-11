@@ -38,9 +38,12 @@ fn saved_query_badge(
 /// stored in [`SearchFormState`], and back again when a saved search is
 /// restored — so both directions MUST read the same table. Module-level rather
 /// than local for exactly that reason.
-const SPECTRAL_UNITS: [&str; 4] = ["nm", "Angstrom", "um", "mm"];
-const TIME_UNITS: [&str; 4] = ["s", "m", "h", "d"];
-const PIXEL_SCALE_UNITS: [&str; 3] = ["arcsec", "arcmin", "deg"];
+//
+// The three unit tables come from `unit_converter`, which is what decides
+// which units mean anything — the page only renders them. Keeping a second
+// copy here is how the dropdown ended up offering 4 of the 14 units the
+// converter has always handled.
+use crate::helpers::unit_converter::{PIXEL_SCALE_UNITS, SPECTRAL_UNITS, TIME_UNITS};
 const DATE_PRESETS: [&str; 4] = ["", "Last 24 hours", "Last week", "Last month"];
 const INTENTS: [&str; 3] = ["", "science", "calibration"];
 const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
@@ -59,6 +62,20 @@ fn split_facet(joined: &str) -> Vec<String> {
 /// Position of `value` in a dropdown table, or 0 (the first entry) when absent.
 fn dropdown_index(table: &[&str], value: &str) -> u32 {
     table.iter().position(|v| *v == value).unwrap_or(0) as u32
+}
+
+/// Position of a spectral unit, tolerating every spelling the converter accepts.
+///
+/// Saved searches persist the unit as text, and older records hold `Angstrom`
+/// and `um` where the list now carries `Å` and `µm`. Exact matching misses those
+/// and falls back to entry 0 — which is `m`, so a restored 500 nm search would
+/// silently become 500 metres.
+fn spectral_unit_index(value: &str) -> u32 {
+    match unit_converter::canonical_spectral_unit(value) {
+        Some(canonical) => dropdown_index(&SPECTRAL_UNITS, canonical),
+        // Unknown unit: keep the caller's first entry rather than inventing one.
+        None => 0,
+    }
 }
 
 mod mcp;
@@ -1049,7 +1066,7 @@ impl SearchPage {
         self.bandpass_width.set_text(&s.bandpass_width_raw);
         self.rest_frame_energy.set_text(&s.rest_frame_energy_raw);
         self.spectral_unit
-            .set_selected(dropdown_index(&SPECTRAL_UNITS, &s.wavelength_unit));
+            .set_selected(spectral_unit_index(&s.wavelength_unit));
         self.spectral_cutout.set_active(s.spectral_cutout);
 
         self.max_records.set_value(s.max_records as f64);

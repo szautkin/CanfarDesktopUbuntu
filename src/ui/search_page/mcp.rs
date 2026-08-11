@@ -11,8 +11,8 @@
 //! without widening their visibility for everyone else.
 
 use super::{
-    dropdown_index, SearchPage, DATE_PRESETS, INTENTS, PIXEL_SCALE_UNITS, RESOLVER_SERVICES,
-    SPECTRAL_UNITS, TIME_UNITS,
+    dropdown_index, spectral_unit_index, SearchPage, DATE_PRESETS, INTENTS, PIXEL_SCALE_UNITS,
+    RESOLVER_SERVICES, SPECTRAL_UNITS, TIME_UNITS,
 };
 use crate::models::search_result::{build_columns_from_headers, default_columns};
 use gtk4::prelude::*;
@@ -452,8 +452,7 @@ impl SearchPage {
             self.rest_frame_energy.set_text(&v);
         }
         if let Some(v) = text("spectralUnit") {
-            self.spectral_unit
-                .set_selected(dropdown_index(&SPECTRAL_UNITS, &v));
+            self.spectral_unit.set_selected(spectral_unit_index(&v));
         }
         if let Some(v) = arg("spectralCutout").and_then(Value::as_bool) {
             self.spectral_cutout.set_active(v);

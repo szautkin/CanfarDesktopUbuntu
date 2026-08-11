@@ -91,19 +91,19 @@ fn form_properties() -> Value {
         "resolver": {"type": "string", "enum": ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"], "description": "Name-resolver service. NONE searches by name only, with no coordinate constraint."},
         "radius": {"type": "number", "minimum": 0, "maximum": 90, "description": "Cone radius in degrees."},
         "pixelScale": {"type": "string", "description": "Pixel scale. Accepts range syntax: `0.1..1.0`, `> 0.2`, `<= 5`. A bare value means EQUALS."},
-        "pixelScaleUnit": {"type": "string", "enum": ["arcsec", "arcmin", "deg"]},
+        "pixelScaleUnit": {"type": "string", "enum": crate::helpers::unit_converter::PIXEL_SCALE_UNITS},
         "spatialCutout": {"type": "boolean", "description": "Restrict to data supporting spatial cutouts."},
         "observationDate": {"type": "string", "description": "Observation date or range (`2020-01-01..2021-01-01`)."},
         "datePreset": {"type": "string", "enum": ["", "Last 24 hours", "Last week", "Last month"]},
         "integrationTime": {"type": "string", "description": "Integration time. Range syntax accepted."},
         "timeSpan": {"type": "string", "description": "Time span. Range syntax accepted."},
-        "timeUnit": {"type": "string", "enum": ["s", "m", "h", "d"]},
+        "timeUnit": {"type": "string", "enum": crate::helpers::unit_converter::TIME_UNITS},
         "spectralCoverage": {"type": "string", "description": "Spectral coverage. Range syntax accepted."},
         "spectralSampling": {"type": "string", "description": "Spectral sampling. Range syntax accepted."},
         "resolvingPower": {"type": "string", "description": "Resolving power. Range syntax accepted."},
         "bandpassWidth": {"type": "string", "description": "Bandpass width. Range syntax accepted."},
         "restFrameEnergy": {"type": "string", "description": "Rest-frame energy. Range syntax accepted."},
-        "spectralUnit": {"type": "string", "enum": ["nm", "Angstrom", "um", "mm"]},
+        "spectralUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS},
         "spectralCutout": {"type": "boolean", "description": "Restrict to data supporting spectral cutouts."},
         "maxRecords": {"type": "integer", "minimum": 1, "maximum": 30000, "description": "Row limit (MAXREC)."}
     })
@@ -415,6 +415,42 @@ fn apply_to_store(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The advertised unit enums must be the SAME lists the form renders and the
+    /// converter understands.
+    ///
+    /// They were three separate hand-written copies, and the schema's had gone
+    /// stale: it offered four spectral units where the converter handles
+    /// fourteen, so an agent asking to search in GHz was told that argument was
+    /// invalid. Binding them to one source is the fix; this proves the binding
+    /// survives, since a literal here would compile perfectly well.
+    #[test]
+    fn the_advertised_units_are_the_ones_the_app_supports() {
+        use crate::helpers::unit_converter::{PIXEL_SCALE_UNITS, SPECTRAL_UNITS, TIME_UNITS};
+
+        let props = form_properties();
+        let enum_of = |key: &str| -> Vec<String> {
+            props[key]["enum"]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{key}` should declare an enum"))
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+
+        assert_eq!(enum_of("spectralUnit"), SPECTRAL_UNITS.to_vec());
+        assert_eq!(enum_of("timeUnit"), TIME_UNITS.to_vec());
+        assert_eq!(enum_of("pixelScaleUnit"), PIXEL_SCALE_UNITS.to_vec());
+
+        // And every advertised spectral unit must actually convert, or the agent
+        // is offered an option that silently drops its constraint.
+        for unit in enum_of("spectralUnit") {
+            assert!(
+                crate::helpers::unit_converter::to_metres(1.0, &unit).is_some(),
+                "`{unit}` is advertised but does not convert"
+            );
+        }
+    }
 
     fn store() -> Arc<InMemoryProposalStore> {
         Arc::new(InMemoryProposalStore::new())
