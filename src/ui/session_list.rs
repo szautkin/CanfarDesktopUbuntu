@@ -16,6 +16,10 @@ const AUTO_REFRESH_SECS: u32 = 15;
 pub struct SessionListView {
     pub container: gtk::Box,
     cards_box: gtk::Box,
+    /// The sessions the currently-rendered cards were built from, in display
+    /// order. Compared against each poll so unchanged cards are left alone —
+    /// see `reconcile_cards`.
+    rendered: RefCell<Vec<Session>>,
     empty_label: gtk::Label,
     loading_spinner: gtk::Spinner,
     count_label: gtk::Label,
@@ -92,6 +96,7 @@ impl SessionListView {
         let view = Rc::new(SessionListView {
             container,
             cards_box,
+            rendered: RefCell::new(Vec::new()),
             empty_label,
             loading_spinner,
             count_label,
@@ -217,11 +222,41 @@ impl SessionListView {
         }
     }
 
-    fn update_sessions(&self, sessions: Vec<Session>) {
+    /// Bring the card strip in line with `visible`, rebuilding only what changed.
+    ///
+    /// The strip polls every 15 seconds. Clearing and re-appending every card on
+    /// each poll reset the horizontal scroll position and dropped hover/focus
+    /// four times a minute — while in the common case nothing about the sessions
+    /// had changed at all. Mirrors the reference's `ReconcileCards`.
+    ///
+    /// A card is reused only when its session compares EQUAL, so any visible
+    /// field (status, in-use CPU/RAM, expiry) still refreshes; the card is built
+    /// in one pass from a `Session`, so equality is the honest test for "does
+    /// this need redrawing".
+    fn reconcile_cards(&self, visible: &[&Session]) {
+        let mut rendered = self.rendered.borrow_mut();
+
+        // Fast path: nothing changed, so touch no widgets at all.
+        if rendered.len() == visible.len() && rendered.iter().zip(visible).all(|(a, b)| a == *b) {
+            return;
+        }
+
+        // Any structural or content change rebuilds from scratch. Reusing widgets
+        // across a reorder would need per-field setters on SessionCard; the win
+        // that matters is the fast path above, which covers the steady state.
         while let Some(child) = self.cards_box.first_child() {
             self.cards_box.remove(&child);
         }
+        for session in visible {
+            let card = SessionCard::new(session, self.on_action.clone());
+            self.cards_box.append(card.widget());
+        }
 
+        rendered.clear();
+        rendered.extend(visible.iter().map(|s| (*s).clone()));
+    }
+
+    fn update_sessions(&self, sessions: Vec<Session>) {
         let filter = self.active_filter();
         // Headless (batch) jobs are shown in the Batch Jobs panel, never here, and
         // never count toward the interactive-session cap (matches the reference).
@@ -244,10 +279,7 @@ impl SessionListView {
             .set_text(&crate::tr_fmt!(count_tmpl, count));
         self.empty_label.set_visible(visible.is_empty());
 
-        for session in &visible {
-            let card = SessionCard::new(session, self.on_action.clone());
-            self.cards_box.append(card.widget());
-        }
+        self.reconcile_cards(&visible);
 
         // Fire desktop notifications for state transitions
         check_notifications(

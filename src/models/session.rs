@@ -29,7 +29,11 @@ pub struct SkahaSessionResponse {
     pub is_fixed_resources: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `PartialEq` is load-bearing, not incidental: the session strip polls every
+/// 15s, and comparing the new snapshot against the rendered one is what lets it
+/// leave unchanged cards alone instead of rebuilding the whole strip — which
+/// reset the user's scroll position and dropped hover four times a minute.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct Session {
     pub id: String,
@@ -90,6 +94,61 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session must compare unequal when anything the card SHOWS changes.
+    ///
+    /// The session strip skips its rebuild when the polled sessions equal the
+    /// rendered ones, so a field that failed to participate in equality would
+    /// leave a stale card on screen — a session shown as Running long after it
+    /// died. Adding `#[serde(skip)]` or a non-comparable field to `Session`
+    /// should fail here.
+    #[test]
+    fn a_changed_session_compares_unequal_so_its_card_redraws() {
+        let json = r#"{
+            "id": "abc123",
+            "userid": "testuser",
+            "image": "images.canfar.net/skaha/notebook:1.0",
+            "type": "notebook",
+            "status": "Running",
+            "name": "notebook1",
+            "startTime": "2024-01-15T10:00:00Z",
+            "expiryTime": "2024-01-22T10:00:00Z",
+            "connectURL": "https://example.com/session/abc123",
+            "requestedRAM": "8G",
+            "requestedCPUCores": "2",
+            "requestedGPUCores": "0"
+        }"#;
+        let parsed: SkahaSessionResponse = serde_json::from_str(json).unwrap();
+        let a = Session::from(parsed.clone());
+
+        // Identical payload → equal, so the strip leaves the card alone.
+        assert_eq!(a, Session::from(parsed.clone()));
+
+        // Every field the card renders must break equality when it changes.
+        for mutate in [
+            "\"status\": \"Running\"",
+            "\"requestedRAM\": \"8G\"",
+            "\"requestedCPUCores\": \"2\"",
+            "\"expiryTime\": \"2024-01-22T10:00:00Z\"",
+            "\"name\": \"notebook1\"",
+        ] {
+            let changed = json.replace(
+                mutate,
+                &mutate
+                    .replace("8G", "16G")
+                    .replace("Running", "Terminating")
+                    .replace("\"2\"", "\"4\"")
+                    .replace("2024-01-22", "2024-01-29")
+                    .replace("notebook1", "notebook2"),
+            );
+            let b: SkahaSessionResponse = serde_json::from_str(&changed).unwrap();
+            assert_ne!(
+                a,
+                Session::from(b),
+                "changing {mutate} must make the session compare unequal"
+            );
+        }
+    }
 
     #[test]
     fn deserialize_skaha_response() {
