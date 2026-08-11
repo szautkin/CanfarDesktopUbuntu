@@ -13,6 +13,34 @@ type OptionalCallback<T> = Rc<RefCell<Option<Box<dyn Fn(T)>>>>;
 
 const AUTO_REFRESH_SECS: u32 = 15;
 
+/// Session-type choices in the strip's filter dropdown, `All` first.
+///
+/// One list: it builds the dropdown AND decodes the selection in both places
+/// that read it. It used to be written out three times, and a type added to the
+/// visible list alone would have filtered by whatever sat at that index in the
+/// stale copies.
+const SESSION_FILTER_TYPES: [&str; 6] = [
+    "All",
+    "notebook",
+    "desktop",
+    "carta",
+    "contributed",
+    "firefly",
+];
+
+/// The `All` entry — no filter, rather than a type named "All".
+const SESSION_FILTER_ALL: &str = SESSION_FILTER_TYPES[0];
+
+/// Which session type the filter dropdown's `index` selects, or `None` for
+/// "All" — and for an index the list does not have, which is the safe reading:
+/// showing everything beats hiding sessions the user has running.
+fn selected_session_filter(index: usize) -> Option<&'static str> {
+    match SESSION_FILTER_TYPES.get(index) {
+        Some(&SESSION_FILTER_ALL) | None => None,
+        Some(session_type) => Some(session_type),
+    }
+}
+
 pub struct SessionListView {
     pub container: gtk::Box,
     cards_box: gtk::Box,
@@ -56,14 +84,7 @@ impl SessionListView {
         // Insert after countdown
         header.insert_child_after(&count_label, Some(&countdown_label));
 
-        let filter_types = gtk::StringList::new(&[
-            "All",
-            "notebook",
-            "desktop",
-            "carta",
-            "contributed",
-            "firefly",
-        ]);
+        let filter_types = gtk::StringList::new(&SESSION_FILTER_TYPES);
         let filter_dropdown = gtk::DropDown::new(Some(filter_types), gtk::Expression::NONE);
         filter_dropdown.set_valign(gtk::Align::Center);
         header.insert_child_after(&filter_dropdown, Some(&count_label));
@@ -207,19 +228,7 @@ impl SessionListView {
     }
 
     fn active_filter(&self) -> Option<String> {
-        let types = [
-            "All",
-            "notebook",
-            "desktop",
-            "carta",
-            "contributed",
-            "firefly",
-        ];
-        let idx = self.filter_dropdown.selected() as usize;
-        match types.get(idx) {
-            Some(&"All") | None => None,
-            Some(t) => Some(t.to_string()),
-        }
+        selected_session_filter(self.filter_dropdown.selected() as usize).map(str::to_string)
     }
 
     /// Bring the card strip in line with `visible`, rebuilding only what changed.
@@ -312,15 +321,6 @@ impl SessionListView {
             countdown_label.set_visible(true);
 
             glib::spawn_future_local(async move {
-                let filter_types = [
-                    "All",
-                    "notebook",
-                    "desktop",
-                    "carta",
-                    "contributed",
-                    "firefly",
-                ];
-
                 loop {
                     // Countdown from 15 to 1
                     for remaining in (1..=AUTO_REFRESH_SECS).rev() {
@@ -346,11 +346,8 @@ impl SessionListView {
                         break;
                     };
 
-                    let active_filter = match filter_types.get(filter_dropdown.selected() as usize)
-                    {
-                        Some(&"All") | None => None,
-                        Some(t) => Some(*t),
-                    };
+                    let active_filter =
+                        selected_session_filter(filter_dropdown.selected() as usize);
 
                     while let Some(child) = cards_box.first_child() {
                         cards_box.remove(&child);
@@ -479,5 +476,41 @@ fn check_notifications(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{selected_session_filter, SESSION_FILTER_ALL, SESSION_FILTER_TYPES};
+
+    #[test]
+    fn the_all_entry_means_no_filter() {
+        // Not a session type called "All" — the platform has no such type, and
+        // filtering by it would show an empty strip.
+        assert_eq!(SESSION_FILTER_ALL, "All");
+        assert_eq!(selected_session_filter(0), None);
+    }
+
+    #[test]
+    fn each_entry_decodes_to_the_type_beside_it() {
+        // The dropdown is built from this list and decoded against it, so index
+        // and value cannot disagree — which is the whole point of one list.
+        for (index, session_type) in SESSION_FILTER_TYPES.iter().enumerate().skip(1) {
+            assert_eq!(selected_session_filter(index), Some(*session_type));
+        }
+    }
+
+    #[test]
+    fn an_index_past_the_end_shows_everything() {
+        // Safer than hiding sessions the user has running.
+        assert_eq!(selected_session_filter(SESSION_FILTER_TYPES.len()), None);
+        assert_eq!(selected_session_filter(999), None);
+    }
+
+    #[test]
+    fn headless_is_not_offered_because_batch_jobs_are_not_cards() {
+        // The strip renders interactive sessions only; a headless filter would
+        // select for something the strip never shows.
+        assert!(!SESSION_FILTER_TYPES.contains(&"headless"));
     }
 }
