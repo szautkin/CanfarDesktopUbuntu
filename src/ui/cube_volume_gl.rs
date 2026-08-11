@@ -95,6 +95,19 @@ struct GlState {
     auto_orbit: bool,
 }
 
+// Bounds the renderer enforces. Declared here, next to the clamps that apply
+// them, and referenced by the `set_cube_view` schema — the tool used to state
+// these ranges in prose only, so a client could not validate before sending and
+// an out-of-range value was silently clamped instead of refused.
+/// Ray-march quality steps. Below the floor the volume breaks into visible
+/// slabs; above the ceiling the frame time grows with nothing to show for it.
+pub const STEPS_RANGE: (f32, f32) = (32.0, 1024.0);
+/// Spectral (Z) axis stretch.
+pub const SPECTRAL_SCALE_RANGE: (f32, f32) = (0.5, 4.0);
+/// Opacity multiplier. Zero would render nothing at all, so the floor is a
+/// small positive value rather than 0.
+pub const DENSITY_MIN: f32 = 0.01;
+
 pub struct CubeVolumeGl {
     area: gtk::GLArea,
     state: Rc<RefCell<GlState>>,
@@ -250,12 +263,12 @@ impl CubeVolumeGl {
     }
 
     pub fn set_density(&self, d: f32) {
-        self.state.borrow_mut().density = d.max(0.01);
+        self.state.borrow_mut().density = d.max(DENSITY_MIN);
         self.area.queue_render();
     }
 
     pub fn set_steps(&self, steps: f32) {
-        self.state.borrow_mut().steps = steps.clamp(32.0, 1024.0);
+        self.state.borrow_mut().steps = steps.clamp(STEPS_RANGE.0, STEPS_RANGE.1);
         self.area.queue_render();
     }
 
@@ -370,7 +383,8 @@ impl CubeVolumeGl {
     }
 
     pub fn set_spectral_scale(&self, v: f32) {
-        self.state.borrow_mut().spectral_scale = v.clamp(0.5, 4.0);
+        self.state.borrow_mut().spectral_scale =
+            v.clamp(SPECTRAL_SCALE_RANGE.0, SPECTRAL_SCALE_RANGE.1);
         self.area.queue_render();
         self.fire_camera_changed();
     }

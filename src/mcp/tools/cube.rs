@@ -73,9 +73,23 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "el": { "type": "number", "description": "Camera elevation (radians, clamped ±1.4)." },
                     "dist": { "type": "number", "description": "Camera distance (clamped 0.5–8)." },
                     "resetCamera": { "type": "boolean", "description": "Reset the orbit camera to the default framing (applied before any az/el/dist override)." },
-                    "steps": { "type": "number", "description": "Ray-march quality steps (32–1024)." },
-                    "spectralScale": { "type": "number", "description": "Spectral (Z) axis stretch (0.5–4)." },
-                    "density": { "type": "number", "description": "Volume opacity/density multiplier (> 0)." },
+                    "steps": {
+                        "type": "number",
+                        "minimum": crate::ui::cube_volume_gl::STEPS_RANGE.0,
+                        "maximum": crate::ui::cube_volume_gl::STEPS_RANGE.1,
+                        "description": "Ray-march quality steps. Fewer breaks the volume into visible slabs; more costs frame time with nothing to show."
+                    },
+                    "spectralScale": {
+                        "type": "number",
+                        "minimum": crate::ui::cube_volume_gl::SPECTRAL_SCALE_RANGE.0,
+                        "maximum": crate::ui::cube_volume_gl::SPECTRAL_SCALE_RANGE.1,
+                        "description": "Spectral (Z) axis stretch."
+                    },
+                    "density": {
+                        "type": "number",
+                        "minimum": crate::ui::cube_volume_gl::DENSITY_MIN,
+                        "description": "Volume opacity/density multiplier. Zero would render nothing."
+                    },
                     "mip": { "type": "boolean", "description": "Max-intensity projection on/off." },
                     "renderMode": { "type": "string", "description": "Volume render mode: \"emission\" or \"max-intensity\" (alias for the MIP toggle)." },
                     "background": { "type": "string", "enum": ["dark", "black", "light"], "description": "3D background preset." },
@@ -247,6 +261,57 @@ pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<Stri
 
 #[cfg(test)]
 mod tests {
+    use crate::ui::cube_volume_gl::{DENSITY_MIN, SPECTRAL_SCALE_RANGE, STEPS_RANGE};
+
+    /// Bounds the renderer ENFORCES must be the bounds the tool ADVERTISES.
+    ///
+    /// They were stated in prose only ("32–1024"), so a client could not
+    /// validate before sending and an out-of-range value was silently clamped
+    /// rather than refused — the caller believed it had set something it had
+    /// not. Reading them from the same constants the clamps use is what keeps
+    /// the two honest.
+    #[test]
+    fn the_volume_bounds_advertised_are_the_bounds_enforced() {
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "set_cube_view")
+            .expect("the tool is declared")
+            .input_schema;
+        let props = &schema["properties"];
+
+        assert_eq!(
+            props["steps"]["minimum"].as_f64(),
+            Some(STEPS_RANGE.0 as f64)
+        );
+        assert_eq!(
+            props["steps"]["maximum"].as_f64(),
+            Some(STEPS_RANGE.1 as f64)
+        );
+        assert_eq!(
+            props["spectralScale"]["minimum"].as_f64(),
+            Some(SPECTRAL_SCALE_RANGE.0 as f64)
+        );
+        assert_eq!(
+            props["spectralScale"]["maximum"].as_f64(),
+            Some(SPECTRAL_SCALE_RANGE.1 as f64)
+        );
+        assert_eq!(
+            props["density"]["minimum"].as_f64(),
+            Some(DENSITY_MIN as f64)
+        );
+    }
+
+    #[test]
+    fn the_volume_bounds_are_usable_ranges() {
+        assert!(STEPS_RANGE.0 < STEPS_RANGE.1, "{STEPS_RANGE:?}");
+        assert!(
+            SPECTRAL_SCALE_RANGE.0 < SPECTRAL_SCALE_RANGE.1,
+            "{SPECTRAL_SCALE_RANGE:?}"
+        );
+        // Zero density renders nothing at all, so the floor has to be positive.
+        assert!(DENSITY_MIN > 0.0, "{DENSITY_MIN}");
+    }
+
     use super::*;
 
     #[test]
