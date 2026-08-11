@@ -336,6 +336,10 @@ async fn resolve_target(services: &crate::state::AppServices, args: &Value) -> T
             "coordSys": r.coord_sys,
             "objectType": r.object_type,
             "service": r.service,
+            // Resolver provenance: which epoch this position came from. The
+            // model has carried it since the search page needed it; the tool
+            // just never passed it on.
+            "resolvedAt": r.resolved_at,
         })),
         Err(e) => ToolResult::Failed(format!("could not resolve target '{target}': {e}")),
     }

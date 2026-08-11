@@ -94,6 +94,28 @@ fn open_tabs_payload(snap: &view_state::ViewSnapshot) -> Value {
     })
 }
 
+/// Read and RANGE-CHECK the sky position for `set_search_focus`.
+///
+/// The reference declares `raDeg`/`decDeg` and refuses anything outside
+/// [0, 360] / [-90, 90]; ours took `ra`/`dec` and accepted whatever arrived, so
+/// a dec of 200 quietly focused the form on a position that does not exist. The
+/// old names still work.
+fn sky_focus_args(args: &Value) -> Result<(f64, f64), String> {
+    let read = |primary: &str, fallback: &str| {
+        super::num_arg(args, primary).or_else(|| super::num_arg(args, fallback))
+    };
+    let (Some(ra), Some(dec)) = (read("raDeg", "ra"), read("decDeg", "dec")) else {
+        return Err("raDeg and decDeg are required".to_string());
+    };
+    if !(0.0..=360.0).contains(&ra) {
+        return Err(format!("raDeg must be in [0, 360] (got {ra})"));
+    }
+    if !(-90.0..=90.0).contains(&dec) {
+        return Err(format!("decDeg must be in [-90, 90] (got {dec})"));
+    }
+    Ok((ra, dec))
+}
+
 pub fn descriptors() -> Vec<ToolDescriptor> {
     let empty = json!({"type":"object","properties":{},"additionalProperties":false});
     vec![
@@ -153,11 +175,17 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "set_search_focus".into(),
-            description: "Navigate to Search and pre-fill a sky position (RA/Dec in degrees).".into(),
+            description: "Point the Search form at a sky position (ICRS RA/Dec in degrees) and bring \
+                          it into view, so the user can refine an agent-suggested cone. Live-applied \
+                          (no proposal)."
+                .into(),
             input_schema: json!({
                 "type":"object",
-                "properties": { "ra": { "type":"number" }, "dec": { "type":"number" } },
-                "required": ["ra","dec"], "additionalProperties": false
+                "properties": {
+                    "raDeg": { "type":"number", "minimum": 0, "maximum": 360 },
+                    "decDeg": { "type":"number", "minimum": -90, "maximum": 90 }
+                },
+                "required": ["raDeg","decDeg"], "additionalProperties": false
             }),
             verb: VerbClass::Write,
             agent_safe: true,
@@ -192,19 +220,14 @@ pub async fn dispatch(
             let ok = view_state::close_active_tab().await;
             Some(ToolResult::Data(json!({ "closed": ok })))
         }
-        "set_search_focus" => {
-            let ra = args.get("ra").and_then(|v| v.as_f64());
-            let dec = args.get("dec").and_then(|v| v.as_f64());
-            match (ra, dec) {
-                (Some(ra), Some(dec)) => {
-                    let ok = view_state::set_search_focus_action(ra, dec).await;
-                    Some(ToolResult::Data(
-                        json!({ "focused": ok, "ra": ra, "dec": dec }),
-                    ))
-                }
-                _ => Some(ToolResult::Failed("ra and dec are required".into())),
+        "set_search_focus" => Some(match sky_focus_args(args) {
+            Ok((ra, dec)) => {
+                let applied = view_state::set_search_focus_action(ra, dec).await;
+                // `applied`/`raDeg`/`decDeg` — the reference's Output record.
+                ToolResult::Data(json!({ "applied": applied, "raDeg": ra, "decDeg": dec }))
             }
-        }
+            Err(e) => ToolResult::Failed(e),
+        }),
         _ => None,
     }
 }
@@ -312,6 +335,38 @@ mod tests {
         let cap = services.proposal_budget.cap();
         assert_eq!(payload["proposalBudget"]["cap"], cap);
         assert_eq!(payload["proposalBudget"]["remaining"], cap - 2);
+    }
+
+    #[test]
+    fn a_sky_focus_outside_the_celestial_sphere_is_refused() {
+        // Previously accepted verbatim, so `decDeg: 200` focused the Search form
+        // on a declination that does not exist.
+        assert!(sky_focus_args(&json!({ "raDeg": 10.0, "decDeg": 200.0 })).is_err());
+        assert!(sky_focus_args(&json!({ "raDeg": -1.0, "decDeg": 0.0 })).is_err());
+        assert!(sky_focus_args(&json!({ "raDeg": 361.0, "decDeg": 0.0 })).is_err());
+        assert!(sky_focus_args(&json!({ "raDeg": 10.0 })).is_err());
+
+        // The poles and the RA wrap-point are legal, not off-by-one rejections.
+        assert_eq!(
+            sky_focus_args(&json!({ "raDeg": 0.0, "decDeg": -90.0 })).unwrap(),
+            (0.0, -90.0)
+        );
+        assert_eq!(
+            sky_focus_args(&json!({ "raDeg": 360.0, "decDeg": 90.0 })).unwrap(),
+            (360.0, 90.0)
+        );
+    }
+
+    #[test]
+    fn the_sky_focus_accepts_the_reference_names_and_our_older_ones() {
+        assert_eq!(
+            sky_focus_args(&json!({ "raDeg": 10.68, "decDeg": 41.27 })).unwrap(),
+            (10.68, 41.27)
+        );
+        assert_eq!(
+            sky_focus_args(&json!({ "ra": 10.68, "dec": 41.27 })).unwrap(),
+            (10.68, 41.27)
+        );
     }
 
     #[test]

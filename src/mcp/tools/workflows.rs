@@ -516,7 +516,10 @@ pub async fn apply(
 // JSON shaping + argument helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compact list-row for one workflow.
+/// Compact list-row for one workflow — the reference's `WorkflowSummaryWire`.
+///
+/// `doneSteps`, not `doneCount`: it reads as a pair with `totalSteps`, and it is
+/// the name the reference sends.
 fn summary_json(w: &WorkflowInfo) -> Value {
     json!({
         "id": w.id,
@@ -524,12 +527,16 @@ fn summary_json(w: &WorkflowInfo) -> Value {
         "description": w.doc.description,
         "tags": w.doc.tags(),
         "source": source_str(w.source),
-        "doneCount": w.doc.done_count(),
+        "doneSteps": w.doc.done_count(),
         "totalSteps": w.doc.steps.len(),
     })
 }
 
-/// Full detail for one workflow, including every step and the raw text.
+/// Full detail for one workflow — the reference's `WorkflowWire`, which is the
+/// summary plus `steps` and `rawText`.
+///
+/// Built by extending [`summary_json`] rather than repeating its seven keys, so
+/// a list row and a detail view describe the same workflow identically.
 fn workflow_json(w: &WorkflowInfo) -> Value {
     let steps: Vec<Value> = w
         .doc
@@ -547,17 +554,11 @@ fn workflow_json(w: &WorkflowInfo) -> Value {
             })
         })
         .collect();
-    json!({
-        "id": w.id,
-        "title": w.doc.title,
-        "description": w.doc.description,
-        "tags": w.doc.tags(),
-        "source": source_str(w.source),
-        "doneCount": w.doc.done_count(),
-        "totalSteps": w.doc.steps.len(),
-        "steps": steps,
-        "rawText": w.raw_text,
-    })
+
+    let mut out = summary_json(w);
+    out["steps"] = json!(steps);
+    out["rawText"] = json!(w.raw_text);
+    out
 }
 
 /// Stable, lowercase source token aligned with the id prefixes.
@@ -575,6 +576,46 @@ fn source_str(source: WorkflowSource) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// Build a workflow with two steps, one checked off.
+    fn sample_workflow() -> WorkflowInfo {
+        let text = "# Reduction\n\nA short protocol.\n\n## Steps\n\n                    - [x] **Fetch** — download the frames\n                    - [ ] **Stack** — coadd them\n";
+        WorkflowInfo {
+            id: "local:reduction".to_string(),
+            source: crate::models::workflow::WorkflowSource::Local,
+            doc: crate::helpers::workflow_format::parse(text),
+            raw_text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_workflow_reports_progress_under_the_reference_field_names() {
+        let summary = summary_json(&sample_workflow());
+        assert_eq!(summary["doneSteps"], 1);
+        assert_eq!(summary["totalSteps"], 2);
+        assert!(
+            summary["doneCount"].is_null(),
+            "doneCount was our name; the reference pairs doneSteps with totalSteps"
+        );
+    }
+
+    #[test]
+    fn the_detail_view_is_the_summary_plus_steps_and_text() {
+        // A list row and a detail view must describe the same workflow the same
+        // way — they were two independent literals, which is how doneCount
+        // could have been fixed in one and missed in the other.
+        let w = sample_workflow();
+        let summary = summary_json(&w);
+        let detail = workflow_json(&w);
+
+        for (key, value) in summary.as_object().unwrap() {
+            assert_eq!(&detail[key], value, "`{key}` differs between the two views");
+        }
+        assert_eq!(detail["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(detail["steps"][0]["done"], true);
+        assert_eq!(detail["steps"][1]["done"], false);
+        assert_eq!(detail["rawText"], w.raw_text);
+    }
+
     #[test]
     fn save_workflow_rejects_an_unknown_location() {
         // A typo must fail loudly rather than silently defaulting to `local` —
