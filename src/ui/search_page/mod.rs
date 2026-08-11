@@ -250,6 +250,15 @@ pub struct SearchPage {
     sort_column: Rc<RefCell<Option<String>>>,
     sort_ascending: Rc<RefCell<bool>>,
     column_filters: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    /// Debounce token for typed column filters. Bumped on every keystroke; the
+    /// pending re-render checks it and gives way to a newer one.
+    filter_generation: Rc<RefCell<u64>>,
+    /// The live filter entry for each column, refreshed on every header build.
+    ///
+    /// Re-rendering rebuilds the header, which DESTROYS the entry the user is
+    /// typing in — so focus and the caret have to be put back afterwards, and
+    /// this is how the replacement widget is found.
+    filter_entries: Rc<RefCell<std::collections::HashMap<String, gtk::Entry>>>,
     /// The "Additional Constraints" (data-train) expander, kept so restoring a
     /// saved search — or an agent setting constraints — can reveal the panel it
     /// just populated rather than leaving the change hidden behind a collapsed
@@ -703,6 +712,8 @@ impl SearchPage {
             sort_column: Rc::new(RefCell::new(None)),
             sort_ascending: Rc::new(RefCell::new(true)),
             column_filters: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            filter_generation: Rc::new(RefCell::new(0)),
+            filter_entries: Rc::new(RefCell::new(std::collections::HashMap::new())),
             train_expander,
             column_visibility: Rc::new(RefCell::new(std::collections::HashMap::new())),
             column_units: Rc::new(RefCell::new(loaded_column_units)),
@@ -1460,7 +1471,10 @@ impl SearchPage {
         // Keep the "Apply filters to ADQL" button in sync with filter state.
         self.update_apply_filters_button();
 
-        // Clear
+        // Clear. The filter-entry lookup goes with the widgets it points at —
+        // focusing a destroyed entry after a rebuild would do nothing visible
+        // and silently swallow the user's next keystroke.
+        self.filter_entries.borrow_mut().clear();
         while let Some(child) = self.results_panel.first_child() {
             self.results_panel.remove(&child);
         }
@@ -1577,7 +1591,9 @@ impl SearchPage {
             }
             let filters_rc = self.column_filters.clone();
             let key2 = col.key.clone();
+            let key3 = col.key.clone();
             let apply_btn = self.apply_filters_btn.clone();
+            let page_rc = Rc::clone(self);
             filter_entry.connect_changed(move |entry| {
                 let text = entry.text().to_string();
                 let active = {
@@ -1590,7 +1606,15 @@ impl SearchPage {
                     !f.is_empty()
                 };
                 apply_btn.set_visible(active);
+                // Re-render, so typing a filter narrows the TABLE. Clicking a
+                // cell's "narrow to this value" always did; typing the same
+                // filter only revealed the Apply button, so the identical
+                // constraint behaved two different ways.
+                page_rc.schedule_filter_render(&key3);
             });
+            self.filter_entries
+                .borrow_mut()
+                .insert(col.key.clone(), filter_entry.clone());
             col_box.append(&filter_entry);
 
             header_row.append(&col_box);
@@ -1843,6 +1867,40 @@ impl SearchPage {
     /// Debounced live target-name resolution (ref `ResolveTargetDebouncedAsync`).
     /// Each call bumps the generation token, so a pending 500 ms timeout or an
     /// in-flight network resolve is discarded once superseded by a newer edit.
+    /// Re-render the results after a short pause in typing.
+    ///
+    /// Debounced rather than immediate: the filter runs over the whole result
+    /// set (up to 10,000 rows) and then rebuilds a page of widgets, which is
+    /// visible jank on every keystroke at the larger page sizes. The generation
+    /// token means a burst of typing produces one render, not one per character.
+    fn schedule_filter_render(self: &Rc<Self>, column_key: &str) {
+        let my_gen = {
+            let mut g = self.filter_generation.borrow_mut();
+            *g = g.wrapping_add(1);
+            *g
+        };
+        let page = Rc::clone(self);
+        let column_key = column_key.to_string();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+            // Superseded by a newer keystroke while this was pending.
+            if *page.filter_generation.borrow() != my_gen {
+                return;
+            }
+            // Back to the first page: the row that was at page 3 of the old
+            // result set is meaningless once the set has changed under it.
+            *page.current_page.borrow_mut() = 0;
+            page.render_results_page();
+
+            // The render rebuilt the header, destroying the entry being typed
+            // in. Put the caret back at the end of its replacement, or the user
+            // types one character and the next goes nowhere.
+            if let Some(entry) = page.filter_entries.borrow().get(&column_key) {
+                entry.grab_focus();
+                entry.set_position(-1);
+            }
+        });
+    }
+
     fn schedule_target_resolve(self: &Rc<Self>) {
         // A changed target invalidates any previously resolved coordinates and
         // their resolver provenance.
