@@ -18,6 +18,7 @@ pub mod network_monitor;
 pub mod notebook_settings_service;
 pub mod notebook_store;
 pub mod notification_service;
+pub mod observation_download;
 pub mod observation_note_store;
 pub mod observation_store;
 pub mod platform_service;

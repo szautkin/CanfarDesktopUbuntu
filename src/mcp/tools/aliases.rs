@@ -227,11 +227,7 @@ mod tests {
     /// This list is a **ratchet, and may only ever shrink**. Delete an entry the
     /// moment its tool lands; `advertised_names_match_the_reference` fails if a
     /// name here is actually implemented, so a stale entry cannot linger.
-    const NOT_YET_PORTED: &[&str] = &[
-        // Phase 5 — research download tools.
-        "download_observation",
-        "download_observations_bulk",
-    ];
+    const NOT_YET_PORTED: &[&str] = &[];
 
     /// **The wire contract.** Everything CanfarDesktop 1.3.3 advertises, we must
     /// advertise under the same name — otherwise a prompt or agent written

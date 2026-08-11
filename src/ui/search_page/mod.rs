@@ -2985,7 +2985,7 @@ async fn save_to_research(
     };
 
     // ── Prepare the managed directory ─────────────────────────────────
-    let obs_id = uuid_from_publisher_id(publisher_id);
+    let obs_id = crate::helpers::caom2_uri::uuid_from_publisher_id(publisher_id);
     let managed_dir = managed_dir_for(&obs_id);
     if let Err(e) = std::fs::create_dir_all(&managed_dir) {
         services
@@ -3319,7 +3319,7 @@ fn build_downloaded_observation(
     };
 
     crate::services::DownloadedObservation {
-        id: uuid_from_publisher_id(publisher_id),
+        id: crate::helpers::caom2_uri::uuid_from_publisher_id(publisher_id),
         publisher_id: publisher_id.to_string(),
         // Headers below MUST match the ADQL column aliases in
         // `helpers/adql_builder.rs::SELECT_COLUMNS`. If that file changes,
@@ -3346,14 +3346,6 @@ fn build_downloaded_observation(
 
 /// Stable, deterministic ID for a publisher DID — avoids duplicate entries
 /// when the same observation is saved multiple times.
-fn uuid_from_publisher_id(publisher_id: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    publisher_id.hash(&mut hasher);
-    format!("obs-{:016x}", hasher.finish())
-}
-
 fn short_pub_id(pub_id: &str) -> String {
     pub_id
         .rsplit('/')

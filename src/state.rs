@@ -18,6 +18,10 @@ pub struct AppServices {
     pub vospace: VoSpaceService,
     pub tap: tap_service::TAPService,
     pub datalink: DataLinkService,
+    /// Shared so its 100-entry LRU actually caches. Constructed per call, the
+    /// cache was always empty and every observation-detail open re-issued a
+    /// 30–50s `caom2ops/meta` request.
+    pub caom2: crate::services::caom2_service::CAOM2Service,
     pub search_store: SearchStoreService,
     pub templates: TemplateService,
     pub notifications: NotificationService,
@@ -72,6 +76,10 @@ impl AppServices {
             vospace: VoSpaceService::new(client.clone(), endpoints.clone()),
             tap: tap_service::TAPService::new(client.clone(), endpoints.clone()),
             datalink: DataLinkService::new(client.clone(), endpoints.clone()),
+            caom2: crate::services::caom2_service::CAOM2Service::new(
+                client.clone(),
+                endpoints.clone(),
+            ),
             search_store: SearchStoreService::new(),
             settings,
             recent_launches: RecentLaunchService::new(),

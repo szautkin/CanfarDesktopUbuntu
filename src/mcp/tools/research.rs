@@ -20,7 +20,7 @@
 
 use crate::helpers::agent_attribution::AgentAttribution;
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
-use crate::mcp::tools::{str_arg, ToolDescriptor, ToolResult, VerbClass};
+use crate::mcp::tools::{opt_u64, str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::observation_note::ObservationNote;
 use crate::services::observation_note_store::ObservationNoteStore;
 use crate::services::observation_store::DownloadedObservation;
@@ -38,6 +38,58 @@ use std::sync::Arc;
 /// gate — not the manifest — keeps them from taking effect without a human).
 pub fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        ToolDescriptor {
+            name: "download_observation".to_string(),
+            description: "Download a CADC observation's FITS file into the user's Research library by \
+                          its publisher id (from search_observations). Optional `artifactIndex` picks a \
+                          SPECIFIC product from the observation's DataLink set — a moment map, an \
+                          integrated spectrum — instead of the default science file; read the set with \
+                          get_data_links first. Proprietary or embargoed collections require the user to \
+                          be signed in to CADC. Queues for the user to apply; once applied it appears in \
+                          list_downloaded_observations."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "publisherId": {"type": "string", "description": "Publisher DID, e.g. ivo://cadc.nrc.ca/CFHT?1234567p"},
+                    "artifactIndex": {"type": "integer", "minimum": 0, "description": "0-based index into the observation's resolved DataLink artifacts"}
+                },
+                "required": ["publisherId"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "download_observations_bulk".to_string(),
+            description: "Download up to 50 observations as ONE proposal, so the user approves a batch \
+                          with a single click. Each item takes the same shape as download_observation. \
+                          The applier fetches them in sequence and reports how many succeeded; a failure \
+                          part-way stops the rest rather than pressing on silently. Large batches of big \
+                          FITS files can outlast the MCP request timeout — prefer groups of ~10."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array", "minItems": 1, "maxItems": 50,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "publisherId": {"type": "string"},
+                                "artifactIndex": {"type": "integer", "minimum": 0}
+                            },
+                            "required": ["publisherId"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["items"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
         ToolDescriptor {
             name: "get_downloaded_observation".to_string(),
             description: "Get one observation from the user's Research library by its local id \
@@ -237,6 +289,8 @@ pub async fn dispatch(
         "get_preview_image" => get_preview_image(services, args).await,
         "update_observation_note" => propose_update_note(args, proposals),
         "bulk_update_observation_notes" => propose_bulk_update_notes(args, proposals),
+        "download_observation" => propose_download(args, proposals),
+        "download_observations_bulk" => propose_download_bulk(args, proposals),
         "delete_downloaded_observation" => propose_delete(args, proposals),
         "clear_research_archive" => propose_clear(proposals),
         "export_research_bundle" => propose_export(args, proposals),
@@ -363,6 +417,111 @@ fn propose_bulk_update_notes(args: &Value, proposals: &Arc<InMemoryProposalStore
     ToolResult::Proposed(p)
 }
 
+/// Cap on one bulk envelope, matching the reference. A larger batch is not
+/// refused arbitrarily: the applier runs the transfers in sequence, so the
+/// in-flight time grows with the count and eventually outlasts the transport.
+const MAX_BULK_DOWNLOADS: usize = 50;
+
+/// Read `{publisherId, artifactIndex?}` from one item, validating the id.
+fn download_item(value: &Value) -> Result<Value, String> {
+    let pid = str_arg(value, "publisherId");
+    if pid.is_empty() {
+        return Err("publisherId is required".to_string());
+    }
+    let mut item = json!({ "publisherId": pid });
+    if let Some(index) = opt_u64(value, "artifactIndex") {
+        item["artifactIndex"] = json!(index);
+    }
+    Ok(item)
+}
+
+fn propose_download(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let payload = match download_item(args) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::Failed(e),
+    };
+    let pid = payload["publisherId"].as_str().unwrap_or_default();
+    let summary = match payload.get("artifactIndex").and_then(|v| v.as_u64()) {
+        Some(i) => format!("Download observation {pid} (artifact #{i})"),
+        None => format!("Download observation {pid}"),
+    };
+    // Non-destructive: it ADDS to the library, so the auto-apply policy may run
+    // it when the user has enabled autonomy.
+    let p = proposals.enqueue("download_observation", &summary, false, payload);
+    ToolResult::Proposed(p)
+}
+
+fn propose_download_bulk(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    let Some(raw) = crate::mcp::tools::arg(args, "items").and_then(|v| v.as_array()) else {
+        return ToolResult::Failed("items is required (an array of observations)".to_string());
+    };
+    if raw.is_empty() {
+        return ToolResult::Failed("items is empty".to_string());
+    }
+    if raw.len() > MAX_BULK_DOWNLOADS {
+        return ToolResult::Failed(format!(
+            "max {MAX_BULK_DOWNLOADS} items per bulk download, got {}",
+            raw.len()
+        ));
+    }
+    // Validate EVERY item before queuing: a batch that fails half way through
+    // leaves the user with a partial download they never asked to approve.
+    let mut items = Vec::with_capacity(raw.len());
+    for (i, value) in raw.iter().enumerate() {
+        match download_item(value) {
+            Ok(item) => items.push(item),
+            Err(e) => return ToolResult::Failed(format!("item {i}: {e}")),
+        }
+    }
+    let summary = format!(
+        "Download {} observation{}",
+        items.len(),
+        if items.len() == 1 { "" } else { "s" }
+    );
+    let p = proposals.enqueue(
+        "download_observations_bulk",
+        &summary,
+        false,
+        json!({ "items": items }),
+    );
+    ToolResult::Proposed(p)
+}
+
+async fn apply_download(services: &AppServices, payload: &Value) -> Result<String, String> {
+    let pid = str_arg(payload, "publisherId");
+    let index = opt_u64(payload, "artifactIndex").map(|n| n as usize);
+    crate::services::observation_download::download_and_register(services, &pid, index).await
+}
+
+async fn apply_download_bulk(services: &AppServices, payload: &Value) -> Result<String, String> {
+    let items = payload
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut done = 0usize;
+    for (i, item) in items.iter().enumerate() {
+        let pid = str_arg(item, "publisherId");
+        let index = opt_u64(item, "artifactIndex").map(|n| n as usize);
+        match crate::services::observation_download::download_and_register(services, &pid, index)
+            .await
+        {
+            Ok(_) => done += 1,
+            // Stop rather than press on: the remaining transfers would very
+            // likely fail the same way (expired session, network down), and the
+            // user gets a truthful count of what actually landed.
+            Err(e) => {
+                return Err(format!(
+                    "downloaded {done} of {}; item {i} ({pid}) failed: {e}",
+                    items.len()
+                ))
+            }
+        }
+    }
+    Ok(format!("Downloaded {done} observation(s)"))
+}
+
 fn propose_delete(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
     let id = str_arg(args, "id");
     if id.is_empty() {
@@ -432,6 +591,10 @@ pub async fn apply(
     match proposal.kind.as_str() {
         "update_observation_note" => Some(apply_update_note(services, proposal).await),
         "bulk_update_observation_notes" => Some(apply_bulk_update_notes(services, proposal).await),
+        "download_observation" => Some(apply_download(services, &proposal.payload).await),
+        "download_observations_bulk" => {
+            Some(apply_download_bulk(services, &proposal.payload).await)
+        }
         "delete_downloaded_observation" => Some(apply_delete(services, &proposal.payload).await),
         "clear_research_archive" => Some(apply_clear(services).await),
         "export_research_bundle" => Some(apply_export(services, &proposal.payload).await),
@@ -722,6 +885,104 @@ fn observation_summary(obs: &DownloadedObservation) -> Value {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    fn store() -> Arc<InMemoryProposalStore> {
+        Arc::new(InMemoryProposalStore::new())
+    }
+
+    #[test]
+    fn download_requires_a_publisher_id() {
+        match propose_download(&json!({}), &store()) {
+            ToolResult::Failed(m) => assert!(m.contains("publisherId is required"), "{m}"),
+            _ => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn download_is_non_destructive_and_carries_the_artifact_index() {
+        // Non-destructive: it ADDS to the library, so autonomy may apply it.
+        match propose_download(
+            &json!({ "publisherId": "ivo://x?1", "artifactIndex": 2 }),
+            &store(),
+        ) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.kind, "download_observation");
+                assert!(!p.destructive);
+                assert_eq!(p.payload["publisherId"], "ivo://x?1");
+                assert_eq!(p.payload["artifactIndex"], 2);
+                assert!(p.summary.contains("artifact #2"), "{}", p.summary);
+            }
+            _ => panic!("expected a queued proposal"),
+        }
+    }
+
+    #[test]
+    fn download_omits_the_artifact_index_when_none_was_given() {
+        // An absent index must stay absent, not become 0 — index 0 addresses a
+        // real artifact, so defaulting would silently pick one.
+        match propose_download(&json!({ "publisherId": "ivo://x?1" }), &store()) {
+            ToolResult::Proposed(p) => {
+                assert!(p.payload.get("artifactIndex").is_none());
+            }
+            _ => panic!("expected a queued proposal"),
+        }
+    }
+
+    #[test]
+    fn bulk_download_rejects_an_empty_or_oversized_batch() {
+        match propose_download_bulk(&json!({ "items": [] }), &store()) {
+            ToolResult::Failed(m) => assert!(m.contains("empty"), "{m}"),
+            _ => panic!("expected a failure for an empty batch"),
+        }
+        let too_many: Vec<Value> = (0..MAX_BULK_DOWNLOADS + 1)
+            .map(|i| json!({ "publisherId": format!("ivo://x?{i}") }))
+            .collect();
+        match propose_download_bulk(&json!({ "items": too_many }), &store()) {
+            ToolResult::Failed(m) => assert!(m.contains("max 50"), "{m}"),
+            _ => panic!("expected a failure for an oversized batch"),
+        }
+    }
+
+    #[test]
+    fn bulk_download_validates_every_item_before_queuing() {
+        // A batch that fails half way through leaves the user with a partial
+        // download they never approved, so a bad item must be caught up front —
+        // and named, so the caller can fix it.
+        let items = json!({ "items": [
+            { "publisherId": "ivo://x?1" },
+            { "publisherId": "  " },
+        ]});
+        match propose_download_bulk(&items, &store()) {
+            ToolResult::Failed(m) => {
+                assert!(
+                    m.contains("item 1"),
+                    "the failing item should be named: {m}"
+                );
+                assert!(m.contains("publisherId is required"), "{m}");
+            }
+            _ => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn bulk_download_queues_one_proposal_for_the_whole_batch() {
+        // One envelope = one user click, which is the point of the bulk tool.
+        let st = store();
+        let items = json!({ "items": [
+            { "publisherId": "ivo://x?1" },
+            { "publisherId": "ivo://x?2", "artifactIndex": 1 },
+        ]});
+        match propose_download_bulk(&items, &st) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.kind, "download_observations_bulk");
+                assert!(!p.destructive);
+                assert_eq!(p.payload["items"].as_array().unwrap().len(), 2);
+                assert!(p.summary.contains('2'), "{}", p.summary);
+            }
+            _ => panic!("expected a queued proposal"),
+        }
+        assert_eq!(st.pending_count(), 1, "the batch must be ONE proposal");
+    }
 
     #[test]
     fn descriptor_names_unique_and_non_empty() {

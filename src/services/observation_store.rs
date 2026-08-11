@@ -36,7 +36,7 @@ fn envelope_version(root: &serde_json::Value) -> u64 {
 /// downloaded file on disk.  `thumbnail_url` / `preview_url` carry optional
 /// DataLink preview URLs so the Research page can show a thumbnail without
 /// re-hitting the network.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DownloadedObservation {
     /// Locally generated UUID identifying this record.
     pub id: String,

@@ -19,7 +19,7 @@
 use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
 use crate::mcp::tools::{num_arg, opt_str_arg, str_arg, ToolDescriptor, ToolResult, VerbClass};
 use crate::models::caom2::{CAOM2Observation, Caom2Plane};
-use crate::services::caom2_service::{CAOM2Service, Caom2Status};
+use crate::services::caom2_service::Caom2Status;
 use crate::services::vizier_service::VizierService;
 use crate::state::AppServices;
 use serde_json::{json, Value};
@@ -159,7 +159,7 @@ async fn get_observation_caom2(services: &AppServices, args: &Value) -> ToolResu
         return ToolResult::Failed("publisher_id is required".to_string());
     }
 
-    let service = CAOM2Service::new(reqwest::Client::new(), services.endpoints.clone());
+    let service = &services.caom2;
     let token = services.get_token().await;
     let result = service.get_by_publisher_id(token.as_deref(), &pid).await;
 

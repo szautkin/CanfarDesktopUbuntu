@@ -67,6 +67,23 @@ pub fn to_observation_uri(publisher_id: &str) -> Option<String> {
     Some(format!("caom:{collection}/{observation}"))
 }
 
+/// A stable local record id derived from a publisher DID.
+///
+/// The Research library keys records by this rather than by the raw DID, which
+/// contains characters no filesystem wants. It MUST be deterministic: the same
+/// observation downloaded twice has to resolve to the same record and the same
+/// managed directory, or the second download silently orphans the first.
+///
+/// Lived in duplicate in two UI files; a divergence between them would have
+/// split one observation into two library entries.
+pub fn uuid_from_publisher_id(publisher_id: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    publisher_id.hash(&mut hasher);
+    format!("obs-{:016x}", hasher.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

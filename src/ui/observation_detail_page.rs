@@ -16,7 +16,7 @@
 
 use crate::models::caom2::{CAOM2Observation, Caom2Artifact};
 use crate::models::search_result::DataLinkResult;
-use crate::services::caom2_service::{CAOM2Service, Caom2Status};
+use crate::services::caom2_service::Caom2Status;
 use crate::state::AppServices;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -163,14 +163,14 @@ impl ObservationDetailPage {
         self.stack.set_visible_child_name("loading");
 
         let svc = self.services.clone();
-        let endpoints = self.services.endpoints.clone();
         let pid = publisher_id.clone();
         let result = self
             .services
             .spawn(async move {
                 let token = svc.get_token().await;
-                let caom2 = CAOM2Service::new(reqwest::Client::new(), endpoints);
-                caom2.get_by_publisher_id(token.as_deref(), &pid).await
+                // The SHARED service, so its LRU actually caches: re-opening an
+                // observation used to re-issue the whole 30-50s metadata fetch.
+                svc.caom2.get_by_publisher_id(token.as_deref(), &pid).await
             })
             .await;
 
@@ -808,7 +808,7 @@ async fn download_artifact(
     // 2. Destination under the managed Research directory (NOT ~/Downloads). The id
     //    is deterministic per publisher DID, so the download lands in — and later
     //    registers under — the same slot a Search-page save would use.
-    let obs_id = uuid_from_publisher_id(&meta.publisher_id);
+    let obs_id = crate::helpers::caom2_uri::uuid_from_publisher_id(&meta.publisher_id);
     let managed_dir = crate::services::managed_dir_for(&obs_id);
     if let Err(e) = std::fs::create_dir_all(&managed_dir) {
         status_error(
@@ -898,7 +898,7 @@ async fn register_in_research(
     local_path: &str,
     file_size: u64,
 ) -> bool {
-    let obs_id = uuid_from_publisher_id(&meta.publisher_id);
+    let obs_id = crate::helpers::caom2_uri::uuid_from_publisher_id(&meta.publisher_id);
 
     // Preview URLs from DataLink so Research can show the image (falls back to any
     // existing record's cached values — the store swaps by id).
@@ -1437,17 +1437,6 @@ fn activate_app_action(widget: &gtk::Box, name: &str, param: Option<&glib::Varia
             ag.activate_action(name, param);
         }
     }
-}
-
-/// Stable, deterministic Research-library id for a publisher DID. Mirrors
-/// `search_page::uuid_from_publisher_id` so a download from the detail page shares
-/// the managed directory and store slot of a Search-page save (no duplicates).
-fn uuid_from_publisher_id(publisher_id: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    publisher_id.hash(&mut hasher);
-    format!("obs-{:016x}", hasher.finish())
 }
 
 // ---------------------------------------------------------------------------

@@ -187,6 +187,58 @@ mod tests {
         CAOM2Service::new(Client::new(), endpoints)
     }
 
+    /// The cache only earns its keep if ONE service instance is shared. It was
+    /// constructed per call, so every lookup missed and each observation-detail
+    /// open re-issued a 30–50s `caom2ops/meta` request. The service now lives in
+    /// `AppServices`; these pin the LRU's own behaviour.
+    #[test]
+    fn lru_returns_an_inserted_entry() {
+        let mut cache = LruCache::new(4);
+        let obs = CAOM2Observation {
+            observation_id: "obs-1".to_string(),
+            ..Default::default()
+        };
+        cache.insert("ivo://x?1".to_string(), obs);
+        assert_eq!(
+            cache.get("ivo://x?1").map(|o| o.observation_id),
+            Some("obs-1".to_string())
+        );
+        assert!(cache.get("ivo://x?2").is_none());
+    }
+
+    #[test]
+    fn lru_evicts_the_least_recently_used_entry() {
+        let mut cache = LruCache::new(2);
+        for id in ["a", "b"] {
+            cache.insert(id.to_string(), CAOM2Observation::default());
+        }
+        // Touch `a`, so `b` becomes the eviction candidate.
+        assert!(cache.get("a").is_some());
+        cache.insert("c".to_string(), CAOM2Observation::default());
+
+        assert!(cache.get("a").is_some(), "recently used entry survived");
+        assert!(cache.get("c").is_some(), "newest entry is present");
+        assert!(cache.get("b").is_none(), "least recently used was evicted");
+    }
+
+    #[test]
+    fn lru_reinserting_a_key_does_not_grow_the_order_queue() {
+        // `touch` removes the previous position before pushing; without that the
+        // queue grows unboundedly on repeat lookups of the same observation and
+        // evicts live entries.
+        let mut cache = LruCache::new(2);
+        for _ in 0..10 {
+            cache.insert("a".to_string(), CAOM2Observation::default());
+        }
+        cache.insert("b".to_string(), CAOM2Observation::default());
+        assert!(
+            cache.get("a").is_some(),
+            "`a` must not have been evicted by its own re-inserts"
+        );
+        assert!(cache.get("b").is_some());
+        assert_eq!(cache.order.len(), 2);
+    }
+
     #[tokio::test]
     async fn invalid_publisher_id_maps_to_invalid_id() {
         let result = service().get_by_publisher_id(None, "not-a-valid-uri").await;
