@@ -12,6 +12,26 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// Session types offered on the Standard tab.
+///
+/// One list, used to BUILD the dropdown and to resolve the configured default.
+/// The selection itself is read back from the widget's own model (see
+/// `selected_type`), never by indexing a parallel copy — this list appeared
+/// three times, and adding a type to one copy would have launched a different
+/// kind of session than the user picked.
+const STANDARD_SESSION_TYPES: [&str; 5] =
+    ["notebook", "desktop", "carta", "contributed", "firefly"];
+
+/// Session types offered on the Advanced tab, which can also submit batch jobs.
+const CUSTOM_SESSION_TYPES: [&str; 6] = [
+    "notebook",
+    "desktop",
+    "carta",
+    "contributed",
+    "firefly",
+    "headless",
+];
+
 pub struct LaunchFormView {
     pub container: gtk::Box,
     services: Arc<AppServices>,
@@ -101,14 +121,12 @@ impl LaunchFormView {
         let form_group = adw::PreferencesGroup::new();
 
         // Session type
-        let types_list =
-            gtk::StringList::new(&["notebook", "desktop", "carta", "contributed", "firefly"]);
+        let types_list = gtk::StringList::new(&STANDARD_SESSION_TYPES);
         let type_combo = gtk::DropDown::new(Some(types_list), gtk::Expression::NONE);
         // Pre-select default session type from settings
         {
             let default_type = services.endpoints.config().default_session_type.clone();
-            let type_names = ["notebook", "desktop", "carta", "contributed", "firefly"];
-            let idx = type_names
+            let idx = STANDARD_SESSION_TYPES
                 .iter()
                 .position(|t| *t == default_type)
                 .unwrap_or(0);
@@ -207,14 +225,7 @@ impl LaunchFormView {
             .build();
 
         // Session type
-        let custom_type_list = gtk::StringList::new(&[
-            "notebook",
-            "desktop",
-            "carta",
-            "contributed",
-            "firefly",
-            "headless",
-        ]);
+        let custom_type_list = gtk::StringList::new(&CUSTOM_SESSION_TYPES);
         let custom_type_combo = gtk::DropDown::new(Some(custom_type_list), gtk::Expression::NONE);
         let custom_type_row = adw::ActionRow::builder()
             .title(crate::tr_en!("Session Type"))
@@ -626,10 +637,19 @@ impl LaunchFormView {
         }
     }
 
+    /// The session type the user picked, read from the dropdown's OWN model.
+    ///
+    /// Not by indexing a parallel array: that copy has to be kept in step with
+    /// the one the combo was built from, and nothing enforces it — a type added
+    /// to the dropdown alone would have launched whatever sat at that index in
+    /// the stale list.
     fn selected_type(&self) -> String {
-        let types = ["notebook", "desktop", "carta", "contributed", "firefly"];
-        let idx = self.type_combo.selected() as usize;
-        types.get(idx).unwrap_or(&"notebook").to_string()
+        let picked = self.combo_selected_string(&self.type_combo);
+        if picked.is_empty() {
+            STANDARD_SESSION_TYPES[0].to_string()
+        } else {
+            picked
+        }
     }
 
     fn selected_registry(&self) -> String {
@@ -1244,5 +1264,45 @@ impl LaunchFormView {
 
     pub fn widget(&self) -> &gtk::Box {
         &self.container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CUSTOM_SESSION_TYPES, STANDARD_SESSION_TYPES};
+
+    #[test]
+    fn the_advanced_tab_offers_everything_the_standard_tab_does_plus_batch() {
+        // The two lists are separate on purpose — only Advanced submits batch
+        // jobs — but Advanced must not silently LOSE an interactive type when
+        // one is added to Standard.
+        for session_type in STANDARD_SESSION_TYPES {
+            assert!(
+                CUSTOM_SESSION_TYPES.contains(&session_type),
+                "`{session_type}` is offered on the Standard tab but not on Advanced"
+            );
+        }
+        assert!(
+            CUSTOM_SESSION_TYPES.contains(&"headless"),
+            "the Advanced tab is the only route to a batch job"
+        );
+    }
+
+    #[test]
+    fn a_session_type_is_a_skaha_type_name_not_a_display_label() {
+        // These strings go straight to Skaha as the session type, so they are
+        // lower-case identifiers, not something translated or capitalised for
+        // display. A label here would be rejected by the platform.
+        for session_type in CUSTOM_SESSION_TYPES {
+            assert_eq!(
+                session_type,
+                session_type.to_lowercase(),
+                "`{session_type}` is sent to Skaha verbatim"
+            );
+            assert!(
+                !session_type.contains(' '),
+                "`{session_type}` is sent to Skaha verbatim"
+            );
+        }
     }
 }
