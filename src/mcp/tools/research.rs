@@ -245,9 +245,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 `path` (the full .zip path) or `destFolder` (a folder to write \
                 research-bundle-<date>.zip into). Non-destructive: queues for the user to apply, \
                 then writes the archive (creating parent folders). Set includeNotes / \
-                includeSearchHistory to false to omit those sections. Uploading to VOSpace and \
-                packing the downloaded FITS files are not supported yet — export locally, then \
-                upload_file_to_vospace."
+                includeSearchHistory to false to omit those sections. Set uploadToVospace to also \
+                publish the .zip to Verbinal-Exports/ in the user's VOSpace for collaborators \
+                (requires sign-in). Packing the downloaded FITS files themselves (includeFiles) is \
+                not supported yet."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -267,6 +268,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "includeSearchHistory": {
                         "type": "boolean",
                         "description": "Include saved + recent searches (default true)."
+                    },
+                    "uploadToVospace": {
+                        "type": "boolean",
+                        "description": "Also upload the .zip to Verbinal-Exports/ in the user's VOSpace, where collaborators can reach it. Requires being signed in."
                     }
                 },
                 "additionalProperties": false
@@ -276,6 +281,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
     ]
 }
+
+/// VOSpace folder that research-bundle exports are uploaded into, relative to
+/// the user's home. Matches the reference's `Verbinal-Exports`.
+const EXPORT_FOLDER: &str = "Verbinal-Exports";
 
 /// Preview fetches are bounded so a hostile/oversized URL can't exhaust memory.
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
@@ -600,20 +609,18 @@ fn export_zip_path(args: &Value) -> Result<String, String> {
 }
 
 fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
-    // The reference declares two options we do not implement. Refuse them
-    // loudly: silently ignoring `uploadToVospace: true` would report a
-    // successful export while the collaborator it was meant for sees nothing.
-    for (flag, what) in [
-        ("uploadToVospace", "uploading the bundle to VOSpace"),
-        ("includeFiles", "packing the downloaded FITS files"),
-    ] {
-        if crate::mcp::tools::bool_arg(args, flag) {
-            return ToolResult::Failed(format!(
-                "{flag} is not supported yet ({what}). Re-run without it, then \
-                 upload the .zip with upload_file_to_vospace."
-            ));
-        }
+    // `includeFiles` is still unimplemented. Refuse it loudly rather than
+    // ignoring it: an export that silently omits the data files the caller
+    // asked for is worse than one that says it cannot.
+    if crate::mcp::tools::bool_arg(args, "includeFiles") {
+        return ToolResult::Failed(
+            "includeFiles is not supported yet (packing the downloaded FITS files). \
+             Re-run without it; the bundle still records each observation's filename \
+             and size."
+                .to_string(),
+        );
     }
+    let upload_to_vospace = crate::mcp::tools::bool_arg(args, "uploadToVospace");
 
     let path = match export_zip_path(args) {
         Ok(p) => p,
@@ -631,13 +638,17 @@ fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolR
         "path": path,
         "includeNotes": include_notes,
         "includeSearchHistory": include_history,
+        "uploadToVospace": upload_to_vospace,
     });
-    let p = proposals.enqueue(
-        "export_research_bundle",
-        &format!("Export research bundle to {}", path),
-        false,
-        payload,
-    );
+    // The summary is what the user approves, so it has to say when the bundle
+    // will ALSO leave the machine — that is a different decision from writing a
+    // file locally.
+    let summary = if upload_to_vospace {
+        format!("Export research bundle to {path} and upload it to VOSpace")
+    } else {
+        format!("Export research bundle to {path}")
+    };
+    let p = proposals.enqueue("export_research_bundle", &summary, false, payload);
     ToolResult::Proposed(p)
 }
 
@@ -860,7 +871,7 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
 
     write_result?;
 
-    Ok(format!(
+    let mut status = format!(
         "Exported research bundle to {} ({} observation{}, {} saved quer{}, {} recent search{})",
         path_str,
         obs_count,
@@ -869,7 +880,64 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
         if saved_count == 1 { "y" } else { "ies" },
         recent_count,
         if recent_count == 1 { "" } else { "es" },
-    ))
+    );
+
+    if payload
+        .get("uploadToVospace")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        // The local file is already written, so a failed upload is reported
+        // rather than raised: losing the export because the network dropped
+        // would be a worse outcome than an unshared one the user can retry.
+        match upload_bundle_to_vospace(services, &path_str).await {
+            Ok(remote) => status.push_str(&format!(" — uploaded to {remote}")),
+            Err(e) => status.push_str(&format!(
+                " — but the VOSpace upload failed ({e}); the local .zip is intact \
+                 and can be sent with upload_file_to_vospace"
+            )),
+        }
+    }
+
+    Ok(status)
+}
+
+/// Upload a written bundle to `Verbinal-Exports/<name>.zip` in the user's
+/// VOSpace, matching the reference's `UploadBundleToVoSpaceAsync`.
+async fn upload_bundle_to_vospace(
+    services: &AppServices,
+    local_path: &str,
+) -> Result<String, String> {
+    let token = services
+        .get_token()
+        .await
+        .ok_or_else(|| "not signed in to CADC/CANFAR".to_string())?;
+    let username = services
+        .get_username()
+        .await
+        .ok_or_else(|| "no signed-in username".to_string())?;
+
+    let filename = std::path::Path::new(local_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{local_path} has no filename"))?;
+
+    // Creating the folder is idempotent — an "already exists" is the normal
+    // case on every export after the first, so it is not an error.
+    let _ = services
+        .vospace
+        .create_folder(&token, &username, EXPORT_FOLDER)
+        .await;
+
+    let bytes = std::fs::read(local_path)
+        .map_err(|e| format!("could not read {local_path} back for upload: {e}"))?;
+    let remote = format!("{EXPORT_FOLDER}/{filename}");
+    services
+        .vospace
+        .upload_file(&token, &username, &remote, bytes, "application/zip")
+        .await
+        .map_err(|e| format!("upload to {remote} failed: {e}"))?;
+    Ok(remote)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1132,24 +1200,55 @@ mod tests {
 
     #[test]
     fn an_unsupported_export_option_is_refused_not_ignored() {
-        // Silently dropping uploadToVospace would report a successful export
-        // while the collaborator it was meant for sees nothing.
+        // `includeFiles` is still unimplemented. Silently dropping it would
+        // produce a bundle missing the data files the caller asked for, and
+        // nothing in the result would say so.
         let store = Arc::new(InMemoryProposalStore::new());
-        for flag in ["uploadToVospace", "includeFiles"] {
-            let args = json!({ "path": "/tmp/b.zip", flag: true });
-            match propose_export(&args, &store) {
-                ToolResult::Failed(m) => assert!(m.contains(flag), "{m}"),
-                _ => panic!("{flag} must be refused, not ignored"),
-            }
+        let args = json!({ "path": "/tmp/b.zip", "includeFiles": true });
+        match propose_export(&args, &store) {
+            ToolResult::Failed(m) => assert!(m.contains("includeFiles"), "{m}"),
+            _ => panic!("includeFiles must be refused, not ignored"),
         }
         assert_eq!(store.pending_count(), 0, "nothing should have been queued");
 
         // Explicitly false is not a request for the feature, so it proceeds.
-        let args = json!({ "path": "/tmp/b.zip", "uploadToVospace": false });
+        let args = json!({ "path": "/tmp/b.zip", "includeFiles": false });
         assert!(matches!(
             propose_export(&args, &store),
             ToolResult::Proposed(_)
         ));
+    }
+
+    #[test]
+    fn a_vospace_upload_is_carried_and_named_in_the_summary() {
+        // The summary is what the user approves. Writing a local file and
+        // publishing it to a shared folder are different decisions, so the
+        // second one has to be visible before they click Apply.
+        let store = Arc::new(InMemoryProposalStore::new());
+        let args = json!({ "path": "/tmp/b.zip", "uploadToVospace": true });
+        match propose_export(&args, &store) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["uploadToVospace"], true);
+                assert!(
+                    p.summary.contains("VOSpace"),
+                    "the user must see that it leaves the machine: {}",
+                    p.summary
+                );
+            }
+            _ => panic!("expected Proposed"),
+        }
+    }
+
+    #[test]
+    fn a_local_export_does_not_mention_vospace() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_export(&json!({ "path": "/tmp/b.zip" }), &store) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["uploadToVospace"], false);
+                assert!(!p.summary.contains("VOSpace"), "{}", p.summary);
+            }
+            _ => panic!("expected Proposed"),
+        }
     }
 
     #[test]
