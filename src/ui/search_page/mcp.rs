@@ -410,8 +410,14 @@ impl SearchPage {
 
         // Spatial
         if let Some(v) = crate::mcp::tools::num_arg(args, "radius") {
-            if !(0.0..=90.0).contains(&v) {
-                return Err(format!("radius must be between 0 and 90 degrees, got {v}"));
+            // Validated against the SAME bounds the widget and the schema use.
+            // A literal here would be a third copy of the number, and the
+            // spinner would silently clamp anything this let through.
+            let (lo, hi) = super::RADIUS_RANGE_DEG;
+            if !(lo..=hi).contains(&v) {
+                return Err(format!(
+                    "radius must be between {lo} and {hi} degrees, got {v}"
+                ));
             }
             self.radius.set_value(v);
         }
@@ -485,8 +491,9 @@ impl SearchPage {
         }
 
         if let Some(v) = crate::mcp::tools::opt_u64(args, "maxRecords") {
-            if !(1..=30_000).contains(&v) {
-                return Err(format!("maxRecords must be between 1 and 30000, got {v}"));
+            let (lo, hi) = super::MAX_RECORDS_RANGE;
+            if !(lo as u64..=hi as u64).contains(&v) {
+                return Err(format!("maxRecords must be between {lo} and {hi}, got {v}"));
             }
             self.max_records.set_value(v as f64);
         }

@@ -4054,6 +4054,24 @@ mod numeric_range_tests {
     }
 
     #[test]
+    fn no_third_copy_of_the_bounds_survives() {
+        // Three places need these numbers: the widget, the tool schema, and the
+        // patch validator that runs before the widget clamps. Each was its own
+        // literal, so `set_search_form` accepted a value the spinner then
+        // silently changed. A scan, because a literal compiles fine.
+        let validator = include_str!("mcp.rs");
+        let radius_max = format!("{}", RADIUS_RANGE_DEG.1);
+        assert!(
+            !validator.contains(&format!("0.0..={radius_max}")),
+            "the radius bound is written out again in the patch validator"
+        );
+        assert!(
+            !validator.contains("1..=30_000"),
+            "the row-limit bound is written out again in the patch validator"
+        );
+    }
+
+    #[test]
     fn the_bounds_are_physically_sensible() {
         // A cone larger than 90 degrees covers the whole sky; asking for zero
         // rows is not a search.
