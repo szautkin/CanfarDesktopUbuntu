@@ -20,7 +20,6 @@
 //! `read_image()` on them.
 
 use crate::models::FitsImageData;
-#[cfg(feature = "fits")]
 use std::collections::HashMap;
 #[cfg(feature = "fits")]
 use std::ffi::CString;
@@ -46,6 +45,90 @@ pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
     // extracted file survives the whole load.
     let resolved = crate::helpers::fits_container::resolve_fits_path(path)?;
     unsafe { load_fits_image_raw(&resolved.path, None) }
+}
+
+/// Everything a header-only read yields: the keyword map, the ordered cards, and
+/// the image dimensions declared by `NAXIS1`/`NAXIS2` (both zero for an HDU that
+/// holds no image).
+pub type HduHeader = (
+    HashMap<String, String>,
+    Vec<(String, String, String)>,
+    usize,
+    usize,
+);
+
+/// Read ONE HDU's header without touching a single pixel.
+///
+/// `hdu` is CFITSIO-native: 1 is the primary HDU. Callers taking the
+/// astropy/reference 0-based convention add one.
+///
+/// This exists because `get_fits_header` and `get_fits_wcs` used the image
+/// loader, which refuses an HDU with fewer than two axes. A multi-extension
+/// file's primary HDU is usually header-only, so asking for its header — the
+/// one place a proposal id or an instrument setting normally lives — failed
+/// with "Image HDU has 0 axes". Reading headers should not require an image.
+#[cfg(feature = "fits")]
+pub fn read_hdu_header(path: &Path, hdu: usize) -> Result<HduHeader, String> {
+    let resolved = crate::helpers::fits_container::resolve_fits_path(path)?;
+    unsafe { read_hdu_header_raw(&resolved.path, hdu as i32) }
+}
+
+#[cfg(not(feature = "fits"))]
+pub fn read_hdu_header(path: &Path, _hdu: usize) -> Result<HduHeader, String> {
+    Err(format!(
+        "FITS support not compiled. Install libcfitsio-dev and rebuild with --features fits to read '{}'",
+        path.display()
+    ))
+}
+
+#[cfg(feature = "fits")]
+unsafe fn read_hdu_header_raw(path: &Path, hdu: i32) -> Result<HduHeader, String> {
+    if hdu < 1 {
+        return Err(format!("HDU {hdu} is out of range — the first HDU is 1"));
+    }
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format!("FITS path contains invalid UTF-8: {:?}", path))?;
+    let c_path = CString::new(path_str)
+        .map_err(|e| format!("Cannot encode FITS path as C string: {}", e))?;
+
+    let mut fptr: *mut sys::fitsfile = std::ptr::null_mut();
+    let mut status: i32 = 0;
+    sys::ffopen(
+        &mut fptr,
+        c_path.as_ptr(),
+        sys::READONLY as i32,
+        &mut status,
+    );
+    check_status(status, "Cannot open FITS file")?;
+    let handle = FitsHandle { fptr };
+
+    let mut num_hdus: i32 = 0;
+    status = 0;
+    sys::ffthdu(handle.fptr, &mut num_hdus, &mut status);
+    check_status(status, "Cannot read number of HDUs")?;
+    if hdu > num_hdus {
+        return Err(format!(
+            "HDU {hdu} is out of range — this file has {num_hdus}"
+        ));
+    }
+
+    let mut hdu_type: i32 = 0;
+    status = 0;
+    sys::ffmahd(handle.fptr, hdu, &mut hdu_type, &mut status);
+    check_status(status, "Cannot move to HDU")?;
+
+    let (header, ordered) = read_header_all(handle.fptr)?;
+    // Dimensions come from the header itself rather than a pixel query, so a
+    // table or header-only HDU reports 0x0 instead of erroring.
+    let axis = |key: &str| -> usize {
+        header
+            .get(key)
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    };
+    let (width, height) = (axis("NAXIS1"), axis("NAXIS2"));
+    Ok((header, ordered, width, height))
 }
 
 /// Load a specific HDU (1-based) from a FITS file — used by the extension

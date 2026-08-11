@@ -18,17 +18,17 @@ use std::sync::Arc;
 
 pub fn descriptors() -> Vec<ToolDescriptor> {
     let empty = json!({"type":"object","properties":{},"additionalProperties":false});
-    // NOTE ON `hdu`: this is a CFITSIO-native 1-based absolute number (1 = the
-    // primary HDU), where the Windows reference — and astropy — index from 0.
-    // The divergence is spelled out in the description rather than papered over,
-    // because silently shifting by one would mis-read every multi-extension
-    // file. Aligning the convention needs a header-only reader first: our loader
-    // requires an image HDU, and an MEF's primary usually has none.
+    // `hdu` is 0-BASED, matching the reference and astropy: 0 is the primary
+    // HDU. It used to be CFITSIO-native 1-based, which silently addressed the
+    // wrong extension for anyone following either of those conventions. The
+    // shift needed a header-only reader first — the image loader refuses an HDU
+    // with fewer than two axes, and a multi-extension file's primary usually has
+    // none — which `fits_loader::read_hdu_header` now provides.
     let with_hdu = json!({
         "type":"object",
         "properties": {
             "localPath": { "type":"string", "description":"Local filesystem path to a FITS file" },
-            "hdu": { "type":"integer", "minimum":1, "description":"1-BASED HDU number: 1 is the primary HDU, 2 the first extension (note: astropy and the Windows app index from 0, so add one). Defaults to the first HDU containing an image." }
+            "hdu": { "type":"integer", "minimum":0, "description":"0-based HDU index (default 0, the primary HDU) — the same numbering astropy uses." }
         },
         "required": ["localPath"], "additionalProperties": false
     });
@@ -265,22 +265,6 @@ fn to_tool_result(r: Result<Value, String>) -> ToolResult {
 
 // ─── Stateless disk readers ──────────────────────────────────────────────────
 
-/// Load a FITS image (whole first-image HDU, or a specific 1-based HDU) from
-/// disk. Behind the `fits` feature; returns an error when it is not compiled.
-#[cfg(feature = "fits")]
-fn load_from_disk(path: &str, hdu: Option<i64>) -> Result<crate::models::FitsImageData, String> {
-    let p = std::path::Path::new(path);
-    match hdu {
-        Some(h) if h >= 1 => crate::helpers::fits_loader::load_fits_image_hdu(p, h as usize),
-        _ => crate::helpers::fits_loader::load_fits_image(p),
-    }
-}
-
-#[cfg(not(feature = "fits"))]
-fn load_from_disk(_path: &str, _hdu: Option<i64>) -> Result<crate::models::FitsImageData, String> {
-    Err("fits feature not built".into())
-}
-
 /// The local FITS path. Declared as `localPath` (the reference's name); `path`
 /// is still accepted, since Verbinal shipped that spelling first.
 fn require_path(args: &Value) -> Result<String, String> {
@@ -292,10 +276,12 @@ fn require_path(args: &Value) -> Result<String, String> {
 
 fn get_fits_header(args: &Value) -> Result<Value, String> {
     let path = require_path(args)?;
-    let hdu = args.get("hdu").and_then(|v| v.as_i64());
-    let data = load_from_disk(&path, hdu)?;
-    let cards: Vec<Value> = data
-        .header_ordered
+    let hdu = requested_hdu(args);
+    let (_, ordered, width, height) = crate::helpers::fits_loader::read_hdu_header(
+        std::path::Path::new(&path),
+        cfitsio_hdu(hdu),
+    )?;
+    let cards: Vec<Value> = ordered
         .iter()
         .map(|(k, v, c)| json!({ "keyword": k, "value": v, "comment": c }))
         .collect();
@@ -304,11 +290,22 @@ fn get_fits_header(args: &Value) -> Result<Value, String> {
         "hdu": hdu,
         "count": cards.len(),
         "cards": cards,
-        // Beyond the reference's record: free here (the image is already
-        // loaded) and it saves an agent a second call to size the frame.
-        "width": data.width,
-        "height": data.height,
+        // Beyond the reference's record: read straight off NAXIS1/NAXIS2, so it
+        // costs nothing and saves an agent a second call to size the frame.
+        // Both are 0 for a table or header-only HDU.
+        "width": width,
+        "height": height,
     }))
+}
+
+/// The 0-based HDU index the caller asked for, defaulting to the primary.
+fn requested_hdu(args: &Value) -> i64 {
+    args.get("hdu").and_then(|v| v.as_i64()).unwrap_or(0).max(0)
+}
+
+/// Translate a 0-based wire index to CFITSIO's 1-based absolute number.
+fn cfitsio_hdu(hdu: i64) -> usize {
+    (hdu as usize).saturating_add(1)
 }
 
 /// Key names follow the reference's `Output` record exactly, including its
@@ -322,22 +319,23 @@ fn get_fits_header(args: &Value) -> Result<Value, String> {
 /// could not tell "no WCS" from "a field I forgot to handle".
 fn get_fits_wcs(args: &Value) -> Result<Value, String> {
     let path = require_path(args)?;
-    let hdu = args.get("hdu").and_then(|v| v.as_i64());
-    let data = load_from_disk(&path, hdu)?;
-    Ok(wcs_payload(
-        &path,
-        hdu,
-        data.width,
-        data.height,
-        data.wcs.as_ref(),
-    ))
+    let hdu = requested_hdu(args);
+    let (header, _, width, height) = crate::helpers::fits_loader::read_hdu_header(
+        std::path::Path::new(&path),
+        cfitsio_hdu(hdu),
+    )?;
+    // The WCS comes from the header alone; the canonical parser lives on
+    // `FitsImageData`, so it is run over an empty image (the same route
+    // `cube_wcs::from_header` takes). No pixels are read.
+    let wcs = crate::models::FitsImageData::new(0, 0, Vec::new(), header).wcs;
+    Ok(wcs_payload(&path, hdu, width, height, wcs.as_ref()))
 }
 
 /// The `get_fits_wcs` payload, split from the file read so the shape can be
 /// tested without a FITS fixture on disk.
 fn wcs_payload(
     path: &str,
-    hdu: Option<i64>,
+    hdu: i64,
     width: usize,
     height: usize,
     wcs: Option<&crate::models::fits_image::WcsInfo>,
@@ -438,7 +436,7 @@ mod tests {
 
     #[test]
     fn the_wcs_payload_carries_every_field_the_reference_promises() {
-        let payload = wcs_payload("/data/a.fits", Some(1), 1024, 1024, Some(&sample_wcs()));
+        let payload = wcs_payload("/data/a.fits", 0, 1024, 1024, Some(&sample_wcs()));
         let obj = payload.as_object().expect("an object");
         for field in REFERENCE_WCS_FIELDS {
             assert!(obj.contains_key(*field), "`{field}` is missing");
@@ -460,7 +458,7 @@ mod tests {
     fn a_file_without_wcs_still_reports_the_full_shape() {
         // Keys must not vanish: a client could not otherwise tell "no WCS
         // solution" from "a field the server forgot".
-        let payload = wcs_payload("/data/a.fits", None, 64, 64, None);
+        let payload = wcs_payload("/data/a.fits", 0, 64, 64, None);
         let obj = payload.as_object().expect("an object");
         for field in REFERENCE_WCS_FIELDS {
             assert!(obj.contains_key(*field), "`{field}` vanished without a WCS");
@@ -480,13 +478,50 @@ mod tests {
         wcs.cd2_1 = 0.0;
         wcs.cd2_2 = 0.0;
 
-        let payload = wcs_payload("/data/a.fits", Some(1), 64, 64, Some(&wcs));
+        let payload = wcs_payload("/data/a.fits", 0, 64, 64, Some(&wcs));
         assert_eq!(payload["isValid"], false);
         assert!(payload["pixelScaleArcsec"].is_null());
         assert!(payload["northAngle"].is_null());
         assert!(payload["hasParityFlip"].is_null());
         // The raw header values are still reported — they were read, after all.
         assert_eq!(payload["cType1"], "RA---TAN");
+    }
+
+    #[test]
+    fn hdu_zero_means_the_primary_hdu() {
+        // 0-based on the wire, CFITSIO's 1-based underneath. Getting this
+        // backwards addresses the wrong extension in every multi-extension
+        // file — and reads plausible data, so nothing looks wrong.
+        assert_eq!(cfitsio_hdu(0), 1, "wire 0 is the primary HDU");
+        assert_eq!(cfitsio_hdu(1), 2, "wire 1 is the first extension");
+        assert_eq!(cfitsio_hdu(7), 8);
+    }
+
+    #[test]
+    fn an_omitted_hdu_defaults_to_the_primary() {
+        assert_eq!(requested_hdu(&json!({})), 0);
+        assert_eq!(requested_hdu(&json!({ "hdu": 2 })), 2);
+    }
+
+    #[test]
+    fn a_negative_hdu_is_clamped_rather_than_wrapping() {
+        // `hdu: -1` would otherwise become a huge usize through the +1 and read
+        // as "past the end" instead of the obvious mistake it is.
+        assert_eq!(requested_hdu(&json!({ "hdu": -1 })), 0);
+        assert_eq!(cfitsio_hdu(requested_hdu(&json!({ "hdu": -5 }))), 1);
+    }
+
+    #[test]
+    fn the_declared_hdu_minimum_matches_the_convention() {
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "get_fits_header")
+            .expect("the tool is declared")
+            .input_schema;
+        assert_eq!(
+            schema["properties"]["hdu"]["minimum"], 0,
+            "0-based indexing must be advertised, or an agent adds one itself"
+        );
     }
 
     #[test]
