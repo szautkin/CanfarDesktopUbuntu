@@ -1631,16 +1631,18 @@ impl ResearchPage {
         }
     }
 
-    /// Upload a finished bundle `.zip` to `vos:<user>/Verbinal-Exports/<name>.zip`
-    /// via the existing VOSpace service.  Requires an authenticated session; if
-    /// the user is signed out the bundle is still saved locally and a toast
-    /// explains the skip.  Mirrors `ExportService.UploadBundleToVoSpaceAsync`.
+    /// Upload a finished bundle to the user's VOSpace, with progress toasts.
+    ///
+    /// The destination and the transfer live in `research_exporter::upload_bundle`,
+    /// shared with the `export_research_bundle` applier — the two used to carry
+    /// separate copies of the folder name, the idempotent create and the content
+    /// type, so an agent-made bundle could have landed somewhere the user's own
+    /// export would not. Signed out, the bundle is still saved locally and a
+    /// toast explains the skip.
     async fn upload_bundle_to_vospace(self: &Rc<Self>, path: &std::path::Path) {
-        let filename = match path.file_name().map(|n| n.to_string_lossy().to_string()) {
-            Some(n) if !n.is_empty() => n,
-            _ => return,
+        let Some(remote_path) = crate::helpers::research_exporter::remote_bundle_path(path) else {
+            return;
         };
-        let remote_path = format!("Verbinal-Exports/{filename}");
         let local_path = path.to_path_buf();
 
         self.services
@@ -1648,8 +1650,7 @@ impl ResearchPage {
             .toast(crate::tr_en!("Uploading bundle to VOSpace…"));
 
         let svc = self.services.clone();
-        let remote_for_task = remote_path.clone();
-        let result: Result<(), String> = self
+        let result: Result<String, String> = self
             .services
             .spawn(async move {
                 let token = svc.get_token().await.ok_or_else(|| {
@@ -1658,22 +1659,18 @@ impl ResearchPage {
                 let username = svc.get_username().await.ok_or_else(|| {
                     "Sign in to CANFAR to upload the bundle to VOSpace".to_string()
                 })?;
-                let data = std::fs::read(&local_path)
-                    .map_err(|e| format!("Could not read bundle: {e}"))?;
-                // Ensure the destination folder exists (409 = already there).
-                let _ = svc
-                    .vospace
-                    .create_folder(&token, &username, "Verbinal-Exports")
-                    .await;
-                svc.vospace
-                    .upload_file(&token, &username, &remote_for_task, data, "application/zip")
-                    .await
-                    .map_err(|e| e.to_string())
+                crate::helpers::research_exporter::upload_bundle(
+                    &svc.vospace,
+                    &token,
+                    &username,
+                    &local_path,
+                )
+                .await
             })
             .await;
 
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 let user = self.services.get_username().await.unwrap_or_default();
                 self.services
                     .toast

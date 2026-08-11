@@ -282,9 +282,27 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
     ]
 }
 
-/// VOSpace folder that research-bundle exports are uploaded into, relative to
-/// the user's home. Matches the reference's `Verbinal-Exports`.
-const EXPORT_FOLDER: &str = "Verbinal-Exports";
+/// Resolve the signed-in session and publish a written bundle to VOSpace.
+///
+/// The destination and the upload itself live in `research_exporter`, shared
+/// with the Research page's Export button; this only supplies the credentials.
+async fn publish_bundle(services: &AppServices, local_path: &str) -> Result<String, String> {
+    let token = services
+        .get_token()
+        .await
+        .ok_or_else(|| "not signed in to CADC/CANFAR".to_string())?;
+    let username = services
+        .get_username()
+        .await
+        .ok_or_else(|| "no signed-in username".to_string())?;
+    crate::helpers::research_exporter::upload_bundle(
+        &services.vospace,
+        &token,
+        &username,
+        std::path::Path::new(local_path),
+    )
+    .await
+}
 
 /// Preview fetches are bounded so a hostile/oversized URL can't exhaust memory.
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
@@ -890,7 +908,7 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
         // The local file is already written, so a failed upload is reported
         // rather than raised: losing the export because the network dropped
         // would be a worse outcome than an unshared one the user can retry.
-        match upload_bundle_to_vospace(services, &path_str).await {
+        match publish_bundle(services, &path_str).await {
             Ok(remote) => status.push_str(&format!(" — uploaded to {remote}")),
             Err(e) => status.push_str(&format!(
                 " — but the VOSpace upload failed ({e}); the local .zip is intact \
@@ -900,44 +918,6 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
     }
 
     Ok(status)
-}
-
-/// Upload a written bundle to `Verbinal-Exports/<name>.zip` in the user's
-/// VOSpace, matching the reference's `UploadBundleToVoSpaceAsync`.
-async fn upload_bundle_to_vospace(
-    services: &AppServices,
-    local_path: &str,
-) -> Result<String, String> {
-    let token = services
-        .get_token()
-        .await
-        .ok_or_else(|| "not signed in to CADC/CANFAR".to_string())?;
-    let username = services
-        .get_username()
-        .await
-        .ok_or_else(|| "no signed-in username".to_string())?;
-
-    let filename = std::path::Path::new(local_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| format!("{local_path} has no filename"))?;
-
-    // Creating the folder is idempotent — an "already exists" is the normal
-    // case on every export after the first, so it is not an error.
-    let _ = services
-        .vospace
-        .create_folder(&token, &username, EXPORT_FOLDER)
-        .await;
-
-    let bytes = std::fs::read(local_path)
-        .map_err(|e| format!("could not read {local_path} back for upload: {e}"))?;
-    let remote = format!("{EXPORT_FOLDER}/{filename}");
-    services
-        .vospace
-        .upload_file(&token, &username, &remote, bytes, "application/zip")
-        .await
-        .map_err(|e| format!("upload to {remote} failed: {e}"))?;
-    Ok(remote)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

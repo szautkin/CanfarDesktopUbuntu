@@ -120,6 +120,50 @@ pub struct BundleSummary {
 const EXPORT_VERSION: &str = "1.0";
 const APP_NAME: &str = "Verbinal";
 
+/// VOSpace folder that finished bundles are published into, relative to the
+/// user's home. Matches the reference's `Verbinal-Exports`.
+pub const EXPORT_FOLDER: &str = "Verbinal-Exports";
+
+/// The VOSpace path a bundle at `local_path` would be published to.
+///
+/// Separated from the upload itself so the destination can be shown, logged and
+/// tested without a network.
+pub fn remote_bundle_path(local_path: &Path) -> Option<String> {
+    let filename = local_path.file_name()?.to_string_lossy();
+    (!filename.is_empty()).then(|| format!("{EXPORT_FOLDER}/{filename}"))
+}
+
+/// Publish a written bundle to `Verbinal-Exports/<name>.zip` in the user's
+/// VOSpace, returning the remote path.
+///
+/// One implementation for both callers — the Research page's Export button and
+/// the `export_research_bundle` applier. They had separate copies of the folder
+/// name, the idempotent create and the content type, which is three chances for
+/// an agent-made bundle to land somewhere the user's own export would not.
+///
+/// Blocking file read; call from a blocking-tolerant context.
+pub async fn upload_bundle(
+    vospace: &crate::services::VoSpaceService,
+    token: &str,
+    username: &str,
+    local_path: &Path,
+) -> Result<String, String> {
+    let remote = remote_bundle_path(local_path)
+        .ok_or_else(|| format!("{} has no filename", local_path.display()))?;
+
+    // The folder usually exists already — every export after the first — so a
+    // failure here is not an error; the upload below is the real test.
+    let _ = vospace.create_folder(token, username, EXPORT_FOLDER).await;
+
+    let bytes = std::fs::read(local_path)
+        .map_err(|e| format!("could not read {} back: {e}", local_path.display()))?;
+    vospace
+        .upload_file(token, username, &remote, bytes, "application/zip")
+        .await
+        .map_err(|e| format!("upload to {remote} failed: {e}"))?;
+    Ok(remote)
+}
+
 /// Best-effort machine name for the bundle's provenance stamp.
 ///
 /// Lives here rather than in a page because BOTH export paths — the Research
@@ -787,6 +831,27 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-07-07T08:30:00Z")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn a_bundle_publishes_under_the_shared_export_folder() {
+        // One destination for both callers. Two copies of this path meant an
+        // agent-made bundle could land somewhere the user's own export would not.
+        assert_eq!(
+            remote_bundle_path(Path::new("/home/u/Verbinal-Export-2026-08-11_120000.zip")),
+            Some("Verbinal-Exports/Verbinal-Export-2026-08-11_120000.zip".to_string())
+        );
+        assert!(remote_bundle_path(Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn the_remote_name_is_the_local_one() {
+        // The user picked the filename in the save dialog; renaming it on the
+        // way up would make the two copies hard to match by eye.
+        let local = Path::new("/tmp/my-run.zip");
+        let remote = remote_bundle_path(local).unwrap();
+        assert!(remote.ends_with("my-run.zip"), "{remote}");
+        assert!(remote.starts_with(EXPORT_FOLDER), "{remote}");
     }
 
     #[test]
