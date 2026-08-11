@@ -221,6 +221,18 @@ pub struct PlateOverlay {
     pub meta: Option<CubeMetadata>,
 }
 
+/// Export scale factors, in dropdown order. The dropdown's LABELS are derived
+/// from these, and the selection decodes back through the same array — it used
+/// to be a hand-written `match` on the index, so adding a factor to the visible
+/// list would silently have exported at 2x.
+const EXPORT_SCALES: [i32; 3] = [1, 2, 4];
+
+/// Index of the default scale (2x) in [`EXPORT_SCALES`].
+const DEFAULT_EXPORT_SCALE: usize = 1;
+
+/// Output formats, in dropdown order.
+const EXPORT_FORMATS: [&str; 2] = ["PNG", "PDF"];
+
 /// The plate content that is invariant across scale/transparent toggles.
 struct PlateSpec {
     capture: Rc<dyn Fn(i32, i32) -> Option<Vec<u8>>>,
@@ -789,12 +801,13 @@ pub fn show_cube_export(
 
     let scale_row = adw::ComboRow::new();
     scale_row.set_title(crate::tr_en!("Scale"));
-    scale_row.set_model(Some(&gtk::StringList::new(&[
-        "1\u{00D7}",
-        "2\u{00D7}",
-        "4\u{00D7}",
-    ])));
-    scale_row.set_selected(1); // default 2×
+    let scale_labels: Vec<String> = EXPORT_SCALES
+        .iter()
+        .map(|factor| format!("{factor}\u{00D7}"))
+        .collect();
+    let scale_label_refs: Vec<&str> = scale_labels.iter().map(String::as_str).collect();
+    scale_row.set_model(Some(&gtk::StringList::new(&scale_label_refs)));
+    scale_row.set_selected(DEFAULT_EXPORT_SCALE as u32);
     group.add(&scale_row);
 
     let transparent_row = adw::SwitchRow::new();
@@ -804,7 +817,7 @@ pub fn show_cube_export(
 
     let format_row = adw::ComboRow::new();
     format_row.set_title(crate::tr_en!("Format"));
-    format_row.set_model(Some(&gtk::StringList::new(&["PNG", "PDF"])));
+    format_row.set_model(Some(&gtk::StringList::new(&EXPORT_FORMATS)));
     format_row.set_selected(0);
     group.add(&format_row);
 
@@ -865,12 +878,11 @@ pub fn show_cube_export(
         let parent_widget = parent_widget.clone();
         let window = window.clone();
         save_btn.connect_clicked(move |_| {
-            let scale = match scale_row.selected() {
-                0 => 1,
-                2 => 4,
-                _ => 2,
-            };
-            let is_pdf = format_row.selected() == 1;
+            let scale = EXPORT_SCALES
+                .get(scale_row.selected() as usize)
+                .copied()
+                .unwrap_or(EXPORT_SCALES[DEFAULT_EXPORT_SCALE]);
+            let is_pdf = EXPORT_FORMATS.get(format_row.selected() as usize) == Some(&"PDF");
             let transparent = transparent_row.is_active();
 
             status.set_text(crate::tr_en!("Rendering figure…"));
@@ -949,4 +961,46 @@ pub fn show_cube_export(
     }
 
     window.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_EXPORT_SCALE, EXPORT_FORMATS, EXPORT_SCALES};
+
+    #[test]
+    fn the_default_scale_is_a_real_choice() {
+        // It is an INDEX into the list, not a factor. A bare `1` here once meant
+        // "the second entry" while a bare `2` elsewhere meant "2x" — the two
+        // only agreed by coincidence.
+        assert!(DEFAULT_EXPORT_SCALE < EXPORT_SCALES.len());
+        assert_eq!(EXPORT_SCALES[DEFAULT_EXPORT_SCALE], 2, "2x by default");
+    }
+
+    #[test]
+    fn every_scale_actually_enlarges() {
+        // A factor of 0 or a negative would produce an empty or inverted surface.
+        for factor in EXPORT_SCALES {
+            assert!(factor >= 1, "{factor}x is not a usable export scale");
+        }
+    }
+
+    #[test]
+    fn the_ui_never_offers_a_scale_the_mcp_tool_would_reject() {
+        // `export_cube_figure` clamps its `scale` argument to 1..4 and its schema
+        // advertises that maximum. If the picker offered 8x, the same export
+        // would succeed from the UI and be silently clamped for an agent.
+        let ui_max = EXPORT_SCALES.iter().copied().max().unwrap_or(1);
+        assert!(
+            ui_max <= 4,
+            "the picker offers {ui_max}x but export_cube_figure caps scale at 4"
+        );
+    }
+
+    #[test]
+    fn pdf_is_recognised_by_name_not_by_position() {
+        // The decoder asks whether the selected entry IS "PDF"; reordering the
+        // list therefore cannot turn a PNG export into a PDF one.
+        assert!(EXPORT_FORMATS.contains(&"PDF"));
+        assert!(EXPORT_FORMATS.contains(&"PNG"));
+    }
 }
