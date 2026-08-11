@@ -3614,7 +3614,7 @@ fn build_spatial_column() -> (
     let (w, pixel_scale, pixel_scale_unit) = labeled_entry_with_combo(
         crate::tr_en!("Pixel Scale"),
         crate::tr_en!("e.g. 0.1..1.0"),
-        &["arcsec", "arcmin", "deg"],
+        &PIXEL_SCALE_UNITS,
     );
     col.append(&w);
 
@@ -3651,14 +3651,14 @@ fn build_temporal_column() -> (
     let (w, obs_date, date_preset) = labeled_entry_with_combo(
         crate::tr_en!("Observation Date"),
         crate::tr_en!("e.g. 2020..2021"),
-        &["", "Last24h", "LastWeek", "LastMonth"],
+        &DATE_PRESETS,
     );
     col.append(&w);
 
     let (w, integration_time, time_unit) = labeled_entry_with_combo(
         crate::tr_en!("Integration Time"),
         crate::tr_en!("e.g. 100..3600"),
-        &["s", "m", "h", "d"],
+        &TIME_UNITS,
     );
     col.append(&w);
 
@@ -3695,7 +3695,7 @@ fn build_spectral_column() -> (
     let (w, spectral_coverage, spectral_unit) = labeled_entry_with_combo(
         crate::tr_en!("Spectral Coverage"),
         crate::tr_en!("e.g. 400..700"),
-        &["nm", "Angstrom", "um", "mm"],
+        &SPECTRAL_UNITS,
     );
     col.append(&w);
 
@@ -3817,6 +3817,86 @@ mod stream_download_tests {
         // Guards against >100% if Content-Length under-reports the body.
         let s = format_download_progress("X", 2048, Some(1024));
         assert!(s.contains("100%"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod combo_tests {
+    //! The form's dropdowns are read back by INDEX — `form_state` does
+    //! `SPECTRAL_UNITS.get(dropdown.selected())` — so the visible list and the
+    //! value list must be the same array. They were separate literals, and when
+    //! `SPECTRAL_UNITS` grew from 4 units to 14 the combo kept showing the old
+    //! four: picking "Angstrom" at index 1 then meant `SPECTRAL_UNITS[1]`, which
+    //! is "cm". A search in Ångström silently ran in centimetres.
+    //!
+    //! Every combo now renders from its own constant. This guard reads the
+    //! source to prove it, because the alternative — a literal — compiles
+    //! perfectly and fails only at runtime, in a unit no test would notice.
+
+    /// Constants that both populate a dropdown and decode its selection.
+    const INDEXED_BY_DROPDOWN: &[&str] = &[
+        "PIXEL_SCALE_UNITS",
+        "DATE_PRESETS",
+        "TIME_UNITS",
+        "SPECTRAL_UNITS",
+    ];
+
+    /// The full argument list of a call, from `(` to its BALANCED `)`.
+    ///
+    /// Stopping at the first `)` would end inside `tr_en!("…")` — the first
+    /// argument — and never reach the item list. That is exactly how the first
+    /// version of this guard passed while the bug it was written for was still
+    /// present, which is worth more than the guard itself as a lesson: a guard
+    /// that cannot fail is worse than none, because it is trusted.
+    fn call_arguments(source: &str, open_paren: usize) -> &str {
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        for (offset, byte) in bytes[open_paren..].iter().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[open_paren..open_paren + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        &source[open_paren..]
+    }
+
+    #[test]
+    fn every_combo_is_populated_from_the_constant_that_decodes_it() {
+        let source = include_str!("mod.rs");
+        let needle = "labeled_entry_with_combo(";
+
+        let mut call_sites = 0;
+        for (index, _) in source.match_indices(needle) {
+            let args = call_arguments(source, index + needle.len() - 1);
+            if args.contains("items: &[&str]") {
+                continue; // the function definition itself
+            }
+            call_sites += 1;
+            assert!(
+                !args.contains("&["),
+                "a combo is populated from an inline list rather than the constant \
+                 that decodes its selection — the two drift, and the index then \
+                 means different things on each side:{args}"
+            );
+        }
+        assert!(
+            call_sites >= 4,
+            "expected to inspect every combo; found only {call_sites}"
+        );
+
+        // And each constant is actually used to build a combo.
+        for name in INDEXED_BY_DROPDOWN {
+            assert!(
+                source.contains(&format!("&{name},")),
+                "`{name}` decodes a dropdown selection but does not populate one"
+            );
+        }
     }
 }
 
