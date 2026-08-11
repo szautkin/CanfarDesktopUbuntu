@@ -626,7 +626,10 @@ impl NotebookTabHost {
 
             "add_cell" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
-                let cell_type = norm_cell_type(args.get("cell_type").or_else(|| args.get("type")));
+                let cell_type = norm_cell_type(
+                    crate::mcp::tools::arg(args, "cell_type")
+                        .or_else(|| crate::mcp::tools::arg(args, "type")),
+                );
                 let count = page.cell_count();
                 let idx = arg_index(args, "index").unwrap_or(count).min(count);
                 page.insert_cell(idx, &cell_type);
@@ -665,7 +668,7 @@ impl NotebookTabHost {
                     arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
                 let ct = args
                     .get("cell_type")
-                    .or_else(|| args.get("type"))
+                    .or_else(|| crate::mcp::tools::arg(args, "type"))
                     .and_then(|v| v.as_str());
                 let ct = match ct {
                     Some("code") => "code",
@@ -690,7 +693,7 @@ impl NotebookTabHost {
                 let to = if let Some(to) = arg_index(args, "to") {
                     to
                 } else {
-                    match args.get("direction").and_then(|v| v.as_str()) {
+                    match crate::mcp::tools::arg(args, "direction").and_then(|v| v.as_str()) {
                         Some("up") => {
                             if idx == 0 {
                                 return Err("cell already at top".to_string());
@@ -801,7 +804,7 @@ impl NotebookTabHost {
     /// Resolve the target page: the `notebook` selector (open-tab index, id, file
     /// path, or title) when present, otherwise the active tab.
     fn resolve_page(&self, args: &serde_json::Value) -> Option<Rc<NotebookPage>> {
-        if let Some(sel) = args.get("notebook").and_then(|v| v.as_str()) {
+        if let Some(sel) = crate::mcp::tools::arg(args, "notebook").and_then(|v| v.as_str()) {
             let sel = sel.trim();
             if !sel.is_empty() {
                 // Bare numeric selector → tab index.
@@ -1649,7 +1652,9 @@ fn no_notebook() -> String {
 
 /// Read a non-negative integer argument as a `usize`.
 fn arg_index(args: &serde_json::Value, key: &str) -> Option<usize> {
-    args.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
+    crate::mcp::tools::arg(args, key)
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
 }
 
 /// Normalise a cell-type argument, defaulting to "code".

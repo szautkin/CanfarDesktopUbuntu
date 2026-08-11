@@ -409,6 +409,60 @@ mod arg_tests {
         assert!(arg(&args, "missing").is_none());
     }
 
+    /// Viewer hosts must read tool arguments through [`arg`], never `args.get`.
+    ///
+    /// This is a source-level check because the failure it catches is invisible
+    /// at runtime AND untestable at the unit level: the hosts need a live GTK
+    /// widget tree. When tool schemas moved to camelCase, three hosts kept
+    /// reading `min_cut` / `north_up` / `center_x` directly, so every one of
+    /// those parameters was silently ignored — the call succeeded and did
+    /// nothing. `arg` accepts either spelling, so routing through it makes the
+    /// mismatch impossible rather than merely fixed.
+    #[test]
+    fn viewer_hosts_read_arguments_through_the_shared_accessor() {
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+        let mut offenders: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+
+        let mut stack = vec![ui];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                // Only files that actually serve bridge commands.
+                if !text.contains("handle_viewer_command") {
+                    continue;
+                }
+                checked += 1;
+                if text.contains("args.get(") {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "found no viewer hosts to check — did src/ui move?"
+        );
+        assert!(
+            offenders.is_empty(),
+            "viewer host(s) read tool arguments with `args.get(...)`, which only \
+             matches one spelling; use `crate::mcp::tools::arg(args, ..)`: {offenders:?}"
+        );
+    }
+
     #[test]
     fn string_arguments_are_trimmed() {
         let args = json!({ "path": "  data/run1  " });

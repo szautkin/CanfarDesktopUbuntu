@@ -251,39 +251,45 @@ impl CubeTabHost {
                     v.gl().reset_view();
                 }
                 let (mut az, mut el, mut dist) = v.gl().camera();
-                if let Some(x) = args.get("az").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "az").and_then(|x| x.as_f64()) {
                     az = x as f32;
                 }
-                if let Some(x) = args.get("el").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "el").and_then(|x| x.as_f64()) {
                     el = x as f32;
                 }
-                if let Some(x) = args.get("dist").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "dist").and_then(|x| x.as_f64()) {
                     dist = x as f32;
                 }
                 v.gl().set_camera(az, el, dist);
 
-                if let Some(x) = args.get("steps").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "steps").and_then(|x| x.as_f64()) {
                     v.gl().set_steps(x as f32);
                 }
-                if let Some(x) = args.get("spectral_scale").and_then(|x| x.as_f64()) {
+                if let Some(x) =
+                    crate::mcp::tools::arg(args, "spectral_scale").and_then(|x| x.as_f64())
+                {
                     v.gl().set_spectral_scale(x as f32);
                 }
-                if let Some(x) = args.get("density").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "density").and_then(|x| x.as_f64()) {
                     v.gl().set_density(x as f32);
                 }
                 // MIP: an explicit `mip` bool wins; otherwise derive it from a
                 // `render_mode` string ("max-intensity"/"mip" → on, else off),
                 // matching ApplyCubeView's RenderModeCombo mapping.
-                if let Some(on) = args.get("mip").and_then(|x| x.as_bool()) {
+                if let Some(on) = crate::mcp::tools::arg(args, "mip").and_then(|x| x.as_bool()) {
                     v.gl().set_mip(on);
-                } else if let Some(mode) = args.get("render_mode").and_then(|x| x.as_str()) {
+                } else if let Some(mode) =
+                    crate::mcp::tools::arg(args, "render_mode").and_then(|x| x.as_str())
+                {
                     let on = mode.to_ascii_lowercase().contains("max")
                         || mode.eq_ignore_ascii_case("mip");
                     v.gl().set_mip(on);
                 }
                 // Background preset (Dark / Black / Light) — the exact RGB the
                 // Background dropdown applies; unknown names fall back to Dark.
-                if let Some(bg) = args.get("background").and_then(|x| x.as_str()) {
+                if let Some(bg) =
+                    crate::mcp::tools::arg(args, "background").and_then(|x| x.as_str())
+                {
                     let rgb = match bg.trim().to_ascii_lowercase().as_str() {
                         "black" => [0.0, 0.0, 0.0],
                         "light" => [0.92, 0.92, 0.94],
@@ -291,10 +297,12 @@ impl CubeTabHost {
                     };
                     v.gl().set_background(rgb);
                 }
-                if let Some(on) = args.get("auto_orbit").and_then(|x| x.as_bool()) {
+                if let Some(on) =
+                    crate::mcp::tools::arg(args, "auto_orbit").and_then(|x| x.as_bool())
+                {
                     v.gl().set_auto_orbit(on);
                 }
-                if let Some(x) = args.get("channel").and_then(|x| x.as_u64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "channel").and_then(|x| x.as_u64()) {
                     v.set_current_channel(x as usize);
                 }
                 Ok(view_json(&v))

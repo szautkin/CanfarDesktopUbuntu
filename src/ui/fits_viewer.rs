@@ -866,36 +866,40 @@ impl FitsViewer {
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
 
-                if args.get("reset").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if crate::mcp::tools::arg(args, "reset")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     tab.reset_stretch();
                     tab.reset_view();
                 }
-                if let Some(s) = args.get("stretch").and_then(|v| v.as_str()) {
+                if let Some(s) = crate::mcp::tools::arg(args, "stretch").and_then(|v| v.as_str()) {
                     tab.set_stretch(
                         stretch_from_str(s).ok_or_else(|| format!("unknown stretch '{s}'"))?,
                     );
                 }
-                if let Some(c) = args.get("colormap").and_then(|v| v.as_str()) {
+                if let Some(c) = crate::mcp::tools::arg(args, "colormap").and_then(|v| v.as_str()) {
                     tab.set_colormap(
                         colormap_from_str(c).ok_or_else(|| format!("unknown colormap '{c}'"))?,
                     );
                 }
-                if let Some(v) = args.get("min_cut").and_then(|v| v.as_f64()) {
+                if let Some(v) = crate::mcp::tools::arg(args, "min_cut").and_then(|v| v.as_f64()) {
                     tab.set_vmin(v);
                 }
-                if let Some(v) = args.get("max_cut").and_then(|v| v.as_f64()) {
+                if let Some(v) = crate::mcp::tools::arg(args, "max_cut").and_then(|v| v.as_f64()) {
                     tab.set_vmax(v);
                 }
-                if let Some(z) = args.get("zoom").and_then(|v| v.as_f64()) {
+                if let Some(z) = crate::mcp::tools::arg(args, "zoom").and_then(|v| v.as_f64()) {
                     tab.set_zoom(z / 100.0);
                 }
-                if let Some(n) = args.get("north_up").and_then(|v| v.as_bool()) {
+                if let Some(n) = crate::mcp::tools::arg(args, "north_up").and_then(|v| v.as_bool())
+                {
                     tab.set_north_up(n);
                 }
                 // Centre is applied after zoom so the pan maths uses the new scale.
                 let (cur_cx, cur_cy) = tab.viewport_center();
-                let cx = args.get("center_x").and_then(|v| v.as_f64());
-                let cy = args.get("center_y").and_then(|v| v.as_f64());
+                let cx = crate::mcp::tools::arg(args, "center_x").and_then(|v| v.as_f64());
+                let cy = crate::mcp::tools::arg(args, "center_y").and_then(|v| v.as_f64());
                 if cx.is_some() || cy.is_some() {
                     tab.set_viewport_center(cx.unwrap_or(cur_cx), cy.unwrap_or(cur_cy));
                 }
@@ -994,8 +998,8 @@ impl FitsViewer {
                     .ok_or_else(|| "name is required".to_string())?;
 
                 // Prefer explicit ra/dec; otherwise capture the active tab's crosshair.
-                let ra = args.get("ra").and_then(|v| v.as_f64());
-                let dec = args.get("dec").and_then(|v| v.as_f64());
+                let ra = crate::mcp::tools::arg(args, "ra").and_then(|v| v.as_f64());
+                let dec = crate::mcp::tools::arg(args, "dec").and_then(|v| v.as_f64());
                 let (ra, dec, source_file) = match (ra, dec) {
                     (Some(ra), Some(dec)) => {
                         let src = self
