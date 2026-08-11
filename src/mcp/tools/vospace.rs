@@ -341,8 +341,10 @@ async fn read_get_quota(services: &AppServices) -> ToolResult {
         Ok(q) => ToolResult::Data(json!({
             "quotaBytes": q.quota_bytes,
             "usedBytes": q.used_bytes,
-            "quotaGb": round_dp(q.quota_gb(), 2),
-            "usedGb": round_dp(q.used_gb(), 2),
+            // `GB`, not `Gb`: .NET's camelCase policy lowercases only the
+            // leading capital, so `QuotaGB` goes out as `quotaGB`.
+            "quotaGB": round_dp(q.quota_gb(), 2),
+            "usedGB": round_dp(q.used_gb(), 2),
             "usagePercent": round_dp(q.usage_percent(), 1),
             "lastModified": q.last_update,
         })),

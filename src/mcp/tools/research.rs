@@ -370,7 +370,9 @@ fn note_summary(n: &ObservationNote) -> Value {
         "rating": n.rating,
         "note": n.note,
         "tags": n.tags,
-        "updated": n.updated,
+        // `updatedUtc` in the reference's NoteView — the name carries the
+        // timezone, which a bare `updated` does not.
+        "updatedUtc": n.updated,
         "agentAttribution": serde_json::to_value(&n.agent_attribution).unwrap_or(Value::Null),
     })
 }

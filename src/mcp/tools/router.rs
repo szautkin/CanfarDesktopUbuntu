@@ -105,13 +105,24 @@ impl McpToolRouter {
                     .filter(|p| visible(&p.origin))
                     .map(|p| {
                         serde_json::json!({
-                            "id": p.id, "kind": p.kind, "summary": p.summary,
-                            "destructive": p.destructive, "state": "pending"
+                            "id": p.id,
+                            "toolName": p.tool_name,
+                            "kind": p.kind,
+                            "summary": p.summary,
+                            "createdAtISO": p.created_at,
+                            // The reference's `Origin.Label`: the client id for an
+                            // external caller, "user" for the app itself.
+                            "originTag": p.origin.clone().unwrap_or_else(|| "user".into()),
+                            // Beyond the reference. Kept because it cannot be
+                            // derived from the other fields and decides whether the
+                            // proposal can auto-apply — the single most useful thing
+                            // to know about a queued write.
+                            "destructive": p.destructive,
                         })
                     })
                     .collect();
                 Some(ToolResult::Data(
-                    serde_json::json!({ "proposals": pending }),
+                    serde_json::json!({ "count": pending.len(), "proposals": pending }),
                 ))
             }
             "get_proposal_state" => {
@@ -126,9 +137,12 @@ impl McpToolRouter {
                             ProposalState::Rejected => "rejected",
                             ProposalState::Withdrawn => "withdrawn",
                         };
-                        Some(ToolResult::Data(serde_json::json!({
-                            "id": p.id, "kind": p.kind, "summary": p.summary, "state": state
-                        })))
+                        // `{id, state}` and nothing else, as the reference does —
+                        // including on the unknown path below, so a client never
+                        // has to branch on which keys came back.
+                        Some(ToolResult::Data(
+                            serde_json::json!({ "id": p.id, "state": state }),
+                        ))
                     }
                     _ => Some(ToolResult::Data(
                         serde_json::json!({ "id": id, "state": "unknown" }),
@@ -148,42 +162,74 @@ impl McpToolRouter {
                 }
                 match self.proposals.resolve(id, ProposalState::Withdrawn) {
                     Some(_) => Some(ToolResult::Data(
-                        serde_json::json!({ "withdrawn": true, "id": id }),
+                        serde_json::json!({ "id": id, "withdrew": true }),
                     )),
                     None => Some(ToolResult::Failed(format!("proposal {id} is not pending"))),
                 }
             }
             "list_events" => {
-                use crate::mcp::agent_events::AgentEventKind;
-                let cursor = args.get("cursor").and_then(|v| v.as_u64()).unwrap_or(0);
+                // Tokens cross the wire as STRINGS, as in the reference: a u64
+                // seq near the top of the range does not survive a round trip
+                // through a JSON parser that stores numbers as doubles.
+                let since = parse_since_token(args);
                 let log = self.proposals.events();
-                // Loss detection: if the caller's cursor predates the retained
+                // Loss detection: if the caller's token predates the retained
                 // window, events between it and the oldest retained were evicted.
-                let lost = cursor > 0 && log.oldest_seq().map(|o| o > cursor + 1).unwrap_or(false);
-                let (events, next) = log.since(cursor);
+                let expired = since > 0 && log.oldest_seq().map(|o| o > since + 1).unwrap_or(false);
+                let (events, next) = log.since(since);
                 let events_json: Vec<_> = events
                     .iter()
                     .filter(|e| visible(&e.origin))
                     .map(|e| {
-                        let kind = match e.kind {
-                            AgentEventKind::ProposalArrived => "arrived",
-                            AgentEventKind::ProposalApplied => "applied",
-                            AgentEventKind::ProposalRejected => "rejected",
-                            AgentEventKind::ProposalWithdrawn => "withdrawn",
-                        };
                         serde_json::json!({
-                            "seq": e.seq, "kind": kind, "proposalId": e.proposal_id,
-                            "proposalKind": e.proposal_kind, "summary": e.summary
+                            "token": e.seq.to_string(),
+                            "occurredAtISO": e.occurred_at,
+                            // Serialized from the enum, whose variants ARE the
+                            // wire kinds (`proposalArrived`, …). A hand-written
+                            // match here previously emitted a shortened set that
+                            // nothing else in the codebase agreed with.
+                            "kind": e.kind,
+                            "proposalID": e.proposal_id,
+                            "proposalKind": e.proposal_kind,
+                            "originKind": e.origin_kind(),
+                            // Beyond the reference: the one-line summary, so an
+                            // agent polling the feed can report what happened
+                            // without a second call per event.
+                            "summary": e.summary,
                         })
                     })
                     .collect();
-                Some(ToolResult::Data(
-                    serde_json::json!({ "events": events_json, "cursor": next, "lost": lost }),
-                ))
+                Some(ToolResult::Data(serde_json::json!({
+                    "events": events_json,
+                    "nextToken": next.to_string(),
+                    "expired": expired,
+                })))
             }
             _ => None,
         }
     }
+}
+
+/// Read the `list_events` resume token.
+///
+/// The reference declares it as `since_token` (explicitly snake_case, unlike
+/// every other argument) and carries it as a string. Absent, blank or malformed
+/// means "from the start of the retained buffer" rather than an error — a client
+/// that lost its token should re-baseline, not fail. `cursor` is accepted too:
+/// Verbinal shipped that name first, and it costs one line to keep working.
+fn parse_since_token(args: &Value) -> u64 {
+    for key in ["since_token", "cursor"] {
+        let Some(v) = super::arg(args, key) else {
+            continue;
+        };
+        if let Some(n) = v.as_u64() {
+            return n;
+        }
+        if let Some(n) = v.as_str().and_then(|s| s.trim().parse::<u64>().ok()) {
+            return n;
+        }
+    }
+    0
 }
 
 /// Descriptors for the proposal-lifecycle tools (agent-safe: they only inspect /
@@ -205,10 +251,14 @@ fn lifecycle_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "list_events".into(),
-            description: "Poll the proposal-lifecycle event feed (arrived/applied/rejected/withdrawn). Pass the last `cursor` to get only newer events.".into(),
+            description: "Poll the proposal-lifecycle event feed (proposalArrived / proposalApplied / \
+                          proposalRejected / proposalWithdrawn). Pass the `nextToken` from the previous \
+                          call to get only newer events; omit it to read from the start of the retained \
+                          buffer. `expired` means events were evicted before you polled — you have a gap."
+                .into(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": { "cursor": { "type": "integer", "minimum": 0, "description": "Return events after this cursor (0 = from the start)." } },
+                "properties": { "since_token": { "type": "string", "description": "Return events after this token (omit to read from the start)." } },
                 "additionalProperties": false
             }),
             verb: VerbClass::Read,
@@ -348,7 +398,9 @@ impl ToolRouter for McpToolRouter {
                     // emit its arrival event (scoped to that origin), before any policy.
                     if let ToolResult::Proposed(p) = &result {
                         let origin = ctx.is_external().then(|| ctx.client_label().to_string());
-                        self.proposals.set_origin(&p.id, origin.clone());
+                        // `resolved` is the canonical name, so a proposal made
+                        // through an alias still reports the tool it really ran.
+                        self.proposals.stamp_source(&p.id, resolved, origin.clone());
                         self.proposals.events().emit(
                             crate::mcp::agent_events::AgentEventKind::ProposalArrived,
                             &p.id,
@@ -445,5 +497,58 @@ impl ToolRouter for McpToolRouter {
 
             result
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resume_token_is_read_from_a_string_as_the_reference_sends_it() {
+        assert_eq!(
+            parse_since_token(&serde_json::json!({"since_token": "42"})),
+            42
+        );
+    }
+
+    #[test]
+    fn a_numeric_token_is_accepted_too() {
+        // Not what the reference emits, but an agent that treats the token as a
+        // number and echoes it back should not silently restart from zero.
+        assert_eq!(
+            parse_since_token(&serde_json::json!({"since_token": 42})),
+            42
+        );
+    }
+
+    #[test]
+    fn the_original_cursor_argument_still_resumes() {
+        assert_eq!(parse_since_token(&serde_json::json!({"cursor": 7})), 7);
+        assert_eq!(parse_since_token(&serde_json::json!({"cursor": "7"})), 7);
+    }
+
+    #[test]
+    fn a_missing_or_unusable_token_reads_from_the_start() {
+        // Re-baselining beats erroring: a client that lost its token still gets
+        // the retained window, which is exactly what `expired` is there to flag.
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"since_token": ""}),
+            serde_json::json!({"since_token": "  "}),
+            serde_json::json!({"since_token": "not-a-number"}),
+            serde_json::json!({"since_token": null}),
+            serde_json::json!({"since_token": -1}),
+        ] {
+            assert_eq!(parse_since_token(&args), 0, "args: {args}");
+        }
+    }
+
+    #[test]
+    fn since_token_wins_over_the_legacy_cursor() {
+        // A client sending both is most likely written against the reference and
+        // carrying `cursor` by accident; the documented argument decides.
+        let args = serde_json::json!({"since_token": "9", "cursor": 3});
+        assert_eq!(parse_since_token(&args), 9);
     }
 }

@@ -298,6 +298,16 @@ mod tests {
         }
     }
 
+    /// Arguments the reference itself declares in snake_case, and which must
+    /// therefore stay that way here.
+    ///
+    /// Exactly one so far: `ListEventsTool.Args.SinceToken` carries an explicit
+    /// `[JsonPropertyName("since_token")]`, overriding the camelCase policy that
+    /// governs every other argument. Matching the reference beats matching our
+    /// own convention — an agent sends what the reference declares. Additions
+    /// need the same evidence: a JsonPropertyName in the reference source.
+    const REFERENCE_SNAKE_CASE_ARGS: &[&str] = &["list_events.since_token"];
+
     /// Argument names are camelCase, matching the reference's serializer. A
     /// snake_case leftover means a rename pass missed a schema.
     #[test]
@@ -308,13 +318,44 @@ mod tests {
                 continue;
             };
             for name in props.keys().filter(|n| n.contains('_')) {
-                offenders.push(format!("{}.{}", d.name, name));
+                let qualified = format!("{}.{}", d.name, name);
+                if !REFERENCE_SNAKE_CASE_ARGS.contains(&qualified.as_str()) {
+                    offenders.push(qualified);
+                }
             }
         }
         assert!(
             offenders.is_empty(),
             "snake_case argument names left in tool schemas: {offenders:?}"
         );
+    }
+
+    /// The exception list may not outlive the exceptions.
+    ///
+    /// A stale entry is worse than no list: it silently re-permits snake_case
+    /// for a tool that has since been fixed or removed.
+    #[test]
+    fn every_snake_case_exception_is_still_in_use() {
+        let declared: Vec<String> = McpToolRouter::all_descriptors()
+            .iter()
+            .filter_map(|d| {
+                let props = d.input_schema.get("properties")?.as_object()?;
+                Some(
+                    props
+                        .keys()
+                        .map(|k| format!("{}.{}", d.name, k))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .collect();
+
+        for allowed in REFERENCE_SNAKE_CASE_ARGS {
+            assert!(
+                declared.iter().any(|d| d == allowed),
+                "`{allowed}` is allow-listed as snake_case but no tool declares it — drop the entry"
+            );
+        }
     }
 
     /// An alias may never collide with a real tool name — dispatch resolves

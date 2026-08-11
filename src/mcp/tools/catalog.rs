@@ -129,6 +129,131 @@ mod tests {
         });
     }
 
+    /// The proposal-lifecycle family is how an agent tracks its own writes, so
+    /// its payload shape has to be the one the reference documents — a client
+    /// polling for `withdrew` or reading `nextToken` gets nothing otherwise.
+    #[test]
+    fn lifecycle_payloads_match_the_reference_records() {
+        use crate::mcp::tools::{ToolContext, ToolResult};
+
+        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+        let (services, _toast_rx) = AppServices::new(rt.handle().clone());
+        let (router, _proposals) = build_router(services);
+
+        rt.block_on(async {
+            let ctx = ToolContext::for_external("agent-A".into(), "req-1".into());
+            let proposal_id = match router
+                .dispatch("delete_node", serde_json::json!({ "path": "/a/x" }), &ctx)
+                .await
+            {
+                ToolResult::Proposed(p) => p.id,
+                other => panic!("expected a queued proposal, got {}", variant_name(&other)),
+            };
+
+            // ── list_pending_proposals → Output(Count, [Item]) ──────────────
+            let ToolResult::Data(listed) = router
+                .dispatch("list_pending_proposals", serde_json::json!({}), &ctx)
+                .await
+            else {
+                panic!("list_pending_proposals should return Data");
+            };
+            assert_eq!(listed["count"], 1, "the reference's Output carries a count");
+            let item = &listed["proposals"][0];
+            for key in [
+                "id",
+                "toolName",
+                "kind",
+                "summary",
+                "createdAtISO",
+                "originTag",
+            ] {
+                assert!(!item[key].is_null(), "Item.{key} is missing or null");
+            }
+            // Called through the `delete_node` alias, reported as the canonical
+            // name — the reference resolves an alias to its inner tool before
+            // stamping `Descriptor.Name`, so both apps name the real tool.
+            assert_eq!(item["toolName"], "delete_vospace_node");
+            assert_eq!(
+                item["originTag"], "agent-A",
+                "originTag is the external client's label"
+            );
+
+            // ── list_events → Output(Events, NextToken, Expired) ────────────
+            let ToolResult::Data(events) = router
+                .dispatch("list_events", serde_json::json!({}), &ctx)
+                .await
+            else {
+                panic!("list_events should return Data");
+            };
+            assert!(events["nextToken"].is_string(), "tokens cross as strings");
+            assert_eq!(events["expired"], false);
+            let ev = &events["events"][0];
+            assert!(
+                ev["token"].is_string(),
+                "the per-event token is a string too"
+            );
+            assert_eq!(
+                ev["kind"], "proposalArrived",
+                "the wire kind is the full name, not a shortened 'arrived'"
+            );
+            assert_eq!(ev["proposalID"], proposal_id);
+            assert_eq!(
+                ev["originKind"], "external",
+                "an agent-queued proposal arrived externally"
+            );
+            assert!(!ev["occurredAtISO"].as_str().unwrap_or("").is_empty());
+
+            // Resuming from the returned token yields nothing new — the round
+            // trip through a string token has to actually work.
+            let next = events["nextToken"].as_str().unwrap().to_string();
+            let ToolResult::Data(again) = router
+                .dispatch(
+                    "list_events",
+                    serde_json::json!({ "since_token": next }),
+                    &ctx,
+                )
+                .await
+            else {
+                panic!("list_events should return Data");
+            };
+            assert!(
+                again["events"].as_array().unwrap().is_empty(),
+                "resuming from nextToken must not replay events already seen"
+            );
+
+            // ── get_proposal_state → Output(Id, State) ──────────────────────
+            let ToolResult::Data(state) = router
+                .dispatch(
+                    "get_proposal_state",
+                    serde_json::json!({ "id": proposal_id }),
+                    &ctx,
+                )
+                .await
+            else {
+                panic!("get_proposal_state should return Data");
+            };
+            assert_eq!(state["state"], "pending");
+            let keys: Vec<&String> = state.as_object().unwrap().keys().collect();
+            assert_eq!(keys.len(), 2, "the reference returns exactly id + state");
+
+            // ── withdraw_proposal → Output(Id, Withdrew) ────────────────────
+            let ToolResult::Data(withdrawn) = router
+                .dispatch(
+                    "withdraw_proposal",
+                    serde_json::json!({ "id": proposal_id }),
+                    &ctx,
+                )
+                .await
+            else {
+                panic!("withdraw_proposal should return Data");
+            };
+            assert_eq!(
+                withdrawn["withdrew"], true,
+                "the reference's field is `withdrew`, not `withdrawn`"
+            );
+        });
+    }
+
     /// Name a [`ToolResult`] variant for assertion messages. `ToolResult` has no
     /// `Debug` on purpose — the `Image` variant carries base64 payload bytes that
     /// should never land in a log or panic message.

@@ -46,6 +46,30 @@ pub struct AgentEvent {
     /// `list_events` so one agent never sees another agent's activity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// When it happened, `YYYY-MM-DDTHH:MM:SSZ` — the reference's event format
+    /// (second precision, explicit Z), distinct from the RFC-3339 stamp on a
+    /// proposal. Lets an agent order events it polled across two calls.
+    pub occurred_at: String,
+}
+
+impl AgentEvent {
+    /// Who caused this, as the reference reports it: `user` or `external`, and
+    /// only for an arrival.
+    ///
+    /// Derived rather than stored — it is a pure function of `kind` and `origin`,
+    /// and a stored copy could contradict them. The reference sets it null for
+    /// every other kind because a proposal is applied or rejected by the person
+    /// at the keyboard regardless of who proposed it.
+    pub fn origin_kind(&self) -> Option<&'static str> {
+        if self.kind != AgentEventKind::ProposalArrived {
+            return None;
+        }
+        Some(if self.origin.is_some() {
+            "external"
+        } else {
+            "user"
+        })
+    }
 }
 
 struct LogInner {
@@ -95,6 +119,7 @@ impl AgentEventLog {
             proposal_kind: proposal_kind.to_string(),
             summary: summary.to_string(),
             origin: origin.map(|s| s.to_string()),
+            occurred_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         });
         while g.ring.len() > CAP {
             g.ring.pop_front();
@@ -221,6 +246,7 @@ mod tests {
             proposal_kind: "save_query".into(),
             summary: "s".into(),
             origin: None,
+            occurred_at: "2026-08-11T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["kind"], "proposalWithdrawn");

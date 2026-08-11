@@ -35,6 +35,17 @@ pub struct PendingProposal {
     /// The originating client label (`None` = internal/UI), stamped by the router
     /// so lifecycle reads/withdraws can be scoped to the agent that created it.
     pub origin: Option<String>,
+    /// The MCP tool that created this proposal.
+    ///
+    /// Usually equal to `kind`, but not by rule — one tool may enqueue a kind
+    /// named for the applier that handles it. Stamped by the router alongside
+    /// `origin`, which is the only place that knows the name the caller used
+    /// (including which alias they called it by). Defaults to `kind` so a
+    /// proposal built directly in a test is never blank.
+    pub tool_name: String,
+    /// When it was queued, ISO-8601. Surfaced as `createdAtISO` so a polling
+    /// agent can tell a stale proposal from one it just made.
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +120,8 @@ impl InMemoryProposalStore {
             payload,
             state: ProposalState::Pending,
             origin: None,
+            tool_name: kind.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
         };
         g.order.push(id.clone());
         g.by_id.insert(id, proposal.clone());
@@ -121,6 +134,18 @@ impl InMemoryProposalStore {
     /// the router before it emits `ProposalArrived` / runs the applier).
     pub fn set_origin(&self, id: &str, origin: Option<String>) {
         if let Some(p) = self.inner.lock().unwrap().by_id.get_mut(id) {
+            p.origin = origin;
+        }
+    }
+
+    /// Stamp both router-known fields at once: the tool the caller invoked and
+    /// the client label it came from.
+    ///
+    /// One method, one lock: stamping them separately leaves a window where a
+    /// concurrent read sees the origin set but the tool name still defaulted.
+    pub fn stamp_source(&self, id: &str, tool_name: &str, origin: Option<String>) {
+        if let Some(p) = self.inner.lock().unwrap().by_id.get_mut(id) {
+            p.tool_name = tool_name.to_string();
             p.origin = origin;
         }
     }

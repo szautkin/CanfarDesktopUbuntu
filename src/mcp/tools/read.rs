@@ -42,9 +42,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
     vec![
         read_tool(
             "describe_app",
-            "Describe the Verbinal / CanfarDesktop app: what it is, its version, and what data it \
-             can expose over MCP (read-only observation search, Skaha sessions, downloaded research \
-             observations, VOSpace storage, FITS/WCS, and service health).",
+            "Describe the Verbinal / CanfarDesktop app: what it is and what data it can expose \
+             over MCP.",
             empty_schema(),
         ),
         read_tool(
@@ -132,8 +131,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         read_tool(
             "list_downloaded_observations",
             "List the observations the user has downloaded or bookmarked into their local Research \
-             library (publisher id, collection, target, instrument, filter, coordinates, local \
-             path, size).",
+             library (publisher id, collection, target, instrument, filter, coordinates, filename, \
+             size in bytes).",
             empty_schema(),
         ),
         read_tool(
@@ -196,23 +195,24 @@ fn arg_u64(args: &Value, key: &str) -> Option<u64> {
 // Foundational
 // ---------------------------------------------------------------------------
 
+/// Name, version, summary — the reference's three fields, no more.
+///
+/// It previously also returned a `modules` array and a `capabilities` object.
+/// Both were dropped: `capabilities` stated three things that are true of every
+/// build, and `modules` was a hand-maintained list that had already gone stale
+/// (it never gained notebooks, workflows, the cube viewer or image discovery
+/// after those shipped). A structured list an agent might reasonably branch on
+/// is worse than prose when nothing keeps it honest — `tools/list` is the
+/// authoritative answer to "what can this app do", and it cannot drift.
 fn describe_app() -> ToolResult {
     ToolResult::Data(json!({
         "name": "Verbinal (CanfarDesktop)",
         "version": crate::mcp::constants::SERVER_VERSION,
         "summary": "Native Linux client for CADC / CANFAR (clone of the Windows CanfarDesktop). \
-                    Exposes read-only observation search (ADQL + CAOM2 cone), Skaha sessions, a \
-                    local research library of downloaded observations, VOSpace/ARC storage, FITS \
-                    headers/WCS, and upstream service health.",
-        "modules": [
-            "observation_search", "sessions", "research_library",
-            "vospace_storage", "fits_wcs", "service_health"
-        ],
-        "capabilities": {
-            "readTools": true,
-            "writeToolsViaProposals": true,
-            "agentSafeReads": true
-        }
+                    Exposes observation search (ADQL + CAOM2), Skaha sessions, downloaded research \
+                    observations + notes, VOSpace/ARC storage, FITS headers/WCS, a spectral-cube \
+                    viewer, container image discovery, research workflows, and a native Jupyter \
+                    notebook engine."
     }))
 }
 
@@ -345,12 +345,21 @@ async fn resolve_target(services: &crate::state::AppServices, args: &Value) -> T
 // Saved / recent (local stores — no network, no token)
 // ---------------------------------------------------------------------------
 
+/// Wire view of one saved query — the reference's `QueryView`.
+///
+/// Shared by the list and single-get tools so they cannot describe the same
+/// query differently. `savedAt`, not `createdAt`: the reference names it for
+/// when the user saved it, and an agent reads that key.
+fn saved_query_view(q: &crate::models::search_result::SavedQuery) -> Value {
+    json!({ "name": q.name, "adql": q.adql, "savedAt": q.created_at })
+}
+
 fn list_saved_queries(services: &crate::state::AppServices) -> ToolResult {
     let queries: Vec<Value> = services
         .search_store
         .load_saved()
-        .into_iter()
-        .map(|q| json!({ "name": q.name, "adql": q.adql, "createdAt": q.created_at }))
+        .iter()
+        .map(saved_query_view)
         .collect();
     ToolResult::Data(json!({ "count": queries.len(), "queries": queries }))
 }
@@ -366,9 +375,7 @@ fn get_saved_query(services: &crate::state::AppServices, args: &Value) -> ToolRe
         .into_iter()
         .find(|q| q.name == name)
     {
-        Some(q) => ToolResult::Data(json!({
-            "name": q.name, "adql": q.adql, "createdAt": q.created_at
-        })),
+        Some(q) => ToolResult::Data(saved_query_view(&q)),
         None => ToolResult::Failed(format!("no saved query named '{name}'")),
     }
 }

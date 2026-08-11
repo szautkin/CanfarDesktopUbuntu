@@ -635,6 +635,8 @@ mod tests {
             payload: json!({}),
             state: crate::mcp::tools::proposals::ProposalState::Pending,
             origin: None,
+            tool_name: "save_query".to_string(),
+            created_at: "2026-08-11T00:00:00Z".to_string(),
         };
         assert!(apply(&services, &foreign).await.is_none());
     }
