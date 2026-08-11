@@ -1,3 +1,4 @@
+use crate::helpers::store_events::{self, Store};
 use crate::models::search_result::{RecentSearch, SavedQuery};
 use directories::ProjectDirs;
 use std::collections::HashMap;
@@ -65,11 +66,19 @@ impl SearchStoreService {
         self.write_recent(&[])
     }
 
+    /// The single write path for recent searches.
+    ///
+    /// The change signal fires HERE, not in each caller: every mutation already
+    /// funnels through this function, so a new one cannot be added that forgets
+    /// to announce itself and leaves the sidebar stale. The id is empty because
+    /// the page rebuilds the whole list from the store anyway.
     fn write_recent(&self, entries: &[RecentSearch]) -> Result<(), String> {
         std::fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
         let path = self.data_dir.join("recent_searches.json");
         let json = serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| e.to_string())
+        std::fs::write(path, json).map_err(|e| e.to_string())?;
+        store_events::record_change(Store::RecentSearches, "");
+        Ok(())
     }
 
     // --- Saved Queries ---
@@ -100,11 +109,15 @@ impl SearchStoreService {
         self.write_saved(&queries)
     }
 
+    /// The single write path for saved queries — see [`Self::write_recent`] for
+    /// why the change signal lives in the writer rather than each caller.
     fn write_saved(&self, queries: &[SavedQuery]) -> Result<(), String> {
         std::fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
         let path = self.data_dir.join("saved_queries.json");
         let json = serde_json::to_string_pretty(queries).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| e.to_string())
+        std::fs::write(path, json).map_err(|e| e.to_string())?;
+        store_events::record_change(Store::SavedQueries, "");
+        Ok(())
     }
 
     // --- Column display units ---
@@ -137,6 +150,56 @@ impl SearchStoreService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every mutation must announce itself, or the sidebar showing it goes
+    /// stale — which is exactly what happened when an agent applied `save_query`
+    /// over MCP: the store changed, the page never heard, and the user kept
+    /// looking at the previous list.
+    ///
+    /// The signal lives in the two private writers, so this walks the PUBLIC
+    /// mutations to prove each one reaches a writer.
+    #[test]
+    fn every_mutation_announces_itself() {
+        use crate::helpers::store_events::{current_seq, Store};
+
+        let t = TempStore::new("signals");
+        let store = &t.svc;
+
+        let saved_before = current_seq(Store::SavedQueries);
+        store
+            .save_query(SavedQuery {
+                name: "Q".into(),
+                adql: "SELECT 1".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                agent_attribution: None,
+            })
+            .expect("save");
+        let after_save = current_seq(Store::SavedQueries);
+        assert!(after_save > saved_before, "save_query must signal");
+
+        store.delete_saved("Q").expect("delete");
+        assert!(
+            current_seq(Store::SavedQueries) > after_save,
+            "delete_saved must signal"
+        );
+
+        let recent_before = current_seq(Store::RecentSearches);
+        store
+            .save_recent(recent("SELECT 2", "M31"))
+            .expect("save_recent");
+        let after_recent = current_seq(Store::RecentSearches);
+        assert!(after_recent > recent_before, "save_recent must signal");
+
+        store.save_all_recent(&[]).expect("save_all_recent");
+        let after_all = current_seq(Store::RecentSearches);
+        assert!(after_all > after_recent, "save_all_recent must signal");
+
+        store.clear_recent().expect("clear_recent");
+        assert!(
+            current_seq(Store::RecentSearches) > after_all,
+            "clear_recent must signal"
+        );
+    }
 
     /// A store rooted in a unique temp dir, cleaned up on drop.
     struct TempStore {

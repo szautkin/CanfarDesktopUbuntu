@@ -13,7 +13,7 @@
 //! Layout mirrors `ui::research_page` — a `gtk::Paned` with an imperatively
 //! rebuilt detail pane.
 
-use crate::helpers::workflow_events;
+use crate::helpers::store_events::{self, Store};
 use crate::helpers::workflow_format::{self, KNOWN_VIEWS};
 use crate::models::workflow::{WorkflowInfo, WorkflowSource, WorkflowStep};
 use crate::services::workflow_store::{WorkflowStore, VOSPACE_PREFIX};
@@ -65,7 +65,7 @@ pub struct WorkflowsPage {
     /// re-renders. Caching also means re-selecting a workflow the user already
     /// looked at is instant.
     vospace_cache: RefCell<std::collections::HashMap<String, WorkflowInfo>>,
-    /// Sequence of the last [`workflow_events`] change this page has rendered.
+    /// Sequence of the last [`store_events`] change this page has rendered.
     ///
     /// The store is stateless and agents mutate it from the tokio pool, so the
     /// page cannot be called back directly; it polls this counter instead. See
@@ -194,7 +194,7 @@ impl WorkflowsPage {
             vospace_cache: RefCell::new(std::collections::HashMap::new()),
             // Seeded with whatever has already happened this session, so opening
             // the page does not replay an old change as if it were new.
-            last_seen_change: RefCell::new(workflow_events::latest().map(|c| c.seq).unwrap_or(0)),
+            last_seen_change: RefCell::new(store_events::current_seq(Store::Workflows)),
         });
 
         // Toolbar wiring
@@ -284,13 +284,13 @@ impl WorkflowsPage {
         page
     }
 
-    /// Poll [`workflow_events`] and bring the page up to date when something
+    /// Poll [`store_events`] and bring the page up to date when something
     /// changed a workflow underneath it.
     ///
     /// The policy lives in [`decide_follow`] so it can be tested without a GTK
     /// window; this method is only the plumbing around it.
     fn follow_external_changes(self: &Rc<Self>) {
-        let Some(change) = workflow_events::latest() else {
+        let Some(change) = store_events::latest(Store::Workflows) else {
             return;
         };
         if change.seq <= *self.last_seen_change.borrow() {

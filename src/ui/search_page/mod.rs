@@ -43,7 +43,13 @@ fn saved_query_badge(
 // which units mean anything — the page only renders them. Keeping a second
 // copy here is how the dropdown ended up offering 4 of the 14 units the
 // converter has always handled.
+use crate::helpers::store_events::{self, Store};
 use crate::helpers::unit_converter::{PIXEL_SCALE_UNITS, SPECTRAL_UNITS, TIME_UNITS};
+
+/// How often the page checks whether the saved-query or recent-search store
+/// changed underneath it. One mutex read per tick; it rebuilds only when a
+/// sequence actually moved.
+const SIDEBAR_POLL_MS: u64 = 1000;
 const DATE_PRESETS: [&str; 4] = ["", "Last 24 hours", "Last week", "Last month"];
 const INTENTS: [&str; 3] = ["", "science", "calibration"];
 const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
@@ -130,6 +136,16 @@ fn spectral_unit_index(value: &str) -> u32 {
 
 mod mcp;
 
+/// Store sequences this page has already rendered, one per sidebar.
+///
+/// Tracked separately so an agent saving a query does not also rebuild the
+/// recent-search list and throw away its scroll position for nothing.
+#[derive(Default)]
+struct SeenStoreSeq {
+    saved: u64,
+    recent: u64,
+}
+
 pub struct SearchPage {
     widget: gtk::Box,
     services: Arc<AppServices>,
@@ -138,6 +154,8 @@ pub struct SearchPage {
     /// critical to avoid XDG portal deadlocks when a child widget is already
     /// detached.
     main_window: adw::ApplicationWindow,
+    /// Sequences from [`store_events`] the sidebars have already reflected.
+    last_store_seq: RefCell<SeenStoreSeq>,
     // Tabs
     notebook: gtk::Notebook,
     // --- Form fields (Observation) ---
@@ -603,6 +621,12 @@ impl SearchPage {
             widget,
             services,
             main_window,
+            // Seeded with what has already happened, so opening the page does
+            // not replay an old change as if it were new.
+            last_store_seq: RefCell::new(SeenStoreSeq {
+                saved: store_events::current_seq(Store::SavedQueries),
+                recent: store_events::current_seq(Store::RecentSearches),
+            }),
             notebook,
             observation_id,
             pi_name,
@@ -808,11 +832,58 @@ impl SearchPage {
         page.refresh_recent();
         page.refresh_saved();
 
+        // Follow saved-query and recent-search edits made elsewhere — an agent
+        // applying save_query or remove_recent_search writes the store directly,
+        // and until now the sidebar kept showing the previous list until the user
+        // happened to trigger a refresh of its own. Weak, so the timer dies with
+        // the page.
+        {
+            let weak = Rc::downgrade(&page);
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(SIDEBAR_POLL_MS),
+                move || match weak.upgrade() {
+                    Some(page) => {
+                        page.follow_store_changes();
+                        glib::ControlFlow::Continue
+                    }
+                    None => glib::ControlFlow::Break,
+                },
+            );
+        }
+
         // Load data train in background
         let p = page.clone();
         glib::spawn_future_local(async move { p.load_data_train().await });
 
         page
+    }
+
+    /// Rebuild a sidebar when its store changed underneath the page.
+    ///
+    /// Each list is tracked separately, so an agent saving a query does not
+    /// redraw the recent-search list and lose its scroll position for nothing.
+    fn follow_store_changes(self: &Rc<Self>) {
+        let saved_seq = store_events::current_seq(Store::SavedQueries);
+        let recent_seq = store_events::current_seq(Store::RecentSearches);
+
+        // Decide inside a scoped borrow and release it BEFORE rebuilding: a
+        // refresh runs arbitrary widget code, and holding a RefCell across it is
+        // how a re-entrant borrow panic gets introduced later.
+        let (rebuild_saved, rebuild_recent) = {
+            let mut seen = self.last_store_seq.borrow_mut();
+            let saved = saved_seq > seen.saved;
+            let recent = recent_seq > seen.recent;
+            seen.saved = saved_seq;
+            seen.recent = recent_seq;
+            (saved, recent)
+        };
+
+        if rebuild_saved {
+            self.refresh_saved();
+        }
+        if rebuild_recent {
+            self.refresh_recent();
+        }
     }
 
     pub fn widget(&self) -> &gtk::Box {

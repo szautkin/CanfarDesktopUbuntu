@@ -10,7 +10,7 @@
 //! then-rename atomic write idiom. Local files are always written as UTF-8 with
 //! no BOM.
 
-use crate::helpers::workflow_events;
+use crate::helpers::store_events::{self, Store};
 use crate::helpers::workflow_format::{self, FILE_EXTENSION};
 use crate::models::workflow::{WorkflowInfo, WorkflowSource};
 use directories::ProjectDirs;
@@ -238,7 +238,7 @@ impl WorkflowStore {
             .upload_file(token, username, &remote, text.into_bytes(), "text/markdown")
             .await
             .map_err(|e| format!("could not upload {remote}: {e}"))?;
-        workflow_events::record_change(&format!("{VOSPACE_PREFIX}{remote}"));
+        store_events::record_change(Store::Workflows, &format!("{VOSPACE_PREFIX}{remote}"));
         Ok(remote)
     }
 
@@ -279,7 +279,7 @@ impl WorkflowStore {
         let path = self.path_of_slug(&candidate);
         write_atomic(&path, text)?;
         let id = format!("{}{}", LOCAL_PREFIX, candidate);
-        workflow_events::record_change(&id);
+        store_events::record_change(Store::Workflows, &id);
         Ok(WorkflowInfo {
             id,
             source: WorkflowSource::Local,
@@ -293,7 +293,7 @@ impl WorkflowStore {
     pub fn update_text(&self, id: &str, text: &str) -> Result<(), String> {
         let path = self.require_local_path(id)?;
         write_atomic(&path, text)?;
-        workflow_events::record_change(id);
+        store_events::record_change(Store::Workflows, id);
         Ok(())
     }
 
@@ -311,7 +311,7 @@ impl WorkflowStore {
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let new_text = workflow_format::with_step_done(&text, step_index, done)?;
         write_atomic(&path, &new_text)?;
-        workflow_events::record_change(id);
+        store_events::record_change(Store::Workflows, id);
         Ok(WorkflowInfo {
             id: id.to_string(),
             source: WorkflowSource::Local,
@@ -324,7 +324,7 @@ impl WorkflowStore {
     pub fn delete(&self, id: &str) -> Result<(), String> {
         let path = self.require_local_path(id)?;
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-        workflow_events::record_change(id);
+        store_events::record_change(Store::Workflows, id);
         Ok(())
     }
 
