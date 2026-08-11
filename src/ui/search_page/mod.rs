@@ -58,6 +58,17 @@ const INTENTS: [&str; 3] = ["", "science", "calibration"];
 /// silently given the wrong page size.
 const ROWS_PER_PAGE: [usize; 5] = [25, 50, 100, 250, 500];
 
+// The numeric inputs' bounds. These are ALSO what `set_search_form` advertises
+// over MCP, and a SpinButton silently clamps anything outside its range — so a
+// tighter widget than the schema means an agent's value is quietly changed and
+// the search runs with numbers nobody asked for. One definition each; a test
+// pins them against the tool schema.
+/// Cone radius, degrees. 90 is the physical bound — a larger cone covers the
+/// whole sky twice.
+const RADIUS_RANGE_DEG: (f64, f64) = (0.0, 90.0);
+/// Row limit (MAXREC). 1 is a legitimate request: "show me one example".
+const MAX_RECORDS_RANGE: (f64, f64) = (1.0, 30_000.0);
+
 /// Width of one results column, in pixels.
 ///
 /// The header strip and the data rows are now in SEPARATE scroll areas, kept in
@@ -426,7 +437,8 @@ impl SearchPage {
         let max_label = gtk::Label::new(Some(crate::tr_en!("Max Records")));
         max_label.add_css_class("caption");
         action_bar.append(&max_label);
-        let max_records = gtk::SpinButton::with_range(10.0, 30000.0, 100.0);
+        let max_records =
+            gtk::SpinButton::with_range(MAX_RECORDS_RANGE.0, MAX_RECORDS_RANGE.1, 100.0);
         max_records.set_value(10000.0);
         max_records.set_width_chars(6);
         action_bar.append(&max_records);
@@ -3771,7 +3783,7 @@ fn build_spatial_column() -> (
     radius_label.add_css_class("caption");
     radius_label.set_halign(gtk::Align::Start);
     radius_box.append(&radius_label);
-    let radius = gtk::SpinButton::with_range(0.0, 10.0, 0.01);
+    let radius = gtk::SpinButton::with_range(RADIUS_RANGE_DEG.0, RADIUS_RANGE_DEG.1, 0.01);
     radius.set_digits(4);
     radius.set_value(0.0167);
     radius_box.append(&radius);
@@ -4001,6 +4013,54 @@ mod stream_download_tests {
         // Guards against >100% if Content-Length under-reports the body.
         let s = format_download_progress("X", 2048, Some(1024));
         assert!(s.contains("100%"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod numeric_range_tests {
+    use super::{MAX_RECORDS_RANGE, RADIUS_RANGE_DEG};
+
+    /// The bounds `set_search_form` advertises, read from the live tool schema.
+    fn schema_bounds(key: &str) -> (f64, f64) {
+        let props = crate::mcp::tools::search_ui::form_properties();
+        let field = &props[key];
+        (
+            field["minimum"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("`{key}` should declare a minimum")),
+            field["maximum"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("`{key}` should declare a maximum")),
+        )
+    }
+
+    #[test]
+    fn the_spin_buttons_accept_everything_the_tool_advertises() {
+        // A SpinButton silently CLAMPS a value outside its range. The radius
+        // spinner stopped at 10 degrees while the schema advertised 90, and the
+        // row limit started at 10 while the schema advertised 1 — so an agent
+        // asking for a 45-degree cone, or for a single example row, had its
+        // number quietly changed and the search ran with something else.
+        assert_eq!(
+            RADIUS_RANGE_DEG,
+            schema_bounds("radius"),
+            "the radius spinner and the advertised range must agree"
+        );
+        assert_eq!(
+            MAX_RECORDS_RANGE,
+            schema_bounds("maxRecords"),
+            "the row-limit spinner and the advertised range must agree"
+        );
+    }
+
+    #[test]
+    fn the_bounds_are_physically_sensible() {
+        // A cone larger than 90 degrees covers the whole sky; asking for zero
+        // rows is not a search.
+        assert_eq!(RADIUS_RANGE_DEG.0, 0.0);
+        assert!(RADIUS_RANGE_DEG.1 <= 90.0, "{:?}", RADIUS_RANGE_DEG);
+        assert!(MAX_RECORDS_RANGE.0 >= 1.0, "{:?}", MAX_RECORDS_RANGE);
+        assert!(MAX_RECORDS_RANGE.0 < MAX_RECORDS_RANGE.1);
     }
 }
 

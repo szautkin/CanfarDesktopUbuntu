@@ -77,7 +77,12 @@ fn no_args() -> Value {
 
 /// The form fields `set_search_form` accepts, shared by its schema so the
 /// documented surface and the accepted surface cannot diverge.
-fn form_properties() -> Value {
+/// The `set_search_form` argument schema.
+///
+/// `pub(crate)` so the Search page can assert its numeric widgets accept
+/// everything advertised here — a SpinButton silently clamps, so a tighter
+/// widget quietly rewrites an agent's value.
+pub(crate) fn form_properties() -> Value {
     json!({
         "observationId": {"type": "string", "description": "Observation ID — an EXACT match (case-insensitive). Use `*` as a wildcard for a prefix or partial id, e.g. `jw01345*`."},
         "piName": {"type": "string", "description": "Principal investigator name."},
