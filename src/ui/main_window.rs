@@ -806,6 +806,7 @@ pub fn build_main_window(
             let cube_host = cube_host.clone();
             let notebook_host = notebook_host.clone();
             let fits_viewer = fits_viewer.clone();
+            let search_page = search_page.clone();
             glib::spawn_future_local(async move {
                 while let Some(cmd) = vc_rx.recv().await {
                     let result = match cmd.target.as_str() {
@@ -816,6 +817,7 @@ pub fn build_main_window(
                                 .await
                         }
                         "fits" => fits_viewer.handle_viewer_command(&cmd.op, &cmd.args).await,
+                        "search" => search_page.handle_viewer_command(&cmd.op, &cmd.args).await,
                         other => Err(format!("unknown viewer target: {other}")),
                     };
                     let _ = cmd.reply.send(result);

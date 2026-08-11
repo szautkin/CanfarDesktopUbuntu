@@ -22,6 +22,7 @@ pub mod proposals;
 pub mod read;
 pub mod research;
 pub mod router;
+pub mod search_ui;
 pub mod sessions;
 pub mod viewstate;
 pub mod vospace;
@@ -175,6 +176,9 @@ pub async fn apply_any(
     if let Some(r) = ai_compute::apply(services, proposal).await {
         return r;
     }
+    if let Some(r) = search_ui::apply(services, proposal).await {
+        return r;
+    }
     write::apply(services, proposal).await
 }
 
@@ -192,6 +196,7 @@ pub fn family_descriptors() -> Vec<ToolDescriptor> {
     v.extend(fits::descriptors());
     v.extend(imagediscovery::descriptors());
     v.extend(caom2_vizier::descriptors());
+    v.extend(search_ui::descriptors());
     v.extend(ai_compute::descriptors());
     v
 }
@@ -234,6 +239,9 @@ pub async fn family_dispatch(
         return Some(r);
     }
     if let Some(r) = caom2_vizier::dispatch(name, services, args, proposals).await {
+        return Some(r);
+    }
+    if let Some(r) = search_ui::dispatch(name, services, args, proposals).await {
         return Some(r);
     }
     if let Some(r) = ai_compute::dispatch(name, services, args, proposals).await {

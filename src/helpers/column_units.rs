@@ -144,6 +144,16 @@ pub fn available_units(column_key: &str) -> Vec<UnitChoice> {
     menu_for(column_key).map(|(c, _)| c).unwrap_or_default()
 }
 
+/// Whether `unit_id` is a display unit this column actually offers.
+///
+/// An empty id means "reset to the column's default" and is always accepted, so
+/// a caller can clear a choice without knowing what the default is. Lives here
+/// rather than at the call site so validation can never drift from the menu it
+/// validates against.
+pub fn is_valid_unit(column_key: &str, unit_id: &str) -> bool {
+    unit_id.is_empty() || available_units(column_key).iter().any(|c| c.id == unit_id)
+}
+
 /// The default unit id for a column's menu, if it has one.
 pub fn default_unit_id(column_key: &str) -> Option<&'static str> {
     menu_for(column_key).map(|(_, d)| d)
@@ -334,6 +344,38 @@ fn finite(raw: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn is_valid_unit_accepts_a_columns_own_menu_and_rejects_others() {
+        // `set_search_results_view` validates against this before touching state,
+        // so a wrong unit id must be rejected rather than silently stored.
+        let units = available_units("Pixel Scale");
+        assert!(!units.is_empty(), "pixel scale should offer a unit menu");
+        for choice in &units {
+            assert!(
+                is_valid_unit("Pixel Scale", choice.id),
+                "{} is one of this column's own units",
+                choice.id
+            );
+        }
+        // A unit that belongs to a DIFFERENT column is still invalid here.
+        assert!(!is_valid_unit("Pixel Scale", "hours"));
+        assert!(!is_valid_unit("Pixel Scale", "parsec"));
+    }
+
+    #[test]
+    fn an_empty_unit_id_means_reset_to_default_and_is_always_valid() {
+        assert!(is_valid_unit("Pixel Scale", ""));
+        // Even for a column with no menu at all.
+        assert!(is_valid_unit("collection", ""));
+    }
+
+    #[test]
+    fn a_column_without_a_menu_accepts_no_unit() {
+        assert!(!has_menu("collection"));
+        assert!(!is_valid_unit("collection", "deg"));
+    }
+
     use super::*;
 
     #[test]

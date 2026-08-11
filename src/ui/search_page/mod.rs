@@ -61,6 +61,8 @@ fn dropdown_index(table: &[&str], value: &str) -> u32 {
     table.iter().position(|v| *v == value).unwrap_or(0) as u32
 }
 
+mod mcp;
+
 pub struct SearchPage {
     widget: gtk::Box,
     services: Arc<AppServices>,
@@ -2178,12 +2180,11 @@ impl SearchPage {
                 let page_rc = Rc::clone(self);
                 let recent_adql = recent.adql.clone();
                 remove_btn.connect_clicked(move |_| {
+                    // One write, order preserved. Replaying the list through
+                    // `save_recent` reversed it and merged entries sharing ADQL.
                     let mut all = page_rc.services.search_store.load_recent();
                     all.retain(|r| r.adql != recent_adql);
-                    let _ = page_rc.services.search_store.clear_recent();
-                    for r in all.into_iter().rev() {
-                        let _ = page_rc.services.search_store.save_recent(r);
-                    }
+                    let _ = page_rc.services.search_store.save_all_recent(&all);
                     page_rc.refresh_recent();
                 });
             }

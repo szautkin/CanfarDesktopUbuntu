@@ -228,22 +228,6 @@ mod tests {
     /// moment its tool lands; `advertised_names_match_the_reference` fails if a
     /// name here is actually implemented, so a stale entry cannot linger.
     const NOT_YET_PORTED: &[&str] = &[
-        // Phase 2 — Search MCP full UI coverage (CanfarDesktop 36ac1d8).
-        "get_search_form",
-        "set_search_form",
-        "get_search_constraints",
-        "set_search_constraints",
-        "reset_search_form",
-        "run_search",
-        "set_adql_query",
-        "execute_adql_query",
-        "get_search_results",
-        "set_search_results_view",
-        "export_search_results",
-        "load_recent_search",
-        "run_saved_query",
-        "remove_recent_search",
-        "clear_recent_searches",
         // Phase 3 — FITS + Cube MCP full UI coverage (CanfarDesktop 27a4889).
         "blink_fits_tabs",
         "switch_fits_tab",

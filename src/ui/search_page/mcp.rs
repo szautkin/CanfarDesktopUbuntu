@@ -1,0 +1,764 @@
+//! The Search page's MCP steering surface — the Rust analogue of the reference's
+//! `Views/SearchPage.Mcp.cs` partial class.
+//!
+//! Every operation here is reached over the viewer-command bridge
+//! (`mcp::view_state::viewer_command("search", op, args)`), so it runs on the
+//! GTK main thread and drives the SAME widgets a user drives. That is the whole
+//! point: an agent and a person must not have two different paths into the page,
+//! or the two will drift.
+//!
+//! A child module of `search_page` so it can reach the page's private widgets
+//! without widening their visibility for everyone else.
+
+use super::{
+    dropdown_index, SearchPage, DATE_PRESETS, INTENTS, PIXEL_SCALE_UNITS, RESOLVER_SERVICES,
+    SPECTRAL_UNITS, TIME_UNITS,
+};
+use crate::models::search_result::{build_columns_from_headers, default_columns};
+use gtk4::prelude::*;
+use serde_json::{json, Value};
+use std::rc::Rc;
+
+/// Tab indices, matching the reference's pivot order.
+const TAB_FORM: u32 = 0;
+const TAB_RESULTS: u32 = 1;
+const TAB_ADQL: u32 = 2;
+
+/// Hard cap on rows returned inline by `get_search_results`, mirroring the
+/// reference. A full result set can be tens of thousands of rows, which would
+/// blow the MCP response budget.
+const MAX_INLINE_ROWS: usize = 500;
+
+/// The seven Additional-Constraints facets, in the order
+/// `DataTrainManager` indexes them. One table so the snapshot and the setter
+/// cannot disagree about which index means what.
+const FACETS: [&str; 7] = [
+    "band",
+    "collection",
+    "instrument",
+    "filter",
+    "calLevel",
+    "dataType",
+    "obsType",
+];
+
+impl SearchPage {
+    /// Run one MCP operation against the live page.
+    ///
+    /// Returns `Err` with a human-readable reason the agent can act on; the
+    /// router turns that into a tool error.
+    pub async fn handle_viewer_command(
+        self: &Rc<Self>,
+        op: &str,
+        args: &Value,
+    ) -> Result<Value, String> {
+        match op {
+            // ── Form ────────────────────────────────────────────────────────
+            "get_search_form" => Ok(self.form_snapshot()),
+            "set_search_form" => {
+                self.apply_form_patch(args)?;
+                self.notebook.set_current_page(Some(TAB_FORM));
+                Ok(self.form_snapshot())
+            }
+            "reset_search_form" => {
+                self.clear_form();
+                self.notebook.set_current_page(Some(TAB_FORM));
+                Ok(self.form_snapshot())
+            }
+
+            // ── Additional Constraints (data train) ─────────────────────────
+            "get_search_constraints" => {
+                self.ensure_data_train().await;
+                Ok(self.constraints_snapshot())
+            }
+            "set_search_constraints" => {
+                self.ensure_data_train().await;
+                let dropped = self.apply_constraints(args)?;
+                self.refresh_train_ui();
+                self.train_expander.set_expanded(true);
+                self.notebook.set_current_page(Some(TAB_FORM));
+                let mut out = self.constraints_snapshot();
+                out["dropped"] = json!(dropped);
+                Ok(out)
+            }
+
+            // ── Running a search ────────────────────────────────────────────
+            "run_search" => {
+                self.guard_not_searching()?;
+                self.execute_search().await;
+                Ok(self.run_result())
+            }
+            "set_adql_query" => {
+                let adql = crate::mcp::tools::str_arg(args, "adql");
+                if adql.is_empty() {
+                    return Err("adql is required".to_string());
+                }
+                self.adql_editor.buffer().set_text(&adql);
+                self.notebook.set_current_page(Some(TAB_ADQL));
+                Ok(json!({ "staged": true, "adql": adql }))
+            }
+            "execute_adql_query" => {
+                self.guard_not_searching()?;
+                let adql = crate::mcp::tools::str_arg(args, "adql");
+                if !adql.is_empty() {
+                    self.adql_editor.buffer().set_text(&adql);
+                }
+                if self.adql_text().trim().is_empty() {
+                    return Err("the ADQL editor is empty — pass `adql`, or stage one with \
+                         set_adql_query first"
+                        .to_string());
+                }
+                self.execute_raw_adql().await;
+                Ok(self.run_result())
+            }
+
+            // ── Results table ───────────────────────────────────────────────
+            "get_search_results" => Ok(self.results_snapshot(args)),
+            "set_search_results_view" => {
+                self.apply_results_view(args)?;
+                Ok(self.results_snapshot(&json!({ "includeRows": false })))
+            }
+            "export_search_results" => self.export_results(args).await,
+
+            // ── Side panel ──────────────────────────────────────────────────
+            "load_recent_search" => self.load_recent(args),
+            "run_saved_query" => self.run_saved(args).await,
+
+            other => Err(format!("unknown search operation: {other}")),
+        }
+    }
+
+    // ── Snapshots ───────────────────────────────────────────────────────────
+
+    fn adql_text(&self) -> String {
+        let buf = self.adql_editor.buffer();
+        buf.text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string()
+    }
+
+    /// Every field of the four constraint columns, plus resolver status and the
+    /// staged ADQL — what the reference's `BuildFormSnapshot` returns.
+    fn form_snapshot(&self) -> Value {
+        json!({
+            // Observation
+            "observationId": self.observation_id.text().to_string(),
+            "piName": self.pi_name.text().to_string(),
+            "proposalId": self.proposal_id.text().to_string(),
+            "proposalTitle": self.proposal_title.text().to_string(),
+            "keywords": self.keywords.text().to_string(),
+            "dataRelease": self.data_release.text().to_string(),
+            "publicOnly": self.public_only.is_active(),
+            "intent": INTENTS.get(self.intent.selected() as usize).unwrap_or(&""),
+            // Spatial
+            "target": self.target.text().to_string(),
+            "resolver": RESOLVER_SERVICES
+                .get(self.resolver.selected() as usize)
+                .unwrap_or(&"ALL"),
+            "radius": self.radius.value(),
+            "pixelScale": self.pixel_scale.text().to_string(),
+            "pixelScaleUnit": PIXEL_SCALE_UNITS
+                .get(self.pixel_scale_unit.selected() as usize)
+                .unwrap_or(&"arcsec"),
+            "spatialCutout": self.spatial_cutout.is_active(),
+            "resolverStatus": self.resolver_status.text().to_string(),
+            "resolvedRa": *self.resolved_ra.borrow(),
+            "resolvedDec": *self.resolved_dec.borrow(),
+            // Temporal
+            "observationDate": self.obs_date.text().to_string(),
+            "datePreset": DATE_PRESETS
+                .get(self.date_preset.selected() as usize)
+                .unwrap_or(&""),
+            "integrationTime": self.integration_time.text().to_string(),
+            "timeSpan": self.time_span.text().to_string(),
+            "timeUnit": TIME_UNITS.get(self.time_unit.selected() as usize).unwrap_or(&"s"),
+            // Spectral
+            "spectralCoverage": self.spectral_coverage.text().to_string(),
+            "spectralSampling": self.spectral_sampling.text().to_string(),
+            "resolvingPower": self.resolving_power.text().to_string(),
+            "bandpassWidth": self.bandpass_width.text().to_string(),
+            "restFrameEnergy": self.rest_frame_energy.text().to_string(),
+            "spectralUnit": SPECTRAL_UNITS
+                .get(self.spectral_unit.selected() as usize)
+                .unwrap_or(&"nm"),
+            "spectralCutout": self.spectral_cutout.is_active(),
+            // Options + live state
+            "maxRecords": self.max_records.value() as u32,
+            "adql": self.adql_text(),
+            "isSearching": self.search_spinner.is_visible(),
+        })
+    }
+
+    /// Per-facet available + selected values, plus whether the data train has
+    /// loaded at all (an empty facet list means "not loaded", not "no values").
+    fn constraints_snapshot(&self) -> Value {
+        let mgr = self.train_manager.borrow();
+        let all: [&[String]; 7] = [
+            &mgr.all_bands,
+            &mgr.all_collections,
+            &mgr.all_instruments,
+            &mgr.all_filters,
+            &mgr.all_cal_levels,
+            &mgr.all_data_types,
+            &mgr.all_obs_types,
+        ];
+        let available = [
+            &mgr.available_bands,
+            &mgr.available_collections,
+            &mgr.available_instruments,
+            &mgr.available_filters,
+            &mgr.available_cal_levels,
+            &mgr.available_data_types,
+            &mgr.available_obs_types,
+        ];
+
+        let mut facets = serde_json::Map::new();
+        for (idx, name) in FACETS.iter().enumerate() {
+            // Keep the column's declared order rather than the HashSet's.
+            let avail: Vec<&String> = all[idx]
+                .iter()
+                .filter(|v| available[idx].contains(*v))
+                .collect();
+            let mut selected: Vec<String> = mgr
+                .selection(idx)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default();
+            selected.sort();
+            facets.insert(
+                (*name).to_string(),
+                json!({ "available": avail, "selected": selected }),
+            );
+        }
+
+        json!({
+            "loaded": !mgr.all_bands.is_empty(),
+            "facets": facets,
+        })
+    }
+
+    /// The results table's full view state, and (by default) the current page's
+    /// RAW cell values — raw so an agent can compute on them, matching the
+    /// reference.
+    fn results_snapshot(&self, args: &Value) -> Value {
+        let include_rows = crate::mcp::tools::opt_bool(args, "includeRows").unwrap_or(true);
+        let max_rows = crate::mcp::tools::opt_u64(args, "maxRows")
+            .map(|n| (n as usize).min(MAX_INLINE_ROWS))
+            .unwrap_or(MAX_INLINE_ROWS);
+
+        let columns = {
+            let store = self.results_store.borrow();
+            match &*store {
+                Some(r) => build_columns_from_headers(&r.columns),
+                None => default_columns(),
+            }
+        };
+        let column_json: Vec<Value> = columns
+            .iter()
+            .map(|c| {
+                json!({
+                    "key": c.key,
+                    "label": c.display_name,
+                    "visible": self.is_col_visible(c),
+                })
+            })
+            .collect();
+
+        let total_rows = self
+            .results_store
+            .borrow()
+            .as_ref()
+            .map(|r| r.total_rows())
+            .unwrap_or(0);
+        let processed = self.get_processed_rows();
+        let page = *self.current_page.borrow();
+        let page_size = *self.page_size.borrow();
+
+        let mut out = json!({
+            "status": self.status_label.text().to_string(),
+            "adql": self.adql_text(),
+            "totalRows": total_rows,
+            "filteredRows": processed.len(),
+            "currentPage": page,
+            "totalPages": self.total_pages(),
+            "rowsPerPage": page_size,
+            "pageStatus": self.page_label.text().to_string(),
+            "sortColumn": self.sort_column.borrow().clone(),
+            "sortAscending": *self.sort_ascending.borrow(),
+            "filters": self.column_filters.borrow().clone(),
+            "columnUnits": self.column_units.borrow().clone(),
+            "columns": column_json,
+        });
+
+        if include_rows {
+            let start = page.saturating_mul(page_size);
+            let visible: Vec<&crate::models::search_result::ResultColumnInfo> =
+                columns.iter().filter(|c| self.is_col_visible(c)).collect();
+            let headers: Vec<&str> = visible.iter().map(|c| c.key.as_str()).collect();
+            let rows: Vec<Value> = processed
+                .iter()
+                .skip(start)
+                .take(page_size.min(max_rows))
+                .map(|row| {
+                    Value::Array(visible.iter().map(|c| json!(row.get(&c.header))).collect())
+                })
+                .collect();
+            out["rowColumns"] = json!(headers);
+            out["rows"] = json!(rows);
+        }
+        out
+    }
+
+    /// `{ran, adql, totalRows, status}` — the shared tail of `run_search` and
+    /// `execute_adql_query`, so both report a run the same way.
+    fn run_result(&self) -> Value {
+        json!({
+            "ran": true,
+            "adql": self.adql_text(),
+            "totalRows": self
+                .results_store
+                .borrow()
+                .as_ref()
+                .map(|r| r.total_rows())
+                .unwrap_or(0),
+            "status": self.status_label.text().to_string(),
+        })
+    }
+
+    /// Refuse to start a second search while one is in flight, rather than
+    /// interleaving two result sets into the same table.
+    fn guard_not_searching(&self) -> Result<(), String> {
+        if self.search_spinner.is_visible() {
+            return Err("a search is already running".to_string());
+        }
+        Ok(())
+    }
+
+    /// Load the data train if it has not arrived yet.
+    ///
+    /// The page kicks this off in the background at construction, so on a cold
+    /// start the facet lists are briefly empty. The reference hit exactly this
+    /// (facets empty on first run) and fixed it by loading synchronously for the
+    /// constraints tools — an agent must never be told "no values" when the
+    /// answer is "not fetched yet".
+    async fn ensure_data_train(self: &Rc<Self>) {
+        if self.train_manager.borrow().all_bands.is_empty() {
+            self.load_data_train().await;
+        }
+    }
+}
+
+// ── Mutators ────────────────────────────────────────────────────────────────
+
+impl SearchPage {
+    /// Apply a sparse form patch: only the fields present in `args` change.
+    ///
+    /// Ordering matters twice, exactly as in the reference:
+    ///  * the resolver is set BEFORE the target, so the resolve that setting the
+    ///    target triggers uses the service the caller asked for;
+    ///  * `datePreset` is applied BEFORE `observationDate`, so an explicit date
+    ///    wins over a preset given in the same call.
+    fn apply_form_patch(self: &Rc<Self>, args: &Value) -> Result<(), String> {
+        let arg = |k: &str| crate::mcp::tools::arg(args, k);
+        let text = |k: &str| arg(k).and_then(Value::as_str).map(str::to_string);
+
+        if let Some(v) = text("resolver") {
+            if !RESOLVER_SERVICES.contains(&v.as_str()) {
+                return Err(format!(
+                    "resolver must be one of {RESOLVER_SERVICES:?}, got {v:?}"
+                ));
+            }
+            self.resolver
+                .set_selected(dropdown_index(&RESOLVER_SERVICES, &v));
+        }
+        if let Some(v) = text("target") {
+            self.target.set_text(&v);
+        }
+
+        // Observation
+        if let Some(v) = text("observationId") {
+            self.observation_id.set_text(&v);
+        }
+        if let Some(v) = text("piName") {
+            self.pi_name.set_text(&v);
+        }
+        if let Some(v) = text("proposalId") {
+            self.proposal_id.set_text(&v);
+        }
+        if let Some(v) = text("proposalTitle") {
+            self.proposal_title.set_text(&v);
+        }
+        if let Some(v) = text("keywords") {
+            self.keywords.set_text(&v);
+        }
+        if let Some(v) = text("dataRelease") {
+            self.data_release.set_text(&v);
+        }
+        if let Some(v) = arg("publicOnly").and_then(Value::as_bool) {
+            self.public_only.set_active(v);
+        }
+        if let Some(v) = text("intent") {
+            self.intent.set_selected(dropdown_index(&INTENTS, &v));
+        }
+
+        // Spatial
+        if let Some(v) = crate::mcp::tools::num_arg(args, "radius") {
+            if !(0.0..=90.0).contains(&v) {
+                return Err(format!("radius must be between 0 and 90 degrees, got {v}"));
+            }
+            self.radius.set_value(v);
+        }
+        if let Some(v) = text("pixelScale") {
+            self.pixel_scale.set_text(&v);
+        }
+        if let Some(v) = text("pixelScaleUnit") {
+            self.pixel_scale_unit
+                .set_selected(dropdown_index(&PIXEL_SCALE_UNITS, &v));
+        }
+        if let Some(v) = arg("spatialCutout").and_then(Value::as_bool) {
+            self.spatial_cutout.set_active(v);
+        }
+
+        // Temporal — preset first, so an explicit date in the same call wins.
+        if let Some(v) = text("datePreset") {
+            self.date_preset
+                .set_selected(dropdown_index(&DATE_PRESETS, &v));
+        }
+        if let Some(v) = text("observationDate") {
+            self.obs_date.set_text(&v);
+        }
+        if let Some(v) = text("integrationTime") {
+            self.integration_time.set_text(&v);
+        }
+        if let Some(v) = text("timeSpan") {
+            self.time_span.set_text(&v);
+        }
+        if let Some(v) = text("timeUnit") {
+            self.time_unit.set_selected(dropdown_index(&TIME_UNITS, &v));
+        }
+
+        // Spectral
+        if let Some(v) = text("spectralCoverage") {
+            self.spectral_coverage.set_text(&v);
+        }
+        if let Some(v) = text("spectralSampling") {
+            self.spectral_sampling.set_text(&v);
+        }
+        if let Some(v) = text("resolvingPower") {
+            self.resolving_power.set_text(&v);
+        }
+        if let Some(v) = text("bandpassWidth") {
+            self.bandpass_width.set_text(&v);
+        }
+        if let Some(v) = text("restFrameEnergy") {
+            self.rest_frame_energy.set_text(&v);
+        }
+        if let Some(v) = text("spectralUnit") {
+            self.spectral_unit
+                .set_selected(dropdown_index(&SPECTRAL_UNITS, &v));
+        }
+        if let Some(v) = arg("spectralCutout").and_then(Value::as_bool) {
+            self.spectral_cutout.set_active(v);
+        }
+
+        if let Some(v) = crate::mcp::tools::opt_u64(args, "maxRecords") {
+            if !(1..=30_000).contains(&v) {
+                return Err(format!("maxRecords must be between 1 and 30000, got {v}"));
+            }
+            self.max_records.set_value(v as f64);
+        }
+        Ok(())
+    }
+
+    /// Replace the named facets' selections, then report what the cascade pruned.
+    ///
+    /// Each facet given REPLACES that facet's whole selection (an omitted facet is
+    /// left alone), matching the reference. Values that the cascade makes
+    /// unavailable are dropped rather than silently kept, and named back to the
+    /// caller so an agent learns its combination was impossible.
+    fn apply_constraints(&self, args: &Value) -> Result<Vec<String>, String> {
+        let clear_all = crate::mcp::tools::bool_arg(args, "clearAll");
+
+        let mut requested: Vec<Vec<String>> = Vec::with_capacity(7);
+        {
+            let mgr = self.train_manager.borrow();
+            for (idx, name) in FACETS.iter().enumerate() {
+                let current: Vec<String> = if clear_all {
+                    Vec::new()
+                } else {
+                    mgr.selection(idx)
+                        .map(|s| s.iter().cloned().collect())
+                        .unwrap_or_default()
+                };
+                match crate::mcp::tools::arg(args, name) {
+                    None | Some(Value::Null) => requested.push(current),
+                    Some(Value::Array(items)) => requested.push(
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect(),
+                    ),
+                    Some(_) => {
+                        return Err(format!("{name} must be an array of strings"));
+                    }
+                }
+            }
+        }
+
+        let asked: Vec<String> = requested.iter().flatten().cloned().collect();
+        let per_column: [Vec<String>; 7] = requested
+            .try_into()
+            .map_err(|_| "internal: facet count mismatch".to_string())?;
+        self.train_manager
+            .borrow_mut()
+            .set_all_selections(per_column);
+
+        // Anything asked for that the cascade did not keep.
+        let mgr = self.train_manager.borrow();
+        let kept: std::collections::HashSet<String> = (0..7)
+            .filter_map(|i| mgr.selection(i))
+            .flat_map(|s| s.iter().cloned())
+            .collect();
+        let mut dropped: Vec<String> = asked.into_iter().filter(|v| !kept.contains(v)).collect();
+        dropped.sort();
+        dropped.dedup();
+        Ok(dropped)
+    }
+
+    /// Apply a results-table view command: filters, sort, column visibility,
+    /// display units, page size and pagination.
+    ///
+    /// Every column key is validated UP FRONT, so a command naming one bad column
+    /// changes nothing at all rather than applying half of itself.
+    fn apply_results_view(self: &Rc<Self>, args: &Value) -> Result<(), String> {
+        let columns = {
+            let store = self.results_store.borrow();
+            match &*store {
+                Some(r) => build_columns_from_headers(&r.columns),
+                None => return Err("no search results — run a search first".to_string()),
+            }
+        };
+        let known: std::collections::HashSet<&str> =
+            columns.iter().map(|c| c.key.as_str()).collect();
+        let check = |key: &str| -> Result<(), String> {
+            if known.contains(key) {
+                Ok(())
+            } else {
+                let mut names: Vec<&str> = known.iter().copied().collect();
+                names.sort();
+                Err(format!("unknown column {key:?}; known columns: {names:?}"))
+            }
+        };
+
+        // ── Validate everything before mutating anything ────────────────────
+        let set_filters = crate::mcp::tools::arg(args, "setFilters").and_then(Value::as_object);
+        if let Some(map) = set_filters {
+            for key in map.keys() {
+                check(key)?;
+            }
+        }
+        let sort_column = crate::mcp::tools::opt_str_arg(args, "sortColumn");
+        if let Some(key) = &sort_column {
+            check(key)?;
+        }
+        let show: Vec<String> = string_list(args, "showColumns");
+        let hide: Vec<String> = string_list(args, "hideColumns");
+        for key in show.iter().chain(hide.iter()) {
+            check(key)?;
+        }
+        let units = crate::mcp::tools::arg(args, "columnUnits").and_then(Value::as_object);
+        if let Some(map) = units {
+            for (key, value) in map {
+                check(key)?;
+                let unit = value.as_str().unwrap_or_default();
+                if !crate::helpers::column_units::is_valid_unit(key, unit) {
+                    return Err(format!("{unit:?} is not a display unit for column {key:?}"));
+                }
+            }
+        }
+
+        // ── Apply ───────────────────────────────────────────────────────────
+        if crate::mcp::tools::bool_arg(args, "clearFilters") {
+            self.column_filters.borrow_mut().clear();
+        }
+        if let Some(map) = set_filters {
+            let mut filters = self.column_filters.borrow_mut();
+            for (key, value) in map {
+                match value.as_str().map(str::trim).unwrap_or_default() {
+                    "" => {
+                        filters.remove(key);
+                    }
+                    text => {
+                        filters.insert(key.clone(), text.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(key) = sort_column {
+            *self.sort_column.borrow_mut() = Some(key);
+            *self.sort_ascending.borrow_mut() =
+                crate::mcp::tools::opt_bool(args, "sortAscending").unwrap_or(true);
+        }
+        if !show.is_empty() || !hide.is_empty() {
+            let mut visibility = self.column_visibility.borrow_mut();
+            for key in show {
+                visibility.insert(key, true);
+            }
+            for key in hide {
+                visibility.insert(key, false);
+            }
+        }
+        if let Some(map) = units {
+            let mut chosen = self.column_units.borrow_mut();
+            for (key, value) in map {
+                match value.as_str().unwrap_or_default() {
+                    "" => {
+                        chosen.remove(key);
+                    }
+                    unit => {
+                        chosen.insert(key.clone(), unit.to_string());
+                    }
+                }
+            }
+            drop(chosen);
+            self.persist_column_units();
+        }
+        if let Some(n) = crate::mcp::tools::opt_u64(args, "rowsPerPage") {
+            if !(1..=1000).contains(&n) {
+                return Err(format!("rowsPerPage must be between 1 and 1000, got {n}"));
+            }
+            *self.page_size.borrow_mut() = n as usize;
+            *self.current_page.borrow_mut() = 0;
+        }
+
+        // Pagination last, so it clamps against the page count the filters and
+        // page size above just produced.
+        let last_page = self.total_pages().saturating_sub(1);
+        if let Some(action) = crate::mcp::tools::opt_str_arg(args, "pageAction") {
+            let mut page = self.current_page.borrow_mut();
+            *page = match action.as_str() {
+                "first" => 0,
+                "previous" | "prev" => page.saturating_sub(1),
+                "next" => (*page + 1).min(last_page),
+                "last" => last_page,
+                other => {
+                    return Err(format!(
+                        "pageAction must be first/previous/next/last, got {other:?}"
+                    ))
+                }
+            };
+        }
+        if let Some(n) = crate::mcp::tools::opt_u64(args, "page") {
+            *self.current_page.borrow_mut() = (n as usize).min(last_page);
+        }
+
+        self.render_results_page();
+        if crate::mcp::tools::bool_arg(args, "applyFiltersToAdql") {
+            self.apply_filters_to_adql();
+        } else {
+            self.notebook.set_current_page(Some(TAB_RESULTS));
+        }
+        Ok(())
+    }
+
+    /// Write the full result set to a file as CSV or TSV — no picker, since an
+    /// agent cannot answer one.
+    async fn export_results(self: &Rc<Self>, args: &Value) -> Result<Value, String> {
+        let rows = self.get_processed_rows();
+        if rows.is_empty() {
+            return Err("no search results to export".to_string());
+        }
+        let format = match crate::mcp::tools::str_arg(args, "format")
+            .to_lowercase()
+            .as_str()
+        {
+            "" | "csv" => "csv",
+            "tsv" => "tsv",
+            other => return Err(format!("format must be csv or tsv, got {other:?}")),
+        };
+        let delimiter = if format == "csv" { "," } else { "\t" };
+        let body = self.export_delimited(delimiter);
+
+        let path = match crate::mcp::tools::opt_str_arg(args, "path") {
+            Some(p) => std::path::PathBuf::from(p),
+            None => default_export_path(format),
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, body)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+
+        Ok(json!({
+            "exported": true,
+            "path": path.to_string_lossy(),
+            "rows": rows.len(),
+            "format": format,
+        }))
+    }
+
+    /// Restore a recent search into the form by its index in `list_recent_searches`.
+    fn load_recent(self: &Rc<Self>, args: &Value) -> Result<Value, String> {
+        // Reload rather than trusting a cached list, so indices match what
+        // `list_recent_searches` most recently reported.
+        let all = self.services.search_store.load_recent();
+        let index = crate::mcp::tools::opt_u64(args, "index").unwrap_or(0) as usize;
+        let entry = all.get(index).ok_or_else(|| {
+            format!(
+                "no recent search at index {index} ({} available)",
+                all.len()
+            )
+        })?;
+
+        let had_facets = self.load_from_form_state(&entry.form_state);
+        self.status_label
+            .set_text(&format!("Loaded search: {}", entry.summary));
+        Ok(json!({
+            "loaded": true,
+            "summary": entry.summary,
+            "restoredConstraints": had_facets,
+            "form": self.form_snapshot(),
+        }))
+    }
+
+    /// Run a saved query by its exact name.
+    async fn run_saved(self: &Rc<Self>, args: &Value) -> Result<Value, String> {
+        let name = crate::mcp::tools::str_arg(args, "name");
+        if name.is_empty() {
+            return Err("name is required".to_string());
+        }
+        self.guard_not_searching()?;
+
+        // Reload first: a saved query an agent added via `save_query` moments ago
+        // is on disk but not yet in the sidebar.
+        self.refresh_saved();
+        let saved = self.services.search_store.load_saved();
+        let query = saved
+            .iter()
+            .find(|q| q.name == name)
+            .ok_or_else(|| format!("no saved query named {name:?}"))?;
+
+        let adql = query.adql.clone();
+        self.adql_editor.buffer().set_text(&adql);
+        self.run_query(&adql, self.max_records.value() as u32, None)
+            .await;
+        self.notebook.set_current_page(Some(TAB_RESULTS));
+        self.render_results_page();
+        Ok(self.run_result())
+    }
+}
+
+/// Read an optional array-of-strings argument as a plain `Vec`.
+fn string_list(args: &Value, key: &str) -> Vec<String> {
+    crate::mcp::tools::opt_str_array(args, key).unwrap_or_default()
+}
+
+/// `~/Downloads/Verbinal/search_results_<timestamp>.<ext>` — the reference's
+/// default destination, so an agent need not invent a path.
+fn default_export_path(format: &str) -> std::path::PathBuf {
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let dir = directories::UserDirs::new()
+        .and_then(|d| d.download_dir().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Verbinal");
+    dir.join(format!("search_results_{stamp}.{format}"))
+}
