@@ -571,6 +571,26 @@ fn last_day_of_month(year: i32, month: u32) -> u32 {
 // ---------------------------------------------------------------------------
 
 fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
+    add_spectral_coverage_clause(state, clauses);
+    add_other_spectral_clauses(state, clauses);
+}
+
+/// The Spectral-coverage field: which observations reach into the given band.
+///
+/// The verbatim text wins over the pre-parsed numeric pair, because only the
+/// text carries an inline unit. The page parses the field into `f64` min/max,
+/// and `500nm` is not a number — so a typed `> 500nm` or `500nm..700nm` yielded
+/// NO clause at all and the search silently widened to every wavelength. The
+/// numeric pair stays as the fallback for searches saved before the raw text was
+/// recorded.
+fn add_spectral_coverage_clause(state: &SearchFormState, clauses: &mut Vec<String>) {
+    if let Some(raw) = trimmed_non_empty(&state.spectral_coverage_raw) {
+        if let Some(range) = range_parser::parse_range(raw) {
+            add_spectral_overlap_clause(&range, &state.wavelength_unit, clauses);
+            return;
+        }
+    }
+
     // Spectral coverage — overlap semantics (matching Windows):
     // Find observations whose energy range overlaps the query range
     if let (Some(wmin), Some(wmax)) = (state.wavelength_min, state.wavelength_max) {
@@ -614,7 +634,10 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
             }
         }
     }
+}
 
+/// Resolving power, bandpass width, spectral sampling and rest-frame energy.
+fn add_other_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
     // Resolving power (dimensionless)
     if let Some(rmin) = state.resolving_power_min {
         clauses.push(format!("Plane.energy_resolvingPower >= {}", num(rmin)));
@@ -623,15 +646,29 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         clauses.push(format!("Plane.energy_resolvingPower <= {}", num(rmax)));
     }
 
-    // Bandpass width (convert to meters)
-    if let Some(bmin) = state.bandpass_width_min {
-        if let Some(m) = convert_spectral_to_metres(bmin, &state.bandpass_width_unit) {
-            clauses.push(format!("Plane.energy_bounds_width >= {}", num(m)));
+    // Bandpass width — verbatim text first, for the same reason as coverage:
+    // it is the only form that carries an inline unit, and it distinguishes
+    // `>` from `>=`, which the numeric min/max pair cannot.
+    if let Some(range) =
+        trimmed_non_empty(&state.bandpass_width_raw).and_then(range_parser::parse_range)
+    {
+        add_converted_range_clause(
+            "Plane.energy_bounds_width",
+            &range,
+            &state.bandpass_width_unit,
+            clauses,
+            convert_spectral_text,
+        );
+    } else {
+        if let Some(bmin) = state.bandpass_width_min {
+            if let Some(m) = convert_spectral_to_metres(bmin, &state.bandpass_width_unit) {
+                clauses.push(format!("Plane.energy_bounds_width >= {}", num(m)));
+            }
         }
-    }
-    if let Some(bmax) = state.bandpass_width_max {
-        if let Some(m) = convert_spectral_to_metres(bmax, &state.bandpass_width_unit) {
-            clauses.push(format!("Plane.energy_bounds_width <= {}", num(m)));
+        if let Some(bmax) = state.bandpass_width_max {
+            if let Some(m) = convert_spectral_to_metres(bmax, &state.bandpass_width_unit) {
+                clauses.push(format!("Plane.energy_bounds_width <= {}", num(m)));
+            }
         }
     }
 
@@ -651,12 +688,7 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
                 &range,
                 &state.spectral_sampling_unit,
                 clauses,
-                |v, u| {
-                    v.trim()
-                        .parse::<f64>()
-                        .ok()
-                        .and_then(|n| convert_spectral_to_metres(n, u))
-                },
+                convert_spectral_text,
             );
         }
     } else if let Some(ss) = state.spectral_sampling {
@@ -666,23 +698,115 @@ fn add_spectral_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         }
     }
 
-    // Rest frame energy (convert to meters — stored as rest wavelength in CAOM2)
-    if let Some(rmin) = state.rest_frame_energy_min {
-        if let Some(m) = convert_spectral_to_metres(rmin, &state.rest_frame_energy_unit) {
-            clauses.push(format!("Plane.energy_restwav >= {}", num(m)));
+    // Rest-frame energy (stored as a rest wavelength in CAOM2) — verbatim text
+    // first, then the numeric fallback.
+    if let Some(range) =
+        trimmed_non_empty(&state.rest_frame_energy_raw).and_then(range_parser::parse_range)
+    {
+        add_converted_range_clause(
+            "Plane.energy_restwav",
+            &range,
+            &state.rest_frame_energy_unit,
+            clauses,
+            convert_spectral_text,
+        );
+    } else {
+        if let Some(rmin) = state.rest_frame_energy_min {
+            if let Some(m) = convert_spectral_to_metres(rmin, &state.rest_frame_energy_unit) {
+                clauses.push(format!("Plane.energy_restwav >= {}", num(m)));
+            }
         }
-    }
-    if let Some(rmax) = state.rest_frame_energy_max {
-        if let Some(m) = convert_spectral_to_metres(rmax, &state.rest_frame_energy_unit) {
-            clauses.push(format!("Plane.energy_restwav <= {}", num(m)));
+        if let Some(rmax) = state.rest_frame_energy_max {
+            if let Some(m) = convert_spectral_to_metres(rmax, &state.rest_frame_energy_unit) {
+                clauses.push(format!("Plane.energy_restwav <= {}", num(m)));
+            }
         }
     }
 }
 
 /// Convert a spectral value to metres using the comprehensive unit_converter.
 /// Falls back to the old wavelength_to_meters for basic units.
+/// A trimmed, non-empty view of a form field, or `None`.
+fn trimmed_non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+/// Spectral-coverage clause with OVERLAP semantics, from operator-aware text.
+///
+/// Port of the reference's `AddSpectralOverlapClause`. The question is always
+/// "does the observation's band reach into what I asked for?", so a lower bound
+/// tests the band's upper edge and vice versa — see the numeric fallback below
+/// for what the containment form got wrong.
+fn add_spectral_overlap_clause(range: &ParsedRange, unit: &str, clauses: &mut Vec<String>) {
+    if range.op == RangeOp::Between {
+        let Some(second) = range.value2.as_deref() else {
+            return;
+        };
+        // The second side inherits the first side's inline unit when it has none
+        // of its own, so `500nm..700` means 700 nm rather than 700 dropdown-units.
+        let (_, unit1) = unit_converter::extract_spectral_suffix(&range.value1);
+        let effective2 = {
+            let (_, unit2) = unit_converter::extract_spectral_suffix(second);
+            unit2.or(unit1).unwrap_or_else(|| unit.to_string())
+        };
+        let (Some(a), Some(b)) = (
+            convert_spectral_text(&range.value1, unit),
+            convert_spectral_text(second, &effective2),
+        ) else {
+            return;
+        };
+        // Frequency and energy invert the ordering against wavelength, so sort
+        // in metres rather than trusting the order the user typed.
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        clauses.push(format!(
+            "Plane.energy_bounds_lower <= {} AND {} <= Plane.energy_bounds_upper",
+            num(hi),
+            num(lo)
+        ));
+        return;
+    }
+
+    let Some(m) = convert_spectral_text(&range.value1, unit) else {
+        return;
+    };
+    match range.op {
+        RangeOp::GreaterThan | RangeOp::GreaterThanOrEqual => {
+            clauses.push(format!("{} <= Plane.energy_bounds_upper", num(m)));
+        }
+        RangeOp::LessThan | RangeOp::LessThanOrEqual => {
+            clauses.push(format!("Plane.energy_bounds_lower <= {}", num(m)));
+        }
+        // A bare value asks "is this wavelength inside the band?".
+        RangeOp::Equals => {
+            clauses.push(format!(
+                "Plane.energy_bounds_lower <= {} AND {} <= Plane.energy_bounds_upper",
+                num(m),
+                num(m)
+            ));
+        }
+        RangeOp::Between => unreachable!("handled above"),
+    }
+}
+
 fn convert_spectral_to_metres(value: f64, unit: &str) -> Option<f64> {
     unit_converter::to_metres(value, unit).or_else(|| Some(wavelength_to_meters(value, unit)))
+}
+
+/// Convert TYPED spectral text to metres, letting an inline unit win.
+///
+/// The reference's `ConvertSpectral`: an astronomer who writes `500nm` or
+/// `1.4GHz` means that unit for that value, whatever the dropdown beside the
+/// field says. Every spectral field parsed the text as a bare `f64` instead, so
+/// `500nm` failed to parse and the constraint was dropped from the query
+/// entirely — the search silently widened.
+///
+/// One function for all four spectral fields; they had three copies of the
+/// bare-`f64` closure between them.
+fn convert_spectral_text(value: &str, unit: &str) -> Option<f64> {
+    let (number, inline_unit) = unit_converter::extract_spectral_suffix(value);
+    let n: f64 = number.trim().parse().ok()?;
+    convert_spectral_to_metres(n, inline_unit.as_deref().unwrap_or(unit))
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +1129,124 @@ mod tests {
         // the failure visible instead of inventing a value the caller never had.
         assert_eq!(num(f64::NAN), "NaN");
         assert_eq!(num(f64::INFINITY), "inf");
+    }
+
+    #[test]
+    fn a_typed_inline_unit_reaches_the_query() {
+        // `500nm` is not a number, so the page's numeric parse produced nothing
+        // and the coverage constraint vanished — the search silently widened to
+        // every wavelength. The verbatim text now drives the clause.
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "m".to_string(); // dropdown deliberately disagrees
+        state.spectral_coverage_raw = "> 500nm".to_string();
+        let adql = build(&state);
+        assert!(
+            adql.contains("0.0000005 <= Plane.energy_bounds_upper"),
+            "the inline nm must win over the dropdown's metres: {adql}"
+        );
+    }
+
+    #[test]
+    fn a_typed_coverage_range_overlaps_rather_than_contains() {
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "nm".to_string();
+        state.spectral_coverage_raw = "500..700".to_string();
+        let adql = build(&state);
+        assert!(
+            adql.contains("Plane.energy_bounds_lower <= 0.0000007"),
+            "{adql}"
+        );
+        assert!(
+            adql.contains("0.0000005 <= Plane.energy_bounds_upper"),
+            "{adql}"
+        );
+    }
+
+    #[test]
+    fn the_second_side_of_a_range_inherits_the_first_sides_unit() {
+        // `500nm..700` means 700 nm, not 700 of whatever the dropdown says.
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "m".to_string();
+        state.spectral_coverage_raw = "500nm..700".to_string();
+        let adql = build(&state);
+        assert!(
+            adql.contains("Plane.energy_bounds_lower <= 0.0000007"),
+            "700 should be read as nm: {adql}"
+        );
+    }
+
+    #[test]
+    fn a_frequency_range_is_ordered_in_metres_not_as_typed() {
+        // Frequency inverts against wavelength: 1 GHz is LONGER than 2 GHz. A
+        // clause built in the typed order would ask for an empty interval.
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "GHz".to_string();
+        state.spectral_coverage_raw = "1..2".to_string();
+        let adql = build(&state);
+
+        let one_ghz = 299_792_458.0 / 1e9; // ~0.2998 m
+        let two_ghz = 299_792_458.0 / 2e9; // ~0.1499 m — SHORTER
+        assert!(
+            adql.contains(&format!("Plane.energy_bounds_lower <= {}", num(one_ghz))),
+            "the longer wavelength must be the upper bound: {adql}"
+        );
+        assert!(
+            adql.contains(&format!("{} <= Plane.energy_bounds_upper", num(two_ghz))),
+            "{adql}"
+        );
+    }
+
+    #[test]
+    fn a_bare_typed_coverage_value_asks_whether_the_band_contains_it() {
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "nm".to_string();
+        state.spectral_coverage_raw = "656.3".to_string();
+        let adql = build(&state);
+        // H-alpha: does this observation cover it?
+        assert!(
+            adql.contains("Plane.energy_bounds_lower <= 0.0000006563"),
+            "{adql}"
+        );
+        assert!(
+            adql.contains("0.0000006563 <= Plane.energy_bounds_upper"),
+            "{adql}"
+        );
+    }
+
+    #[test]
+    fn an_inline_unit_reaches_the_bandpass_and_rest_frame_fields_too() {
+        let mut state = SearchFormState::new();
+        state.bandpass_width_unit = "m".to_string();
+        state.bandpass_width_raw = "> 10nm".to_string();
+        let adql = build(&state);
+        assert!(
+            adql.contains("Plane.energy_bounds_width > 0.00000001"),
+            "{adql}"
+        );
+
+        let mut state = SearchFormState::new();
+        state.rest_frame_energy_unit = "m".to_string();
+        state.rest_frame_energy_raw = "656.3nm".to_string();
+        let adql = build(&state);
+        assert!(
+            adql.contains("Plane.energy_restwav = 0.0000006563"),
+            "{adql}"
+        );
+    }
+
+    #[test]
+    fn a_saved_search_without_raw_text_still_uses_its_numeric_bounds() {
+        // Searches saved before the verbatim text was recorded have only the
+        // numeric pair; they must keep working.
+        let mut state = SearchFormState::new();
+        state.wavelength_unit = "nm".to_string();
+        state.wavelength_min = Some(500.0);
+        state.spectral_coverage_raw = String::new();
+        let adql = build(&state);
+        assert!(
+            adql.contains("0.0000005 <= Plane.energy_bounds_upper"),
+            "{adql}"
+        );
     }
 
     #[test]

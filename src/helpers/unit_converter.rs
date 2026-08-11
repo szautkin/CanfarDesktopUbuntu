@@ -37,6 +37,54 @@ pub fn canonical_spectral_unit(unit: &str) -> Option<&'static str> {
         .find(|candidate| normalize_spectral(candidate) == normalized)
 }
 
+/// Spectral unit suffixes recognised inside a typed value, LONGEST FIRST.
+///
+/// Order is load-bearing: `m` is a suffix of `nm`, `mm` and `cm`, so a shorter
+/// candidate tested first would split `500nm` into `500n` + `m` and the number
+/// would fail to parse. Mirrors the reference's longest-match-first regex.
+const SPECTRAL_SUFFIXES: &[&str] = &[
+    "ghz", "mhz", "khz", "gev", "mev", "kev", "nm", "um", "mm", "cm", "hz", "ev", "a", "m",
+];
+
+/// Split a typed spectral value into its number and its inline unit, if any.
+///
+/// The Search form pairs each spectral field with a unit dropdown, but an
+/// astronomer types `500nm` or `1.4GHz` — and the reference honours that,
+/// letting the inline unit override the dropdown for that value alone. Without
+/// this, `500nm` simply failed to parse as a number and the constraint was
+/// dropped from the query with no warning.
+///
+/// Returns the number text (trimmed) and the recognised unit as it was written,
+/// or `None` when the value carries no suffix.
+pub fn extract_spectral_suffix(value: &str) -> (String, Option<String>) {
+    let trimmed = value.trim();
+    let lowered = normalize_spectral(trimmed);
+
+    for suffix in SPECTRAL_SUFFIXES {
+        if !lowered.ends_with(suffix) {
+            continue;
+        }
+        // Normalization can change the byte length (`µm` → `um`), so cut the
+        // ORIGINAL string by counting characters from its end instead.
+        let keep = trimmed
+            .chars()
+            .count()
+            .saturating_sub(suffix.chars().count());
+        let (number, unit): (String, String) = (
+            trimmed.chars().take(keep).collect(),
+            trimmed.chars().skip(keep).collect(),
+        );
+        // A bare unit with no number ("nm") is not a value; and the remainder
+        // has to look like a number, or this was never a suffix at all.
+        let number = number.trim().to_string();
+        if number.is_empty() || number.parse::<f64>().is_err() {
+            continue;
+        }
+        return (number, Some(unit));
+    }
+    (trimmed.to_string(), None)
+}
+
 /// Fold a spectral unit to the form [`to_metres`] matches on: lower-cased, with
 /// `µ`→`u`, `Å`→`a`, and the long name `angstrom` folded onto `a`.
 fn normalize_spectral(unit: &str) -> String {
@@ -150,6 +198,68 @@ pub fn is_inverse_unit(unit: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_value_carries_its_own_unit() {
+        assert_eq!(
+            extract_spectral_suffix("500nm"),
+            ("500".to_string(), Some("nm".to_string()))
+        );
+        assert_eq!(
+            extract_spectral_suffix("1.4GHz"),
+            ("1.4".to_string(), Some("GHz".to_string()))
+        );
+        // Spacing and case are how people actually type.
+        assert_eq!(
+            extract_spectral_suffix(" 2.5 keV "),
+            ("2.5".to_string(), Some("keV".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_longer_unit_wins_over_the_one_it_ends_with() {
+        // `m` is a suffix of `nm`, `mm` and `cm`; testing it first would split
+        // `500nm` into `500n` + `m`, and `500n` is not a number — so the whole
+        // constraint would be dropped.
+        for (input, unit) in [("500nm", "nm"), ("500mm", "mm"), ("500cm", "cm")] {
+            let (number, found) = extract_spectral_suffix(input);
+            assert_eq!(number, "500", "{input}");
+            assert_eq!(found.as_deref(), Some(unit), "{input}");
+        }
+        // Frequency and energy have the same trap: Hz inside GHz, eV inside keV.
+        assert_eq!(extract_spectral_suffix("3GHz").1.as_deref(), Some("GHz"));
+        assert_eq!(extract_spectral_suffix("3keV").1.as_deref(), Some("keV"));
+    }
+
+    #[test]
+    fn a_plain_number_has_no_inline_unit() {
+        assert_eq!(
+            extract_spectral_suffix("500"),
+            ("500".to_string(), None),
+            "the dropdown unit applies"
+        );
+        assert_eq!(extract_spectral_suffix("1e-7"), ("1e-7".to_string(), None));
+    }
+
+    #[test]
+    fn a_bare_unit_is_not_mistaken_for_a_value() {
+        // "nm" on its own has no number; treating it as a suffix would leave an
+        // empty numeric part and a nonsense constraint.
+        assert_eq!(extract_spectral_suffix("nm"), ("nm".to_string(), None));
+        assert_eq!(extract_spectral_suffix(""), (String::new(), None));
+        // Nor is a word that merely ends in a unit letter.
+        assert_eq!(extract_spectral_suffix("abcm"), ("abcm".to_string(), None));
+    }
+
+    #[test]
+    fn the_micron_and_angstrom_glyphs_are_recognised_inline() {
+        assert_eq!(extract_spectral_suffix("2.2µm").1.as_deref(), Some("µm"));
+        assert_eq!(extract_spectral_suffix("6563Å").1.as_deref(), Some("Å"));
+        // And the extracted unit still converts, which is the whole point.
+        let (n, u) = extract_spectral_suffix("6563Å");
+        let metres = to_metres(n.parse().unwrap(), u.as_deref().unwrap());
+        assert!((metres.unwrap() - 6.563e-7).abs() < 1e-12, "{metres:?}");
+    }
 
     #[test]
     fn every_offered_spectral_unit_actually_converts() {
