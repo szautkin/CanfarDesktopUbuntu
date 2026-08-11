@@ -108,6 +108,13 @@ pub const SPECTRAL_SCALE_RANGE: (f32, f32) = (0.5, 4.0);
 /// small positive value rather than 0.
 pub const DENSITY_MIN: f32 = 0.01;
 
+/// Camera elevation, radians. Just short of the poles, where the orbit basis
+/// degenerates and the volume flips.
+pub const ELEVATION_RANGE: (f32, f32) = (-1.4, 1.4);
+
+/// Camera distance. Closer clips into the volume; further leaves it a speck.
+pub const DISTANCE_RANGE: (f32, f32) = (0.5, 8.0);
+
 pub struct CubeVolumeGl {
     area: gtk::GLArea,
     state: Rc<RefCell<GlState>>,
@@ -341,7 +348,7 @@ impl CubeVolumeGl {
                 {
                     let mut s = t1.state.borrow_mut();
                     s.az = az0 - dx as f32 * 0.01;
-                    s.el = (el0 + dy as f32 * 0.01).clamp(-1.4, 1.4);
+                    s.el = (el0 + dy as f32 * 0.01).clamp(ELEVATION_RANGE.0, ELEVATION_RANGE.1);
                 }
                 t1.area.queue_render();
                 t1.fire_camera_changed();
@@ -361,7 +368,8 @@ impl CubeVolumeGl {
             scroll.connect_scroll(move |_, _dx, dy| {
                 {
                     let mut s = this.state.borrow_mut();
-                    s.dist = (s.dist * (dy as f32 * 0.12).exp()).clamp(0.5, 8.0);
+                    s.dist = (s.dist * (dy as f32 * 0.12).exp())
+                        .clamp(DISTANCE_RANGE.0, DISTANCE_RANGE.1);
                 }
                 this.area.queue_render();
                 this.fire_camera_changed();
@@ -420,8 +428,8 @@ impl CubeVolumeGl {
         {
             let mut s = self.state.borrow_mut();
             s.az = az;
-            s.el = el.clamp(-1.4, 1.4);
-            s.dist = dist.clamp(0.5, 8.0);
+            s.el = el.clamp(ELEVATION_RANGE.0, ELEVATION_RANGE.1);
+            s.dist = dist.clamp(DISTANCE_RANGE.0, DISTANCE_RANGE.1);
         }
         self.area.queue_render();
         self.fire_camera_changed();

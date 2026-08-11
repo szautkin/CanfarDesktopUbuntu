@@ -925,7 +925,14 @@ impl FitsViewer {
                 if let Some(v) = crate::mcp::tools::arg(args, "maxCut").and_then(|v| v.as_f64()) {
                     tab.set_vmax(v);
                 }
-                if let Some(z) = crate::mcp::tools::arg(args, "zoom").and_then(|v| v.as_f64()) {
+                // `zoomPercent` is what get_fits_view REPORTS and what the
+                // reference declares; this accepted only `zoom`, so an agent
+                // reading the view and writing a field straight back was
+                // silently ignored. Both spellings work.
+                if let Some(z) = crate::mcp::tools::arg(args, "zoomPercent")
+                    .or_else(|| crate::mcp::tools::arg(args, "zoom"))
+                    .and_then(|v| v.as_f64())
+                {
                     tab.set_zoom(z / 100.0);
                 }
                 if let Some(n) = crate::mcp::tools::arg(args, "northUp").and_then(|v| v.as_bool()) {

@@ -60,7 +60,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type":"object",
                 "properties": {
-                    "zoom": {
+                    "zoomPercent": {
                         "type":"number",
                         "minimum": crate::ui::fits_canvas::ZOOM_SCALE_RANGE.0 * 100.0,
                         "maximum": crate::ui::fits_canvas::ZOOM_SCALE_RANGE.1 * 100.0,
@@ -505,7 +505,7 @@ mod tests {
             .find(|d| d.name == "set_fits_view")
             .expect("the tool is declared")
             .input_schema;
-        let zoom = &schema["properties"]["zoom"];
+        let zoom = &schema["properties"]["zoomPercent"];
 
         // The tool speaks percent; the canvas stores a scale factor.
         assert_eq!(zoom["minimum"].as_f64(), Some(ZOOM_SCALE_RANGE.0 * 100.0));

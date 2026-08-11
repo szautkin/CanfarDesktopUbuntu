@@ -273,13 +273,22 @@ impl CubeTabHost {
                     v.gl().reset_view();
                 }
                 let (mut az, mut el, mut dist) = v.gl().camera();
-                if let Some(x) = crate::mcp::tools::arg(args, "az").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "azimuth")
+                    .or_else(|| crate::mcp::tools::arg(args, "az"))
+                    .and_then(|x| x.as_f64())
+                {
                     az = x as f32;
                 }
-                if let Some(x) = crate::mcp::tools::arg(args, "el").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "elevation")
+                    .or_else(|| crate::mcp::tools::arg(args, "el"))
+                    .and_then(|x| x.as_f64())
+                {
                     el = x as f32;
                 }
-                if let Some(x) = crate::mcp::tools::arg(args, "dist").and_then(|x| x.as_f64()) {
+                if let Some(x) = crate::mcp::tools::arg(args, "distance")
+                    .or_else(|| crate::mcp::tools::arg(args, "dist"))
+                    .and_then(|x| x.as_f64())
+                {
                     dist = x as f32;
                 }
                 v.gl().set_camera(az, el, dist);
@@ -821,6 +830,11 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
     let (nx, ny, nz) = v.dims();
     let (window_lo, window_hi) = v.window();
     serde_json::json!({
+        // The reference's names, with our original short forms kept so an
+        // existing reader does not break.
+        "azimuth": az,
+        "elevation": el,
+        "distance": dist,
         "az": az,
         "el": el,
         "dist": dist,

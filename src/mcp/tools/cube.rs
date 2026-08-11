@@ -74,9 +74,19 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "az": { "type": "number", "description": "Camera azimuth (radians)." },
-                    "el": { "type": "number", "description": "Camera elevation (radians, clamped ±1.4)." },
-                    "dist": { "type": "number", "description": "Camera distance (clamped 0.5–8)." },
+                    "azimuth": { "type": "number", "description": "Camera azimuth in radians. Also accepted as `az`." },
+                    "elevation": {
+                        "type": "number",
+                        "minimum": crate::ui::cube_volume_gl::ELEVATION_RANGE.0,
+                        "maximum": crate::ui::cube_volume_gl::ELEVATION_RANGE.1,
+                        "description": "Camera elevation in radians — stops short of the poles, where the orbit basis degenerates. Also accepted as `el`."
+                    },
+                    "distance": {
+                        "type": "number",
+                        "minimum": crate::ui::cube_volume_gl::DISTANCE_RANGE.0,
+                        "maximum": crate::ui::cube_volume_gl::DISTANCE_RANGE.1,
+                        "description": "Camera distance. Closer clips into the volume; further leaves it a speck. Also accepted as `dist`."
+                    },
                     "resetCamera": { "type": "boolean", "description": "Reset the orbit camera to the default framing (applied before any az/el/dist override)." },
                     "steps": {
                         "type": "number",
