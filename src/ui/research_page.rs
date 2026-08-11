@@ -1484,7 +1484,7 @@ impl ResearchPage {
 
         // ── Write on the blocking pool — pure Rust, no GTK ─────────────────
         let app_version = env!("CARGO_PKG_VERSION").to_string();
-        let host = host_name();
+        let host = crate::helpers::research_exporter::host_name();
         let write_path = path.clone();
         let result = self
             .services
@@ -1594,20 +1594,6 @@ impl ResearchPage {
                 .toast(format!("VOSpace upload failed: {e}")),
         }
     }
-}
-
-/// Best-effort local hostname for the export manifest/README provenance.
-fn host_name() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Build a standard `Icon + Label` button used in the detail pane action bar.

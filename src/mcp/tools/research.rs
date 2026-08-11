@@ -238,7 +238,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             name: "export_research_bundle".to_string(),
             description: "Export a Claude-friendly research bundle — the user's downloaded \
                 observations, research notes, and saved/recent searches rendered as JSON + markdown \
-                (with fenced sql query blocks) — packed into a single store-only .zip. Give either \
+                (with fenced sql query blocks) — packed into a single .zip. Inside is a timestamped \
+                folder holding manifest.json (a machine index), README.md (what the bundle is and \
+                how to cite it), and research/ + search/ subdirectories: the same layout the app's \
+                own Export button produces. Give either \
                 `path` (the full .zip path) or `destFolder` (a folder to write \
                 research-bundle-<date>.zip into). Non-destructive: queues for the user to apply, \
                 then writes the archive (creating parent folders). Set includeNotes / \
@@ -820,31 +823,37 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
     let path = std::path::PathBuf::from(&path_str);
     let now = Utc::now();
 
-    // Notes are a tiny JSON file; the render + zip write are blocking. Do the
-    // whole build off the async executor.
+    // The SAME wrapped layout the Research page writes — manifest.json,
+    // README.md, and research/ + search/ under a timestamped folder. This path
+    // used to assemble a flat zip of loose files instead, so an agent-requested
+    // export came out in a different shape from a user-requested one, and the
+    // agent's copy was the one missing the README that explains the bundle and
+    // names the citation to use. Two layouts from one product, and the wrong one
+    // went to the reader who most needed the index.
+    let app_version = env!("CARGO_PKG_VERSION").to_string();
+    let host = crate::helpers::research_exporter::host_name();
     let write_result = tokio::task::spawn_blocking(move || {
         let notes = if include_notes {
             crate::services::observation_note_store::ObservationNoteStore::new().all()
         } else {
             Vec::new()
         };
-        let rb = crate::helpers::research_exporter::build_bundle(&observations, &notes, now);
-        let search_files = crate::helpers::search_exporter::build_search_bundle(
-            &saved,
-            &recent,
-            include_history,
-            now,
-        );
-
-        let mut entries: Vec<(&str, &[u8])> = vec![
-            ("observations.json", rb.observations_json.as_bytes()),
-            ("notes.json", rb.notes_json.as_bytes()),
-            ("notes.md", rb.notes_md.as_bytes()),
-        ];
-        for (name, content) in &search_files {
-            entries.push((name.as_str(), content.as_bytes()));
-        }
-        crate::helpers::research_exporter::write_store_zip(&path, &entries)
+        crate::helpers::research_exporter::write_research_bundle_zip(
+            &path,
+            &crate::helpers::research_exporter::BundleRequest {
+                observations: &observations,
+                notes: &notes,
+                saved: &saved,
+                recent: &recent,
+                options: crate::helpers::research_exporter::BundleOptions {
+                    include_notes,
+                    include_search_history: include_history,
+                },
+                now,
+                app_version: &app_version,
+                host_name: &host,
+            },
+        )
     })
     .await
     .map_err(|e| format!("export task failed: {e}"))?;

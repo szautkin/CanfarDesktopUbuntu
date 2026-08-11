@@ -66,30 +66,11 @@ pub fn build_bundle(
     }
 }
 
-/// Build the bundle and write it to `path` as a store-only ZIP.
-///
-/// Returns the number of observations written on success. Blocking disk I/O —
-/// call from a blocking thread (e.g. `tokio::task::spawn_blocking`).
-pub fn write_bundle_zip(
-    path: &Path,
-    observations: &[DownloadedObservation],
-    notes: &[ObservationNote],
-) -> Result<usize, String> {
-    let bundle = build_bundle(observations, notes, Utc::now());
-    let entries: [(&str, &[u8]); 3] = [
-        ("observations.json", bundle.observations_json.as_bytes()),
-        ("notes.json", bundle.notes_json.as_bytes()),
-        ("notes.md", bundle.notes_md.as_bytes()),
-    ];
-    write_zip(path, &entries)?;
-    Ok(bundle.observation_count)
-}
-
 // ---------------------------------------------------------------------------
 // Wrapped bundle: manifest.json + README.md + per-module subdirectories
 //
 // Port of `ExportService.BuildBundleAsync` + `ZipBundle`. Where the flat
-// [`write_bundle_zip`] emits three loose files, this assembles a proper,
+// an earlier flat writer emitted three loose files, this assembles a proper,
 // Claude-friendly bundle: a top-level `manifest.json` (machine index) and
 // `README.md` (human/LLM guide) alongside a `research/` and `search/`
 // subdirectory, all nested under a timestamped base folder inside the zip.
@@ -138,6 +119,23 @@ pub struct BundleSummary {
 
 const EXPORT_VERSION: &str = "1.0";
 const APP_NAME: &str = "Verbinal";
+
+/// Best-effort machine name for the bundle's provenance stamp.
+///
+/// Lives here rather than in a page because BOTH export paths — the Research
+/// page and the MCP applier — stamp the manifest with it, and they must agree.
+pub fn host_name() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
 /// Timestamped base-folder name, e.g. `Verbinal-Export-2026-07-08_143000`.
 /// Matches `ExportService.BundleName`.
@@ -629,16 +627,6 @@ fn iso_or_raw(s: &str) -> String {
 // Minimal store-only ZIP writer
 // ---------------------------------------------------------------------------
 
-/// Public entry point over the internal store-only ZIP writer.
-///
-/// Sibling exporters (e.g. [`crate::helpers::search_exporter`]) reuse this to
-/// pack their own `(name, bytes)` payloads — and the combined research + search
-/// bundle — into the *same* archive format without duplicating the ZIP
-/// machinery below. Blocking disk I/O.
-pub fn write_store_zip(path: &Path, entries: &[(&str, &[u8])]) -> Result<(), String> {
-    write_zip(path, entries)
-}
-
 /// Write `entries` (name, bytes) to `path` as a store-only (method 0) ZIP.
 ///
 /// Each entry is stored uncompressed with its CRC-32; a central directory and
@@ -944,44 +932,6 @@ mod tests {
         assert_eq!(crc32(b""), 0);
     }
 
-    #[test]
-    fn write_zip_produces_readable_archive() {
-        let observations = vec![obs("ivo://x?1", "M31", "CFHT", "obs-1")];
-        let notes = vec![note("ivo://x?1", 3, "Fair seeing", &["queue"])];
-
-        let path = std::env::temp_dir().join(format!(
-            "verbinal_export_test_{}_{}.zip",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-
-        let count = write_bundle_zip(&path, &observations, &notes).unwrap();
-        assert_eq!(count, 1);
-
-        let bytes = std::fs::read(&path).unwrap();
-        // Local file header magic "PK\x03\x04".
-        assert_eq!(&bytes[0..4], &[0x50, 0x4b, 0x03, 0x04]);
-        // End-of-central-directory magic "PK\x05\x06" appears near the tail.
-        assert!(bytes.windows(4).any(|w| w == [0x50, 0x4b, 0x05, 0x06]));
-        // All three member names are present in the raw archive.
-        let haystack = bytes.as_slice();
-        for name in ["observations.json", "notes.json", "notes.md"] {
-            assert!(
-                haystack.windows(name.len()).any(|w| w == name.as_bytes()),
-                "archive missing {name}"
-            );
-        }
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    // ── Wrapped bundle (manifest + README + module subdirs) ──────────────
-
-    /// A [`BundleRequest`] with no search modules and the fixed test clock —
-    /// what every wrapped-bundle test here varies is the data and the options.
     fn req<'a>(
         observations: &'a [DownloadedObservation],
         notes: &'a [ObservationNote],
@@ -1133,7 +1083,11 @@ mod tests {
         assert_eq!(summary.observation_count, 1);
 
         let bytes = std::fs::read(&path).unwrap();
+        // Local file header magic "PK\x03\x04" …
         assert_eq!(&bytes[0..4], &[0x50, 0x4b, 0x03, 0x04]);
+        // … and an end-of-central-directory record "PK\x05\x06" near the tail,
+        // without which no unzip tool will open the archive at all.
+        assert!(bytes.windows(4).any(|w| w == [0x50, 0x4b, 0x05, 0x06]));
         let haystack = bytes.as_slice();
         for name in [
             "manifest.json",
