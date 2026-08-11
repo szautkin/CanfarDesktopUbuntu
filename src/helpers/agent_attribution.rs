@@ -51,6 +51,23 @@ impl AgentAttribution {
     /// Short stable fingerprint (first 6 hex of SHA-256(origin label)), matching
     /// the badge fingerprint in `models::agent_attribution` and the C#
     /// `AgentActivityEntry.Fingerprint`.
+    /// The stamp an applier records on the entity it creates or edits, or `None`
+    /// when the proposal came from the user rather than an agent.
+    ///
+    /// The `origin` is what distinguishes them: an external MCP client sets it, a
+    /// UI-initiated write does not. Getting this wrong in either direction is bad
+    /// — an unstamped agent write is indistinguishable from the user's own, and a
+    /// stamped user write blames an agent for something a person did.
+    ///
+    /// Lived in duplicate in two tool modules; every applier that records
+    /// provenance must reach the same answer, so it belongs beside the type.
+    pub fn for_applied_proposal(proposal: &PendingProposal) -> Option<Self> {
+        proposal
+            .origin
+            .as_ref()
+            .map(|_| Self::for_proposal(proposal, chrono::Utc::now().to_rfc3339()))
+    }
+
     pub fn fingerprint(&self) -> String {
         crate::models::agent_attribution::fingerprint(&self.origin)
     }
@@ -58,6 +75,63 @@ impl AgentAttribution {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_an_agent_origin_earns_a_stamp() {
+        use crate::mcp::tools::proposals::InMemoryProposalStore;
+
+        let store = InMemoryProposalStore::new();
+
+        // A user-initiated write has no origin, so it must NOT be stamped —
+        // blaming an agent for something a person did is as wrong as the reverse.
+        let user = store.enqueue(
+            "download_observation",
+            "Download ivo://x?1",
+            false,
+            serde_json::json!({}),
+        );
+        assert!(AgentAttribution::for_applied_proposal(&user).is_none());
+
+        // An external MCP client sets the origin; that write must be stamped, or
+        // it is indistinguishable from the user's own in the Research list.
+        let agent = store.enqueue(
+            "download_observation",
+            "Download ivo://x?2",
+            false,
+            serde_json::json!({}),
+        );
+        store.set_origin(&agent.id, Some("Claude Desktop".to_string()));
+        let agent = store.get(&agent.id).unwrap();
+        let attr = AgentAttribution::for_applied_proposal(&agent).expect("must be stamped");
+        assert_eq!(attr.origin, "Claude Desktop");
+        assert_eq!(attr.proposal_id, agent.id);
+    }
+
+    #[test]
+    fn a_stamp_survives_the_json_round_trip_the_store_uses() {
+        // The observation store keeps attribution as a JSON string, and the
+        // Research page falls back to a bare label if it cannot parse — which
+        // silently loses the tool and timestamp. Pin the full round trip.
+        use crate::mcp::tools::proposals::InMemoryProposalStore;
+
+        let store = InMemoryProposalStore::new();
+        let p = store.enqueue(
+            "download_observation",
+            "Download ivo://x?3",
+            false,
+            serde_json::json!({}),
+        );
+        store.set_origin(&p.id, Some("Claude Code".to_string()));
+        let p = store.get(&p.id).unwrap();
+        let attr = AgentAttribution::for_applied_proposal(&p).unwrap();
+
+        let encoded = serde_json::to_string(&attr).unwrap();
+        let back: AgentAttribution = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(back.origin, "Claude Code");
+        assert_eq!(back.proposal_id, attr.proposal_id);
+        assert_eq!(back.summary, attr.summary);
+        assert_eq!(back.applied_at, attr.applied_at);
+    }
+
     use super::*;
     use crate::mcp::tools::proposals::{InMemoryProposalStore, ProposalState};
     use serde_json::json;

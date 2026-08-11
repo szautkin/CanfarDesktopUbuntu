@@ -110,6 +110,7 @@ pub async fn download_and_register(
     services: &AppServices,
     publisher_id: &str,
     artifact_index: Option<usize>,
+    attribution: Option<crate::helpers::agent_attribution::AgentAttribution>,
 ) -> Result<String, String> {
     let outcome =
         download_observation(services, publisher_id, artifact_index, publisher_id).await?;
@@ -130,6 +131,16 @@ pub async fn download_and_register(
     record.local_path = outcome.local_path.display().to_string();
     record.file_size = outcome.file_size;
     record.downloaded_at = chrono::Utc::now().to_rfc3339();
+    // Stamp WHO fetched it. An unstamped agent download is indistinguishable
+    // from one the user made themselves — the badge in the Research list is the
+    // only thing that tells them apart. `None` (a user-initiated download)
+    // deliberately clears any previous stamp: the user has now taken ownership.
+    //
+    // Serialised as JSON so client / tool / timestamp all survive; the Research
+    // page falls back to reading a bare label, but that loses the detail.
+    record.agent_attribution = attribution
+        .as_ref()
+        .and_then(|a| serde_json::to_string(a).ok());
 
     services.observation_store.save(record)?;
     Ok(format!(

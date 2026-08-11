@@ -487,14 +487,25 @@ fn propose_download_bulk(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
     ToolResult::Proposed(p)
 }
 
-async fn apply_download(services: &AppServices, payload: &Value) -> Result<String, String> {
+async fn apply_download(
+    services: &AppServices,
+    proposal: &PendingProposal,
+) -> Result<String, String> {
+    let payload = &proposal.payload;
     let pid = str_arg(payload, "publisherId");
     let index = opt_u64(payload, "artifactIndex").map(|n| n as usize);
-    crate::services::observation_download::download_and_register(services, &pid, index).await
+    let attribution = AgentAttribution::for_applied_proposal(proposal);
+    crate::services::observation_download::download_and_register(services, &pid, index, attribution)
+        .await
 }
 
-async fn apply_download_bulk(services: &AppServices, payload: &Value) -> Result<String, String> {
-    let items = payload
+async fn apply_download_bulk(
+    services: &AppServices,
+    proposal: &PendingProposal,
+) -> Result<String, String> {
+    let attribution = AgentAttribution::for_applied_proposal(proposal);
+    let items = proposal
+        .payload
         .get("items")
         .and_then(|v| v.as_array())
         .cloned()
@@ -504,8 +515,13 @@ async fn apply_download_bulk(services: &AppServices, payload: &Value) -> Result<
     for (i, item) in items.iter().enumerate() {
         let pid = str_arg(item, "publisherId");
         let index = opt_u64(item, "artifactIndex").map(|n| n as usize);
-        match crate::services::observation_download::download_and_register(services, &pid, index)
-            .await
+        match crate::services::observation_download::download_and_register(
+            services,
+            &pid,
+            index,
+            attribution.clone(),
+        )
+        .await
         {
             Ok(_) => done += 1,
             // Stop rather than press on: the remaining transfers would very
@@ -591,10 +607,8 @@ pub async fn apply(
     match proposal.kind.as_str() {
         "update_observation_note" => Some(apply_update_note(services, proposal).await),
         "bulk_update_observation_notes" => Some(apply_bulk_update_notes(services, proposal).await),
-        "download_observation" => Some(apply_download(services, &proposal.payload).await),
-        "download_observations_bulk" => {
-            Some(apply_download_bulk(services, &proposal.payload).await)
-        }
+        "download_observation" => Some(apply_download(services, proposal).await),
+        "download_observations_bulk" => Some(apply_download_bulk(services, proposal).await),
         "delete_downloaded_observation" => Some(apply_delete(services, &proposal.payload).await),
         "clear_research_archive" => Some(apply_clear(services).await),
         "export_research_bundle" => Some(apply_export(services, &proposal.payload).await),
@@ -647,7 +661,7 @@ async fn apply_update_note(
         return Err("update_observation_note payload missing id".to_string());
     }
     let pub_id = resolve_publisher_id(services, &id).await;
-    let attribution = attribution_for(proposal);
+    let attribution = AgentAttribution::for_applied_proposal(proposal);
     let spec = proposal.payload.clone();
     let pub_for_msg = pub_id.clone();
     tokio::task::spawn_blocking(move || upsert_note_blocking(pub_id, &spec, attribution))
@@ -681,7 +695,7 @@ async fn apply_bulk_update_notes(
         resolved.push((pub_id, item));
     }
     let count = resolved.len();
-    let attribution = attribution_for(proposal);
+    let attribution = AgentAttribution::for_applied_proposal(proposal);
     tokio::task::spawn_blocking(move || {
         for (pub_id, spec) in resolved {
             upsert_note_blocking(pub_id, &spec, attribution.clone());
@@ -693,15 +707,6 @@ async fn apply_bulk_update_notes(
         "Set research notes for {count} observation{}",
         if count == 1 { "" } else { "s" }
     ))
-}
-
-/// Provenance stamp for an applied note write, or `None` when user-originated.
-/// Mirrors [`crate::mcp::tools::write`]'s `attribution_for`.
-fn attribution_for(proposal: &PendingProposal) -> Option<AgentAttribution> {
-    proposal
-        .origin
-        .as_ref()
-        .map(|_| AgentAttribution::for_proposal(proposal, Utc::now().to_rfc3339()))
 }
 
 async fn apply_delete(services: &AppServices, payload: &Value) -> Result<String, String> {

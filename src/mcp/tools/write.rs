@@ -294,7 +294,7 @@ pub async fn apply(services: &AppServices, proposal: &PendingProposal) -> Result
                 created_at: chrono::Utc::now().to_rfc3339(),
                 // Stamp provenance when this apply originated from an external
                 // agent proposal; user-originated proposals get no badge.
-                agent_attribution: attribution_for(proposal),
+                agent_attribution: AgentAttribution::for_applied_proposal(proposal),
             };
             services.search_store.save_query(query)?;
             Ok(format!("Saved query '{}'", name))
@@ -369,16 +369,6 @@ pub async fn apply(services: &AppServices, proposal: &PendingProposal) -> Result
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent attribution
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Build the provenance stamp an applier records on the entity it creates/edits,
-/// or `None` when the proposal is user-originated (no external `origin` → no
-/// badge). Mirrors `AgentAttributionStamp.ForProposal`.
-fn attribution_for(proposal: &PendingProposal) -> Option<AgentAttribution> {
-    proposal
-        .origin
-        .as_ref()
-        .map(|_| AgentAttribution::for_proposal(proposal, chrono::Utc::now().to_rfc3339()))
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Argument helpers
@@ -469,13 +459,14 @@ mod tests {
         let store = InMemoryProposalStore::new();
         // User-originated proposal (origin None) → no badge.
         let user = store.enqueue("save_query", "Save query: M31", false, json!({}));
-        assert!(attribution_for(&user).is_none());
+        assert!(AgentAttribution::for_applied_proposal(&user).is_none());
 
         // Agent-originated proposal (origin set by the router) → stamped.
         let agent = store.enqueue("save_query", "Save query: NGC 224", false, json!({}));
         store.set_origin(&agent.id, Some("Claude Desktop".to_string()));
         let agent = store.get(&agent.id).unwrap();
-        let attr = attribution_for(&agent).expect("agent origin must be stamped");
+        let attr =
+            AgentAttribution::for_applied_proposal(&agent).expect("agent origin must be stamped");
         assert_eq!(attr.origin, "Claude Desktop");
         assert_eq!(attr.proposal_id, agent.id);
         assert_eq!(attr.summary, "Save query: NGC 224");
