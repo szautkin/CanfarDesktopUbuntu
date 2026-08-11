@@ -282,32 +282,33 @@ fn parse_radius(input: &str) -> f64 {
 // Temporal constraints
 // ---------------------------------------------------------------------------
 
+/// How many days back a date preset reaches, or `None` when it is not one.
+///
+/// Shared with the Search form, which writes the resulting range into the
+/// visible date field when a preset is picked. The window the user is SHOWN has
+/// to be the window that is queried; two copies of these numbers would let the
+/// dates on screen drift away from the results.
+pub fn preset_days_back(preset: &str) -> Option<f64> {
+    match preset {
+        "Last 24 hours" => Some(1.0),
+        "Last week" => Some(7.0),
+        "Last month" => Some(30.0),
+        _ => None,
+    }
+}
+
 fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
     // Date presets — use INTERSECTS(INTERVAL) with MJD (matching Windows)
     let now_mjd = current_mjd();
-    match state.date_preset.as_str() {
-        "Last 24 hours" => {
+    match preset_days_back(&state.date_preset) {
+        Some(days) => {
             clauses.push(format!(
                 "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                num(now_mjd - 1.0),
+                num(now_mjd - days),
                 num(now_mjd)
             ));
         }
-        "Last week" => {
-            clauses.push(format!(
-                "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                num(now_mjd - 7.0),
-                num(now_mjd)
-            ));
-        }
-        "Last month" => {
-            clauses.push(format!(
-                "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                num(now_mjd - 30.0),
-                num(now_mjd)
-            ));
-        }
-        _ => {
+        None => {
             let raw = state.obs_date_raw.trim();
             // Explicit range operators (>, >=, <, <=) on the observation-date field
             // map onto time_bounds comparisons (ported AddDateRangeClause). Plain
@@ -1155,6 +1156,45 @@ mod tests {
         // the failure visible instead of inventing a value the caller never had.
         assert_eq!(num(f64::NAN), "NaN");
         assert_eq!(num(f64::INFINITY), "inf");
+    }
+
+    #[test]
+    fn every_offered_preset_resolves_to_a_window() {
+        // The Search form builds its dropdown from DATE_PRESETS and asks this
+        // function what each entry means. An entry it did not recognise would be
+        // a selectable option that silently applies no date constraint at all.
+        for preset in ["Last 24 hours", "Last week", "Last month"] {
+            assert!(
+                preset_days_back(preset).is_some(),
+                "`{preset}` is offered but resolves to no window"
+            );
+        }
+        // The blank entry means "no preset", not "zero days".
+        assert_eq!(preset_days_back(""), None);
+        assert_eq!(preset_days_back("Last fortnight"), None);
+    }
+
+    #[test]
+    fn the_windows_widen_in_the_order_they_are_offered() {
+        let day = preset_days_back("Last 24 hours").unwrap();
+        let week = preset_days_back("Last week").unwrap();
+        let month = preset_days_back("Last month").unwrap();
+        assert!(day < week && week < month, "{day} {week} {month}");
+    }
+
+    #[test]
+    fn a_preset_overrides_a_typed_date() {
+        // Matching the reference: the preset takes priority, so a stale date in
+        // the text field cannot narrow the window the preset asked for.
+        let mut state = SearchFormState::new();
+        state.date_preset = "Last week".to_string();
+        state.obs_date_raw = "1999-01-01..1999-12-31".to_string();
+        let adql = build(&state);
+        assert!(adql.contains("Plane.time_bounds_samples"), "{adql}");
+        assert!(
+            !adql.contains("time_bounds_lower >= 51179"),
+            "the 1999 range must not also apply: {adql}"
+        );
     }
 
     #[test]

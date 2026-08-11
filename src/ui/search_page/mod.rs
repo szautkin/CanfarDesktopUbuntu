@@ -122,6 +122,22 @@ fn delimited_export(
     out
 }
 
+/// The concrete `YYYY-MM-DD..YYYY-MM-DD` window a date preset stands for, or
+/// `None` when `preset` is the blank entry.
+///
+/// Derived from `adql_builder::preset_days_back`, so the range written into the
+/// visible field is exactly the one the query will use.
+fn preset_date_range(preset: &str) -> Option<String> {
+    let days = crate::helpers::adql_builder::preset_days_back(preset)?;
+    let now = chrono::Utc::now();
+    let start = now - chrono::Duration::days(days as i64);
+    Some(format!(
+        "{}..{}",
+        start.format("%Y-%m-%d"),
+        now.format("%Y-%m-%d")
+    ))
+}
+
 /// Position of `value` in a dropdown table, or 0 (the first entry) when absent.
 fn dropdown_index(table: &[&str], value: &str) -> u32 {
     table.iter().position(|v| *v == value).unwrap_or(0) as u32
@@ -838,6 +854,23 @@ impl SearchPage {
             gtk::glib::Propagation::Proceed
         });
         page.widget.add_controller(key_controller);
+
+        // Picking a date preset writes the concrete range into the visible date
+        // field, so the user can SEE the window they just asked for — and edit
+        // it, by clearing the preset back to blank. The dates come from the same
+        // rule the query uses, so what is shown always matches what is searched.
+        {
+            let weak = Rc::downgrade(&page);
+            page.date_preset.connect_selected_notify(move |combo| {
+                let Some(page) = weak.upgrade() else { return };
+                let Some(preset) = DATE_PRESETS.get(combo.selected() as usize) else {
+                    return;
+                };
+                if let Some(range) = preset_date_range(preset) {
+                    page.obs_date.set_text(&range);
+                }
+            });
+        }
 
         // Load recent + saved
         page.refresh_recent();
@@ -3828,6 +3861,52 @@ mod stream_download_tests {
         // Guards against >100% if Content-Length under-reports the body.
         let s = format_download_progress("X", 2048, Some(1024));
         assert!(s.contains("100%"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod date_preset_tests {
+    use super::{preset_date_range, DATE_PRESETS};
+
+    #[test]
+    fn every_offered_preset_writes_a_range_except_the_blank_one() {
+        // The blank first entry means "no preset" and must leave the date field
+        // alone rather than writing today..today.
+        assert_eq!(DATE_PRESETS[0], "");
+        assert_eq!(preset_date_range(DATE_PRESETS[0]), None);
+
+        for preset in DATE_PRESETS.iter().skip(1) {
+            let range = preset_date_range(preset)
+                .unwrap_or_else(|| panic!("`{preset}` is offered but writes nothing"));
+            let (start, end) = range
+                .split_once("..")
+                .unwrap_or_else(|| panic!("`{preset}` produced `{range}`, not a range"));
+            assert_eq!(start.len(), 10, "ISO date, not a timestamp: {range}");
+            assert_eq!(end.len(), 10, "ISO date, not a timestamp: {range}");
+            assert!(start < end, "the window must run forwards: {range}");
+        }
+    }
+
+    #[test]
+    fn the_window_shown_is_the_window_queried() {
+        // The field is filled from the same rule the ADQL builder uses, so the
+        // dates on screen cannot drift away from the results. A second copy of
+        // these numbers is exactly how that drift would start.
+        for preset in DATE_PRESETS.iter().skip(1) {
+            let days = crate::helpers::adql_builder::preset_days_back(preset)
+                .unwrap_or_else(|| panic!("`{preset}` has no window"));
+            let range = preset_date_range(preset).unwrap();
+            let (start, end) = range.split_once("..").unwrap();
+
+            let start = chrono::NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
+            let end = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap();
+            assert_eq!(
+                (end - start).num_days(),
+                days as i64,
+                "`{preset}` shows a {}-day window but queries {days}",
+                (end - start).num_days()
+            );
+        }
     }
 }
 
