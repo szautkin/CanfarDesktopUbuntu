@@ -52,6 +52,13 @@ use crate::helpers::unit_converter::{PIXEL_SCALE_UNITS, SPECTRAL_UNITS, TIME_UNI
 const SIDEBAR_POLL_MS: u64 = 1000;
 const DATE_PRESETS: [&str; 4] = ["", "Last 24 hours", "Last week", "Last month"];
 const INTENTS: [&str; 3] = ["", "science", "calibration"];
+/// Rows-per-page choices. The dropdown is decoded by index, so its LABELS are
+/// derived from these numbers rather than written out a second time — the two
+/// literals used to sit 350 lines apart, and adding a choice to one would have
+/// silently given the wrong page size.
+const ROWS_PER_PAGE: [usize; 5] = [25, 50, 100, 250, 500];
+/// Index of the default page size (100) in [`ROWS_PER_PAGE`].
+const DEFAULT_ROWS_PER_PAGE: usize = 2;
 const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
 
 /// Split a comma-joined facet selection back into values, dropping blanks.
@@ -441,11 +448,13 @@ impl SearchPage {
         let rows_label = gtk::Label::new(Some(crate::tr_en!("Rows/page:")));
         rows_label.add_css_class("caption");
         results_toolbar.append(&rows_label);
+        let row_choices: Vec<String> = ROWS_PER_PAGE.iter().map(usize::to_string).collect();
+        let row_choice_refs: Vec<&str> = row_choices.iter().map(String::as_str).collect();
         let rows_combo = gtk::DropDown::new(
-            Some(gtk::StringList::new(&["25", "50", "100", "250", "500"])),
+            Some(gtk::StringList::new(&row_choice_refs)),
             gtk::Expression::NONE,
         );
-        rows_combo.set_selected(2); // default 100
+        rows_combo.set_selected(DEFAULT_ROWS_PER_PAGE as u32);
         results_toolbar.append(&rows_combo);
 
         results_tab.append(&results_toolbar);
@@ -791,9 +800,11 @@ impl SearchPage {
         // Rows per page combo
         let p = page.clone();
         rows_combo.connect_selected_notify(move |combo| {
-            let sizes = [25, 50, 100, 250, 500];
             let idx = combo.selected() as usize;
-            let new_size = sizes.get(idx).copied().unwrap_or(100);
+            let new_size = ROWS_PER_PAGE
+                .get(idx)
+                .copied()
+                .unwrap_or(ROWS_PER_PAGE[DEFAULT_ROWS_PER_PAGE]);
             *p.page_size.borrow_mut() = new_size;
             *p.current_page.borrow_mut() = 0;
             p.render_results_page();
@@ -3542,7 +3553,7 @@ fn build_observation_column() -> (
     intent_label.add_css_class("caption");
     intent_label.set_halign(gtk::Align::Start);
     intent_box.append(&intent_label);
-    let intent_list = gtk::StringList::new(&["", "science", "calibration"]);
+    let intent_list = gtk::StringList::new(&INTENTS);
     let intent = gtk::DropDown::new(Some(intent_list), gtk::Expression::NONE);
     intent_box.append(&intent);
     col.append(&intent_box);
@@ -3588,7 +3599,7 @@ fn build_spatial_column() -> (
     resolver_label.add_css_class("caption");
     resolver_label.set_halign(gtk::Align::Start);
     resolver_box.append(&resolver_label);
-    let resolver_list = gtk::StringList::new(&["ALL", "SIMBAD", "NED", "VIZIER", "NONE"]);
+    let resolver_list = gtk::StringList::new(&RESOLVER_SERVICES);
     let resolver = gtk::DropDown::new(Some(resolver_list), gtk::Expression::NONE);
     resolver_box.append(&resolver);
     col.append(&resolver_box);
@@ -3839,6 +3850,8 @@ mod combo_tests {
         "DATE_PRESETS",
         "TIME_UNITS",
         "SPECTRAL_UNITS",
+        "INTENTS",
+        "RESOLVER_SERVICES",
     ];
 
     /// The full argument list of a call, from `(` to its BALANCED `)`.
@@ -3890,10 +3903,21 @@ mod combo_tests {
             "expected to inspect every combo; found only {call_sites}"
         );
 
-        // And each constant is actually used to build a combo.
+        // The plain `gtk::StringList` dropdowns are decoded by index the same
+        // way and must come from their constants too.
+        for (index, _) in source.match_indices("gtk::StringList::new(") {
+            let args = call_arguments(source, index + "gtk::StringList::new(".len() - 1);
+            assert!(
+                !args.contains("&[\""),
+                "a dropdown is populated from an inline list rather than the \
+                 constant that decodes its selection:{args}"
+            );
+        }
+
+        // And each constant is actually used to build a dropdown.
         for name in INDEXED_BY_DROPDOWN {
             assert!(
-                source.contains(&format!("&{name},")),
+                source.contains(&format!("&{name}")),
                 "`{name}` decodes a dropdown selection but does not populate one"
             );
         }
