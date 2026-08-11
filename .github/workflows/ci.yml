@@ -39,11 +39,21 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
+      # No `--features fits` anywhere below: it is a DEFAULT feature now, so
+      # these are the exact commands README and CONTRIBUTING tell a contributor
+      # to run. CI passing while the documented command produced a different
+      # (and quietly crippled) binary is how that divergence went unnoticed.
       - name: Clippy
-        run: cargo clippy --features fits -- -D warnings -A dead_code
+        run: cargo clippy -- -D warnings -A dead_code
 
       - name: Build
-        run: cargo build --release --features fits
+        run: cargo build --release
 
       - name: Run tests
-        run: cargo test --features fits
+        run: cargo test
+
+      # The opt-out path packagers use when cfitsio is unavailable. Only a
+      # compile check — without cfitsio there is no FITS to exercise — but it
+      # keeps the `#[cfg(not(feature = "fits"))]` arms from rotting.
+      - name: Check the build without cfitsio
+        run: cargo check --no-default-features --all-targets

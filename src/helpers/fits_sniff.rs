@@ -2,8 +2,12 @@
 //!
 //! Port of `Helpers/FitsSniff.cs`. Used right after a download / before opening
 //! to pick the viewer to suggest (Cube Viewer vs FITS Viewer). Reads only header
-//! metadata (via the existing cfitsio helpers), never pixels. Any trouble returns
-//! the 2D image as the safe default.
+//! metadata (via the existing cfitsio helpers), never pixels.
+//!
+//! Any trouble returns [`FitsKind::NotFits`]. That is the conservative answer,
+//! not merely the ignorant one: callers read anything else as "this IS a FITS
+//! file" and act on it — registering it in the Research library as a science
+//! observation and routing it to a viewer.
 
 use std::path::Path;
 
@@ -83,11 +87,19 @@ pub fn inspect(path: &Path) -> FitsShape {
     }
 }
 
-/// Without cfitsio compiled in, default to the 2D image (safe suggestion).
+/// Without cfitsio compiled in, nothing can be determined — and nothing can be
+/// opened either, so say so.
+///
+/// This used to answer `Image2D`, described as the "safe suggestion". It was the
+/// opposite: callers treat anything that is not `NotFits` as a FITS file, so a
+/// downloaded preview PNG or README was registered in the Research library as a
+/// science observation and offered to a viewer that could not open it.
+/// `NotFits` routes the file to the OS-default open, which is the only thing
+/// that actually works in this build.
 #[cfg(not(feature = "fits"))]
 pub fn inspect(_path: &Path) -> FitsShape {
     FitsShape {
-        kind: FitsKind::Image2D,
+        kind: FitsKind::NotFits,
         is_spectral: false,
     }
 }
@@ -95,6 +107,23 @@ pub fn inspect(_path: &Path) -> FitsShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that is not FITS — or that we cannot inspect — must never be
+    /// reported as one.
+    ///
+    /// Callers treat any kind other than `NotFits` as "this IS a FITS file":
+    /// they register it in the Research library as a science observation and
+    /// offer it to a viewer. Answering `Image2D` when nothing was actually read
+    /// therefore filed preview PNGs and READMEs as science data.
+    #[test]
+    fn a_file_that_cannot_be_inspected_is_not_claimed_as_fits() {
+        // A path that does not exist stands in for "nothing could be read",
+        // which is also exactly what the no-cfitsio build always faces.
+        let shape = inspect(Path::new("/nonexistent/not-a-file.bin"));
+        assert_eq!(shape.kind, FitsKind::NotFits);
+        assert!(!shape.has_cube_axis());
+        assert!(!shape.recommend_cube());
+    }
 
     #[test]
     fn spectral_axis_detection() {

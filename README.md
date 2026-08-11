@@ -35,14 +35,18 @@ This is the Linux counterpart of [Verbinal for Windows](https://github.com/szaut
 - System development packages:
   ```
   # Debian / Ubuntu
-  sudo apt install libgtk-4-dev libadwaita-1-dev pkg-config
+  sudo apt install libgtk-4-dev libadwaita-1-dev libcfitsio-dev pkg-config
 
   # Fedora
-  sudo dnf install gtk4-devel libadwaita-devel
+  sudo dnf install gtk4-devel libadwaita-devel cfitsio-devel
 
   # Arch
-  sudo pacman -S gtk4 libadwaita
+  sudo pacman -S gtk4 libadwaita cfitsio
   ```
+
+  cfitsio backs the FITS and cube viewers and the post-download shape check. It
+  is required by default; `cargo build --no-default-features` builds without it,
+  at the cost of not being able to open any FITS file.
 
 ## Building
 

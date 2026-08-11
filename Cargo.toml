@@ -44,7 +44,15 @@ gl = "0.14"
 libloading = "0.8"
 
 [features]
-default = []
+# `fits` is ON by default: this is a CADC/CANFAR client, and without cfitsio it
+# cannot open a single FITS file — the FITS viewer, the cube viewer and the
+# shape sniff all degrade to errors or "not FITS". CI and the release workflow
+# always passed `--features fits`, but README and CONTRIBUTING document a plain
+# `cargo build`, so anyone following them got a quietly crippled binary.
+#
+# The feature is kept so a build without libcfitsio-dev is still possible via
+# `--no-default-features`, for packaging environments that cannot supply it.
+default = ["fits"]
 fits = ["fitsio", "fitsio-sys"]
 
 [package.metadata.deb]
