@@ -238,10 +238,13 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             name: "export_research_bundle".to_string(),
             description: "Export a Claude-friendly research bundle — the user's downloaded \
                 observations, research notes, and saved/recent searches rendered as JSON + markdown \
-                (with fenced sql query blocks) — packed into a single store-only .zip at the given \
-                path. Non-destructive: queues for the user to apply, then writes the archive \
-                (creating parent folders). Set include_notes / include_search_history to false to \
-                omit those sections."
+                (with fenced sql query blocks) — packed into a single store-only .zip. Give either \
+                `path` (the full .zip path) or `destFolder` (a folder to write \
+                research-bundle-<date>.zip into). Non-destructive: queues for the user to apply, \
+                then writes the archive (creating parent folders). Set includeNotes / \
+                includeSearchHistory to false to omit those sections. Uploading to VOSpace and \
+                packing the downloaded FITS files are not supported yet — export locally, then \
+                upload_file_to_vospace."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -249,6 +252,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "path": {
                         "type": "string",
                         "description": "Full local path for the output .zip (parent folders are created)."
+                    },
+                    "destFolder": {
+                        "type": "string",
+                        "description": "Alternative to `path`: an existing folder to write research-bundle-<date>.zip into."
                     },
                     "includeNotes": {
                         "type": "boolean",
@@ -259,7 +266,6 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "description": "Include saved + recent searches (default true)."
                     }
                 },
-                "required": ["path"],
                 "additionalProperties": false
             }),
             verb: VerbClass::Write,
@@ -568,11 +574,48 @@ fn propose_clear(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
 /// Propose exporting the combined research + search bundle to `path`. The write
 /// is non-destructive (it only creates a new archive), but it still routes
 /// through the proposal gate so the user confirms *where* it lands.
-fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
-    let path = str_arg(args, "path");
-    if path.is_empty() {
-        return ToolResult::Failed("path is required".to_string());
+/// Where the research bundle's `.zip` should be written.
+///
+/// The reference takes `destFolder` — an existing DIRECTORY — and names the
+/// archive itself; Verbinal takes `path`, the full file path. Both work: a
+/// `destFolder` gets the standard filename appended, so a call written against
+/// the Windows app lands somewhere sensible instead of failing outright.
+///
+/// The date in the generated name is deliberate — exporting twice in a week
+/// should not silently overwrite the first bundle.
+fn export_zip_path(args: &Value) -> Result<String, String> {
+    if let Some(path) = crate::mcp::tools::opt_str_arg(args, "path") {
+        return Ok(path);
     }
+    let folder = crate::mcp::tools::opt_str_arg(args, "destFolder")
+        .ok_or_else(|| "path (or destFolder) is required".to_string())?;
+    let name = format!("research-bundle-{}.zip", Utc::now().format("%Y-%m-%d"));
+    Ok(std::path::Path::new(&folder)
+        .join(name)
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    // The reference declares two options we do not implement. Refuse them
+    // loudly: silently ignoring `uploadToVospace: true` would report a
+    // successful export while the collaborator it was meant for sees nothing.
+    for (flag, what) in [
+        ("uploadToVospace", "uploading the bundle to VOSpace"),
+        ("includeFiles", "packing the downloaded FITS files"),
+    ] {
+        if crate::mcp::tools::bool_arg(args, flag) {
+            return ToolResult::Failed(format!(
+                "{flag} is not supported yet ({what}). Re-run without it, then \
+                 upload the .zip with upload_file_to_vospace."
+            ));
+        }
+    }
+
+    let path = match export_zip_path(args) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::Failed(e),
+    };
     let include_notes = args
         .get("include_notes")
         .and_then(Value::as_bool)
@@ -1047,6 +1090,57 @@ mod tests {
             _ => panic!("expected Proposed"),
         }
         assert_eq!(store.pending_count(), 2);
+    }
+
+    #[test]
+    fn a_dest_folder_gets_a_dated_bundle_name() {
+        // The reference names the archive itself from a destFolder; without
+        // this, every reference-written export failed with "path is required".
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_export(&json!({ "destFolder": "/home/u/exports" }), &store) {
+            ToolResult::Proposed(p) => {
+                let path = p.payload["path"].as_str().unwrap();
+                assert!(path.starts_with("/home/u/exports/"), "{path}");
+                assert!(path.ends_with(".zip"), "{path}");
+                assert!(
+                    path.contains("research-bundle-"),
+                    "the name should say what it is: {path}"
+                );
+            }
+            _ => panic!("expected Proposed"),
+        }
+    }
+
+    #[test]
+    fn an_explicit_path_wins_over_a_dest_folder() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        let args = json!({ "path": "/tmp/mine.zip", "destFolder": "/home/u/exports" });
+        match propose_export(&args, &store) {
+            ToolResult::Proposed(p) => assert_eq!(p.payload["path"], "/tmp/mine.zip"),
+            _ => panic!("expected Proposed"),
+        }
+    }
+
+    #[test]
+    fn an_unsupported_export_option_is_refused_not_ignored() {
+        // Silently dropping uploadToVospace would report a successful export
+        // while the collaborator it was meant for sees nothing.
+        let store = Arc::new(InMemoryProposalStore::new());
+        for flag in ["uploadToVospace", "includeFiles"] {
+            let args = json!({ "path": "/tmp/b.zip", flag: true });
+            match propose_export(&args, &store) {
+                ToolResult::Failed(m) => assert!(m.contains(flag), "{m}"),
+                _ => panic!("{flag} must be refused, not ignored"),
+            }
+        }
+        assert_eq!(store.pending_count(), 0, "nothing should have been queued");
+
+        // Explicitly false is not a request for the feature, so it proceeds.
+        let args = json!({ "path": "/tmp/b.zip", "uploadToVospace": false });
+        assert!(matches!(
+            propose_export(&args, &store),
+            ToolResult::Proposed(_)
+        ));
     }
 
     #[test]

@@ -86,9 +86,17 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         read_tool(
             "list_recent_launches",
-            "List the user's recently launched session presets (name, session type, image, \
-             cores/RAM/GPUs, timestamp) — a shortlist of what they tend to launch.",
-            empty_schema(),
+            "List the user's recently launched sessions remembered locally (name, type, image, \
+             project, resources, and when) — newest first, so it doubles as a shortlist of what \
+             they tend to launch. Headless entries also carry the command, args and replica count \
+             needed to replay them.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "description": "Optional: cap the number returned (most recent first)." }
+                },
+                "additionalProperties": false
+            }),
         ),
         read_tool(
             "list_session_images",
@@ -193,7 +201,7 @@ pub async fn dispatch(
         // Reads.
         "list_guide_tools" => read_list_guide_tools(services),
         "get_platform_load" => read_platform_load(services).await,
-        "list_recent_launches" => read_recent_launches(services),
+        "list_recent_launches" => read_recent_launches(services, args),
         "list_session_images" => read_session_images(services).await,
         // Writes.
         "set_tool_description" => propose_set_tool_description(args, proposals),
@@ -281,12 +289,69 @@ async fn read_platform_load(services: &AppServices) -> ToolResult {
     }
 }
 
-fn read_recent_launches(services: &AppServices) -> ToolResult {
-    let launches = services.recent_launches.load();
-    match serde_json::to_value(&launches) {
-        Ok(v) => ToolResult::Data(json!({ "count": launches.len(), "launches": v })),
-        Err(e) => ToolResult::Failed(format!("could not serialize recent launches: {e}")),
+fn read_recent_launches(services: &AppServices, args: &Value) -> ToolResult {
+    // The reference refuses a non-positive limit rather than treating it as
+    // "no limit" — a caller that computed 0 asked for nothing and should be
+    // told, not handed the full list.
+    let limit = match crate::mcp::tools::arg(args, "limit") {
+        None => None,
+        Some(v) => match v.as_u64() {
+            Some(n) if n > 0 => Some(n as usize),
+            _ => return ToolResult::Failed("limit must be a positive integer".to_string()),
+        },
+    };
+
+    let mut launches = services.recent_launches.load();
+    // Newest first, as the reference orders them. The store keeps insertion
+    // order, which is usually the same — but a record edited in place, or one
+    // restored from an older file, would otherwise surface in the wrong place.
+    launches.sort_by(|a, b| {
+        b.launched_at_or_timestamp()
+            .cmp(a.launched_at_or_timestamp())
+    });
+    if let Some(limit) = limit {
+        launches.truncate(limit);
     }
+
+    let items: Vec<Value> = launches.iter().map(recent_launch_view).collect();
+    ToolResult::Data(json!({ "count": items.len(), "launches": items }))
+}
+
+/// Wire view of one remembered launch — the reference's `RecentLaunchView`.
+///
+/// Built by hand rather than serializing [`RecentLaunch`]: that struct is the
+/// PERSISTED shape and carries no camelCase rename, so serializing it put
+/// `session_type`, `resource_type` and `launched_at` on the wire where the
+/// reference promises `type`, `resourceType` and `launchedAt` — and never
+/// emitted `imageLabel` at all. Keeping the two apart also means the wire
+/// contract can change without rewriting everyone's stored history.
+fn recent_launch_view(r: &crate::models::recent_launch::RecentLaunch) -> Value {
+    let mut view = json!({
+        "name": r.name,
+        "type": r.session_type,
+        "image": r.image,
+        // The short, human-facing image name the launch card shows.
+        "imageLabel": r.display_image(),
+        "project": r.project_display().unwrap_or_default(),
+        // Resolved, never null: a legacy record with no stored value IS
+        // flexible, which is how every other code path reads it.
+        "resourceType": if r.is_flexible() { "flexible" } else { "fixed" },
+        "cores": r.cores,
+        "ram": r.ram,
+        "gpus": r.gpus,
+        // Falls back to the legacy `timestamp` field, so a record written before
+        // `launched_at` existed still reports when it ran.
+        "launchedAt": r.launched_at_or_timestamp(),
+    });
+
+    // Headless-only, and beyond the reference's record: without these an agent
+    // cannot reconstruct a batch job it is looking at.
+    if r.is_headless() {
+        view["cmd"] = json!(r.cmd);
+        view["args"] = json!(r.args);
+        view["replicas"] = json!(r.replicas);
+    }
+    view
 }
 
 async fn read_session_images(services: &AppServices) -> ToolResult {
@@ -537,6 +602,91 @@ pub async fn apply(
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    fn sample_launch() -> crate::models::recent_launch::RecentLaunch {
+        crate::models::recent_launch::RecentLaunch {
+            name: "notebook-1".into(),
+            session_type: "notebook".into(),
+            image: "images.canfar.net/skaha/astroml:24.07".into(),
+            cores: 4,
+            ram: 16,
+            gpus: 0,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            project: Some("skaha".into()),
+            resource_type: Some("fixed".into()),
+            cmd: None,
+            args: None,
+            replicas: None,
+            launched_at: Some("2026-08-01T09:00:00Z".into()),
+        }
+    }
+
+    /// Every field of the reference's `RecentLaunchView`, camelCased.
+    const REFERENCE_LAUNCH_FIELDS: &[&str] = &[
+        "name",
+        "type",
+        "image",
+        "imageLabel",
+        "project",
+        "resourceType",
+        "cores",
+        "ram",
+        "gpus",
+        "launchedAt",
+    ];
+
+    #[test]
+    fn a_recent_launch_uses_the_reference_field_names() {
+        let view = recent_launch_view(&sample_launch());
+        let obj = view.as_object().expect("an object");
+        for field in REFERENCE_LAUNCH_FIELDS {
+            assert!(obj.contains_key(*field), "`{field}` is missing");
+        }
+        assert_eq!(view["type"], "notebook");
+        assert_eq!(view["imageLabel"], "astroml:24.07");
+        assert_eq!(view["resourceType"], "fixed");
+        assert_eq!(view["launchedAt"], "2026-08-01T09:00:00Z");
+
+        // Serializing the persisted struct used to emit these instead.
+        for leaked in ["session_type", "resource_type", "launched_at"] {
+            assert!(
+                !obj.contains_key(leaked),
+                "`{leaked}` is the stored field name, not the wire contract"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_record_reports_flexible_and_falls_back_to_its_timestamp() {
+        // Records written before `resource_type` and `launched_at` existed must
+        // still answer both questions rather than emitting null.
+        let mut launch = sample_launch();
+        launch.resource_type = None;
+        launch.launched_at = None;
+
+        let view = recent_launch_view(&launch);
+        assert_eq!(view["resourceType"], "flexible");
+        assert_eq!(view["launchedAt"], "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn only_a_headless_entry_carries_its_command_line() {
+        // Replay fields on an interactive session would be meaningless noise.
+        let interactive = recent_launch_view(&sample_launch());
+        assert!(interactive.get("cmd").is_none());
+        assert!(interactive.get("replicas").is_none());
+
+        let mut batch = sample_launch();
+        batch.session_type = "headless".into();
+        batch.cmd = Some("python".into());
+        batch.args = Some(vec!["reduce.py".into()]);
+        batch.replicas = Some(3);
+
+        let view = recent_launch_view(&batch);
+        assert_eq!(view["cmd"], "python");
+        assert_eq!(view["args"], json!(["reduce.py"]));
+        assert_eq!(view["replicas"], 3);
+    }
 
     #[test]
     fn descriptor_names_unique_and_non_empty() {
