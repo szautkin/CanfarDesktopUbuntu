@@ -13,6 +13,7 @@
 //! Layout mirrors `ui::research_page` — a `gtk::Paned` with an imperatively
 //! rebuilt detail pane.
 
+use crate::helpers::workflow_events;
 use crate::helpers::workflow_format::{self, KNOWN_VIEWS};
 use crate::models::workflow::{WorkflowInfo, WorkflowSource, WorkflowStep};
 use crate::services::workflow_store::{WorkflowStore, VOSPACE_PREFIX};
@@ -64,7 +65,19 @@ pub struct WorkflowsPage {
     /// re-renders. Caching also means re-selecting a workflow the user already
     /// looked at is instant.
     vospace_cache: RefCell<std::collections::HashMap<String, WorkflowInfo>>,
+    /// Sequence of the last [`workflow_events`] change this page has rendered.
+    ///
+    /// The store is stateless and agents mutate it from the tokio pool, so the
+    /// page cannot be called back directly; it polls this counter instead. See
+    /// [`Self::follow_external_changes`].
+    last_seen_change: RefCell<u64>,
 }
+
+/// How often the page checks whether an agent (or another surface) changed a
+/// workflow underneath it. Fast enough that a step check-off looks live,
+/// slow enough to be free — the check is one mutex read, and it rebuilds only
+/// when the sequence actually moved.
+const FOLLOW_POLL_MS: u32 = 1000;
 
 impl WorkflowsPage {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
@@ -179,6 +192,9 @@ impl WorkflowsPage {
             on_navigate: Rc::new(RefCell::new(None)),
             vospace_entries: RefCell::new(Vec::new()),
             vospace_cache: RefCell::new(std::collections::HashMap::new()),
+            // Seeded with whatever has already happened this session, so opening
+            // the page does not replay an old change as if it were new.
+            last_seen_change: RefCell::new(workflow_events::latest().map(|c| c.seq).unwrap_or(0)),
         });
 
         // Toolbar wiring
@@ -249,7 +265,62 @@ impl WorkflowsPage {
         }
         page.render_detail();
 
+        // Follow changes made outside this page (an agent checking off steps
+        // over MCP, most often). Weak, so the timer dies with the page.
+        {
+            let weak = Rc::downgrade(&page);
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(FOLLOW_POLL_MS as u64),
+                move || match weak.upgrade() {
+                    Some(page) => {
+                        page.follow_external_changes();
+                        glib::ControlFlow::Continue
+                    }
+                    None => glib::ControlFlow::Break,
+                },
+            );
+        }
+
         page
+    }
+
+    /// Poll [`workflow_events`] and bring the page up to date when something
+    /// changed a workflow underneath it.
+    ///
+    /// The policy lives in [`decide_follow`] so it can be tested without a GTK
+    /// window; this method is only the plumbing around it.
+    fn follow_external_changes(self: &Rc<Self>) {
+        let Some(change) = workflow_events::latest() else {
+            return;
+        };
+        if change.seq <= *self.last_seen_change.borrow() {
+            return;
+        }
+        // Recorded before acting: an early return below must not leave the page
+        // re-running the same change on every tick.
+        *self.last_seen_change.borrow_mut() = change.seq;
+
+        // A published workflow's cached body is now stale, and the listing may
+        // have gained an entry.
+        if change.id.starts_with(VOSPACE_PREFIX) {
+            self.vospace_cache.borrow_mut().remove(&change.id);
+            let page = Rc::clone(self);
+            glib::spawn_future_local(async move { page.refresh_vospace().await });
+        }
+
+        let action = decide_follow(
+            *self.editing.borrow(),
+            self.selected_id.borrow().as_deref(),
+            &change.id,
+        );
+        match action {
+            FollowAction::RebuildListOnly => self.rebuild_lists(),
+            FollowAction::RerenderSelection => self.reload_and_render(),
+            FollowAction::SelectAndRender => {
+                *self.selected_id.borrow_mut() = Some(change.id);
+                self.reload_and_render();
+            }
+        }
     }
 
     /// Root widget to embed in the view stack.
@@ -1335,4 +1406,89 @@ async fn confirm_delete(widget: &impl IsA<gtk::Widget>, title: &str) -> bool {
     let _ = rx.await;
     let val = *result.borrow();
     val
+}
+
+// ---------------------------------------------------------------------------
+// Follow-the-agent policy
+// ---------------------------------------------------------------------------
+
+/// What the page should do about a workflow that changed underneath it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FollowAction {
+    /// Refresh the sidebar only; leave the detail pane exactly as it is.
+    RebuildListOnly,
+    /// Refresh the sidebar and re-render the current selection.
+    RerenderSelection,
+    /// Select the changed workflow, then render it.
+    SelectAndRender,
+}
+
+/// Decide how to react to an external change. Three rules, in priority order:
+///
+/// 1. **Never clobber the editor.** With unsaved text on screen only the
+///    sidebar refreshes; re-rendering rebuilds the buffer from the file and
+///    would silently discard what the user typed — far worse than a briefly
+///    stale step count.
+/// 2. **Re-render when the change touched what is shown**, so an agent's
+///    check-off flips the roundel while the user watches.
+/// 3. **Follow only into an empty pane.** Selecting the changed workflow helps
+///    when the user is looking at nothing; yanking them away from the workflow
+///    they deliberately opened does not.
+fn decide_follow(editing: bool, selected: Option<&str>, changed_id: &str) -> FollowAction {
+    if editing {
+        return FollowAction::RebuildListOnly;
+    }
+    match selected {
+        Some(id) if id == changed_id => FollowAction::RerenderSelection,
+        Some(_) => FollowAction::RebuildListOnly,
+        None => FollowAction::SelectAndRender,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_check_off_rerenders_the_open_workflow() {
+        // The case this whole mechanism exists for: the user is watching the
+        // workflow an assistant is working through.
+        assert_eq!(
+            decide_follow(false, Some("local:reduction"), "local:reduction"),
+            FollowAction::RerenderSelection
+        );
+    }
+
+    #[test]
+    fn an_empty_pane_follows_the_change() {
+        assert_eq!(
+            decide_follow(false, None, "local:reduction"),
+            FollowAction::SelectAndRender
+        );
+    }
+
+    #[test]
+    fn a_change_elsewhere_never_steals_the_users_selection() {
+        // Reading workflow A while an agent edits B must not yank the user to
+        // B — the sidebar's step count updates, nothing else moves.
+        assert_eq!(
+            decide_follow(false, Some("local:alpha"), "local:beta"),
+            FollowAction::RebuildListOnly
+        );
+    }
+
+    #[test]
+    fn the_editor_is_never_clobbered_even_for_the_workflow_being_edited() {
+        // The dangerous case: unsaved text on screen, and the change is to the
+        // very workflow open in the editor. Re-rendering would reload the
+        // buffer from disk and destroy the user's edits, so the detail pane
+        // must be left alone whatever else is true.
+        for selected in [Some("local:draft"), Some("local:other"), None] {
+            assert_eq!(
+                decide_follow(true, selected, "local:draft"),
+                FollowAction::RebuildListOnly,
+                "editing must suppress every detail-pane rebuild (selected={selected:?})"
+            );
+        }
+    }
 }

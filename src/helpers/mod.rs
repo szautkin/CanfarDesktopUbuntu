@@ -44,6 +44,7 @@ pub mod sexagesimal;
 pub mod transfer_function;
 pub mod unit_converter;
 pub mod vospace_parser;
+pub mod workflow_events;
 pub mod workflow_format;
 
 pub use image_parser::ImageParser;
