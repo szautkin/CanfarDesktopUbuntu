@@ -219,6 +219,11 @@ pub struct SearchPage {
     // --- Form fields (Spectral) ---
     spectral_coverage: gtk::Entry,
     spectral_unit: gtk::DropDown,
+    /// Each spectral field carries its own unit — a coverage in nm alongside a
+    /// sampling in GHz is routine, and one shared dropdown could not say it.
+    spectral_sampling_unit: gtk::DropDown,
+    bandpass_width_unit: gtk::DropDown,
+    rest_frame_energy_unit: gtk::DropDown,
     spectral_sampling: gtk::Entry,
     resolving_power: gtk::Entry,
     bandpass_width: gtk::Entry,
@@ -380,9 +385,12 @@ impl SearchPage {
             spectral_coverage,
             spectral_unit,
             spectral_sampling,
+            spectral_sampling_unit,
             resolving_power,
             bandpass_width,
+            bandpass_width_unit,
             rest_frame_energy,
+            rest_frame_energy_unit,
             spectral_cutout,
         ) = build_spectral_column();
         columns.attach(&spectral_col, 3, 0, 1, 1);
@@ -716,6 +724,9 @@ impl SearchPage {
             time_span,
             spectral_coverage,
             spectral_unit,
+            spectral_sampling_unit,
+            bandpass_width_unit,
+            rest_frame_energy_unit,
             spectral_sampling,
             resolving_power,
             bandpass_width,
@@ -1009,10 +1020,19 @@ impl SearchPage {
         let intents = INTENTS;
         let resolver_services = RESOLVER_SERVICES;
 
-        let spectral_unit = spectral_units
-            .get(self.spectral_unit.selected() as usize)
-            .unwrap_or(&"nm")
-            .to_string();
+        // Each spectral field reads its OWN dropdown. They shared one, so the
+        // model's four separate unit fields all carried the same value and a
+        // coverage in nm alongside a sampling in GHz was inexpressible.
+        let unit_of = |combo: &gtk::DropDown| -> String {
+            spectral_units
+                .get(combo.selected() as usize)
+                .unwrap_or(&"nm")
+                .to_string()
+        };
+        let spectral_unit = unit_of(&self.spectral_unit);
+        let sampling_unit = unit_of(&self.spectral_sampling_unit);
+        let bandpass_unit = unit_of(&self.bandpass_width_unit);
+        let rest_frame_unit = unit_of(&self.rest_frame_energy_unit);
         let time_unit = time_units
             .get(self.time_unit.selected() as usize)
             .unwrap_or(&"s")
@@ -1149,19 +1169,19 @@ impl SearchPage {
             time_span_unit: time_unit,
             wavelength_min: wl_min,
             wavelength_max: wl_max,
-            wavelength_unit: spectral_unit.clone(),
+            wavelength_unit: spectral_unit,
             spectral_coverage: None, // covered by wavelength_min/max
             spectral_sampling: ss_val,
             spectral_sampling_raw: ss_raw,
-            spectral_sampling_unit: spectral_unit.clone(),
+            spectral_sampling_unit: sampling_unit,
             resolving_power_min: rp_min,
             resolving_power_max: rp_max,
             bandpass_width_min: bw_min,
             bandpass_width_max: bw_max,
-            bandpass_width_unit: spectral_unit.clone(),
+            bandpass_width_unit: bandpass_unit,
             rest_frame_energy_min: rfe_min,
             rest_frame_energy_max: rfe_max,
-            rest_frame_energy_unit: spectral_unit,
+            rest_frame_energy_unit: rest_frame_unit,
             spectral_cutout: self.spectral_cutout.is_active(),
             // Data Train
             band: mgr.bands_string(),
@@ -1274,8 +1294,16 @@ impl SearchPage {
         self.resolving_power.set_text(&s.resolving_power_raw);
         self.bandpass_width.set_text(&s.bandpass_width_raw);
         self.rest_frame_energy.set_text(&s.rest_frame_energy_raw);
+        // Each field's own unit. A search saved before per-field units carries
+        // the same value in all four, so it restores exactly as it was entered.
         self.spectral_unit
             .set_selected(spectral_unit_index(&s.wavelength_unit));
+        self.spectral_sampling_unit
+            .set_selected(spectral_unit_index(&s.spectral_sampling_unit));
+        self.bandpass_width_unit
+            .set_selected(spectral_unit_index(&s.bandpass_width_unit));
+        self.rest_frame_energy_unit
+            .set_selected(spectral_unit_index(&s.rest_frame_energy_unit));
         self.spectral_cutout.set_active(s.spectral_cutout);
 
         self.max_records.set_value(s.max_records as f64);
@@ -3813,16 +3841,23 @@ fn build_temporal_column() -> (
     )
 }
 
-fn build_spectral_column() -> (
+/// The Spectral column: four value entries, each with its own unit dropdown,
+/// plus resolving power (dimensionless) and the cutout toggle.
+type SpectralColumn = (
     gtk::Box,
-    gtk::Entry,
-    gtk::DropDown,
-    gtk::Entry,
-    gtk::Entry,
-    gtk::Entry,
-    gtk::Entry,
+    gtk::Entry,    // spectral coverage
+    gtk::DropDown, // …its unit
+    gtk::Entry,    // spectral sampling
+    gtk::DropDown, // …its unit
+    gtk::Entry,    // resolving power (dimensionless)
+    gtk::Entry,    // bandpass width
+    gtk::DropDown, // …its unit
+    gtk::Entry,    // rest-frame energy
+    gtk::DropDown, // …its unit
     gtk::CheckButton,
-) {
+);
+
+fn build_spectral_column() -> SpectralColumn {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
 
     let heading = gtk::Label::new(Some(crate::tr_en!("Spectral")));
@@ -3837,16 +3872,24 @@ fn build_spectral_column() -> (
     );
     col.append(&w);
 
-    let (w, spectral_sampling) = labeled_entry(crate::tr_en!("Spectral Sampling"), "");
+    // Each spectral field carries its OWN unit. The form state has always held
+    // four separate units; one shared dropdown drove all of them, so a coverage
+    // in nm and a sampling in GHz — a routine radio/optical comparison — could
+    // not both be expressed. Mirrors the reference, which binds a unit combo to
+    // every spectral row.
+    let (w, spectral_sampling, spectral_sampling_unit) =
+        labeled_entry_with_combo(crate::tr_en!("Spectral Sampling"), "", &SPECTRAL_UNITS);
     col.append(&w);
     let (w, resolving_power) = labeled_entry(
         crate::tr_en!("Resolving Power"),
         crate::tr_en!("e.g. 1000..5000"),
     );
     col.append(&w);
-    let (w, bandpass_width) = labeled_entry(crate::tr_en!("Bandpass Width"), "");
+    let (w, bandpass_width, bandpass_width_unit) =
+        labeled_entry_with_combo(crate::tr_en!("Bandpass Width"), "", &SPECTRAL_UNITS);
     col.append(&w);
-    let (w, rest_frame_energy) = labeled_entry(crate::tr_en!("Rest Frame Energy"), "");
+    let (w, rest_frame_energy, rest_frame_energy_unit) =
+        labeled_entry_with_combo(crate::tr_en!("Rest Frame Energy"), "", &SPECTRAL_UNITS);
     col.append(&w);
 
     let spectral_cutout = gtk::CheckButton::with_label(crate::tr_en!("Spectral cutout"));
@@ -3857,9 +3900,12 @@ fn build_spectral_column() -> (
         spectral_coverage,
         spectral_unit,
         spectral_sampling,
+        spectral_sampling_unit,
         resolving_power,
         bandpass_width,
+        bandpass_width_unit,
         rest_frame_energy,
+        rest_frame_energy_unit,
         spectral_cutout,
     )
 }

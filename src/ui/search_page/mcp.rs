@@ -180,6 +180,15 @@ impl SearchPage {
             "spectralUnit": SPECTRAL_UNITS
                 .get(self.spectral_unit.selected() as usize)
                 .unwrap_or(&"nm"),
+            "spectralSamplingUnit": SPECTRAL_UNITS
+                .get(self.spectral_sampling_unit.selected() as usize)
+                .unwrap_or(&"nm"),
+            "bandpassWidthUnit": SPECTRAL_UNITS
+                .get(self.bandpass_width_unit.selected() as usize)
+                .unwrap_or(&"nm"),
+            "restFrameEnergyUnit": SPECTRAL_UNITS
+                .get(self.rest_frame_energy_unit.selected() as usize)
+                .unwrap_or(&"nm"),
             "spectralCutout": self.spectral_cutout.is_active(),
             // Options + live state
             "maxRecords": self.max_records.value() as u32,
@@ -451,8 +460,25 @@ impl SearchPage {
         if let Some(v) = text("restFrameEnergy") {
             self.rest_frame_energy.set_text(&v);
         }
+        // `spectralUnit` sets the coverage field's unit and, unless overridden
+        // below, every other spectral unit too — so an agent that names one unit
+        // for the whole block still gets what it meant, while one that wants a
+        // coverage in nm and a sampling in GHz can say so.
         if let Some(v) = text("spectralUnit") {
-            self.spectral_unit.set_selected(spectral_unit_index(&v));
+            let index = spectral_unit_index(&v);
+            self.spectral_unit.set_selected(index);
+            self.spectral_sampling_unit.set_selected(index);
+            self.bandpass_width_unit.set_selected(index);
+            self.rest_frame_energy_unit.set_selected(index);
+        }
+        for (key, combo) in [
+            ("spectralSamplingUnit", &self.spectral_sampling_unit),
+            ("bandpassWidthUnit", &self.bandpass_width_unit),
+            ("restFrameEnergyUnit", &self.rest_frame_energy_unit),
+        ] {
+            if let Some(v) = text(key) {
+                combo.set_selected(spectral_unit_index(&v));
+            }
         }
         if let Some(v) = arg("spectralCutout").and_then(Value::as_bool) {
             self.spectral_cutout.set_active(v);

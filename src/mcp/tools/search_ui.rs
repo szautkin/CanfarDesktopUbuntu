@@ -103,7 +103,10 @@ fn form_properties() -> Value {
         "resolvingPower": {"type": "string", "description": "Resolving power. Range syntax accepted."},
         "bandpassWidth": {"type": "string", "description": "Bandpass width. Range syntax accepted."},
         "restFrameEnergy": {"type": "string", "description": "Rest-frame energy. Range syntax accepted."},
-        "spectralUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS},
+        "spectralUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS, "description": "Unit for spectralCoverage. Also applies to the other spectral fields unless they name their own below."},
+        "spectralSamplingUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS},
+        "bandpassWidthUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS},
+        "restFrameEnergyUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS},
         "spectralCutout": {"type": "boolean", "description": "Restrict to data supporting spectral cutouts."},
         "maxRecords": {"type": "integer", "minimum": 1, "maximum": 30000, "description": "Row limit (MAXREC)."}
     })
@@ -441,7 +444,17 @@ mod tests {
                 .collect()
         };
 
-        assert_eq!(enum_of("spectralUnit"), SPECTRAL_UNITS.to_vec());
+        // Every spectral field carries its own unit, so every one of them has to
+        // offer the same list — an agent told GHz is valid for coverage but not
+        // for sampling would have no way to tell which.
+        for key in [
+            "spectralUnit",
+            "spectralSamplingUnit",
+            "bandpassWidthUnit",
+            "restFrameEnergyUnit",
+        ] {
+            assert_eq!(enum_of(key), SPECTRAL_UNITS.to_vec(), "{key}");
+        }
         assert_eq!(enum_of("timeUnit"), TIME_UNITS.to_vec());
         assert_eq!(enum_of("pixelScaleUnit"), PIXEL_SCALE_UNITS.to_vec());
 
