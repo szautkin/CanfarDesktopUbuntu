@@ -634,6 +634,15 @@ fn build_files(
             .as_ref()
             .and_then(|p| p.title.clone())
             .unwrap_or_default(),
+        // Planes can disagree; the earliest release is when ANY of this
+        // observation's data first became available, which is what a citation
+        // needs. Empty when no plane declares one.
+        data_release: obs
+            .planes
+            .iter()
+            .filter_map(|p| p.data_release.clone())
+            .min()
+            .unwrap_or_default(),
     };
 
     if obs.planes.is_empty() {
@@ -774,6 +783,9 @@ struct ObsMeta {
     proposal_id: String,
     proposal_pi: String,
     proposal_title: String,
+    /// When the data becomes public — the plane's `dataRelease`. Completes the
+    /// citation for a proprietary-period observation.
+    data_release: String,
 }
 
 /// Download an artifact into the managed Research library, register the science
@@ -996,11 +1008,7 @@ async fn register_in_research(
         proposal_title: carry_forward(&meta.proposal_title, existing.as_ref(), |o| {
             &o.proposal_title
         }),
-        // Not in the CAOM2 document we parse; a Search-page save supplies it.
-        data_release: existing
-            .as_ref()
-            .map(|o| o.data_release.clone())
-            .unwrap_or_default(),
+        data_release: carry_forward(&meta.data_release, existing.as_ref(), |o| &o.data_release),
         thumbnail_url: if thumbnail_url.is_empty() {
             existing
                 .as_ref()

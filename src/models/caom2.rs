@@ -83,6 +83,16 @@ pub struct Caom2Plane {
     pub data_product_type: Option<String>,
     /// junk / good / ...
     pub quality: Option<String>,
+    /// Who produced this plane (`ivo://…` creator id).
+    pub creator_id: Option<String>,
+    /// When the plane's METADATA became public, raw ISO-8601 text.
+    pub meta_release: Option<String>,
+    /// When the plane's DATA becomes public, raw ISO-8601 text.
+    ///
+    /// Part of citing a proprietary-period observation, and the field
+    /// `DownloadedObservation::data_release` is filled from when an observation
+    /// is saved from the detail page.
+    pub data_release: Option<String>,
     /// Data-processing provenance (pipeline + upstream plane inputs).
     pub provenance: Option<Caom2Provenance>,
     /// Footprint polygon vertices as (RA, Dec) in degrees.

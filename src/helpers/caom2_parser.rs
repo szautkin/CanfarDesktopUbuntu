@@ -119,6 +119,9 @@ fn parse_plane(el: Node) -> Caom2Plane {
         calibration_level: int_child(el, "calibrationLevel"),
         data_product_type: text_child(el, "dataProductType"),
         quality: child(el, "quality").and_then(|q| text_child(q, "flag")),
+        creator_id: text_child(el, "creatorID"),
+        meta_release: text_child(el, "metaRelease"),
+        data_release: text_child(el, "dataRelease"),
         provenance: child(el, "provenance").map(parse_provenance),
         position_bounds: position.map(parse_position_bounds).unwrap_or_default(),
         position_dimension: position
@@ -373,6 +376,9 @@ mod tests {
       <caom2:productID>1234567p</caom2:productID>
       <caom2:calibrationLevel>2</caom2:calibrationLevel>
       <caom2:dataProductType>image</caom2:dataProductType>
+      <caom2:creatorID>ivo://cadc.nrc.ca/CFHT?1234567/1234567p</caom2:creatorID>
+      <caom2:metaRelease>2012-03-14T00:00:00.000</caom2:metaRelease>
+      <caom2:dataRelease>2013-03-14T00:00:00.000</caom2:dataRelease>
       <caom2:quality>
         <caom2:flag>good</caom2:flag>
       </caom2:quality>
@@ -483,6 +489,20 @@ mod tests {
         assert_eq!(plane.calibration_level, Some(2));
         assert_eq!(plane.data_product_type.as_deref(), Some("image"));
         assert_eq!(plane.quality.as_deref(), Some("good"));
+        // The release dates are the citation handle for a proprietary-period
+        // observation: `dataRelease` says when the data itself became public.
+        assert_eq!(
+            plane.data_release.as_deref(),
+            Some("2013-03-14T00:00:00.000")
+        );
+        assert_eq!(
+            plane.meta_release.as_deref(),
+            Some("2012-03-14T00:00:00.000")
+        );
+        assert_eq!(
+            plane.creator_id.as_deref(),
+            Some("ivo://cadc.nrc.ca/CFHT?1234567/1234567p")
+        );
         assert_eq!(plane.position_bounds, vec![(10.0, 41.0), (10.5, 41.5)]);
         assert_eq!(plane.energy_lower, Some(3.5e-7));
         assert_eq!(plane.energy_upper, Some(6.0e-7));

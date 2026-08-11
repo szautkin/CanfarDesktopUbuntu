@@ -458,6 +458,12 @@ fn plane_to_json(p: &Caom2Plane) -> Value {
         "calibrationLevel": p.calibration_level,
         "dataProductType": p.data_product_type,
         "quality": p.quality,
+        // Release dates matter to an agent deciding whether data is public yet,
+        // and `dataRelease` is the citation handle for a proprietary-period
+        // observation. Both were parsed but never reported.
+        "creatorId": p.creator_id,
+        "metaRelease": p.meta_release,
+        "dataRelease": p.data_release,
         "positionBounds": p
             .position_bounds
             .iter()
