@@ -351,7 +351,14 @@ pub fn clean_key(header: &str) -> String {
     header.replace(['"', ' ', '.'], "").trim().to_lowercase()
 }
 
-/// Default visible keys (cleaned form) matching the Windows app.
+/// Default visible keys (cleaned form), matching the reference's
+/// `CellFormatter.DefaultVisibleKeys`.
+///
+/// `obsid` belongs here and was missing: it is the handle every other tool
+/// wants — the thing you paste into `get_observation_details`, or search for
+/// again later — and a reader had to open the Columns dialog to discover the
+/// results even had one. `datatype` and `band` are not in the reference's set
+/// and are no longer in ours; both remain one click away in the dialog.
 static DEFAULT_VISIBLE: &[&str] = &[
     "collection",
     "targetname",
@@ -364,9 +371,32 @@ static DEFAULT_VISIBLE: &[&str] = &[
     "obstype",
     "proposalid",
     "piname",
-    "datatype",
-    "band",
+    "obsid",
 ];
+
+/// Display width in pixels for a results column, by cleaned key.
+///
+/// Ported from the reference's `CellFormatter.ColumnWidth`. One fixed width for
+/// all 41 columns wasted half the row on `filter` and `callev` while still
+/// truncating a target name — and horizontal space is the scarce resource in a
+/// grid this wide.
+///
+/// The header strip and the data rows live in separate scroll areas kept in step
+/// by a shared adjustment, so BOTH sides must size a column through this
+/// function or the labels drift off the values they name.
+pub fn column_width(key: &str) -> i32 {
+    match key {
+        "collection" | "proposalid" | "obsid" => 100,
+        "targetname" | "piname" => 110,
+        "ra(j20000)" | "dec(j20000)" => 95,
+        "startdate" | "enddate" | "datarelease" => 90,
+        "instrument" => 90,
+        "inttime" => 65,
+        "filter" | "callev" | "band" => 60,
+        "obstype" | "datatype" => 75,
+        _ => 80,
+    }
+}
 
 /// Format dispatch by cleaned key, matching Windows CellFormatter.
 fn format_for_key(key: &str) -> ColumnFormat {
@@ -433,6 +463,10 @@ pub fn default_columns() -> Vec<ResultColumnInfo> {
         "PI Name",
         "Data Type",
         "Band",
+        // The ADQL selects this as `Obs. ID`; it belongs in the placeholder set
+        // too, or the pre-search grid advertises a different set of columns than
+        // the one a search returns.
+        "Obs. ID",
         "publisherID",
     ];
     headers
@@ -799,6 +833,57 @@ fn format_integration_time(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_id_column_is_visible_without_opening_a_dialog() {
+        // obsid is the handle every other tool wants — paste it into
+        // get_observation_details, or search for it again next week. It was
+        // absent from the default set, so the reader had to discover through the
+        // Columns dialog that the results even had one.
+        assert!(super::DEFAULT_VISIBLE.contains(&"obsid"));
+    }
+
+    #[test]
+    fn the_default_visible_set_matches_the_reference() {
+        // CellFormatter.DefaultVisibleKeys, minus the two virtual columns.
+        let mut ours = super::DEFAULT_VISIBLE.to_vec();
+        ours.sort_unstable();
+        let mut theirs = vec![
+            "collection",
+            "targetname",
+            "ra(j20000)",
+            "dec(j20000)",
+            "startdate",
+            "instrument",
+            "filter",
+            "callev",
+            "obstype",
+            "proposalid",
+            "piname",
+            "obsid",
+        ];
+        theirs.sort_unstable();
+        assert_eq!(ours, theirs);
+    }
+
+    #[test]
+    fn a_column_is_as_wide_as_what_it_holds() {
+        // A sexagesimal coordinate needs more room than a filter name; one width
+        // for all 41 columns spent it in the wrong places.
+        assert!(super::column_width("targetname") > super::column_width("filter"));
+        assert!(super::column_width("ra(j20000)") > super::column_width("callev"));
+        // Anything unlisted still gets the reference's default rather than 0.
+        assert_eq!(super::column_width("some_new_tap_column"), 80);
+    }
+
+    #[test]
+    fn every_column_is_wide_enough_to_read() {
+        // Below this the ellipsis eats every value, which defeats a grid whose
+        // point is comparing cells at a glance.
+        for key in ["filter", "callev", "band", "inttime", "unknown"] {
+            assert!(super::column_width(key) >= 60, "{key}");
+        }
+    }
+
     use super::*;
 
     #[test]

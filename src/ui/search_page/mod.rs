@@ -4,8 +4,8 @@ use crate::helpers::data_train_manager::DataTrainManager;
 use crate::helpers::range_parser;
 use crate::helpers::unit_converter;
 use crate::models::search_result::{
-    build_columns_from_headers, default_columns, format_cell, format_cell_with_unit, RecentSearch,
-    ResolverResult, SavedQuery, SearchFormState, SearchResultRow, SearchResults,
+    build_columns_from_headers, column_width, default_columns, format_cell, format_cell_with_unit,
+    RecentSearch, ResolverResult, SavedQuery, SearchFormState, SearchResultRow, SearchResults,
 };
 
 use crate::helpers::filter_to_adql;
@@ -69,22 +69,19 @@ pub(crate) const RADIUS_RANGE_DEG: (f64, f64) = (0.0, 90.0);
 /// Row limit (MAXREC). 1 is a legitimate request: "show me one example".
 pub(crate) const MAX_RECORDS_RANGE: (f64, f64) = (1.0, 30_000.0);
 
-/// Width of one results column, in pixels.
+/// Gap after each results column, applied on both sides so the header strip and
+/// the rows stay in step.
 ///
-/// The header strip and the data rows are now in SEPARATE scroll areas, kept in
-/// step by a shared horizontal adjustment — so this width has to be identical on
-/// both sides or the labels sit visibly off their columns. It was three separate
-/// literals; one constant is what makes the alignment structural rather than a
-/// coincidence.
-const RESULT_COLUMN_WIDTH: i32 = 100;
-
-/// Gap after each results column, applied on both sides for the same reason.
+/// The WIDTH is per column and lives with the column metadata
+/// ([`column_width`](crate::models::search_result::column_width)): the header
+/// strip and the data rows are in separate scroll areas kept in step by a shared
+/// horizontal adjustment, so both sides must size a column through the same
+/// function or the labels sit visibly off the values they name — and further
+/// right the error compounds across 41 columns.
 const RESULT_COLUMN_GAP: i32 = 4;
 
-// Pinned at compile time, next to the values themselves. Narrower than this and
-// the ellipsis eats every cell, which defeats a grid whose whole point is
-// comparing values at a glance; a negative gap would overlap the next column.
-const _: () = assert!(RESULT_COLUMN_WIDTH >= 60);
+// A negative gap would overlap the next column. The per-column widths carry
+// their own floor, tested where they live.
 const _: () = assert!(RESULT_COLUMN_GAP >= 0);
 /// Index of the default page size (100) in [`ROWS_PER_PAGE`].
 const DEFAULT_ROWS_PER_PAGE: usize = 2;
@@ -1666,7 +1663,7 @@ impl SearchPage {
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         for col in vis_columns.iter() {
             let col_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
-            col_box.set_size_request(RESULT_COLUMN_WIDTH, -1);
+            col_box.set_size_request(column_width(&col.key), -1);
             col_box.set_margin_end(RESULT_COLUMN_GAP);
 
             // Clickable header label for sorting
@@ -1787,7 +1784,7 @@ impl SearchPage {
                     let cell_btn = gtk::Button::new();
                     cell_btn.set_child(Some(&inner));
                     cell_btn.add_css_class("flat");
-                    cell_btn.set_size_request(RESULT_COLUMN_WIDTH, -1);
+                    cell_btn.set_size_request(column_width(&col.key), -1);
                     cell_btn.set_halign(gtk::Align::Start);
                     cell_btn.set_margin_end(RESULT_COLUMN_GAP);
                     cell_btn.set_tooltip_text(Some(&format!("Narrow to: {}", raw)));
@@ -1807,7 +1804,7 @@ impl SearchPage {
                 } else {
                     let label = gtk::Label::new(Some(&formatted));
                     label.add_css_class("caption");
-                    label.set_size_request(RESULT_COLUMN_WIDTH, -1);
+                    label.set_size_request(column_width(&col.key), -1);
                     label.set_halign(gtk::Align::Start);
                     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     label.set_margin_end(RESULT_COLUMN_GAP);
@@ -4142,21 +4139,22 @@ mod numeric_range_tests {
 
 #[cfg(test)]
 mod results_layout_tests {
-    use super::RESULT_COLUMN_WIDTH;
 
     #[test]
     fn the_header_and_the_rows_size_their_columns_identically() {
-        // They live in SEPARATE scroll areas now — the header pinned above, the
-        // rows scrolling under it — kept in step only by a shared horizontal
+        // They live in SEPARATE scroll areas — the header pinned above, the rows
+        // scrolling under it — kept in step only by a shared horizontal
         // adjustment. If the two sides sized columns differently the labels
         // would sit visibly off the values they name, and further right the
-        // error would compound across 41 columns.
+        // error would compound across 41 columns. Now that width varies BY
+        // COLUMN, both sides must not merely use one constant but ask the same
+        // function about the same key.
         //
         // A source scan, because the widths are set on GTK widgets this test
-        // cannot build: it proves both sides read the same constants.
+        // cannot build.
         let source = include_str!("mod.rs");
         let width_uses = source
-            .matches("set_size_request(RESULT_COLUMN_WIDTH, -1)")
+            .matches("set_size_request(column_width(&col.key), -1)")
             .count();
         let gap_uses = source.matches("set_margin_end(RESULT_COLUMN_GAP)").count();
 
@@ -4164,19 +4162,28 @@ mod results_layout_tests {
         // plain label).
         assert!(
             width_uses >= 3,
-            "expected the header and both row-cell forms to use the shared width, found {width_uses}"
+            "expected the header and both row-cell forms to size by column key, found {width_uses}"
         );
         assert!(
             gap_uses >= 3,
             "expected the header and both row-cell forms to use the shared gap, found {gap_uses}"
         );
-        // Split so this guard does not match ITSELF — the scan reads the file
-        // it lives in, and the first version failed on its own assertion text.
-        let literal_width = format!("set_size_request({}, -1)", RESULT_COLUMN_WIDTH);
-        assert!(
-            !source.contains(&literal_width),
-            "a literal column width has come back; it will drift from the header's"
-        );
+
+        // And each of the three grid widgets sizes that way — scoped to those
+        // three, since a fixed 80px on an unrelated combo elsewhere on the page
+        // is not drift. A whole-file scan for "80" said otherwise, which is how
+        // a guard earns a reputation for crying wolf.
+        for widget in ["col_box", "cell_btn", "label"] {
+            let prefix = format!("{widget}.set_size_request(");
+            for (i, _) in source.match_indices(&prefix) {
+                let line_end = source[i..].find('\n').map_or(source.len(), |n| i + n);
+                let call = &source[i..line_end];
+                assert!(
+                    call.contains("column_width("),
+                    "a grid cell sizes itself with a literal, which will drift from the header's: {call}"
+                );
+            }
+        }
     }
 }
 
