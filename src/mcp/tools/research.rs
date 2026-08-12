@@ -651,14 +651,17 @@ fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolR
         Ok(p) => p,
         Err(e) => return ToolResult::Failed(e),
     };
-    let include_notes = args
-        .get("include_notes")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let include_history = args
-        .get("include_search_history")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    // Through `arg`, which bridges the two spellings. These read the snake_case
+    // names straight off the map while the SCHEMA advertises `includeNotes` and
+    // `includeSearchHistory`, so a caller sending exactly what the tool
+    // documents had both options ignored and got a bundle with everything in.
+    let flag = |key: &str| {
+        crate::mcp::tools::arg(args, key)
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    };
+    let include_notes = flag("includeNotes");
+    let include_history = flag("includeSearchHistory");
     let payload = json!({
         "path": path,
         "includeNotes": include_notes,

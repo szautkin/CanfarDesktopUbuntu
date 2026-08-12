@@ -294,20 +294,24 @@ async fn vizier_cone_search(args: &Value) -> ToolResult {
         Err(e) => return ToolResult::Failed(e),
     };
 
-    let max_rec = args
-        .get("max_rec")
+    // `arg`, not a raw map lookup: the schema advertises `maxRec` and this read
+    // `max_rec` straight off the object, so a caller asking for 5,000 rows —
+    // spelled exactly as the tool documents — silently got the default. The
+    // error names the advertised spelling too; refusing a value by a name the
+    // caller never used is a second puzzle on top of the first.
+    let max_rec = crate::mcp::tools::arg(args, "maxRec")
         .and_then(Value::as_i64)
         .unwrap_or(DEFAULT_MAX_REC);
     if !(1..=MAX_REC_CAP).contains(&max_rec) {
-        return ToolResult::Failed(format!("max_rec must be between 1 and {MAX_REC_CAP}"));
+        return ToolResult::Failed(format!("maxRec must be between 1 and {MAX_REC_CAP}"));
     }
 
     let catalog = opt_str_arg(args, "catalogue")
         .or_else(|| opt_str_arg(args, "catalog"))
         .unwrap_or_else(|| DEFAULT_CATALOG.to_string());
-    let ra_column = opt_str_arg(args, "ra_column").unwrap_or_else(|| DEFAULT_RA_COLUMN.to_string());
+    let ra_column = opt_str_arg(args, "raColumn").unwrap_or_else(|| DEFAULT_RA_COLUMN.to_string());
     let dec_column =
-        opt_str_arg(args, "dec_column").unwrap_or_else(|| DEFAULT_DEC_COLUMN.to_string());
+        opt_str_arg(args, "decColumn").unwrap_or_else(|| DEFAULT_DEC_COLUMN.to_string());
 
     let service = VizierService::new(reqwest::Client::new());
     match service

@@ -505,13 +505,35 @@ mod payload_contract_tests {
     }
 
     /// Keys a file reads back OUT of a proposal payload.
-    fn read_keys(source: &str) -> Vec<String> {
+    /// A key an applier reads, and whether the read goes through `arg()`.
+    ///
+    /// The distinction is not academic. `arg()` bridges camelCase and
+    /// snake_case, so `str_arg(payload, "include_notes")` does receive
+    /// `includeNotes`; `payload.get("include_notes")` does NOT. Treating both
+    /// alike is how this test passed over an export whose includeNotes and
+    /// includeSearchHistory options were silently ignored — every bundle carried
+    /// notes and history whatever the caller asked for.
+    struct PayloadRead {
+        key: String,
+        bridged: bool,
+    }
+
+    fn read_keys(source: &str) -> Vec<PayloadRead> {
         let mut keys = Vec::new();
-        for marker in ["payload, \"", "payload.get(\"", "p.payload, \""] {
+        // `(payload, "x")` is an arg-family helper; `.get("x")` is a raw map
+        // lookup that spells the key exactly.
+        for (marker, bridged) in [
+            ("payload, \"", true),
+            ("p.payload, \"", true),
+            ("payload.get(\"", false),
+        ] {
             for (at, _) in source.match_indices(marker) {
                 let rest = &source[at + marker.len()..];
                 if let Some(end) = rest.find('"') {
-                    keys.push(rest[..end].to_string());
+                    keys.push(PayloadRead {
+                        key: rest[..end].to_string(),
+                        bridged,
+                    });
                 }
             }
         }
@@ -524,16 +546,20 @@ mod payload_contract_tests {
         for (name, source) in PAYLOAD_FILES {
             let source = super::advertised_argument_tests::without_test_modules(source);
             let written = written_keys(&write_side(&source));
-            let has = |key: &str| {
-                written.iter().any(|w| {
-                    w == key
-                        || *w == crate::mcp::tools::camel_case(key)
-                        || *w == crate::mcp::tools::snake_case(key)
-                })
-            };
-            for key in read_keys(&source) {
-                if !has(&key) {
-                    orphans.push(format!("{name}: {key}"));
+            for read in read_keys(&source) {
+                let found = written.iter().any(|w| {
+                    *w == read.key
+                        || (read.bridged
+                            && (*w == crate::mcp::tools::camel_case(&read.key)
+                                || *w == crate::mcp::tools::snake_case(&read.key)))
+                });
+                if !found {
+                    let how = if read.bridged {
+                        ""
+                    } else {
+                        " (read with .get(), which does NOT bridge camelCase)"
+                    };
+                    orphans.push(format!("{name}: {}{how}", read.key));
                 }
             }
         }
@@ -560,6 +586,12 @@ mod advertised_argument_tests {
     //! A source scan, deliberately coarse: it asks only whether the NAME appears
     //! as a string literal in the argument-reading code. That is enough to catch
     //! a name that exists on one side only, which is the whole failure mode.
+    //!
+    //! What it cannot see: WHICH function reads it. A tool whose proposer reads
+    //! the wrong spelling while its applier reads the right one still passes,
+    //! because the name is read somewhere in the scanned set. Scoping the scan
+    //! per handler would need to know which function belongs to which tool, and
+    //! that map is exactly the sort of second copy these tests exist to avoid.
 
     use super::*;
     use crate::mcp::tools::ToolRouter;
@@ -688,7 +720,12 @@ mod advertised_argument_tests {
                 // naming its own argument does not count as reading it. That is
                 // what let the zoomPercent split survive an earlier version of
                 // this scan.
-                let read = |src: &String, spelling: &str| {
+                // A lookup that goes through `arg()` accepts either spelling;
+                // a raw `.get("x")` accepts only the one written. Conflating
+                // them let an export tool advertise `includeNotes` while reading
+                // `include_notes` off the map — the documented call was ignored,
+                // and this test said the argument was read.
+                let read = |src: &String, spelling: &str, bridged_only: bool| {
                     let needle = format!("\"{spelling}\"");
                     src.match_indices(&needle).any(|(at, _)| {
                         let before = src[..at].trim_end();
@@ -697,18 +734,26 @@ mod advertised_argument_tests {
                         // event-cursor aliases are read by iterating a list, and
                         // a rule that only understood direct calls reported both
                         // as unread.
-                        before.ends_with('(') || before.ends_with(',') || before.ends_with('[')
+                        let in_lookup_position =
+                            before.ends_with('(') || before.ends_with(',') || before.ends_with('[');
+                        if !in_lookup_position {
+                            return false;
+                        }
+                        !bridged_only || !before.ends_with(".get(")
                     })
                 };
-                let spellings = [
-                    name.clone(),
+                let exact = name.clone();
+                let bridged = [
                     crate::mcp::tools::camel_case(name),
                     crate::mcp::tools::snake_case(name),
                 ];
-                if !readers
-                    .iter()
-                    .any(|src| spellings.iter().any(|s| read(src, s)))
-                {
+                let found = readers.iter().any(|src| {
+                    read(src, &exact, false)
+                        || bridged
+                            .iter()
+                            .any(|spelling| *spelling != exact && read(src, spelling, true))
+                });
+                if !found {
                     unread.push(format!("{}.{}", tool.name, name));
                 }
             }
