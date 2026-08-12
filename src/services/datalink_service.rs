@@ -92,6 +92,14 @@ impl DataLinkService {
 
     /// Download a thumbnail/preview image with concurrency limiting.
     /// Retries once with 300ms delay on failure (matching Windows).
+    ///
+    /// The one place this service buffers a whole body, and deliberately: a
+    /// preview is a few hundred kilobytes and its bytes go straight into a
+    /// texture. Science files are STREAMED to disk by
+    /// [`stream_download_to_file`](crate::ui::search_page::stream_download_to_file)
+    /// — a sibling of this function that buffered them into a `Vec<u8>` was
+    /// deleted unused, which is the only reason it never met a multi-gigabyte
+    /// cube.
     pub async fn download_image(
         &self,
         url: &str,
@@ -128,36 +136,6 @@ impl DataLinkService {
             .await
             .map_err(|e| ApiError::Network(e.to_string()))?;
         Ok(bytes.to_vec())
-    }
-
-    /// Download a file with progress tracking via content-length.
-    pub async fn download_file(
-        &self,
-        url: &str,
-        token: Option<&str>,
-    ) -> Result<(Vec<u8>, Option<u64>), ApiError> {
-        let mut req = self
-            .client
-            .get(url)
-            .timeout(std::time::Duration::from_secs(300));
-        if let Some(t) = token {
-            req = req.bearer_auth(t);
-        }
-        let resp = req.send().await?;
-
-        if !resp.status().is_success() {
-            return Err(ApiError::Server {
-                status: resp.status().as_u16(),
-                body: "File download failed".to_string(),
-            });
-        }
-
-        let content_length = resp.content_length();
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
-        Ok((bytes.to_vec(), content_length))
     }
 }
 
