@@ -13,6 +13,12 @@ pub const INTERACTIVE_SESSION_TYPES: [&str; 5] =
     ["notebook", "desktop", "carta", "contributed", "firefly"];
 
 /// Everything the Advanced tab can submit: the interactive types plus batch.
+///
+/// Also the `list_session_types` payload and the image-discovery filter enum.
+/// Those carried their own copies, one of them with `firefly` and `contributed`
+/// the other way round — two tools advertising the same enum in different
+/// orders, which is what a second copy looks like before it becomes a
+/// disagreement about contents.
 pub const LAUNCHABLE_SESSION_TYPES: [&str; 6] = [
     "notebook",
     "desktop",
@@ -339,5 +345,35 @@ mod tests {
 
         session.status = "RUNNING".to_string();
         assert!(session.is_running());
+    }
+}
+
+#[cfg(test)]
+mod session_type_tests {
+    use super::{INTERACTIVE_SESSION_TYPES, LAUNCHABLE_SESSION_TYPES};
+
+    #[test]
+    fn the_launchable_set_is_the_interactive_set_plus_headless() {
+        // The two lists are related by a rule, so state it: adding an
+        // interactive type and forgetting the other list is how they drifted
+        // into five copies in the first place.
+        for kind in INTERACTIVE_SESSION_TYPES {
+            assert!(
+                LAUNCHABLE_SESSION_TYPES.contains(&kind),
+                "`{kind}` is interactive but not launchable"
+            );
+        }
+        assert!(LAUNCHABLE_SESSION_TYPES.contains(&"headless"));
+        assert_eq!(
+            LAUNCHABLE_SESSION_TYPES.len(),
+            INTERACTIVE_SESSION_TYPES.len() + 1
+        );
+    }
+
+    #[test]
+    fn headless_is_not_an_interactive_type() {
+        // The MCP surface tells the two apart, and a batch job in the
+        // interactive list would be launched down a path that expects a URL.
+        assert!(!INTERACTIVE_SESSION_TYPES.contains(&"headless"));
     }
 }

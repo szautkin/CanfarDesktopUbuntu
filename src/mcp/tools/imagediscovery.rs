@@ -37,14 +37,7 @@ const PARTIAL_LIMIT: usize = 5;
 /// Session types accepted by the (parity-only) `type` filter. The Linux manifest cache
 /// records no per-image session type, so the filter is accepted but does not scope
 /// results — it exists so clients written against the Windows/macOS contract don't error.
-const SESSION_TYPES: &[&str] = &[
-    "notebook",
-    "desktop",
-    "carta",
-    "firefly",
-    "contributed",
-    "headless",
-];
+use crate::models::session::LAUNCHABLE_SESSION_TYPES as SESSION_TYPES;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manifest

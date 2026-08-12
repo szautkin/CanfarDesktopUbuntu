@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 /// Interactive Skaha session types accepted by `launch_session` (mirrors the C#
 /// `SessionWriteHelpers.InteractiveTypes`).
-const INTERACTIVE_TYPES: &[&str] = &["notebook", "desktop", "carta", "contributed", "firefly"];
+use crate::models::session::INTERACTIVE_SESSION_TYPES;
 
 use crate::models::session_launch_params::{
     agent_session_name, DEFAULT_CORES, DEFAULT_GPUS, DEFAULT_RAM_GB,
@@ -85,7 +85,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["notebook", "desktop", "carta", "contributed", "firefly"],
+                        "enum": INTERACTIVE_SESSION_TYPES,
                         "description": "Interactive session type."
                     },
                     "image": { "type": "string", "description": "Container image id to launch." },
@@ -198,10 +198,10 @@ fn propose_delete_saved_query(args: &Value, proposals: &Arc<InMemoryProposalStor
 
 fn propose_launch_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
     let kind = str_arg(args, "kind").to_lowercase();
-    if !INTERACTIVE_TYPES.contains(&kind.as_str()) {
+    if !INTERACTIVE_SESSION_TYPES.contains(&kind.as_str()) {
         return ToolResult::Failed(format!(
             "kind must be one of: {}",
-            INTERACTIVE_TYPES.join(", ")
+            INTERACTIVE_SESSION_TYPES.join(", ")
         ));
     }
     let image = str_arg(args, "image");

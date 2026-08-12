@@ -22,19 +22,11 @@ use crate::state::AppServices;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// The session types Skaha can launch (interactive + headless), mirroring the C#
-/// `ListSessionTypesTool.Types`.
-const SESSION_TYPES: &[&str] = &[
-    "notebook",
-    "desktop",
-    "carta",
-    "contributed",
-    "firefly",
-    "headless",
-];
-
-/// Interactive (non-headless) types, surfaced so a caller can tell them apart.
-const INTERACTIVE_TYPES: &[&str] = &["notebook", "desktop", "carta", "contributed", "firefly"];
+// The session types come from `models::session`, where the launch form, Settings
+// and the session strip already read them. Four more copies lived in the MCP
+// tools — one of them in a different ORDER, so two tools advertised the same
+// enum differently.
+use crate::models::session::{INTERACTIVE_SESSION_TYPES, LAUNCHABLE_SESSION_TYPES};
 
 use crate::models::session_launch_params::{
     agent_session_name, DEFAULT_CORES, DEFAULT_GPUS, DEFAULT_RAM_GB,
@@ -232,9 +224,9 @@ async fn get_session(services: &AppServices, args: &Value) -> ToolResult {
 
 fn list_session_types() -> ToolResult {
     ToolResult::Data(json!({
-        "count": SESSION_TYPES.len(),
-        "types": SESSION_TYPES,
-        "interactive": INTERACTIVE_TYPES,
+        "count": LAUNCHABLE_SESSION_TYPES.len(),
+        "types": LAUNCHABLE_SESSION_TYPES,
+        "interactive": INTERACTIVE_SESSION_TYPES,
         "headless": ["headless"],
     }))
 }
