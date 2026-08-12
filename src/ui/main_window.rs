@@ -936,50 +936,62 @@ pub fn build_main_window(
         app.add_action(&logout_action);
     }
 
+    // Everything the shell changes on sign-in, shared by every path that can
+    // start a session.
+    let signed_in = SignedInChrome {
+        login_btn: login_btn.clone(),
+        user_menu_btn: user_menu_btn.clone(),
+        status_label: status_label.clone(),
+        view_stack: view_stack.clone(),
+        dashboard: dashboard.clone(),
+        cached_user_info: cached_user_info.clone(),
+        vospace: vospace_browser.clone(),
+        welcome: welcome.clone(),
+    };
+
     // Login button
     {
         let window_clone = window.clone();
         let services = services.clone();
-        let login_btn_clone = login_btn.clone();
-        let user_menu_btn = user_menu_btn.clone();
-        let status_label = status_label.clone();
-        let view_stack = view_stack.clone();
-        let dashboard = dashboard.clone();
-        let cached_user_info = cached_user_info.clone();
-        let vospace = vospace_browser.clone();
-        let welcome = welcome.clone();
+        let signed_in = signed_in.clone();
 
         login_btn.connect_clicked(move |_| {
             let window = window_clone.clone();
             let services = services.clone();
-            let login_btn = login_btn_clone.clone();
-            let user_menu_btn = user_menu_btn.clone();
-            let status_label = status_label.clone();
-            let view_stack = view_stack.clone();
-            let dashboard = dashboard.clone();
-            let cached_user_info = cached_user_info.clone();
-            let vospace = vospace.clone();
-            let welcome = welcome.clone();
+            let signed_in = signed_in.clone();
 
             glib::spawn_future_local(async move {
                 if let Some((_username, _token, user_info)) =
                     show_login_dialog(&window, &services).await
                 {
-                    let display = user_info.display_name();
-                    login_btn.set_visible(false);
-                    user_menu_btn.set_label(&display);
-                    user_menu_btn.set_visible(true);
-                    status_label.set_text(&crate::tr_fmt!("Welcome, {}", &display));
-                    *cached_user_info.borrow_mut() = Some(user_info);
+                    signed_in.apply(user_info, &services).await;
+                }
+            });
+        });
+    }
 
-                    // Unlock the auth-gated landing tiles before swapping in the dashboard.
-                    welcome.set_authenticated(true);
-                    navigate_to_dashboard(&view_stack, &services, &dashboard).await;
-                    vospace.refresh().await;
+    // Signing in from the observation detail page's proprietary-data panel.
+    // The reference offers Sign in there rather than Retry, and reloads the
+    // observation afterwards — telling someone to go and find the account
+    // button, then come back and press Retry, is three steps where one will do.
+    {
+        let window_clone = window.clone();
+        let services = services.clone();
+        let signed_in = signed_in.clone();
+        let page = obs_detail.clone();
 
-                    services
-                        .toast
-                        .toast(crate::tr_fmt!("Welcome back, {}!", &display));
+        obs_detail.set_on_sign_in(move || {
+            let window = window_clone.clone();
+            let services = services.clone();
+            let signed_in = signed_in.clone();
+            let page = page.clone();
+
+            glib::spawn_future_local(async move {
+                if let Some((_username, _token, user_info)) =
+                    show_login_dialog(&window, &services).await
+                {
+                    signed_in.apply(user_info, &services).await;
+                    page.reload().await;
                 }
             });
         });
@@ -988,15 +1000,9 @@ pub fn build_main_window(
     // Try auto-login on startup
     {
         let services = services.clone();
-        let login_btn = login_btn.clone();
-        let user_menu_btn = user_menu_btn.clone();
         let status_label = status_label.clone();
         let spinner = spinner.clone();
-        let view_stack = view_stack.clone();
-        let dashboard = dashboard.clone();
-        let cached_user_info = cached_user_info.clone();
-        let vospace = vospace_browser.clone();
-        let welcome = welcome.clone();
+        let signed_in = signed_in.clone();
 
         glib::spawn_future_local(async move {
             if let Some(stored_token) = TokenStorage::get_token() {
@@ -1038,21 +1044,7 @@ pub fn build_main_window(
                             })
                             .await;
 
-                        let display = user_info.display_name();
-                        login_btn.set_visible(false);
-                        user_menu_btn.set_label(&display);
-                        user_menu_btn.set_visible(true);
-                        status_label.set_text(&crate::tr_fmt!("Welcome, {}", &display));
-                        *cached_user_info.borrow_mut() = Some(user_info);
-
-                        // Unlock the auth-gated landing tiles for the restored session.
-                        welcome.set_authenticated(true);
-                        navigate_to_dashboard(&view_stack, &services, &dashboard).await;
-                        vospace.refresh().await;
-
-                        services
-                            .toast
-                            .toast(crate::tr_fmt!("Welcome back, {}!", &display));
+                        signed_in.apply(user_info, &services).await;
                     }
                     Err(_) => {
                         TokenStorage::clear();
@@ -1364,6 +1356,52 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     toolbar_view.set_content(Some(&content));
     dialog.set_content(Some(&toolbar_view));
     dialog.present();
+}
+
+// ---------------------------------------------------------------------------
+// Session
+// ---------------------------------------------------------------------------
+
+/// Everything the shell changes when a session starts.
+///
+/// One place because three paths lead here — the Login button, the startup
+/// auto-login, and the observation detail page's Sign in — and they must all
+/// leave the app in the same state. Two of them held their own copy of this
+/// sequence, differing only in a comment; the third would have been a fourth
+/// chance to forget one line.
+#[derive(Clone)]
+struct SignedInChrome {
+    login_btn: gtk::Button,
+    user_menu_btn: gtk::MenuButton,
+    status_label: gtk::Label,
+    view_stack: adw::ViewStack,
+    dashboard: Rc<RefCell<Option<DashboardView>>>,
+    cached_user_info: Rc<RefCell<Option<UserInfo>>>,
+    vospace: Rc<VoSpaceBrowser>,
+    welcome: Rc<WelcomePage>,
+}
+
+impl SignedInChrome {
+    /// Swap the shell into its signed-in state for `user_info`.
+    async fn apply(&self, user_info: UserInfo, services: &Arc<AppServices>) {
+        let display = user_info.display_name();
+        self.login_btn.set_visible(false);
+        self.user_menu_btn.set_label(&display);
+        self.user_menu_btn.set_visible(true);
+        self.status_label
+            .set_text(&crate::tr_fmt!("Welcome, {}", &display));
+        *self.cached_user_info.borrow_mut() = Some(user_info);
+
+        // Unlock the auth-gated landing tiles BEFORE swapping in the dashboard,
+        // or the tiles render locked behind a view the user can already use.
+        self.welcome.set_authenticated(true);
+        navigate_to_dashboard(&self.view_stack, services, &self.dashboard).await;
+        self.vospace.refresh().await;
+
+        services
+            .toast
+            .toast(crate::tr_fmt!("Welcome back, {}!", &display));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1950,5 +1988,55 @@ fn load_app_icon(pixel_size: i32) -> gtk::Image {
             image.set_pixel_size(pixel_size);
             image
         }
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    //! The shell's sign-in sequence has no runtime coverage — it needs a GTK
+    //! main loop and a live CADC session — so these read the source instead.
+
+    const SOURCE: &str = include_str!("main_window.rs");
+
+    #[test]
+    fn only_one_place_puts_the_shell_into_its_signed_in_state() {
+        // Two paths held their own copy of this sequence and differed already;
+        // the detail page's Sign in would have been a third. A second copy is
+        // how one of them ends up forgetting to unlock the landing tiles, or to
+        // refresh VOSpace, for one way of signing in but not the others.
+        // Assembled at runtime so this guard does not count ITSELF — the scan
+        // reads the file it lives in, and the first version failed on its own
+        // assertion text.
+        let needle = format!("set_authenticated({})", true);
+        let unlocks = SOURCE.matches(&needle).count();
+        assert_eq!(
+            unlocks, 1,
+            "the signed-in sequence exists in {unlocks} places; it belongs in SignedInChrome::apply alone"
+        );
+    }
+
+    #[test]
+    fn every_way_of_signing_in_goes_through_it() {
+        // The login button, the startup auto-login, and the detail page's
+        // proprietary-data panel.
+        let applies = SOURCE.matches("signed_in.apply(").count();
+        assert!(
+            applies >= 3,
+            "expected all three sign-in paths to apply the shared chrome, found {applies}"
+        );
+    }
+
+    #[test]
+    fn the_detail_pages_sign_in_reloads_the_observation() {
+        // Signing in and being left staring at the same "sign in to view" panel
+        // is the bug this whole path exists to avoid.
+        let handler = SOURCE
+            .split("set_on_sign_in(")
+            .nth(1)
+            .expect("the detail page's sign-in handler is wired here");
+        assert!(
+            handler.contains("page.reload()"),
+            "the sign-in handler does not reload the observation afterwards"
+        );
     }
 }

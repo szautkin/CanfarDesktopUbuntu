@@ -48,6 +48,12 @@ pub struct ObservationDetailPage {
     /// Publisher id of the observation currently being shown. Used by Retry and
     /// to discard a stale fetch when the user navigates away mid-load.
     current_publisher_id: RefCell<String>,
+    /// Raised when the user asks to sign in from the proprietary-data panel.
+    ///
+    /// The host owns the login dialog and the shell chrome that a new session
+    /// changes; this page owns only the observation. Reloading after a
+    /// successful sign-in is the host's job too, through [`Self::reload`].
+    on_sign_in: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl ObservationDetailPage {
@@ -76,12 +82,16 @@ impl ObservationDetailPage {
         // ── Auth required ──────────────────────────────────────────────
         let auth_page = adw::StatusPage::new();
         auth_page.set_icon_name(Some("channel-secure-symbolic"));
-        auth_page.set_title(crate::tr_en!("Sign-in required"));
+        auth_page.set_title(crate::tr_en!("Sign in to view"));
         auth_page.set_description(Some(crate::tr_en!(
-            "This observation's metadata is proprietary. Sign in with the account button, then retry."
+            "This observation is from a proprietary collection. Sign in with your CADC account to access the details."
         )));
-        let auth_retry = pill_button(crate::tr_en!("Retry"));
-        auth_page.set_child(Some(&auth_retry));
+        // Sign in, not Retry: retrying without credentials fails the same way,
+        // and sending the reader off to find the account button and come back
+        // is three steps where one will do. Matches the reference's panel.
+        let auth_sign_in = pill_button(crate::tr_en!("Sign in"));
+        auth_sign_in.add_css_class("suggested-action");
+        auth_page.set_child(Some(&auth_sign_in));
         stack.add_named(&auth_page, Some("auth"));
 
         // ── Not found ──────────────────────────────────────────────────
@@ -119,15 +129,14 @@ impl ObservationDetailPage {
             notfound_page,
             error_page,
             current_publisher_id: RefCell::new(String::new()),
+            on_sign_in: RefCell::new(None),
         });
 
-        // Retry buttons re-run the current fetch (e.g. after signing in).
         {
             let p = Rc::clone(&page);
-            auth_retry.connect_clicked(move |_| {
-                let pid = p.current_publisher_id.borrow().clone();
-                if !pid.is_empty() {
-                    p.show(&pid);
+            auth_sign_in.connect_clicked(move |_| {
+                if let Some(handler) = p.on_sign_in.borrow().as_ref() {
+                    handler();
                 }
             });
         }
@@ -147,6 +156,21 @@ impl ObservationDetailPage {
     /// Root widget to embed in the host view.
     pub fn widget(&self) -> &gtk::Box {
         &self.widget
+    }
+
+    /// Install the host's sign-in handler for the proprietary-data panel.
+    pub fn set_on_sign_in(self: &Rc<Self>, handler: impl Fn() + 'static) {
+        *self.on_sign_in.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// Re-fetch the observation currently on screen — what the host calls once a
+    /// sign-in succeeds, so the proprietary metadata appears without the reader
+    /// having to ask for it again.
+    pub async fn reload(self: &Rc<Self>) {
+        let pid = self.current_publisher_id.borrow().clone();
+        if !pid.is_empty() {
+            self.load(pid).await;
+        }
     }
 
     /// Load (or reload) the detail view for a search-result publisher id.
