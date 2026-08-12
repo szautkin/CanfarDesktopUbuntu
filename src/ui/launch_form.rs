@@ -1117,16 +1117,24 @@ impl LaunchFormView {
                 let Some(token) = svc.get_token().await else {
                     return Err("Not authenticated".to_string());
                 };
-                svc.sessions.launch_session(&token, &params_clone).await
+                // One POST per replica: asking for eight jobs and receiving one
+                // is what the single-request version did.
+                svc.sessions
+                    .launch_headless(&token, &params_clone)
+                    .await
+                    .map_err(|e| e.to_string())
             })
             .await;
 
         match result {
-            Ok(id) => {
+            Ok(ids) => {
+                let id = ids.join(", ");
                 self.status_label.set_text("");
-                self.services
-                    .toast
-                    .toast(crate::tr_fmt!("Launched batch job '{}' ({})", name, id));
+                self.services.toast.toast(if ids.len() > 1 {
+                    crate::tr_fmt!("Launched {} batch replicas ({})", ids.len(), &id)
+                } else {
+                    crate::tr_fmt!("Launched batch job '{}' ({})", name, &id)
+                });
 
                 // Save to recent launches so the batch job can be relaunched with
                 // its exact command line (cmd/args/replicas) and resources.

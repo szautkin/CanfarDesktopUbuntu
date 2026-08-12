@@ -464,10 +464,20 @@ async fn apply_launch_headless_job(
         args,
         replicas,
     };
-    let id = services.sessions.launch_session(&token, &params).await?;
-    match replicas {
-        Some(n) if n > 1 => Ok(format!("Launched {n} headless replicas (first id {id})")),
-        _ => Ok(format!("Launched headless job (id {id})")),
+    // One POST per replica, as the reference does — see
+    // `SessionService::launch_headless`.
+    let ids = services
+        .sessions
+        .launch_headless(&token, &params)
+        .await
+        .map_err(|e| e.to_string())?;
+    match ids.as_slice() {
+        [single] => Ok(format!("Launched headless job (id {single})")),
+        many => Ok(format!(
+            "Launched {} headless replicas (ids {})",
+            many.len(),
+            many.join(", ")
+        )),
     }
 }
 

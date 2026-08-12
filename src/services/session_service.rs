@@ -4,6 +4,32 @@ use crate::services::api_error::{check_response, ApiError};
 use reqwest::Client;
 use std::sync::Arc;
 
+/// A headless launch that failed after some replicas were already running.
+///
+/// Carries them: those jobs exist and are spending quota, and an error that
+/// mentions only the failure leaves the user with nothing to clean up by.
+#[derive(Debug)]
+pub struct HeadlessLaunchError {
+    pub message: String,
+    pub launched: Vec<String>,
+}
+
+impl std::fmt::Display for HeadlessLaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.launched.is_empty() {
+            write!(f, "{}", self.message)
+        } else {
+            write!(
+                f,
+                "{} — {} replica(s) already launched: {}",
+                self.message,
+                self.launched.len(),
+                self.launched.join(", ")
+            )
+        }
+    }
+}
+
 pub struct SessionService {
     client: Client,
     endpoints: Arc<ApiEndpoints>,
@@ -31,9 +57,54 @@ impl SessionService {
         token: &str,
         params: &SessionLaunchParams,
     ) -> Result<String, String> {
-        let url = self.endpoints.sessions_url();
-        let form_pairs = params.to_form_pairs();
+        self.post_launch(token, params, params.to_form_pairs())
+            .await
+    }
 
+    /// Launch every replica of a headless job, returning the session ids in
+    /// launch order.
+    ///
+    /// The reference posts once PER REPLICA (`HeadlessRequestBuilder`), which is
+    /// also the canonical Python client's wire shape; we sent a single request
+    /// carrying `replicas=N`, so a user who asked for eight jobs got one, with
+    /// no `REPLICA_ID` to tell it which slice of the work was its own.
+    ///
+    /// A failure part-way is reported WITH the ids already launched: those jobs
+    /// are running and spending quota, and an error that hides them leaves the
+    /// user unable to find what to clean up. Mirrors the reference's
+    /// `HeadlessLaunchException`.
+    pub async fn launch_headless(
+        &self,
+        token: &str,
+        params: &SessionLaunchParams,
+    ) -> Result<Vec<String>, HeadlessLaunchError> {
+        let count = params.replica_count();
+        let mut ids = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            match self
+                .post_launch(token, params, params.headless_form_pairs(index, count))
+                .await
+            {
+                Ok(id) => ids.push(id),
+                Err(message) => {
+                    return Err(HeadlessLaunchError {
+                        message,
+                        launched: ids,
+                    })
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// POST one launch and read back its session id.
+    async fn post_launch(
+        &self,
+        token: &str,
+        params: &SessionLaunchParams,
+        form_pairs: Vec<(&'static str, String)>,
+    ) -> Result<String, String> {
+        let url = self.endpoints.sessions_url();
         let mut req = self.client.post(&url).bearer_auth(token).form(&form_pairs);
 
         if let Some(ref user) = params.registry_username {
