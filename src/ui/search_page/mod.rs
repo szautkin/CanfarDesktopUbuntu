@@ -3526,12 +3526,35 @@ async fn save_to_research(
 ///
 /// `pub(crate)` so the Research page can reuse the exact same streaming idiom
 /// when re-downloading a record whose local file went missing.
+/// Bytes so far, and the total when the server declared one.
+pub(crate) type DownloadProgress = tokio::sync::mpsc::UnboundedSender<(u64, Option<u64>)>;
+
 pub(crate) async fn stream_download_to_file(
     url: &str,
     token: Option<&str>,
     dest: &std::path::Path,
     toast: &crate::services::notification_service::ToastNotifier,
     label: &str,
+) -> Result<u64, String> {
+    stream_download_with_progress(url, token, dest, toast, label, None).await
+}
+
+/// The same download, additionally reporting progress to `progress`.
+///
+/// One implementation with an optional observer rather than two downloaders:
+/// this one streams to a sibling `.tmp` and renames on success, so an
+/// interrupted multi-gigabyte transfer never leaves a half-file that looks
+/// complete — a property a second copy would have to re-earn.
+///
+/// The channel exists because this runs on the tokio runtime while the widgets
+/// live on the GLib thread; the receiver drives them from there.
+pub(crate) async fn stream_download_with_progress(
+    url: &str,
+    token: Option<&str>,
+    dest: &std::path::Path,
+    toast: &crate::services::notification_service::ToastNotifier,
+    label: &str,
+    progress: Option<DownloadProgress>,
 ) -> Result<u64, String> {
     use std::io::Write;
 
@@ -3594,6 +3617,13 @@ pub(crate) async fn stream_download_to_file(
                 };
                 if advanced && last_report.elapsed() >= std::time::Duration::from_millis(700) {
                     toast.toast(format_download_progress(label, downloaded, total));
+                    // Same throttle for the inline bar: a send per 8 KiB chunk
+                    // would post thousands of GLib wake-ups a second to move a
+                    // bar by a pixel. A closed channel means the page went away
+                    // mid-download, which is not a reason to stop downloading.
+                    if let Some(tx) = &progress {
+                        let _ = tx.send((downloaded, total));
+                    }
                     last_report = std::time::Instant::now();
                     last_report_bytes = downloaded;
                 }
@@ -3642,23 +3672,34 @@ fn format_byte_size(bytes: u64) -> String {
     }
 }
 
-/// Build a progress-toast string, e.g.
-/// `"Downloading M81… 128.0 MiB / 1.20 GiB (10%)"`, or — when the server sends
-/// no Content-Length — `"Downloading M81… 128.0 MiB"`.
-fn format_download_progress(label: &str, downloaded: u64, total: Option<u64>) -> String {
+/// How far a transfer has got, e.g. `"128.0 MiB / 1.20 GiB (10%)"` — or just
+/// `"128.0 MiB"` when the server sends no Content-Length.
+///
+/// Shared by the progress toasts and the detail page's inline progress bar, so
+/// the two never disagree about how many bytes have arrived.
+pub(crate) fn format_download_amount(downloaded: u64, total: Option<u64>) -> String {
     match total {
         Some(t) if t > 0 => {
             let pct = (downloaded.min(t) as u128 * 100 / t as u128) as u64;
             format!(
-                "Downloading {}… {} / {} ({}%)",
-                label,
+                "{} / {} ({}%)",
                 format_byte_size(downloaded),
                 format_byte_size(t),
                 pct
             )
         }
-        _ => format!("Downloading {}… {}", label, format_byte_size(downloaded)),
+        _ => format_byte_size(downloaded),
     }
+}
+
+/// Build a progress-toast string, e.g.
+/// `"Downloading M81… 128.0 MiB / 1.20 GiB (10%)"`.
+fn format_download_progress(label: &str, downloaded: u64, total: Option<u64>) -> String {
+    format!(
+        "Downloading {}… {}",
+        label,
+        format_download_amount(downloaded, total)
+    )
 }
 
 /// Guess a file extension from an HTTP Content-Type header.
@@ -4173,6 +4214,21 @@ mod stream_download_tests {
         // Guards against >100% if Content-Length under-reports the body.
         let s = format_download_progress("X", 2048, Some(1024));
         assert!(s.contains("100%"), "{s}");
+    }
+
+    #[test]
+    fn the_toast_and_the_inline_bar_report_the_same_amount() {
+        // The detail page's progress bar and the toast are two windows onto one
+        // transfer; a reader who sees them disagree learns to trust neither.
+        let amount = super::format_download_amount(1024, Some(4096));
+        let toast = format_download_progress("M81", 1024, Some(4096));
+        assert!(toast.ends_with(&amount), "{toast} should end with {amount}");
+        assert!(amount.contains("25%"), "{amount}");
+
+        // No Content-Length: bytes so far, and no invented percentage.
+        let amount = super::format_download_amount(1024, None);
+        assert!(!amount.contains('%'), "{amount}");
+        assert!(format_download_progress("M81", 1024, None).ends_with(&amount));
     }
 }
 

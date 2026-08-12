@@ -901,7 +901,27 @@ async fn download_artifact(
     // 3. Stream the body chunk-by-chunk to disk (same helper the Search/Research
     //    pages use). Progress surfaces as throttled toasts; the inline spinner
     //    stays up for the duration.
-    status_downloading(&status_box, &format!("Downloading {}…", name));
+    // An inline bar, not just a spinner: a multi-gigabyte cube spends twenty
+    // minutes here, and a spinner says only that something is happening. The
+    // reference shows the same measure — bytes so far against the total, and an
+    // indeterminate bar when the server declares no length.
+    let bar = status_downloading_with_progress(&status_box, &format!("Downloading {}…", name));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+    {
+        let bar = bar.clone();
+        glib::spawn_future_local(async move {
+            while let Some((done, total)) = rx.recv().await {
+                match total {
+                    Some(t) if t > 0 => bar.set_fraction((done as f64 / t as f64).min(1.0)),
+                    _ => bar.pulse(),
+                }
+                bar.set_text(Some(&crate::ui::search_page::format_download_amount(
+                    done, total,
+                )));
+            }
+        });
+    }
+
     let svc = services.clone();
     let url2 = url.clone();
     let dest = target.clone();
@@ -910,12 +930,13 @@ async fn download_artifact(
     let dl_result = services
         .spawn(async move {
             let token = svc.get_token().await;
-            crate::ui::search_page::stream_download_to_file(
+            crate::ui::search_page::stream_download_with_progress(
                 &url2,
                 token.as_deref(),
                 &dest,
                 &toast_handle,
                 &progress_label,
+                Some(tx),
             )
             .await
         })
@@ -1597,6 +1618,20 @@ fn status_reset(status_box: &gtk::Box) {
 
 /// Show a spinner + label while a download is in flight (matches the page's
 /// existing loading-spinner style).
+/// The downloading state, plus a progress bar the caller drives.
+///
+/// Returned rather than stored: the bar belongs to one transfer, and the next
+/// call to `status_reset` takes it away with the rest of the row.
+fn status_downloading_with_progress(status_box: &gtk::Box, text: &str) -> gtk::ProgressBar {
+    status_downloading(status_box, text);
+    let bar = gtk::ProgressBar::new();
+    bar.set_show_text(true);
+    bar.set_hexpand(true);
+    bar.set_margin_top(4);
+    status_box.append(&bar);
+    bar
+}
+
 fn status_downloading(status_box: &gtk::Box, text: &str) {
     status_reset(status_box);
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
