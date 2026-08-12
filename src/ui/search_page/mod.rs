@@ -148,6 +148,109 @@ fn delimited_export(
     out
 }
 
+/// A row's peek-at-the-image button: a popover that fetches the observation's
+/// DataLink preview the first time it is opened.
+///
+/// The reference renders this as a virtual `preview` column; ours sits with the
+/// row's other actions. What matters is the capability, which was missing: in a
+/// grid of ten thousand rows, the alternative to a peek is downloading the file
+/// to find out what it is.
+///
+/// Loaded lazily and once — a preview per visible row would be a hundred
+/// requests for images nobody asked to see, and CADC's DataLink is not free.
+fn preview_button(services: &Arc<AppServices>, publisher_id: &str) -> gtk::MenuButton {
+    // A MenuButton rather than a Button plus a manually parented Popover: it
+    // OWNS the popover, so the popover goes when the row does. Rows are rebuilt
+    // on every page turn and every sort, and a hand-parented popover left behind
+    // by each one leaks a widget per row.
+    let btn = gtk::MenuButton::new();
+    btn.set_icon_name("image-x-generic-symbolic");
+    btn.add_css_class("flat");
+    btn.set_valign(gtk::Align::Center);
+    btn.set_tooltip_text(Some(crate::tr_en!("Preview this observation")));
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    content.set_size_request(260, 160);
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&content));
+
+    let loaded = Rc::new(std::cell::Cell::new(false));
+    {
+        let services = services.clone();
+        let pid = publisher_id.to_string();
+        let content = content.clone();
+        let loaded = loaded.clone();
+        popover.connect_show(move |_| {
+            if loaded.replace(true) {
+                return;
+            }
+            let spinner = gtk::Spinner::new();
+            spinner.set_size_request(32, 32);
+            spinner.set_valign(gtk::Align::Center);
+            spinner.set_halign(gtk::Align::Center);
+            spinner.set_vexpand(true);
+            spinner.start();
+            content.append(&spinner);
+
+            let services = services.clone();
+            let pid = pid.clone();
+            let content = content.clone();
+            glib::spawn_future_local(async move {
+                let picture = fetch_preview_picture(&services, &pid).await;
+                while let Some(child) = content.first_child() {
+                    content.remove(&child);
+                }
+                match picture {
+                    Some(p) => {
+                        p.set_vexpand(true);
+                        content.append(&p);
+                    }
+                    None => {
+                        let empty = gtk::Label::new(Some(crate::tr_en!("No preview available")));
+                        empty.add_css_class("dim-label");
+                        empty.set_vexpand(true);
+                        empty.set_valign(gtk::Align::Center);
+                        content.append(&empty);
+                    }
+                }
+            });
+        });
+    }
+
+    btn.set_popover(Some(&popover));
+    btn
+}
+
+/// Resolve an observation's preview image and decode it, or `None` when it
+/// publishes neither preview nor thumbnail — which is common, and not an error.
+async fn fetch_preview_picture(
+    services: &Arc<AppServices>,
+    publisher_id: &str,
+) -> Option<gtk::Picture> {
+    let svc = services.clone();
+    let pid = publisher_id.to_string();
+    let bytes = services
+        .spawn(async move {
+            let token = svc.get_token().await;
+            let resolved = svc.datalink.resolve(&pid, token.as_deref()).await.ok()?;
+            // Prefer the full preview; a thumbnail is soft at this size but far
+            // better than nothing.
+            let url = resolved
+                .preview_urls()
+                .into_iter()
+                .next()
+                .or_else(|| resolved.thumbnail_urls().into_iter().next())?;
+            svc.datalink
+                .download_image(&url, token.as_deref())
+                .await
+                .ok()
+        })
+        .await?;
+
+    let texture = gtk::gdk::Texture::from_bytes(&glib::Bytes::from(&bytes)).ok()?;
+    Some(gtk::Picture::for_paintable(&texture))
+}
+
 /// Whether a completed FORM search earns a place in the recent list.
 ///
 /// Only when it found something, matching the reference's `TotalRows > 0`
@@ -1817,6 +1920,8 @@ impl SearchPage {
             // through the same flow as the detail dialog button.
             let publisher_id = row.get("publisherID").to_string();
             if !publisher_id.is_empty() {
+                row_box.append(&preview_button(&self.services, &publisher_id));
+
                 let save_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
                 save_btn.add_css_class("flat");
                 save_btn.set_tooltip_text(Some(crate::tr_en!(
