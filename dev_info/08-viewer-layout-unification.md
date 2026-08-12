@@ -82,7 +82,27 @@ that a 280 px column squeezes the image on a laptop. libadwaita 0.7 is already a
 widget is present; the app uses `adw::ToolbarView` in five dialogs already, so the idiom is familiar
 here.
 
-## 6. Plan
+## 6. Status
+
+_Updated 2026-08-12, after the work._
+
+| Phase | State |
+|---|---|
+| 1 — Extract the scaffold | **Done.** `ui::viewer_shell`; the cube switched in the same commit and looks unchanged. |
+| 2 — The FITS viewer gets a column | **Done.** `DISPLAY` / `VIEW` / `CROSSHAIR` / `COMPARE`; the toolbar keeps Open and the status line. `sync_toolbar_to_tab` renamed. |
+| 3 — Panels become sections | **Done.** Both panels are expanders in the column; one header panel for the viewer, refilled per tab; the expander is the MCP state. |
+| 4 — One tab strip | **Open, deliberately.** The only phase that touches working tab logic rather than layout. |
+| 5 — One guard for both | **Done.** Both viewers build from the shell, neither keeps a private copy of the helpers, and neither may open a popover from a control with no visible word. |
+
+Found and fixed along the way, outside the plan: **Search here** was reachable only from inside the
+saved-coordinates panel, which is closed by default — an action the reference offers from its
+crosshair menu did not appear to exist. It is in the `CROSSHAIR` section now, running the panel's own
+action rather than a copy of it.
+
+Still worth doing when phase 4 lands: `adw::OverlaySplitView` instead of the plain `Paned`, so the
+column overlays rather than squeezes on a narrow window.
+
+## 7. Plan
 
 Five phases, each shippable on its own, each leaving the app working.
 
@@ -123,7 +143,7 @@ A single test asserting that each viewer routes its controls through `viewer_she
 hides an affordance behind an unlabelled popover — replacing the FITS-only guard with one that covers
 whichever viewer grows a control next.
 
-## 7. Risks, and what makes them small
+## 8. Risks, and what makes them small
 
 | Risk | Why it is contained |
 |---|---|
@@ -133,7 +153,7 @@ whichever viewer grows a control next.
 | Blink's transient controls (stop, interval) | They move as a group into `COMPARE`; the stop path is already state-driven, not layout-driven. |
 | Losing reference parity of chrome | Explicit, recorded here, and the same trade already made in the cube. Capability parity is unaffected — no affordance is removed, only relocated. |
 
-## 8. Recommendation
+## 9. Recommendation
 
 Do **phases 1–3**. They deliver the whole of what you asked for: the FITS viewer gets the cube's
 shape, the two stop diverging, and roughly 200 lines of duplicated scaffolding collapse into one
