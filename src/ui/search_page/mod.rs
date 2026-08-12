@@ -151,6 +151,20 @@ fn delimited_export(
     out
 }
 
+/// Whether a completed FORM search earns a place in the recent list.
+///
+/// Only when it found something, matching the reference's `TotalRows > 0`
+/// guard: a twenty-entry history is a small place, and a search that returned
+/// nothing pushes out one that worked.
+///
+/// The other half of the rule is the caller's: a raw ADQL execution is not
+/// recorded at all. It has no form state, so the entry restored a BLANK form
+/// when clicked, under a summary that read "ADQL query" and named nothing —
+/// a history row that wipes the form is worse than no row.
+fn should_record_recent(count: usize) -> bool {
+    count > 0
+}
+
 /// The status line after a search returns.
 ///
 /// Says when the row limit truncated the answer, as the reference does. Without
@@ -1512,23 +1526,23 @@ impl SearchPage {
                 self.status_label
                     .set_text(&search_status(count, max_records));
 
-                // Save recent
-                let summary = form_state
-                    .map(|s| s.summary())
-                    .unwrap_or_else(|| crate::tr_en!("ADQL query").to_string());
-                let recent = RecentSearch {
-                    summary,
-                    adql: adql.to_string(),
-                    // Denormalised resolver-provenance copies (the primary source
-                    // is `form_state`; these are the exporter's fallback).
-                    resolver_service_used: form_state.and_then(|s| s.resolver_service_used.clone()),
-                    resolution_epoch: form_state.and_then(|s| s.resolution_epoch.clone()),
-                    form_state: form_state.cloned().unwrap_or_default(),
-                    result_count: count,
-                    searched_at: chrono::Utc::now().to_rfc3339(),
-                };
-                let _ = self.services.search_store.save_recent(recent);
-                self.refresh_recent();
+                // Record it in the recent list, on the reference's terms.
+                if let Some(state) = form_state.filter(|_| should_record_recent(count)) {
+                    let recent = RecentSearch {
+                        summary: state.summary(),
+                        adql: adql.to_string(),
+                        // Denormalised resolver-provenance copies (the primary
+                        // source is `form_state`; these are the exporter's
+                        // fallback).
+                        resolver_service_used: state.resolver_service_used.clone(),
+                        resolution_epoch: state.resolution_epoch.clone(),
+                        form_state: state.clone(),
+                        result_count: count,
+                        searched_at: chrono::Utc::now().to_rfc3339(),
+                    };
+                    let _ = self.services.search_store.save_recent(recent);
+                    self.refresh_recent();
+                }
 
                 *self.results_store.borrow_mut() = Some(results);
                 *self.current_page.borrow_mut() = 0;
@@ -4168,7 +4182,14 @@ mod results_layout_tests {
 
 #[cfg(test)]
 mod search_status_tests {
-    use super::search_status;
+    use super::{search_status, should_record_recent};
+
+    #[test]
+    fn a_search_that_found_nothing_is_not_remembered() {
+        // Twenty slots; a search that found nothing evicts one that worked.
+        assert!(!should_record_recent(0));
+        assert!(should_record_recent(1));
+    }
 
     #[test]
     fn a_truncated_result_set_says_so() {
