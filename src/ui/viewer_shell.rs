@@ -107,6 +107,26 @@ mod tests {
     }
 
     #[test]
+    fn neither_viewer_hides_a_control_behind_an_unlabelled_popover() {
+        // The failure this whole module exists to prevent: a control that works,
+        // that an agent can drive, and that a person cannot find. A popover is
+        // allowed — the thing that OPENS it must carry a word.
+        for (name, source) in [("cube", CUBE), ("fits", FITS)] {
+            for (at, _) in source.match_indices("set_popover(Some(") {
+                // Look back at the button this popover belongs to: within the
+                // preceding few lines it must set a label.
+                let start = at.saturating_sub(700);
+                let context = &source[start..at];
+                assert!(
+                    context.contains("set_label(") || context.contains("set_title("),
+                    "a popover in the {name} viewer is opened by a control with \
+                     no visible word on it"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn neither_viewer_keeps_its_own_copy_of_the_helpers() {
         // Assembled at runtime so this guard does not match itself.
         let local = format!("fn {}(text: &str) -> gtk::Label", "section_header");

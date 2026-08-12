@@ -20,7 +20,10 @@ type SaveBookmarkCallback = Rc<RefCell<Option<Box<dyn Fn() -> Option<(f64, f64, 
 type SearchHereCallback = Rc<RefCell<Option<Rc<dyn Fn(f64, f64)>>>>;
 
 pub struct FitsCoordsPanel {
-    widget: gtk::Revealer,
+    /// The panel's content. Collapsing is the column expander's job now — a
+    /// revealer inside an expander would be two things that both believe they
+    /// decide whether the section is open.
+    widget: gtk::Box,
     crosshair_label: gtk::Label,
     bookmark_label_entry: gtk::Entry,
     ra_entry: gtk::Entry,
@@ -122,12 +125,7 @@ impl FitsCoordsPanel {
 
         container.append(&section3);
 
-        // Wrap in revealer
-        let widget = gtk::Revealer::new();
-        widget.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
-        widget.set_transition_duration(200);
-        widget.set_reveal_child(false);
-        widget.set_child(Some(&container));
+        let widget = container;
 
         let panel = Rc::new(FitsCoordsPanel {
             widget,
@@ -195,13 +193,8 @@ impl FitsCoordsPanel {
         panel
     }
 
-    pub fn widget(&self) -> &gtk::Revealer {
+    pub fn widget(&self) -> &gtk::Box {
         &self.widget
-    }
-
-    pub fn toggle(&self) {
-        let now = self.widget.reveals_child();
-        self.widget.set_reveal_child(!now);
     }
 
     /// Update the current crosshair readout. Pass `None` to clear.

@@ -10,79 +10,42 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct FitsHeaderPanel {
-    widget: gtk::Revealer,
+    widget: gtk::Box,
+    /// The at-a-glance summary, rebuilt when the panel is pointed at another
+    /// image.
+    info_grid: gtk::Grid,
     list_box: gtk::ListBox,
     entries: Rc<RefCell<Vec<(String, String, String)>>>,
     search_entry: gtk::SearchEntry,
 }
 
 impl FitsHeaderPanel {
-    pub fn new(entries: Vec<(String, String, String)>) -> Rc<Self> {
-        Self::new_with_info(entries, Vec::new())
-    }
-
-    /// Construct with an at-a-glance Image Info summary block rendered above the
-    /// searchable raw header.
-    pub fn new_with_info(
-        entries: Vec<(String, String, String)>,
-        info: Vec<(String, String)>,
-    ) -> Rc<Self> {
+    /// An empty panel. Content arrives through [`Self::set_content`] when a tab
+    /// becomes the visible one — there is one panel for the viewer, not one per
+    /// image.
+    pub fn new() -> Rc<Self> {
+        // Lives in the control column now, so it sizes to the column rather
+        // than demanding 320 px of its own beside the image.
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        container.set_width_request(320);
-        container.set_vexpand(true);
 
-        // Image Info summary (dimensions, WCS, pixel scale, FoV, sky centre, …)
-        if !info.is_empty() {
-            let info_title = gtk::Label::new(Some(crate::tr_en!("Image Info")));
-            info_title.add_css_class("heading");
-            info_title.set_halign(gtk::Align::Start);
-            info_title.set_margin_start(12);
-            info_title.set_margin_end(12);
-            info_title.set_margin_top(12);
-            info_title.set_margin_bottom(6);
-            container.append(&info_title);
+        // Image Info summary (dimensions, WCS, pixel scale, FoV, sky centre, …),
+        // rebuilt whenever the panel is pointed at another image.
+        let info_grid = gtk::Grid::new();
+        info_grid.set_column_spacing(10);
+        info_grid.set_row_spacing(2);
+        info_grid.set_margin_bottom(8);
+        container.append(&info_grid);
 
-            let info_grid = gtk::Grid::new();
-            info_grid.set_column_spacing(10);
-            info_grid.set_row_spacing(2);
-            info_grid.set_margin_start(12);
-            info_grid.set_margin_end(12);
-            info_grid.set_margin_bottom(8);
-            for (i, (label, value)) in info.iter().enumerate() {
-                let l = gtk::Label::new(Some(label));
-                l.add_css_class("caption-heading");
-                l.set_halign(gtk::Align::Start);
-                info_grid.attach(&l, 0, i as i32, 1, 1);
-                let v = gtk::Label::new(Some(value));
-                v.add_css_class("caption");
-                v.set_halign(gtk::Align::Start);
-                v.set_hexpand(true);
-                v.set_selectable(true);
-                v.set_wrap(true);
-                info_grid.attach(&v, 1, i as i32, 1, 1);
-            }
-            container.append(&info_grid);
-            container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        }
-
-        // Header
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.set_margin_start(8);
-        header.set_margin_end(8);
-        header.set_margin_top(8);
-        header.set_margin_bottom(4);
         let title = gtk::Label::new(Some(crate::tr_en!("FITS Header")));
-        title.add_css_class("heading");
+        title.add_css_class("caption-heading");
+        title.add_css_class("dim-label");
         title.set_halign(gtk::Align::Start);
-        title.set_hexpand(true);
-        header.append(&title);
-        container.append(&header);
+        title.set_margin_bottom(4);
+        container.append(&title);
 
         // Search
         let search_entry = gtk::SearchEntry::new();
         search_entry.set_placeholder_text(Some(crate::tr_en!("Filter keywords…")));
-        search_entry.set_margin_start(8);
-        search_entry.set_margin_end(8);
         search_entry.set_margin_bottom(4);
         container.append(&search_entry);
 
@@ -90,30 +53,24 @@ impl FitsHeaderPanel {
         let list_box = gtk::ListBox::new();
         list_box.set_selection_mode(gtk::SelectionMode::None);
         list_box.add_css_class("boxed-list");
-        list_box.set_margin_start(8);
-        list_box.set_margin_end(8);
-        list_box.set_margin_bottom(8);
 
+        // Bounded, and it scrolls its own content: a header of three hundred
+        // keywords inside a column that also scrolls would otherwise make the
+        // column itself hundreds of screens tall.
         let scroll = gtk::ScrolledWindow::new();
-        scroll.set_hexpand(false);
-        scroll.set_vexpand(true);
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroll.set_propagate_natural_height(true);
+        scroll.set_max_content_height(320);
         scroll.set_child(Some(&list_box));
         container.append(&scroll);
 
-        // Wrap in a revealer for collapsible animation
-        let widget = gtk::Revealer::new();
-        // Slides in from the trailing edge, where the panel now lives — a
-        // SlideRight on a right-hand panel animates away from its own edge.
-        widget.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
-        widget.set_transition_duration(200);
-        widget.set_reveal_child(false);
-        widget.set_child(Some(&container));
+        let widget = container;
 
         let panel = Rc::new(FitsHeaderPanel {
             widget,
+            info_grid,
             list_box,
-            entries: Rc::new(RefCell::new(entries)),
+            entries: Rc::new(RefCell::new(Vec::new())),
             search_entry,
         });
 
@@ -130,19 +87,37 @@ impl FitsHeaderPanel {
         panel
     }
 
-    pub fn widget(&self) -> &gtk::Revealer {
+    pub fn widget(&self) -> &gtk::Box {
         &self.widget
     }
 
-    /// Toggle visibility with animation.
-    pub fn toggle(&self) {
-        let now = self.widget.reveals_child();
-        self.widget.set_reveal_child(!now);
-    }
-
-    /// Is the panel currently revealed?
-    pub fn is_revealed(&self) -> bool {
-        self.widget.reveals_child()
+    /// Point the panel at another image: its summary rows and its keywords.
+    ///
+    /// One panel for the viewer rather than one per tab. The per-tab panels each
+    /// carried their own 320 px of layout beside the image, whether or not
+    /// anyone had opened them.
+    pub fn set_content(&self, entries: Vec<(String, String, String)>, info: Vec<(String, String)>) {
+        while let Some(child) = self.info_grid.first_child() {
+            self.info_grid.remove(&child);
+        }
+        for (i, (label, value)) in info.iter().enumerate() {
+            let l = gtk::Label::new(Some(label));
+            l.add_css_class("caption");
+            l.add_css_class("dim-label");
+            l.set_halign(gtk::Align::Start);
+            l.set_yalign(0.0);
+            self.info_grid.attach(&l, 0, i as i32, 1, 1);
+            let v = gtk::Label::new(Some(value));
+            v.add_css_class("caption");
+            v.set_halign(gtk::Align::Start);
+            v.set_xalign(0.0);
+            v.set_hexpand(true);
+            v.set_selectable(true);
+            v.set_wrap(true);
+            self.info_grid.attach(&v, 1, i as i32, 1, 1);
+        }
+        *self.entries.borrow_mut() = entries;
+        self.rebuild(&self.search_entry.text().to_string().to_ascii_lowercase());
     }
 
     fn rebuild(&self, filter: &str) {

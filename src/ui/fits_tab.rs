@@ -8,7 +8,6 @@ use crate::helpers::fits_renderer::{self, ColorMap, Stretch};
 use crate::models::fits_image::HduInfo;
 use crate::models::FitsImageData;
 use crate::ui::fits_canvas::{FitsCanvas, SharedSkyRef};
-use crate::ui::fits_header_panel::FitsHeaderPanel;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use std::cell::{Cell, RefCell};
@@ -17,7 +16,6 @@ use std::rc::Rc;
 pub struct FitsTab {
     widget: gtk::Box,
     canvas: Rc<FitsCanvas>,
-    header_panel: Rc<FitsHeaderPanel>,
     data: Rc<FitsImageData>,
     /// Current render parameters, per-tab.
     stretch: RefCell<Stretch>,
@@ -64,17 +62,11 @@ impl FitsTab {
             data.wcs.clone(),
         );
 
-        let header_panel =
-            FitsHeaderPanel::new_with_info(data.header_ordered.clone(), data.image_info_rows());
-
-        // Layout: canvas | header panel (RIGHT), matching the reference, which
-        // puts every side panel on the trailing edge. On the left the collapsed
-        // panel pushed the image away from the edge it should sit against, and a
-        // reader seeing a band of empty space beside their data reasonably reads
-        // it as something broken rather than something closed.
+        // The tab is the image, and nothing else. Its header and image info are
+        // shown by the viewer's single panel in the control column, refilled on
+        // tab switch — a per-tab panel meant every open file carried 320 px of
+        // layout beside the image whether or not anyone had opened it.
         widget.append(canvas.widget());
-        widget.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        widget.append(header_panel.widget());
 
         // Precompute the North-Up rotation (radians). Windows' NorthAngle uses the
         // atan2(-Cd1_2, Cd2_2) convention; to show North up, rotate by -NorthAngle.
@@ -87,7 +79,6 @@ impl FitsTab {
         Rc::new(FitsTab {
             widget,
             canvas,
-            header_panel,
             data,
             stretch: RefCell::new(Stretch::Linear),
             colormap: RefCell::new(ColorMap::Grayscale),
@@ -182,10 +173,6 @@ impl FitsTab {
         *self.vmin.borrow_mut() = self.auto_vmin;
         *self.vmax.borrow_mut() = self.auto_vmax;
         self.re_render();
-    }
-
-    pub fn toggle_header(&self) {
-        self.header_panel.toggle();
     }
 
     pub fn set_north_up(&self, enabled: bool) {

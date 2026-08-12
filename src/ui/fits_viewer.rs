@@ -10,6 +10,7 @@ use crate::models::fits_image::{HduInfo, WcsInfo};
 use crate::state::AppServices;
 use crate::ui::fits_canvas::{BlinkOverlay, FitsCanvas, SharedSky, SharedSkyRef};
 use crate::ui::fits_coords_panel::FitsCoordsPanel;
+use crate::ui::fits_header_panel::FitsHeaderPanel;
 use crate::ui::fits_tab::FitsTab;
 use crate::ui::viewer_shell;
 use gtk4::glib;
@@ -83,8 +84,11 @@ pub struct FitsViewer {
     /// Free-form zoom % entry (parses "NNN" / "NNN%" on activate).
     zoom_entry: gtk::Entry,
     north_up_btn: gtk::ToggleButton,
-    header_btn: gtk::ToggleButton,
-    coords_btn: gtk::ToggleButton,
+    /// The header/info section. The expander IS the state — there is no second
+    /// toggle that could disagree with whether the section is open.
+    header_panel: Rc<FitsHeaderPanel>,
+    header_expander: gtk::Expander,
+    coords_expander: gtk::Expander,
     /// Sky-linked crosshair toggle (default ON; also auto-enables North-Up).
     link_btn: gtk::ToggleButton,
     /// Cross-fade blink toggle.
@@ -248,24 +252,6 @@ impl FitsViewer {
             &north_up_btn,
         ));
 
-        let header_btn = icon_toggle(
-            "view-list-symbolic",
-            crate::tr_en!("FITS header and image info, beside the image"),
-        );
-        column.append(&viewer_shell::labeled_row(
-            crate::tr_en!("Header panel"),
-            &header_btn,
-        ));
-
-        let coords_btn = icon_toggle(
-            "starred-symbolic",
-            crate::tr_en!("Saved coordinates: bookmarks and go-to"),
-        );
-        column.append(&viewer_shell::labeled_row(
-            crate::tr_en!("Coordinates panel"),
-            &coords_btn,
-        ));
-
         // ── CROSSHAIR ───────────────────────────────────────────────────────
         column.append(&viewer_shell::section_header(crate::tr_en!("CROSSHAIR")));
 
@@ -304,6 +290,20 @@ impl FitsViewer {
         )));
         search_here_btn.set_sensitive(false);
         column.append(&search_here_btn);
+
+        // ── HEADER & IMAGE INFO ─────────────────────────────────────────────
+        // A section of the column, not a panel beside the image: one instance
+        // for the viewer, refilled when you switch tabs.
+        let header_panel = FitsHeaderPanel::new();
+        let header_expander = gtk::Expander::new(Some(crate::tr_en!("Header & image info")));
+        header_expander.set_child(Some(header_panel.widget()));
+        column.append(&header_expander);
+
+        // ── SAVED COORDINATES ───────────────────────────────────────────────
+        let coords_panel = FitsCoordsPanel::new();
+        let coords_expander = gtk::Expander::new(Some(crate::tr_en!("Saved coordinates")));
+        coords_expander.set_child(Some(coords_panel.widget()));
+        column.append(&coords_expander);
 
         // ── COMPARE ─────────────────────────────────────────────────────────
         // Everything that acts across tabs, together.
@@ -459,10 +459,6 @@ impl FitsViewer {
         );
 
         body.append(&notebook);
-        body.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
-        let coords_panel = FitsCoordsPanel::new();
-        body.append(coords_panel.widget());
 
         // Image on the left, controls docked on the right — the cube viewer's
         // shape, from the same module.
@@ -494,8 +490,9 @@ impl FitsViewer {
             zoom_combo,
             zoom_entry,
             north_up_btn,
-            header_btn,
-            coords_btn,
+            header_panel,
+            header_expander,
+            coords_expander,
             link_btn,
             blink_btn,
             blink_target_btn,
@@ -582,18 +579,7 @@ impl FitsViewer {
             reset_btn.connect_clicked(move |_| {
                 if let Some(tab) = v.current_tab() {
                     tab.reset_stretch();
-                    v.sync_toolbar_to_tab(&tab);
-                }
-            });
-        }
-        {
-            let v = viewer.clone();
-            viewer.header_btn.connect_toggled(move |_| {
-                if *v.suppress_sync.borrow() {
-                    return;
-                }
-                if let Some(tab) = v.current_tab() {
-                    tab.toggle_header();
+                    v.sync_controls_to_tab(&tab);
                 }
             });
         }
@@ -688,15 +674,6 @@ impl FitsViewer {
         }
         {
             let v = viewer.clone();
-            viewer.coords_btn.connect_toggled(move |_| {
-                if *v.suppress_sync.borrow() {
-                    return;
-                }
-                v.coords_panel.toggle();
-            });
-        }
-        {
-            let v = viewer.clone();
             viewer.zoom_combo.connect_selected_notify(move |combo| {
                 if *v.suppress_sync.borrow() {
                     return;
@@ -727,7 +704,7 @@ impl FitsViewer {
                         if let Some(tab) = v.current_tab() {
                             tab.set_zoom(pct / 100.0);
                             // Reflect the (clamped) applied zoom back to both widgets.
-                            v.sync_toolbar_to_tab(&tab);
+                            v.sync_controls_to_tab(&tab);
                             if v.sync_zoom_enabled.get() {
                                 v.update_shared_angular_zoom();
                             }
@@ -814,7 +791,7 @@ impl FitsViewer {
                         // shared angular zoom, THEN sync the toolbar so the zoom % reflects it.
                         tab.apply_linked_crosshair();
                         v.apply_shared_view_to_active(&tab);
-                        v.sync_toolbar_to_tab(&tab);
+                        v.sync_controls_to_tab(&tab);
                         v.update_hdu_and_banner(&tab);
                     }
                     // The active index changed, so the MCP snapshot is stale.
@@ -999,12 +976,12 @@ impl FitsViewer {
                 if let Some(v) =
                     crate::mcp::tools::arg(args, "showHeaderPanel").and_then(|v| v.as_bool())
                 {
-                    self.header_btn.set_active(v);
+                    self.header_expander.set_expanded(v);
                 }
                 if let Some(v) =
                     crate::mcp::tools::arg(args, "showBookmarksPanel").and_then(|v| v.as_bool())
                 {
-                    self.coords_btn.set_active(v);
+                    self.coords_expander.set_expanded(v);
                 }
                 // Centre is applied after zoom so the pan maths uses the new scale.
                 let (cur_cx, cur_cy) = tab.viewport_center();
@@ -1013,7 +990,7 @@ impl FitsViewer {
                 if cx.is_some() || cy.is_some() {
                     tab.set_viewport_center(cx.unwrap_or(cur_cx), cy.unwrap_or(cur_cy));
                 }
-                self.sync_toolbar_to_tab(&tab);
+                self.sync_controls_to_tab(&tab);
                 Ok(self.fits_view_state(&tab))
             }
             "probe_fits_pixel" => {
@@ -1080,7 +1057,7 @@ impl FitsViewer {
                         if in_bounds {
                             tab.canvas().set_crosshair(Some((px, py)));
                         }
-                        self.sync_toolbar_to_tab(&tab);
+                        self.sync_controls_to_tab(&tab);
                         Ok(json!({
                             "moved": true,
                             "ra": ra,
@@ -1221,8 +1198,8 @@ impl FitsViewer {
             // Cross-tab toggles + panels, mirroring the toolbar.
             "syncZoom": self.sync_zoom_enabled.get(),
             "linkedCrosshair": self.link_btn.is_active(),
-            "showHeaderPanel": self.header_btn.is_active(),
-            "showBookmarksPanel": self.coords_btn.is_active(),
+            "showHeaderPanel": self.header_expander.is_expanded(),
+            "showBookmarksPanel": self.coords_expander.is_expanded(),
             "blink": self.blink_state(),
             // Which tab this is, so a reader can correlate with list_open_tabs.
             "tabIndex": self.notebook.current_page().unwrap_or(0),
@@ -1242,9 +1219,17 @@ impl FitsViewer {
         self.tabs.borrow().get(idx as usize).cloned()
     }
 
-    /// Sync all toolbar widgets to the given tab's current state.
-    fn sync_toolbar_to_tab(&self, tab: &Rc<FitsTab>) {
+    /// Sync every control in the column to the given tab's current state.
+    fn sync_controls_to_tab(&self, tab: &Rc<FitsTab>) {
         *self.suppress_sync.borrow_mut() = true;
+
+        // The header section shows the image you are LOOKING at. One panel for
+        // the viewer means it has to be repointed here; the alternative, one
+        // panel per tab, is what used to put 320 px of layout beside every open
+        // image whether or not anyone had opened it.
+        let data = tab.data();
+        self.header_panel
+            .set_content(data.header_ordered.clone(), data.image_info_rows());
 
         self.stretch_combo
             .set_selected(stretch_to_index(tab.stretch()));
@@ -1380,7 +1365,7 @@ impl FitsViewer {
                 self.publish_open_tabs();
 
                 // Sync toolbar + extension selector + WCS banner to the new tab
-                self.sync_toolbar_to_tab(&tab);
+                self.sync_controls_to_tab(&tab);
                 self.update_hdu_and_banner(&tab);
             }
             Err(e) => {
@@ -1548,7 +1533,7 @@ impl FitsViewer {
         self.notebook.set_current_page(Some(new_pos));
         *self.suppress_page_switch.borrow_mut() = false;
 
-        self.sync_toolbar_to_tab(&new_tab);
+        self.sync_controls_to_tab(&new_tab);
         self.update_hdu_and_banner(&new_tab);
     }
 
@@ -2187,8 +2172,8 @@ mod control_visibility_tests {
             ("Max cut", "max_scale"),
             ("Reset", "reset_btn"),
             ("North up", "north_up_btn"),
-            ("Header panel", "header_btn"),
-            ("Bookmarks panel", "coords_btn"),
+            ("Header panel", "header_expander"),
+            ("Bookmarks panel", "coords_expander"),
             ("Zoom", "zoom_box"),
             ("Blink", "blink_btn"),
             ("Blink target", "blink_target_btn"),
@@ -2222,8 +2207,8 @@ mod control_visibility_tests {
             "Min cut",
             "Max cut",
             "North up",
-            "Header panel",
-            "Coordinates panel",
+            "Header & image info",
+            "Saved coordinates",
             "Zoom",
             "Blink",
             "Fade speed",
