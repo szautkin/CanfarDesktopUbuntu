@@ -89,8 +89,10 @@ cargo test
 ## Code Quality
 
 ```bash
-# Lint
-cargo clippy -- -D warnings
+# Lint — the exact command CI runs, so a green local run means a green CI run.
+# `--all-targets` includes the tests; `-A dead_code` is deliberate (a good deal
+# of the surface is live only under one feature configuration).
+cargo clippy --all-targets -- -D warnings -A dead_code
 
 # Format check
 cargo fmt -- --check

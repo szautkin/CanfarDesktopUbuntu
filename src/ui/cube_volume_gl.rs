@@ -107,6 +107,9 @@ pub const SPECTRAL_SCALE_RANGE: (f32, f32) = (0.5, 4.0);
 /// Opacity multiplier. Zero would render nothing at all, so the floor is a
 /// small positive value rather than 0.
 pub const DENSITY_MIN: f32 = 0.01;
+// Checked where the value lives, at compile time: a floor of zero advertises a
+// setting that renders an empty frame.
+const _: () = assert!(DENSITY_MIN > 0.0);
 
 /// Camera elevation, radians. Just short of the poles, where the orbit basis
 /// degenerates and the volume flips.

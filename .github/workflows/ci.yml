@@ -43,8 +43,12 @@ jobs:
       # these are the exact commands README and CONTRIBUTING tell a contributor
       # to run. CI passing while the documented command produced a different
       # (and quietly crippled) binary is how that divergence went unnoticed.
+      # `--all-targets` so the ~1,070 tests are linted too. Without it clippy
+      # sees only the binary, and three lints sat unnoticed in test code that
+      # `cargo test` happily compiled — the same shape as the `--features fits`
+      # divergence above: a gate that checks less than the repo contains.
       - name: Clippy
-        run: cargo clippy -- -D warnings -A dead_code
+        run: cargo clippy --all-targets -- -D warnings -A dead_code
 
       - name: Build
         run: cargo build --release

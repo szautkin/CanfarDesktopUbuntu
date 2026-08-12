@@ -413,8 +413,8 @@ mod tests {
             SPECTRAL_SCALE_RANGE.0 < SPECTRAL_SCALE_RANGE.1,
             "{SPECTRAL_SCALE_RANGE:?}"
         );
-        // Zero density renders nothing at all, so the floor has to be positive.
-        assert!(DENSITY_MIN > 0.0, "{DENSITY_MIN}");
+        // The density floor is pinned at compile time beside the constant
+        // itself — a runtime assertion on a `const` can only ever restate it.
     }
 
     use super::*;

@@ -17,19 +17,19 @@ for contributing to the project.
    ```bash
    cargo build
    cargo test
-   cargo clippy -- -D warnings
+   cargo clippy --all-targets -- -D warnings -A dead_code
    ```
 
 ## Code Style
 
 - Run `cargo fmt` before committing
-- Run `cargo clippy -- -D warnings` and fix all warnings
+- Run `cargo clippy --all-targets -- -D warnings -A dead_code` (the command CI runs — `--all-targets` lints the tests too) and fix all warnings
 - Follow existing code patterns and naming conventions
 - Keep changes focused — one feature or fix per PR
 
 ## Pull Requests
 
-1. Ensure your code compiles without warnings (`cargo build`, `cargo clippy`)
+1. Ensure your code compiles without warnings (`cargo build`, `cargo clippy --all-targets`)
 2. Format your code (`cargo fmt`)
 3. Run tests (`cargo test`)
 4. Write a clear PR description explaining what and why

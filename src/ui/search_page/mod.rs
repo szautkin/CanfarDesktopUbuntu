@@ -80,6 +80,12 @@ const RESULT_COLUMN_WIDTH: i32 = 100;
 
 /// Gap after each results column, applied on both sides for the same reason.
 const RESULT_COLUMN_GAP: i32 = 4;
+
+// Pinned at compile time, next to the values themselves. Narrower than this and
+// the ellipsis eats every cell, which defeats a grid whose whole point is
+// comparing values at a glance; a negative gap would overlap the next column.
+const _: () = assert!(RESULT_COLUMN_WIDTH >= 60);
+const _: () = assert!(RESULT_COLUMN_GAP >= 0);
 /// Index of the default page size (100) in [`ROWS_PER_PAGE`].
 const DEFAULT_ROWS_PER_PAGE: usize = 2;
 const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
@@ -4084,7 +4090,7 @@ mod numeric_range_tests {
 
 #[cfg(test)]
 mod results_layout_tests {
-    use super::{RESULT_COLUMN_GAP, RESULT_COLUMN_WIDTH};
+    use super::RESULT_COLUMN_WIDTH;
 
     #[test]
     fn the_header_and_the_rows_size_their_columns_identically() {
@@ -4119,14 +4125,6 @@ mod results_layout_tests {
             !source.contains(&literal_width),
             "a literal column width has come back; it will drift from the header's"
         );
-    }
-
-    #[test]
-    fn a_column_is_wide_enough_to_read() {
-        // Narrower than this and the ellipsis eats every value; the point of the
-        // grid is to compare cells at a glance.
-        assert!(RESULT_COLUMN_WIDTH >= 60, "{RESULT_COLUMN_WIDTH}");
-        assert!(RESULT_COLUMN_GAP >= 0, "{RESULT_COLUMN_GAP}");
     }
 }
 
