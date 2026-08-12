@@ -1,3 +1,4 @@
+use crate::helpers::date_presets;
 use crate::helpers::range_parser::{self, ParsedRange, RangeOp};
 use crate::helpers::sexagesimal;
 use crate::helpers::unit_converter;
@@ -282,30 +283,18 @@ fn parse_radius(input: &str) -> f64 {
 // Temporal constraints
 // ---------------------------------------------------------------------------
 
-/// How many days back a date preset reaches, or `None` when it is not one.
-///
-/// Shared with the Search form, which writes the resulting range into the
-/// visible date field when a preset is picked. The window the user is SHOWN has
-/// to be the window that is queried; two copies of these numbers would let the
-/// dates on screen drift away from the results.
-pub fn preset_days_back(preset: &str) -> Option<f64> {
-    match preset {
-        "Last 24 hours" => Some(1.0),
-        "Last week" => Some(7.0),
-        "Last month" => Some(30.0),
-        _ => None,
-    }
-}
-
 fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
-    // Date presets — use INTERSECTS(INTERVAL) with MJD (matching Windows)
-    let now_mjd = current_mjd();
-    match preset_days_back(&state.date_preset) {
-        Some(days) => {
+    // Date presets — use INTERSECTS(INTERVAL) with MJD (matching Windows).
+    // The window comes from the shared preset table, which the dropdown and the
+    // MCP schema also read: the range the user is SHOWN has to be the range that
+    // is queried.
+    let now = chrono::Utc::now();
+    match date_presets::window_start(&state.date_preset, now) {
+        Some(start) => {
             clauses.push(format!(
                 "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                num(now_mjd - days),
-                num(now_mjd)
+                num(datetime_to_mjd(start)),
+                num(datetime_to_mjd(now))
             ));
         }
         None => {
@@ -493,10 +482,9 @@ fn expand_date_to_mjd_range(s: &str) -> Option<(f64, f64)> {
     Some((lo, hi))
 }
 
-/// Get the current Modified Julian Date.
-fn current_mjd() -> f64 {
-    let now = chrono::Utc::now();
-    let unix_days = now.timestamp() as f64 / 86400.0;
+/// Modified Julian Date for an instant.
+fn datetime_to_mjd(at: chrono::DateTime<chrono::Utc>) -> f64 {
+    let unix_days = at.timestamp() as f64 / 86400.0;
     unix_days + 40587.0 // MJD epoch offset from Unix epoch
 }
 
@@ -1085,7 +1073,7 @@ mod tests {
     #[test]
     fn build_with_date_preset() {
         let mut state = SearchFormState::new();
-        state.date_preset = "Last 24 hours".to_string();
+        state.date_preset = "Last24h".to_string();
         let adql = build(&state);
         assert!(adql.contains("INTERSECTS( INTERVAL("));
         assert!(adql.contains("Plane.time_bounds_samples"));
@@ -1159,27 +1147,27 @@ mod tests {
     }
 
     #[test]
-    fn every_offered_preset_resolves_to_a_window() {
-        // The Search form builds its dropdown from DATE_PRESETS and asks this
-        // function what each entry means. An entry it did not recognise would be
-        // a selectable option that silently applies no date constraint at all.
-        for preset in ["Last 24 hours", "Last week", "Last month"] {
-            assert!(
-                preset_days_back(preset).is_some(),
-                "`{preset}` is offered but resolves to no window"
-            );
-        }
-        // The blank entry means "no preset", not "zero days".
-        assert_eq!(preset_days_back(""), None);
-        assert_eq!(preset_days_back("Last fortnight"), None);
-    }
+    fn a_preset_constrains_the_query_and_an_unknown_one_does_not_pretend_to() {
+        // Which window each preset means is tested where the table lives; what
+        // matters here is that a preset produces a temporal clause at all, and
+        // that a value naming no preset falls through to the date field instead
+        // of quietly emitting nothing.
+        let mut state = SearchFormState {
+            date_preset: "Last24h".to_string(),
+            ..Default::default()
+        };
+        let with_preset = build(&state);
+        assert!(
+            with_preset.contains("Plane.time_bounds_samples"),
+            "{with_preset}"
+        );
 
-    #[test]
-    fn the_windows_widen_in_the_order_they_are_offered() {
-        let day = preset_days_back("Last 24 hours").unwrap();
-        let week = preset_days_back("Last week").unwrap();
-        let month = preset_days_back("Last month").unwrap();
-        assert!(day < week && week < month, "{day} {week} {month}");
+        // The value we used to persist must still work — saved searches hold it.
+        state.date_preset = "Last 24 hours".to_string();
+        assert!(build(&state).contains("Plane.time_bounds_samples"));
+
+        state.date_preset = String::new();
+        assert!(!build(&state).contains("Plane.time_bounds_samples"));
     }
 
     #[test]
@@ -1187,7 +1175,7 @@ mod tests {
         // Matching the reference: the preset takes priority, so a stale date in
         // the text field cannot narrow the window the preset asked for.
         let mut state = SearchFormState::new();
-        state.date_preset = "Last week".to_string();
+        state.date_preset = "LastWeek".to_string();
         state.obs_date_raw = "1999-01-01..1999-12-31".to_string();
         let adql = build(&state);
         assert!(adql.contains("Plane.time_bounds_samples"), "{adql}");

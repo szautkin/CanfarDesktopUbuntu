@@ -99,7 +99,7 @@ pub(crate) fn form_properties() -> Value {
         "pixelScaleUnit": {"type": "string", "enum": crate::helpers::unit_converter::PIXEL_SCALE_UNITS},
         "spatialCutout": {"type": "boolean", "description": "Restrict to data supporting spatial cutouts."},
         "observationDate": {"type": "string", "description": "Observation date or range (`2020-01-01..2021-01-01`)."},
-        "datePreset": {"type": "string", "enum": crate::ui::search_page::DATE_PRESETS, "description": "Relative date window. Applied BEFORE observationDate, so an explicit date in the same call wins."},
+        "datePreset": {"type": "string", "enum": crate::helpers::date_presets::VALUES, "description": "Relative date window. Applied BEFORE observationDate, so an explicit date in the same call wins."},
         "integrationTime": {"type": "string", "description": "Integration time. Range syntax accepted."},
         "timeSpan": {"type": "string", "description": "Time span. Range syntax accepted."},
         "timeUnit": {"type": "string", "enum": crate::helpers::unit_converter::TIME_UNITS},

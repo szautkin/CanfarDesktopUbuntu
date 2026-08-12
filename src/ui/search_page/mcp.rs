@@ -11,33 +11,43 @@
 //! without widening their visibility for everyone else.
 
 use super::{
-    dropdown_index, SearchPage, DATE_PRESETS, INTENTS, PIXEL_SCALE_UNITS, RESOLVER_SERVICES,
-    SPECTRAL_UNITS, TIME_UNITS,
+    dropdown_index, SearchPage, INTENTS, PIXEL_SCALE_UNITS, RESOLVER_SERVICES, SPECTRAL_UNITS,
+    TIME_UNITS,
 };
+use crate::helpers::date_presets;
 use crate::models::search_result::{build_columns_from_headers, default_columns};
 use gtk4::prelude::*;
 use serde_json::{json, Value};
 use std::rc::Rc;
 
-/// Every enum-valued field of `set_search_form`, with the list it decodes
-/// against — `None` for the spectral units, which resolve through the converter
-/// so `Angstrom` and `um` are understood alongside `Å` and `µm`.
+/// How a field's value is resolved to a dropdown position.
+enum Choices {
+    /// Exactly the listed values, case-insensitively.
+    List(&'static [&'static str]),
+    /// Through the unit converter, which also understands `Angstrom` and `um`
+    /// alongside `Å` and `µm`.
+    Spectral,
+    /// Through the preset table, which also understands the spelling we used to
+    /// persist and the one the macOS app uses.
+    DatePreset,
+}
+
+/// Every enum-valued field of `set_search_form`.
 ///
 /// One table, walked by both the validator and a test that reads the published
 /// schema: an enum added to the schema without an entry here fails that test,
 /// which is the only thing standing between an advertised choice and a value
 /// silently swapped for another.
-type Choices = Option<&'static [&'static str]>;
 const ENUM_FIELDS: &[(&str, Choices)] = &[
-    ("intent", Some(&INTENTS)),
-    ("resolver", Some(&RESOLVER_SERVICES)),
-    ("datePreset", Some(&DATE_PRESETS)),
-    ("pixelScaleUnit", Some(&PIXEL_SCALE_UNITS)),
-    ("timeUnit", Some(&TIME_UNITS)),
-    ("spectralUnit", None),
-    ("spectralSamplingUnit", None),
-    ("bandpassWidthUnit", None),
-    ("restFrameEnergyUnit", None),
+    ("intent", Choices::List(&INTENTS)),
+    ("resolver", Choices::List(&RESOLVER_SERVICES)),
+    ("datePreset", Choices::DatePreset),
+    ("pixelScaleUnit", Choices::List(&PIXEL_SCALE_UNITS)),
+    ("timeUnit", Choices::List(&TIME_UNITS)),
+    ("spectralUnit", Choices::Spectral),
+    ("spectralSamplingUnit", Choices::Spectral),
+    ("bandpassWidthUnit", Choices::Spectral),
+    ("restFrameEnergyUnit", Choices::Spectral),
 ];
 
 /// The dropdown position for `value` in `field`'s list, or an error naming what
@@ -55,11 +65,11 @@ fn choice_index(field: &str, value: &str) -> Result<u32, String> {
     let allowed = ENUM_FIELDS
         .iter()
         .find(|(name, _)| *name == field)
-        .map(|(_, choices)| *choices)
+        .map(|(_, choices)| choices)
         .ok_or_else(|| format!("{field} is not a choice field"))?;
 
     match allowed {
-        Some(list) => list
+        Choices::List(list) => list
             .iter()
             .position(|candidate| candidate.eq_ignore_ascii_case(value))
             .map(|i| i as u32)
@@ -67,9 +77,12 @@ fn choice_index(field: &str, value: &str) -> Result<u32, String> {
         // Spectral units accept every spelling the converter does, then resolve
         // to the canonical entry — so nothing reaches the dropdown that the
         // query builder would later fail to convert.
-        None => crate::helpers::unit_converter::canonical_spectral_unit(value)
+        Choices::Spectral => crate::helpers::unit_converter::canonical_spectral_unit(value)
             .map(|canonical| dropdown_index(&SPECTRAL_UNITS, canonical))
             .ok_or_else(|| choice_error(field, &SPECTRAL_UNITS)),
+        Choices::DatePreset => {
+            date_presets::position(value).ok_or_else(|| choice_error(field, &date_presets::VALUES))
+        }
     }
 }
 
@@ -265,7 +278,7 @@ impl SearchPage {
             "resolvedDec": *self.resolved_dec.borrow(),
             // Temporal
             "observationDate": self.obs_date.text().to_string(),
-            "datePreset": DATE_PRESETS
+            "datePreset": date_presets::VALUES
                 .get(self.date_preset.selected() as usize)
                 .unwrap_or(&""),
             "integrationTime": self.integration_time.text().to_string(),

@@ -43,6 +43,7 @@ fn saved_query_badge(
 // which units mean anything — the page only renders them. Keeping a second
 // copy here is how the dropdown ended up offering 4 of the 14 units the
 // converter has always handled.
+use crate::helpers::date_presets;
 use crate::helpers::store_events::{self, Store};
 use crate::helpers::unit_converter::{PIXEL_SCALE_UNITS, SPECTRAL_UNITS, TIME_UNITS};
 
@@ -50,7 +51,6 @@ use crate::helpers::unit_converter::{PIXEL_SCALE_UNITS, SPECTRAL_UNITS, TIME_UNI
 /// changed underneath it. One mutex read per tick; it rebuilds only when a
 /// sequence actually moved.
 const SIDEBAR_POLL_MS: u64 = 1000;
-pub(crate) const DATE_PRESETS: [&str; 4] = ["", "Last 24 hours", "Last week", "Last month"];
 pub(crate) const INTENTS: [&str; 3] = ["", "science", "calibration"];
 /// Rows-per-page choices. The dropdown is decoded by index, so its LABELS are
 /// derived from these numbers rather than written out a second time — the two
@@ -154,12 +154,11 @@ fn delimited_export(
 /// The concrete `YYYY-MM-DD..YYYY-MM-DD` window a date preset stands for, or
 /// `None` when `preset` is the blank entry.
 ///
-/// Derived from `adql_builder::preset_days_back`, so the range written into the
-/// visible field is exactly the one the query will use.
+/// Reads the same window rule the ADQL builder reads, so the range written into
+/// the visible field is exactly the one the query will use.
 fn preset_date_range(preset: &str) -> Option<String> {
-    let days = crate::helpers::adql_builder::preset_days_back(preset)?;
     let now = chrono::Utc::now();
-    let start = now - chrono::Duration::days(days as i64);
+    let start = date_presets::window_start(preset, now)?;
     Some(format!(
         "{}..{}",
         start.format("%Y-%m-%d"),
@@ -936,7 +935,7 @@ impl SearchPage {
             let weak = Rc::downgrade(&page);
             page.date_preset.connect_selected_notify(move |combo| {
                 let Some(page) = weak.upgrade() else { return };
-                let Some(preset) = DATE_PRESETS.get(combo.selected() as usize) else {
+                let Some(preset) = date_presets::VALUES.get(combo.selected() as usize) else {
                     return;
                 };
                 if let Some(range) = preset_date_range(preset) {
@@ -1034,7 +1033,7 @@ impl SearchPage {
         let spectral_units = SPECTRAL_UNITS;
         let time_units = TIME_UNITS;
         let pixel_scale_units = PIXEL_SCALE_UNITS;
-        let date_presets = DATE_PRESETS;
+        let date_preset_values = date_presets::VALUES;
         let intents = INTENTS;
         let resolver_services = RESOLVER_SERVICES;
 
@@ -1172,7 +1171,7 @@ impl SearchPage {
                 .unwrap_or(&"")
                 .to_string(),
             public_only: self.public_only.is_active(),
-            date_preset: date_presets
+            date_preset: date_preset_values
                 .get(self.date_preset.selected() as usize)
                 .unwrap_or(&"")
                 .to_string(),
@@ -1298,8 +1297,9 @@ impl SearchPage {
 
         // ── Temporal ─────────────────────────────────────────────────────────
         self.obs_date.set_text(&s.obs_date_raw);
+        // Alias-tolerant: saved searches on disk hold the LABEL as their value.
         self.date_preset
-            .set_selected(dropdown_index(&DATE_PRESETS, &s.date_preset));
+            .set_selected(date_presets::position(&s.date_preset).unwrap_or(0));
         self.integration_time.set_text(&s.integration_time_raw);
         self.time_span.set_text(&s.time_span_raw);
         self.time_unit
@@ -3835,7 +3835,7 @@ fn build_temporal_column() -> (
     let (w, obs_date, date_preset) = labeled_entry_with_combo(
         crate::tr_en!("Observation Date"),
         crate::tr_en!("e.g. 2020..2021"),
-        &DATE_PRESETS,
+        &date_presets::LABELS,
     );
     col.append(&w);
 
@@ -4130,7 +4130,8 @@ mod results_layout_tests {
 
 #[cfg(test)]
 mod date_preset_tests {
-    use super::{preset_date_range, DATE_PRESETS};
+    use super::preset_date_range;
+    use crate::helpers::date_presets::VALUES as DATE_PRESETS;
 
     #[test]
     fn every_offered_preset_writes_a_range_except_the_blank_one() {
@@ -4153,22 +4154,19 @@ mod date_preset_tests {
 
     #[test]
     fn the_window_shown_is_the_window_queried() {
-        // The field is filled from the same rule the ADQL builder uses, so the
-        // dates on screen cannot drift away from the results. A second copy of
-        // these numbers is exactly how that drift would start.
+        // The field is filled from the same rule the query uses, so the dates on
+        // screen cannot drift away from the results. A second copy of these
+        // numbers is exactly how that drift would start.
+        let now = chrono::Utc::now();
         for preset in DATE_PRESETS.iter().skip(1) {
-            let days = crate::helpers::adql_builder::preset_days_back(preset)
+            let expected = crate::helpers::date_presets::window_start(preset, now)
                 .unwrap_or_else(|| panic!("`{preset}` has no window"));
             let range = preset_date_range(preset).unwrap();
-            let (start, end) = range.split_once("..").unwrap();
-
-            let start = chrono::NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
-            let end = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap();
+            let (start, _) = range.split_once("..").unwrap();
             assert_eq!(
-                (end - start).num_days(),
-                days as i64,
-                "`{preset}` shows a {}-day window but queries {days}",
-                (end - start).num_days()
+                start,
+                expected.format("%Y-%m-%d").to_string(),
+                "`{preset}` shows a window starting elsewhere than the query's"
             );
         }
     }
@@ -4190,7 +4188,11 @@ mod combo_tests {
     /// Constants that both populate a dropdown and decode its selection.
     const INDEXED_BY_DROPDOWN: &[&str] = &[
         "PIXEL_SCALE_UNITS",
-        "DATE_PRESETS",
+        // The presets are the one pair where the visible list and the value
+        // list are DIFFERENT arrays — the labels a person reads, and the
+        // reference's wire values — so the guard names the labels, and
+        // `date_presets` pins the two to the same order.
+        "date_presets::LABELS",
         "TIME_UNITS",
         "SPECTRAL_UNITS",
         "INTENTS",
