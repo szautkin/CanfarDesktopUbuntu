@@ -401,6 +401,152 @@ mod read_back_tests {
 }
 
 #[cfg(test)]
+mod payload_contract_tests {
+    //! A proposal's payload is written by one function and read by another,
+    //! usually hundreds of lines apart. Nothing connects them.
+    //!
+    //! `apply_launch_headless_job` read `replicas` from its payload and no
+    //! proposer ever wrote one, so the field was permanently `None` — an entire
+    //! capability the launch form offers, the service supports and the reference
+    //! advertises, unreachable through the tool that pretends to expose it.
+
+    /// Files where a propose/apply pair lives.
+    const PAYLOAD_FILES: &[(&str, &str)] = &[
+        ("sessions.rs", include_str!("sessions.rs")),
+        ("vospace.rs", include_str!("vospace.rs")),
+        ("research.rs", include_str!("research.rs")),
+        ("workflows.rs", include_str!("workflows.rs")),
+        ("write.rs", include_str!("write.rs")),
+        ("ai_compute.rs", include_str!("ai_compute.rs")),
+        ("aiguide_ext.rs", include_str!("aiguide_ext.rs")),
+        ("imagediscovery.rs", include_str!("imagediscovery.rs")),
+        ("search_ui.rs", include_str!("search_ui.rs")),
+        ("caom2_vizier.rs", include_str!("caom2_vizier.rs")),
+    ];
+
+    /// The file with the schema declarations and the appliers removed — what is
+    /// left is the propose side and the helpers it builds payloads with.
+    ///
+    /// Scoping matters more than it looks: scanning the whole file counts the
+    /// tool SCHEMA's own property names as writes, so a payload key nothing
+    /// writes is found in the schema and the guard passes. That is exactly how
+    /// this test's first version failed to catch the bug it was written for.
+    /// Scoping the other way — to `propose_*` bodies alone — was too tight, and
+    /// reported three keys written by a shared helper.
+    fn without_body_of(source: &str, marker: &str) -> String {
+        let mut out = String::new();
+        let mut rest = source;
+        while let Some(at) = rest.find(marker) {
+            out.push_str(&rest[..at]);
+            let after = &rest[at..];
+            let Some(open) = after.find('{') else { break };
+            let mut depth = 0usize;
+            let mut end = after.len();
+            for (i, c) in after[open..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = &after[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Everything that can WRITE a payload: the file minus its schemas and minus
+    /// its appliers.
+    fn write_side(source: &str) -> String {
+        let mut out = without_body_of(source, "fn descriptors(");
+        while out.contains("fn apply") {
+            let next = without_body_of(&out, "fn apply");
+            if next == out {
+                break;
+            }
+            out = next;
+        }
+        out
+    }
+
+    /// Keys a file writes into any JSON object, plus `payload["k"] =` stores.
+    fn written_keys(source: &str) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        for (at, _) in source.match_indices("\":") {
+            // Walk back over the key and its opening quote.
+            let head = &source[..at];
+            if let Some(open) = head.rfind('"') {
+                let name = &head[open + 1..];
+                if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    keys.push(name.to_string());
+                }
+            }
+        }
+        // `something["key"] = …` — the payload is not always the binding called
+        // `payload`; `download_item` builds one named `item`.
+        for (at, _) in source.match_indices("[\"") {
+            let rest = &source[at + 2..];
+            if let Some(end) = rest.find('"') {
+                let name = &rest[..end];
+                if rest[end..].starts_with("\"]")
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    keys.push(name.to_string());
+                }
+            }
+        }
+        keys
+    }
+
+    /// Keys a file reads back OUT of a proposal payload.
+    fn read_keys(source: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        for marker in ["payload, \"", "payload.get(\"", "p.payload, \""] {
+            for (at, _) in source.match_indices(marker) {
+                let rest = &source[at + marker.len()..];
+                if let Some(end) = rest.find('"') {
+                    keys.push(rest[..end].to_string());
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn every_payload_key_an_applier_reads_is_one_a_proposer_writes() {
+        let mut orphans: Vec<String> = Vec::new();
+        for (name, source) in PAYLOAD_FILES {
+            let source = super::advertised_argument_tests::without_test_modules(source);
+            let written = written_keys(&write_side(&source));
+            let has = |key: &str| {
+                written.iter().any(|w| {
+                    w == key
+                        || *w == crate::mcp::tools::camel_case(key)
+                        || *w == crate::mcp::tools::snake_case(key)
+                })
+            };
+            for key in read_keys(&source) {
+                if !has(&key) {
+                    orphans.push(format!("{name}: {key}"));
+                }
+            }
+        }
+
+        assert!(
+            orphans.is_empty(),
+            "these payload keys are read when a proposal is applied but never \
+             written when one is made, so the value is always absent: {orphans:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod advertised_argument_tests {
     //! Every argument a tool advertises must be an argument something READS.
     //!
@@ -451,7 +597,7 @@ mod advertised_argument_tests {
     /// Tests name arguments constantly — asserting on them, building payloads
     /// out of them — and every one of those mentions would answer "yes, it is
     /// read" for code that reads nothing.
-    fn without_test_modules(source: &str) -> String {
+    pub(super) fn without_test_modules(source: &str) -> String {
         let mut out = String::with_capacity(source.len());
         let mut rest = source;
         while let Some(at) = rest.find("#[cfg(test)]") {
