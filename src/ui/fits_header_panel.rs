@@ -153,6 +153,11 @@ impl FitsHeaderPanel {
         let entries = self.entries.borrow();
         let filter_lower = filter.trim().to_ascii_lowercase();
 
+        // Say WHY the list is empty. A panel that opens onto nothing reads as a
+        // broken panel; an extension with no keywords, or a filter that matched
+        // none, is information the reader can act on.
+        let mut shown = 0usize;
+
         for (key, value, comment) in entries.iter() {
             if !filter_lower.is_empty()
                 && !key.to_ascii_lowercase().contains(&filter_lower)
@@ -195,6 +200,28 @@ impl FitsHeaderPanel {
             }
 
             row.set_child(Some(&grid));
+            self.list_box.append(&row);
+            shown += 1;
+        }
+
+        if shown == 0 {
+            let message = if entries.is_empty() {
+                crate::tr_en!("This extension carries no header keywords.")
+            } else {
+                crate::tr_en!("No keyword matches that search.")
+            };
+            let empty = gtk::Label::new(Some(message));
+            empty.add_css_class("dim-label");
+            empty.add_css_class("caption");
+            empty.set_wrap(true);
+            empty.set_margin_start(12);
+            empty.set_margin_end(12);
+            empty.set_margin_top(12);
+            empty.set_margin_bottom(12);
+            let row = gtk::ListBoxRow::new();
+            row.set_selectable(false);
+            row.set_activatable(false);
+            row.set_child(Some(&empty));
             self.list_box.append(&row);
         }
     }
