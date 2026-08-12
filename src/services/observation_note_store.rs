@@ -30,9 +30,50 @@ impl ObservationNoteStore {
         ObservationNoteStore { data_path }
     }
 
+    /// Point the store at an arbitrary file.
+    ///
+    /// Exists so callers that must not touch the user's real notes — tests, and
+    /// anything operating on an exported copy — can say so explicitly rather
+    /// than depending on the process-wide data dir.
+    pub fn with_path(data_path: PathBuf) -> Self {
+        ObservationNoteStore { data_path }
+    }
+
     /// The note for `publisher_id`, or `None` if there isn't one.
     pub fn get(&self, publisher_id: &str) -> Option<ObservationNote> {
         self.load_map().remove(publisher_id)
+    }
+
+    /// Remove the note for `publisher_id`, if there is one.
+    ///
+    /// Saving an empty note happens to have the same effect, but only as a side
+    /// effect of the delete-on-empty rule — a caller that means "delete" should
+    /// be able to say it, and not break the day that rule changes.
+    pub fn delete(&self, publisher_id: &str) -> Result<(), String> {
+        self.delete_many(&[publisher_id.to_string()])
+    }
+
+    /// Remove the notes for every id in `publisher_ids` in ONE rewrite.
+    ///
+    /// Clearing the archive deletes as many notes as there are observations, and
+    /// each write here rewrites the whole file — looping over [`Self::delete`]
+    /// would turn a 200-record clear into 200 full rewrites, with 200 chances to
+    /// be interrupted half-way through the set.
+    pub fn delete_many(&self, publisher_ids: &[String]) -> Result<(), String> {
+        if publisher_ids.is_empty() {
+            return Ok(());
+        }
+        let mut map = self.load_map();
+        let removed = publisher_ids
+            .iter()
+            .filter(|id| map.remove(*id).is_some())
+            .count();
+        // Nothing matched: skip the write rather than rewriting the file with
+        // identical content.
+        if removed == 0 {
+            return Ok(());
+        }
+        self.write_map(&map)
     }
 
     /// Insert or update a note.  An empty note (see [`ObservationNote::is_empty`])
@@ -109,14 +150,6 @@ impl Default for ObservationNoteStore {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    // Test-only constructor pointing the store at an arbitrary path so tests
-    // never touch the user's real notes file.
-    impl ObservationNoteStore {
-        fn with_path(path: PathBuf) -> Self {
-            ObservationNoteStore { data_path: path }
-        }
-    }
 
     /// A unique temp path per test, cleaned up on drop.
     struct TempStore {
@@ -236,6 +269,52 @@ mod tests {
 
         // Blank query returns nothing (not everything).
         assert!(store.search("   ").is_empty());
+    }
+
+    #[test]
+    fn delete_removes_one_note_and_leaves_the_rest() {
+        let tmp = TempStore::new();
+        let store = tmp.store();
+        store.save(note("id1", 3, "keep", &["x"])).unwrap();
+        store.save(note("id2", 4, "also keep", &[])).unwrap();
+
+        store.delete("id1").unwrap();
+
+        assert!(store.get("id1").is_none());
+        assert!(
+            store.get("id2").is_some(),
+            "an unrelated note was collateral"
+        );
+    }
+
+    #[test]
+    fn deleting_an_absent_note_is_not_an_error() {
+        // Clearing the archive deletes a note per observation, and most
+        // observations never had one — that must not fail the clear.
+        let tmp = TempStore::new();
+        let store = tmp.store();
+        store.save(note("id1", 3, "keep", &[])).unwrap();
+
+        store.delete("nobody").unwrap();
+        store.delete_many(&[]).unwrap();
+
+        assert!(store.get("id1").is_some());
+    }
+
+    #[test]
+    fn delete_many_removes_every_id_it_is_given() {
+        let tmp = TempStore::new();
+        let store = tmp.store();
+        store.save(note("id1", 1, "one", &[])).unwrap();
+        store.save(note("id2", 2, "two", &[])).unwrap();
+        store.save(note("id3", 3, "three", &[])).unwrap();
+
+        store
+            .delete_many(&["id1".to_string(), "id3".to_string(), "absent".to_string()])
+            .unwrap();
+
+        let ids: Vec<String> = store.all().into_iter().map(|n| n.publisher_id).collect();
+        assert_eq!(ids, vec!["id2".to_string()]);
     }
 
     #[test]

@@ -12,7 +12,8 @@
 //!   `update_observation_note` / `bulk_update_observation_notes` writes use).
 //! * `delete_downloaded_observation` — propose removing one observation (its
 //!   record + managed files). Destructive.
-//! * `clear_research_archive` — propose removing EVERY observation. Destructive.
+//! * `clear_research_archive` — propose removing EVERY observation, with its
+//!   notes and managed files. Destructive.
 //!
 //! Reads dispatch straight against `services.observation_store`. Writes NEVER
 //! mutate at propose time: they enqueue a [`PendingProposal`]; the real store
@@ -207,8 +208,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "clear_research_archive".to_string(),
             description: "Propose removing ALL observations from the Research library — every \
-                record and its managed files (file deletion is best-effort). Queues for the user \
-                to apply (a destructive change)."
+                record, its notes, and its managed files (file deletion is best-effort). Queues \
+                for the user to apply (a destructive change)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -595,9 +596,14 @@ fn propose_delete(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolR
 }
 
 fn propose_clear(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+    // The summary is what the user reads before approving a destructive change,
+    // so it names everything that goes. The reference's own summary says only
+    // "records" while its applier also deletes notes and files; a confirmation
+    // that understates what it destroys is the one place to prefer accuracy over
+    // a matching string.
     let p = proposals.enqueue(
         "clear_research_archive",
-        "Clear ALL research archive records",
+        "Clear ALL research archive records, their notes and their downloaded files",
         true,
         json!({}),
     );
@@ -815,9 +821,41 @@ async fn apply_delete(services: &AppServices, payload: &Value) -> Result<String,
     Ok(format!("Removed observation {} from Research", label))
 }
 
+/// Delete the notes belonging to `list`, in one rewrite.
+///
+/// Takes the store rather than opening one, so a test can point it at a temp
+/// file: clearing the archive is not something a test may run against the real
+/// data dir, yet "did the notes go too?" is exactly the part that was wrong.
+///
+/// Ids are deduplicated and blanks dropped — a record saved before publisher ids
+/// were recorded has none, and an empty key would delete nothing under a name
+/// that looks like it deleted something.
+fn clear_notes(store: &ObservationNoteStore, list: &[DownloadedObservation]) -> Result<(), String> {
+    let mut ids: Vec<String> = list
+        .iter()
+        .map(|o| o.publisher_id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    store.delete_many(&ids)
+}
+
 async fn apply_clear(services: &AppServices) -> Result<String, String> {
     let list = services.observation_store.load_async().await;
     let count = list.len();
+
+    // Notes go with the records. Leaving them behind is not merely untidy: a
+    // later re-download of the same observation would silently inherit the
+    // rating and note of a library the user chose to empty.
+    let for_notes = list.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        // Best-effort, like the file cleanup below — a notes write that fails
+        // must not leave the records half-removed.
+        let _ = clear_notes(&ObservationNoteStore::new(), &for_notes);
+    })
+    .await;
+
     for obs in &list {
         // Best-effort per-item file cleanup: a missing/locked managed dir must
         // never abort the clear.
@@ -1153,10 +1191,151 @@ mod tests {
             ToolResult::Proposed(p) => {
                 assert_eq!(p.kind, "clear_research_archive");
                 assert!(p.destructive);
+                // What the user approves must name everything that goes.
+                let summary = p.summary.to_lowercase();
+                for named in ["records", "notes", "files"] {
+                    assert!(
+                        summary.contains(named),
+                        "the confirmation does not mention {named}: {}",
+                        p.summary
+                    );
+                }
             }
             _ => panic!("expected Proposed"),
         }
         assert_eq!(store.pending_count(), 2);
+    }
+
+    /// A unique notes file per test, removed on drop, so nothing here can reach
+    /// the user's real research notes.
+    struct TempNotes {
+        path: std::path::PathBuf,
+    }
+
+    impl TempNotes {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "verbinal_clear_notes_{}_{}_{}.json",
+                tag,
+                std::process::id(),
+                nanos
+            ));
+            TempNotes { path }
+        }
+
+        fn store(&self) -> ObservationNoteStore {
+            ObservationNoteStore::with_path(self.path.clone())
+        }
+    }
+
+    impl Drop for TempNotes {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn noted(store: &ObservationNoteStore, pub_id: &str) {
+        store
+            .save(ObservationNote {
+                publisher_id: pub_id.to_string(),
+                rating: 4,
+                note: "worth another look".to_string(),
+                tags: vec!["followup".to_string()],
+                updated: "2026-01-01T00:00:00Z".to_string(),
+                agent_attribution: None,
+            })
+            .unwrap();
+    }
+
+    fn downloaded(pub_id: &str) -> DownloadedObservation {
+        DownloadedObservation {
+            id: format!("id-of-{pub_id}"),
+            publisher_id: pub_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn clearing_the_archive_takes_the_notes_with_it() {
+        // Left behind, a note re-attaches to the next download of the same
+        // observation — a rating and comment surfacing in a library the user
+        // deliberately emptied.
+        let tmp = TempNotes::new("takes");
+        let store = tmp.store();
+        noted(&store, "ivo://cadc/CFHT?1");
+        noted(&store, "ivo://cadc/CFHT?2");
+
+        clear_notes(
+            &store,
+            &[
+                downloaded("ivo://cadc/CFHT?1"),
+                downloaded("ivo://cadc/CFHT?2"),
+            ],
+        )
+        .unwrap();
+
+        assert!(store.all().is_empty(), "notes survived the clear");
+    }
+
+    #[test]
+    fn clearing_leaves_notes_for_observations_it_did_not_hold() {
+        // The library is the set of DOWNLOADED observations; a note can outlive
+        // its download, and clearing the library must not reach past its own list.
+        let tmp = TempNotes::new("scope");
+        let store = tmp.store();
+        noted(&store, "ivo://cadc/CFHT?1");
+        noted(&store, "ivo://cadc/JCMT?9");
+
+        clear_notes(&store, &[downloaded("ivo://cadc/CFHT?1")]).unwrap();
+
+        let left: Vec<String> = store.all().into_iter().map(|n| n.publisher_id).collect();
+        assert_eq!(left, vec!["ivo://cadc/JCMT?9".to_string()]);
+    }
+
+    /// The body of a top-level `fn`/`async fn` in this file, by name.
+    ///
+    /// Reads to the next item at column 0, which is enough here: every function
+    /// in this module is top-level and separated that way.
+    fn function_body(source: &'static str, signature: &str) -> &'static str {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is gone — this guard needs rewriting"));
+        let rest = &source[start + signature.len()..];
+        let end = rest
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{signature} has no closing brace at column 0"));
+        &rest[..end]
+    }
+
+    #[test]
+    fn the_applier_deletes_the_notes_it_promises_to() {
+        // `clear_notes` is tested directly above; what this pins is that the
+        // applier still CALLS it. Nothing at runtime can check that — the
+        // applier needs the whole `AppServices` and writes to the user's real
+        // data dir, so a test may never run it.
+        let body = function_body(include_str!("research.rs"), "async fn apply_clear(");
+        assert!(
+            body.contains("clear_notes("),
+            "apply_clear no longer deletes notes, but the tool description still promises it"
+        );
+    }
+
+    #[test]
+    fn a_record_without_a_publisher_id_clears_nothing() {
+        // Records predating publisher ids have none. An empty key would delete
+        // nothing while the code read as though it had deleted something.
+        let tmp = TempNotes::new("blank");
+        let store = tmp.store();
+        noted(&store, "");
+        noted(&store, "ivo://cadc/CFHT?1");
+
+        clear_notes(&store, &[downloaded("   ")]).unwrap();
+
+        assert_eq!(store.all().len(), 2, "a blank id matched a stored note");
     }
 
     #[test]
