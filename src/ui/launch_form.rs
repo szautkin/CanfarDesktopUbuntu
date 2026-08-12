@@ -785,17 +785,23 @@ impl LaunchFormView {
         filtered.get(idx).map(|img| img.id.clone())
     }
 
-    fn update_advanced_name(&self) {
-        let types = [
-            "notebook",
-            "desktop",
-            "carta",
-            "contributed",
-            "firefly",
-            "headless",
-        ];
+    /// The Advanced tab's session type, decoded from the list the dropdown was
+    /// BUILT from.
+    ///
+    /// Three call sites each kept their own copy of that list. They agreed
+    /// today; the day a type is added to `LAUNCHABLE_SESSION_TYPES` alone, every
+    /// selection past it decodes to the wrong type — the user picks CARTA and
+    /// launches a desktop, with nothing to indicate it.
+    fn advanced_session_type(&self) -> &'static str {
         let idx = self.custom_type_combo.selected() as usize;
-        let session_type = types.get(idx).unwrap_or(&"notebook");
+        LAUNCHABLE_SESSION_TYPES
+            .get(idx)
+            .copied()
+            .unwrap_or(LAUNCHABLE_SESSION_TYPES[0])
+    }
+
+    fn update_advanced_name(&self) {
+        let session_type = self.advanced_session_type();
         let count = self.session_count_for_type(session_type);
         let name = format!("{}{}", session_type, count + 1);
         self.adv_name_entry.set_text(&name);
@@ -860,16 +866,7 @@ impl LaunchFormView {
         let is_advanced = self.notebook.current_page() == Some(1);
 
         let (session_type, image, reg_user, reg_secret) = if is_advanced {
-            let types = [
-                "notebook",
-                "desktop",
-                "carta",
-                "contributed",
-                "firefly",
-                "headless",
-            ];
-            let idx = self.custom_type_combo.selected() as usize;
-            let st = types.get(idx).unwrap_or(&"notebook").to_string();
+            let st = self.advanced_session_type().to_string();
             // Resolve custom URI (honours a discovery-picked full image).
             let img = self.advanced_image_uri();
             let ru = {
@@ -1176,16 +1173,7 @@ impl LaunchFormView {
         let is_advanced = self.notebook.current_page() == Some(1);
 
         let (session_type, image) = if is_advanced {
-            let types = [
-                "notebook",
-                "desktop",
-                "carta",
-                "contributed",
-                "firefly",
-                "headless",
-            ];
-            let idx = self.custom_type_combo.selected() as usize;
-            let st = types.get(idx).unwrap_or(&"notebook").to_string();
+            let st = self.advanced_session_type().to_string();
             let img = self.advanced_image_uri();
             (st, img)
         } else {

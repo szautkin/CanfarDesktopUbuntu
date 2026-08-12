@@ -96,14 +96,9 @@ impl ImageParser {
         types.sort();
         types.dedup();
 
-        let order = [
-            "notebook",
-            "desktop",
-            "carta",
-            "contributed",
-            "firefly",
-            "headless",
-        ];
+        // The canonical order, from the one list every session-type surface
+        // reads; anything the registry reports that is not in it sorts last.
+        let order = crate::models::session::LAUNCHABLE_SESSION_TYPES;
         types.sort_by_key(|t| order.iter().position(|o| o == t).unwrap_or(order.len()));
         types
     }

@@ -370,6 +370,58 @@ mod session_type_tests {
         );
     }
 
+    /// Every file that has held a copy of this list, or plausibly could.
+    const SESSION_TYPE_READERS: &[(&str, &str)] = &[
+        ("ui/launch_form.rs", include_str!("../ui/launch_form.rs")),
+        (
+            "ui/settings_page.rs",
+            include_str!("../ui/settings_page.rs"),
+        ),
+        (
+            "helpers/image_parser.rs",
+            include_str!("../helpers/image_parser.rs"),
+        ),
+        (
+            "mcp/tools/sessions.rs",
+            include_str!("../mcp/tools/sessions.rs"),
+        ),
+        ("mcp/tools/write.rs", include_str!("../mcp/tools/write.rs")),
+        (
+            "mcp/tools/imagediscovery.rs",
+            include_str!("../mcp/tools/imagediscovery.rs"),
+        ),
+    ];
+
+    #[test]
+    fn nobody_else_writes_the_list_out() {
+        // It reached FIVE copies, one of them in a different order, and the
+        // launch form decoded a dropdown against three private ones — the shape
+        // that made a search in Ångström run in centimetres, in a different
+        // room. A source scan, because a second copy compiles perfectly and is
+        // wrong only later.
+        //
+        // The needle is built at runtime so this guard does not match itself.
+        let needle = format!(
+            "{:?},
+",
+            INTERACTIVE_SESSION_TYPES[0]
+        );
+        for (name, source) in SESSION_TYPE_READERS {
+            let body = match source.find("#[cfg(test)]") {
+                Some(at) => &source[..at],
+                None => source,
+            };
+            for (at, _) in body.match_indices(&needle) {
+                let after = &body[at..(at + 200).min(body.len())];
+                assert!(
+                    !after.contains(&format!("{:?}", INTERACTIVE_SESSION_TYPES[1])),
+                    "{name} writes the session-type list out again; decode it \
+                     from models::session instead"
+                );
+            }
+        }
+    }
+
     #[test]
     fn headless_is_not_an_interactive_type() {
         // The MCP surface tells the two apart, and a batch job in the
