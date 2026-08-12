@@ -151,6 +151,24 @@ fn delimited_export(
     out
 }
 
+/// The status line after a search returns.
+///
+/// Says when the row limit truncated the answer, as the reference does. Without
+/// it, "Found 10000 observations" reads as the size of the result set when it is
+/// really the size of the limit — and the difference decides whether the next
+/// step is to narrow the query or to accept it.
+fn search_status(count: usize, max_records: u32) -> String {
+    if count >= max_records as usize {
+        crate::tr_fmt!(
+            "Found {} observations (row limit {} reached — raise Max Records to see more)",
+            count,
+            max_records
+        )
+    } else {
+        crate::tr_fmt!("Found {} observations", count)
+    }
+}
+
 /// The concrete `YYYY-MM-DD..YYYY-MM-DD` window a date preset stands for, or
 /// `None` when `preset` is the blank entry.
 ///
@@ -254,6 +272,8 @@ pub struct SearchPage {
     /// Column headers, in a strip pinned above the scrolled rows.
     header_panel: gtk::Box,
     results_count_label: gtk::Label,
+    /// Wrapped, dismissible explanation of the last failed query.
+    error_banner: adw::Banner,
     page_label: gtk::Label,
     /// "Apply filters to ADQL" button — shown only while client-side column
     /// filters are active (ref `ApplyFiltersBtn` / `UpdateApplyFiltersButton`).
@@ -340,6 +360,19 @@ impl SearchPage {
         title.set_halign(gtk::Align::Start);
         title.set_margin_bottom(12);
         main_box.append(&title);
+
+        // A failed query says why HERE, wrapped and dismissible, rather than in
+        // the one-line status label where a TAP service's explanation of what
+        // was wrong with the ADQL is ellipsised away. Mirrors the reference's
+        // error InfoBar.
+        let error_banner = adw::Banner::new("");
+        error_banner.set_revealed(false);
+        error_banner.set_button_label(Some(crate::tr_en!("Dismiss")));
+        {
+            let banner = error_banner.clone();
+            error_banner.connect_button_clicked(move |_| banner.set_revealed(false));
+        }
+        main_box.append(&error_banner);
 
         // --- Notebook (3 tabs: Search Form | Results | ADQL Editor) ---
         let notebook = gtk::Notebook::new();
@@ -754,6 +787,7 @@ impl SearchPage {
             results_panel,
             header_panel,
             results_count_label,
+            error_banner,
             page_label,
             apply_filters_btn,
             recent_list,
@@ -1449,6 +1483,8 @@ impl SearchPage {
         form_state: Option<&SearchFormState>,
     ) {
         self.status_label.set_text(crate::tr_en!("Searching..."));
+        // A previous failure must not sit above a fresh, successful search.
+        self.error_banner.set_revealed(false);
         self.search_spinner.set_visible(true);
         self.search_spinner.start();
 
@@ -1474,7 +1510,7 @@ impl SearchPage {
                 self.results_count_label
                     .set_text(&format!("{} observations", count));
                 self.status_label
-                    .set_text(&format!("Found {} observations", count));
+                    .set_text(&search_status(count, max_records));
 
                 // Save recent
                 let summary = form_state
@@ -1502,7 +1538,9 @@ impl SearchPage {
                 self.notebook.set_current_page(Some(1));
             }
             Err(e) => {
-                self.status_label.set_text(&format!("Search failed: {}", e));
+                self.status_label.set_text(crate::tr_en!("Search failed"));
+                self.error_banner.set_title(&e.to_string());
+                self.error_banner.set_revealed(true);
             }
         }
     }
@@ -4125,6 +4163,42 @@ mod results_layout_tests {
             !source.contains(&literal_width),
             "a literal column width has come back; it will drift from the header's"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_status_tests {
+    use super::search_status;
+
+    #[test]
+    fn a_truncated_result_set_says_so() {
+        // 10,000 rows at a 10,000 limit is not "10,000 observations" — it is
+        // "at least 10,000", and the difference decides whether to narrow the
+        // query or accept the answer.
+        let s = search_status(10_000, 10_000);
+        assert!(s.contains("10000"), "{s}");
+        assert!(s.contains("row limit"), "{s}");
+        assert!(
+            s.contains("Max Records"),
+            "the reader needs the way out: {s}"
+        );
+    }
+
+    #[test]
+    fn a_complete_result_set_does_not() {
+        let s = search_status(42, 10_000);
+        assert!(s.contains("42"), "{s}");
+        assert!(!s.contains("row limit"), "{s}");
+    }
+
+    #[test]
+    fn an_empty_result_is_not_reported_as_truncated() {
+        // A limit of 0 is not reachable through the form, but arithmetic that
+        // reads `0 >= 0` as "truncated" would be wrong for the one case that
+        // matters most to explain plainly.
+        let s = search_status(0, 10_000);
+        assert!(s.contains('0'), "{s}");
+        assert!(!s.contains("row limit"), "{s}");
     }
 }
 
