@@ -7,7 +7,7 @@
 use chrono::{Duration, TimeZone, Utc};
 
 /// Em dash shown for "no value".
-const DASH: &str = "\u{2014}";
+pub const DASH: &str = "\u{2014}";
 
 /// Format a float with up to `decimals` places, trimming trailing zeros and any
 /// dangling decimal point (mirrors C# "0.#"-style formats).
@@ -103,6 +103,60 @@ pub fn seconds(s: Option<f64>) -> String {
     }
 }
 
+/// A plain number, up to 4 decimals (`Caom2Format.Number`).
+pub fn number(d: Option<f64>) -> String {
+    match d {
+        Some(v) if v.is_finite() => trim_num(v, 4),
+        _ => DASH.to_string(),
+    }
+}
+
+/// Yes / No / dash (`Caom2Format.Bool`).
+pub fn yes_no(b: Option<bool>) -> String {
+    match b {
+        Some(true) => crate::tr_en!("Yes").to_string(),
+        Some(false) => crate::tr_en!("No").to_string(),
+        None => DASH.to_string(),
+    }
+}
+
+/// An ISO-8601 timestamp reduced to its calendar date (`Caom2Format.Date`).
+///
+/// Tolerant by design: CAOM2 dates arrive as free text from a dozen archives,
+/// and text we cannot parse is shown as it came rather than replaced by a dash —
+/// an unparsed date is still information; a dash is not.
+pub fn date(s: Option<&str>) -> String {
+    match s {
+        Some(v) if !v.trim().is_empty() => {
+            let t = v.trim();
+            let head = t.get(..10).unwrap_or(t);
+            match chrono::NaiveDate::parse_from_str(head, "%Y-%m-%d") {
+                Ok(d) => d.format("%Y-%m-%d").to_string(),
+                Err(_) => t.to_string(),
+            }
+        }
+        _ => DASH.to_string(),
+    }
+}
+
+/// A keyword list joined for display, or the dash when empty.
+pub fn keywords(keywords: &[String]) -> String {
+    if keywords.is_empty() {
+        DASH.to_string()
+    } else {
+        keywords.join(", ")
+    }
+}
+
+/// Last path segment of a `cadc:`/`vos:` artifact URI — the file name
+/// (`Caom2Format.ArtifactFileName`).
+pub fn artifact_file_name(uri: &str) -> String {
+    match uri.rfind('/') {
+        Some(i) if i + 1 < uri.len() => uri[i + 1..].to_string(),
+        _ => uri.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +213,56 @@ mod tests {
         assert_eq!(degrees(Some(10.5)), "10.5\u{00b0}");
         assert_eq!(seconds(Some(120.0)), "120 s");
         assert_eq!(seconds(Some(0.25)), "0.25 s");
+    }
+}
+
+#[cfg(test)]
+mod added_tests {
+    use super::*;
+
+    #[test]
+    fn a_number_trims_to_four_places() {
+        assert_eq!(number(Some(1.5)), "1.5");
+        assert_eq!(number(Some(1.0)), "1");
+        assert_eq!(number(Some(0.123456)), "0.1235");
+        assert_eq!(number(None), DASH);
+        assert_eq!(number(Some(f64::NAN)), DASH);
+    }
+
+    #[test]
+    fn a_missing_flag_is_not_a_no() {
+        // "No" is a claim about the observation; the dash says we were not told.
+        assert_eq!(yes_no(Some(true)), "Yes");
+        assert_eq!(yes_no(Some(false)), "No");
+        assert_eq!(yes_no(None), DASH);
+    }
+
+    #[test]
+    fn a_date_keeps_text_it_cannot_parse() {
+        assert_eq!(date(Some("2026-03-08T12:00:00Z")), "2026-03-08");
+        assert_eq!(date(Some("2026-03-08")), "2026-03-08");
+        // Unparseable, but still information — better than a dash.
+        assert_eq!(date(Some("early 2026")), "early 2026");
+        assert_eq!(date(Some("  ")), DASH);
+        assert_eq!(date(None), DASH);
+    }
+
+    #[test]
+    fn keywords_join_or_dash() {
+        assert_eq!(keywords(&["a".to_string(), "b".to_string()]), "a, b");
+        assert_eq!(keywords(&[]), DASH);
+    }
+
+    #[test]
+    fn an_artifact_uri_reduces_to_its_file_name() {
+        assert_eq!(
+            artifact_file_name("cadc:CFHT/1234567p.fits.fz"),
+            "1234567p.fits.fz"
+        );
+        assert_eq!(artifact_file_name("vos:user/dir/x.fits"), "x.fits");
+        // No slash, or a trailing one: show what we were given rather than "".
+        assert_eq!(artifact_file_name("1234567p.fits"), "1234567p.fits");
+        assert_eq!(artifact_file_name("cadc:CFHT/"), "cadc:CFHT/");
+        assert_eq!(artifact_file_name(""), "");
     }
 }

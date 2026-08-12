@@ -28,7 +28,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// Em dash used for "no value", matching `Caom2Format.Dash`.
-const DASH: &str = "—";
+/// The CAOM2 value formatters, under the short names this page has always used.
+///
+/// They were a second implementation of `Helpers/Caom2Format.cs` living here,
+/// untested and already drifting from the tested one — its MJD conversion
+/// truncated where the shared one rounds. One home now; only the aliases stay.
+use crate::helpers::caom2_format::{
+    artifact_file_name, bytes as f_bytes, date as f_date, degrees as f_degrees,
+    keywords as join_keywords, mjd_to_date as f_mjd_to_date, number as f_number, text as f_text,
+    wavelength as f_wavelength, wavelength_range as f_wavelength_range, yes_no as f_bool, DASH,
+};
 
 // ---------------------------------------------------------------------------
 // ObservationDetailPage
@@ -417,9 +426,9 @@ fn build_overview(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             .map(|(x, y, z)| {
                 format!(
                     "({}, {}, {}) m",
-                    trim_float(x, 4),
-                    trim_float(y, 4),
-                    trim_float(z, 4)
+                    f_number(Some(x)),
+                    f_number(Some(y)),
+                    f_number(Some(z))
                 )
             })
             .unwrap_or_else(|| DASH.to_string());
@@ -519,13 +528,13 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             if let Some(r) = plane.position_resolution {
                 rows.push((
                     crate::tr_en!("Resolution").into(),
-                    format!("{}″", trim_float(r, 4)),
+                    format!("{}″", f_number(Some(r))),
                 ));
             }
             if let Some(s) = plane.position_sample_size {
                 rows.push((
                     crate::tr_en!("Sample Size").into(),
-                    format!("{}″", trim_float(s, 4)),
+                    format!("{}″", f_number(Some(s))),
                 ));
             }
             add_card(&plane_box, crate::tr_en!("Spatial Footprint"), &rows);
@@ -1742,147 +1751,6 @@ fn status_downloaded_other(status_box: &gtk::Box, name: &str, path: &str) {
         });
     }
     status_box.append(&open_btn);
-}
-
-/// Last path segment of a `cadc:`/`vos:` artifact URI (the file name).
-fn artifact_file_name(uri: &str) -> String {
-    if uri.is_empty() {
-        return uri.to_string();
-    }
-    match uri.rfind('/') {
-        Some(i) if i + 1 < uri.len() => uri[i + 1..].to_string(),
-        _ => uri.to_string(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Value formatting (mirrors Helpers/Caom2Format.cs)
-// ---------------------------------------------------------------------------
-
-fn f_text(s: Option<&str>) -> String {
-    match s {
-        Some(v) if !v.trim().is_empty() => v.to_string(),
-        _ => DASH.to_string(),
-    }
-}
-
-/// ISO-8601 timestamp → calendar date `YYYY-MM-DD` (mirrors `Caom2Format.Date`).
-/// Tolerant: parses the leading date portion and falls back to the raw text.
-fn f_date(s: Option<&str>) -> String {
-    match s {
-        Some(v) if !v.trim().is_empty() => {
-            let t = v.trim();
-            let head = t.get(..10).unwrap_or(t);
-            match chrono::NaiveDate::parse_from_str(head, "%Y-%m-%d") {
-                Ok(d) => d.format("%Y-%m-%d").to_string(),
-                Err(_) => t.to_string(),
-            }
-        }
-        _ => DASH.to_string(),
-    }
-}
-
-fn f_bool(b: Option<bool>) -> String {
-    match b {
-        Some(true) => crate::tr_en!("Yes").to_string(),
-        Some(false) => crate::tr_en!("No").to_string(),
-        None => DASH.to_string(),
-    }
-}
-
-fn f_number(d: Option<f64>) -> String {
-    match d {
-        Some(v) if v.is_finite() => trim_float(v, 4),
-        _ => DASH.to_string(),
-    }
-}
-
-fn f_degrees(d: Option<f64>) -> String {
-    match d {
-        Some(v) if v.is_finite() => format!("{}°", trim_float(v, 6)),
-        _ => DASH.to_string(),
-    }
-}
-
-/// Human-readable byte size (B/KB/MB/GB/TB).
-fn f_bytes(bytes: Option<u64>) -> String {
-    let b = match bytes {
-        Some(b) => b,
-        None => return DASH.to_string(),
-    };
-    let units = ["B", "KB", "MB", "GB", "TB"];
-    let mut size = b as f64;
-    let mut u = 0;
-    while size >= 1024.0 && u < units.len() - 1 {
-        size /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{} {}", b, units[u])
-    } else {
-        format!("{} {}", trim_float(size, 1), units[u])
-    }
-}
-
-/// Wavelength in metres → friendly nm/µm/mm/m.
-fn f_wavelength(metres: Option<f64>) -> String {
-    let m = match metres {
-        Some(m) if m > 0.0 && m.is_finite() => m,
-        _ => return DASH.to_string(),
-    };
-    if m < 1e-6 {
-        format!("{} nm", trim_float(m * 1e9, 3))
-    } else if m < 1e-3 {
-        format!("{} µm", trim_float(m * 1e6, 3))
-    } else if m < 1.0 {
-        format!("{} mm", trim_float(m * 1e3, 3))
-    } else {
-        format!("{} m", trim_float(m, 3))
-    }
-}
-
-fn f_wavelength_range(lower: Option<f64>, upper: Option<f64>) -> String {
-    if lower.is_none() && upper.is_none() {
-        DASH.to_string()
-    } else {
-        format!("{} – {}", f_wavelength(lower), f_wavelength(upper))
-    }
-}
-
-/// MJD (epoch 1858-11-17 UTC) → calendar UTC string.
-fn f_mjd_to_date(mjd: Option<f64>) -> String {
-    let v = match mjd {
-        Some(v) if v.is_finite() => v,
-        _ => return DASH.to_string(),
-    };
-    let epoch = chrono::NaiveDate::from_ymd_opt(1858, 11, 17).and_then(|d| d.and_hms_opt(0, 0, 0));
-    match epoch {
-        Some(e) => {
-            let dt = e + chrono::Duration::milliseconds((v * 86_400_000.0) as i64);
-            dt.format("%Y-%m-%d %H:%M UTC").to_string()
-        }
-        None => DASH.to_string(),
-    }
-}
-
-fn join_keywords(keywords: &[String]) -> String {
-    if keywords.is_empty() {
-        DASH.to_string()
-    } else {
-        keywords.join(", ")
-    }
-}
-
-/// Format a float to at most `decimals` places, trimming trailing zeros and a
-/// dangling decimal point (approximates .NET's "0.###" formatting).
-fn trim_float(v: f64, decimals: usize) -> String {
-    let s = format!("{:.*}", decimals, v);
-    if s.contains('.') {
-        let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-        trimmed.to_string()
-    } else {
-        s
-    }
 }
 
 #[cfg(test)]
