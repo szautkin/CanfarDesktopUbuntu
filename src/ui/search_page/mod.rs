@@ -50,8 +50,8 @@ use crate::helpers::unit_converter::{PIXEL_SCALE_UNITS, SPECTRAL_UNITS, TIME_UNI
 /// changed underneath it. One mutex read per tick; it rebuilds only when a
 /// sequence actually moved.
 const SIDEBAR_POLL_MS: u64 = 1000;
-const DATE_PRESETS: [&str; 4] = ["", "Last 24 hours", "Last week", "Last month"];
-const INTENTS: [&str; 3] = ["", "science", "calibration"];
+pub(crate) const DATE_PRESETS: [&str; 4] = ["", "Last 24 hours", "Last week", "Last month"];
+pub(crate) const INTENTS: [&str; 3] = ["", "science", "calibration"];
 /// Rows-per-page choices. The dropdown is decoded by index, so its LABELS are
 /// derived from these numbers rather than written out a second time — the two
 /// literals used to sit 350 lines apart, and adding a choice to one would have
@@ -65,9 +65,9 @@ const ROWS_PER_PAGE: [usize; 5] = [25, 50, 100, 250, 500];
 // pins them against the tool schema.
 /// Cone radius, degrees. 90 is the physical bound — a larger cone covers the
 /// whole sky twice.
-const RADIUS_RANGE_DEG: (f64, f64) = (0.0, 90.0);
+pub(crate) const RADIUS_RANGE_DEG: (f64, f64) = (0.0, 90.0);
 /// Row limit (MAXREC). 1 is a legitimate request: "show me one example".
-const MAX_RECORDS_RANGE: (f64, f64) = (1.0, 30_000.0);
+pub(crate) const MAX_RECORDS_RANGE: (f64, f64) = (1.0, 30_000.0);
 
 /// Width of one results column, in pixels.
 ///
@@ -88,7 +88,7 @@ const _: () = assert!(RESULT_COLUMN_WIDTH >= 60);
 const _: () = assert!(RESULT_COLUMN_GAP >= 0);
 /// Index of the default page size (100) in [`ROWS_PER_PAGE`].
 const DEFAULT_ROWS_PER_PAGE: usize = 2;
-const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
+pub(crate) const RESOLVER_SERVICES: [&str; 5] = ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"];
 
 /// Split a comma-joined facet selection back into values, dropping blanks.
 /// Inverse of `DataTrainManager::*_string()`.

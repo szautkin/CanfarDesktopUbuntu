@@ -91,15 +91,15 @@ pub(crate) fn form_properties() -> Value {
         "keywords": {"type": "string", "description": "Proposal keywords."},
         "dataRelease": {"type": "string", "description": "Data-release date constraint."},
         "publicOnly": {"type": "boolean", "description": "Restrict to public data."},
-        "intent": {"type": "string", "enum": ["", "science", "calibration"], "description": "Observation intent."},
+        "intent": {"type": "string", "enum": crate::ui::search_page::INTENTS, "description": "Observation intent."},
         "target": {"type": "string", "description": "Target name (resolved to RA/Dec), or coordinates."},
-        "resolver": {"type": "string", "enum": ["ALL", "SIMBAD", "NED", "VIZIER", "NONE"], "description": "Name-resolver service. NONE searches by name only, with no coordinate constraint."},
-        "radius": {"type": "number", "minimum": 0, "maximum": 90, "description": "Cone radius in degrees."},
+        "resolver": {"type": "string", "enum": crate::ui::search_page::RESOLVER_SERVICES, "description": "Name-resolver service. NONE searches by name only, with no coordinate constraint."},
+        "radius": {"type": "number", "minimum": crate::ui::search_page::RADIUS_RANGE_DEG.0, "maximum": crate::ui::search_page::RADIUS_RANGE_DEG.1, "description": "Cone radius in degrees."},
         "pixelScale": {"type": "string", "description": "Pixel scale. Accepts range syntax: `0.1..1.0`, `> 0.2`, `<= 5`. A bare value means EQUALS."},
         "pixelScaleUnit": {"type": "string", "enum": crate::helpers::unit_converter::PIXEL_SCALE_UNITS},
         "spatialCutout": {"type": "boolean", "description": "Restrict to data supporting spatial cutouts."},
         "observationDate": {"type": "string", "description": "Observation date or range (`2020-01-01..2021-01-01`)."},
-        "datePreset": {"type": "string", "enum": ["", "Last 24 hours", "Last week", "Last month"]},
+        "datePreset": {"type": "string", "enum": crate::ui::search_page::DATE_PRESETS, "description": "Relative date window. Applied BEFORE observationDate, so an explicit date in the same call wins."},
         "integrationTime": {"type": "string", "description": "Integration time. Range syntax accepted."},
         "timeSpan": {"type": "string", "description": "Time span. Range syntax accepted."},
         "timeUnit": {"type": "string", "enum": crate::helpers::unit_converter::TIME_UNITS},
@@ -113,7 +113,7 @@ pub(crate) fn form_properties() -> Value {
         "bandpassWidthUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS},
         "restFrameEnergyUnit": {"type": "string", "enum": crate::helpers::unit_converter::SPECTRAL_UNITS},
         "spectralCutout": {"type": "boolean", "description": "Restrict to data supporting spectral cutouts."},
-        "maxRecords": {"type": "integer", "minimum": 1, "maximum": 30000, "description": "Row limit (MAXREC)."}
+        "maxRecords": {"type": "integer", "minimum": crate::ui::search_page::MAX_RECORDS_RANGE.0 as u64, "maximum": crate::ui::search_page::MAX_RECORDS_RANGE.1 as u64, "description": "Row limit (MAXREC)."}
     })
 }
 

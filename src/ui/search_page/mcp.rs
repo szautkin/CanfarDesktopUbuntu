@@ -11,13 +11,113 @@
 //! without widening their visibility for everyone else.
 
 use super::{
-    dropdown_index, spectral_unit_index, SearchPage, DATE_PRESETS, INTENTS, PIXEL_SCALE_UNITS,
-    RESOLVER_SERVICES, SPECTRAL_UNITS, TIME_UNITS,
+    dropdown_index, SearchPage, DATE_PRESETS, INTENTS, PIXEL_SCALE_UNITS, RESOLVER_SERVICES,
+    SPECTRAL_UNITS, TIME_UNITS,
 };
 use crate::models::search_result::{build_columns_from_headers, default_columns};
 use gtk4::prelude::*;
 use serde_json::{json, Value};
 use std::rc::Rc;
+
+/// Every enum-valued field of `set_search_form`, with the list it decodes
+/// against — `None` for the spectral units, which resolve through the converter
+/// so `Angstrom` and `um` are understood alongside `Å` and `µm`.
+///
+/// One table, walked by both the validator and a test that reads the published
+/// schema: an enum added to the schema without an entry here fails that test,
+/// which is the only thing standing between an advertised choice and a value
+/// silently swapped for another.
+type Choices = Option<&'static [&'static str]>;
+const ENUM_FIELDS: &[(&str, Choices)] = &[
+    ("intent", Some(&INTENTS)),
+    ("resolver", Some(&RESOLVER_SERVICES)),
+    ("datePreset", Some(&DATE_PRESETS)),
+    ("pixelScaleUnit", Some(&PIXEL_SCALE_UNITS)),
+    ("timeUnit", Some(&TIME_UNITS)),
+    ("spectralUnit", None),
+    ("spectralSamplingUnit", None),
+    ("bandpassWidthUnit", None),
+    ("restFrameEnergyUnit", None),
+];
+
+/// The dropdown position for `value` in `field`'s list, or an error naming what
+/// the field accepts.
+///
+/// This replaces [`dropdown_index`] on every MCP path, and the difference is the
+/// whole point: `dropdown_index` falls back to entry 0, which for a UNIT list is
+/// a DIFFERENT unit. `timeUnit: "weeks"` selected seconds, so a search for
+/// exposures over 5 weeks quietly ran as 5 seconds; `spectralCoverageUnit:
+/// "furlong"` selected metres. Both reported success. The reference refuses the
+/// value instead (`SearchUiTools.Choice`), and so do we now.
+///
+/// Case-insensitive, matching the reference's `OrdinalIgnoreCase`.
+fn choice_index(field: &str, value: &str) -> Result<u32, String> {
+    let allowed = ENUM_FIELDS
+        .iter()
+        .find(|(name, _)| *name == field)
+        .map(|(_, choices)| *choices)
+        .ok_or_else(|| format!("{field} is not a choice field"))?;
+
+    match allowed {
+        Some(list) => list
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(value))
+            .map(|i| i as u32)
+            .ok_or_else(|| choice_error(field, list)),
+        // Spectral units accept every spelling the converter does, then resolve
+        // to the canonical entry — so nothing reaches the dropdown that the
+        // query builder would later fail to convert.
+        None => crate::helpers::unit_converter::canonical_spectral_unit(value)
+            .map(|canonical| dropdown_index(&SPECTRAL_UNITS, canonical))
+            .ok_or_else(|| choice_error(field, &SPECTRAL_UNITS)),
+    }
+}
+
+/// "field must be one of: a, b, c" — the empty entry, which means "no
+/// constraint", is described rather than shown as a blank.
+fn choice_error(field: &str, allowed: &[&str]) -> String {
+    let named: Vec<&str> = allowed.iter().copied().filter(|v| !v.is_empty()).collect();
+    let empty_note = if allowed.iter().any(|v| v.is_empty()) {
+        ", or \"\" for no constraint"
+    } else {
+        ""
+    };
+    format!("{field} must be one of: {}{}", named.join(", "), empty_note)
+}
+
+/// Check a whole form patch before any of it is applied.
+///
+/// Up front, deliberately: the checks used to sit inline beside the widget they
+/// guarded, so a patch with a bad `maxRecords` had already written six other
+/// fields into the form by the time it was refused. A rejected patch must leave
+/// the page exactly as it was.
+///
+/// Pure, so it can be tested — the page itself needs a GTK main loop.
+pub(super) fn validate_form_patch(args: &Value) -> Result<(), String> {
+    for (field, _) in ENUM_FIELDS {
+        if let Some(value) = crate::mcp::tools::arg(args, field).and_then(Value::as_str) {
+            choice_index(field, value)?;
+        }
+    }
+    if let Some(v) = crate::mcp::tools::num_arg(args, "radius") {
+        // The SAME bounds the widget and the schema use. A literal here would be
+        // a third copy of the number, and the spinner would silently clamp
+        // anything this let through.
+        let (lo, hi) = super::RADIUS_RANGE_DEG;
+        if !(lo..=hi).contains(&v) {
+            return Err(format!(
+                "radius must be between {lo} and {hi} degrees, got {v}"
+            ));
+        }
+    }
+    if let Some(v) = crate::mcp::tools::opt_u64(args, "maxRecords") {
+        let (lo, hi) = super::MAX_RECORDS_RANGE;
+        if !(lo as u64..=hi as u64).contains(&v) {
+            return Err(format!("maxRecords must be between {lo} and {hi}, got {v}"));
+        }
+    }
+    Ok(())
+}
 
 /// Tab indices, matching the reference's pivot order.
 const TAB_FORM: u32 = 0;
@@ -366,17 +466,15 @@ impl SearchPage {
     ///  * `datePreset` is applied BEFORE `observationDate`, so an explicit date
     ///    wins over a preset given in the same call.
     fn apply_form_patch(self: &Rc<Self>, args: &Value) -> Result<(), String> {
+        // Everything is checked before anything is written, so a refusal leaves
+        // the form untouched rather than half-patched.
+        validate_form_patch(args)?;
+
         let arg = |k: &str| crate::mcp::tools::arg(args, k);
         let text = |k: &str| arg(k).and_then(Value::as_str).map(str::to_string);
 
         if let Some(v) = text("resolver") {
-            if !RESOLVER_SERVICES.contains(&v.as_str()) {
-                return Err(format!(
-                    "resolver must be one of {RESOLVER_SERVICES:?}, got {v:?}"
-                ));
-            }
-            self.resolver
-                .set_selected(dropdown_index(&RESOLVER_SERVICES, &v));
+            self.resolver.set_selected(choice_index("resolver", &v)?);
         }
         if let Some(v) = text("target") {
             self.target.set_text(&v);
@@ -405,20 +503,11 @@ impl SearchPage {
             self.public_only.set_active(v);
         }
         if let Some(v) = text("intent") {
-            self.intent.set_selected(dropdown_index(&INTENTS, &v));
+            self.intent.set_selected(choice_index("intent", &v)?);
         }
 
         // Spatial
         if let Some(v) = crate::mcp::tools::num_arg(args, "radius") {
-            // Validated against the SAME bounds the widget and the schema use.
-            // A literal here would be a third copy of the number, and the
-            // spinner would silently clamp anything this let through.
-            let (lo, hi) = super::RADIUS_RANGE_DEG;
-            if !(lo..=hi).contains(&v) {
-                return Err(format!(
-                    "radius must be between {lo} and {hi} degrees, got {v}"
-                ));
-            }
             self.radius.set_value(v);
         }
         if let Some(v) = text("pixelScale") {
@@ -426,7 +515,7 @@ impl SearchPage {
         }
         if let Some(v) = text("pixelScaleUnit") {
             self.pixel_scale_unit
-                .set_selected(dropdown_index(&PIXEL_SCALE_UNITS, &v));
+                .set_selected(choice_index("pixelScaleUnit", &v)?);
         }
         if let Some(v) = arg("spatialCutout").and_then(Value::as_bool) {
             self.spatial_cutout.set_active(v);
@@ -435,7 +524,7 @@ impl SearchPage {
         // Temporal — preset first, so an explicit date in the same call wins.
         if let Some(v) = text("datePreset") {
             self.date_preset
-                .set_selected(dropdown_index(&DATE_PRESETS, &v));
+                .set_selected(choice_index("datePreset", &v)?);
         }
         if let Some(v) = text("observationDate") {
             self.obs_date.set_text(&v);
@@ -447,7 +536,7 @@ impl SearchPage {
             self.time_span.set_text(&v);
         }
         if let Some(v) = text("timeUnit") {
-            self.time_unit.set_selected(dropdown_index(&TIME_UNITS, &v));
+            self.time_unit.set_selected(choice_index("timeUnit", &v)?);
         }
 
         // Spectral
@@ -471,7 +560,7 @@ impl SearchPage {
         // for the whole block still gets what it meant, while one that wants a
         // coverage in nm and a sampling in GHz can say so.
         if let Some(v) = text("spectralUnit") {
-            let index = spectral_unit_index(&v);
+            let index = choice_index("spectralUnit", &v)?;
             self.spectral_unit.set_selected(index);
             self.spectral_sampling_unit.set_selected(index);
             self.bandpass_width_unit.set_selected(index);
@@ -483,7 +572,7 @@ impl SearchPage {
             ("restFrameEnergyUnit", &self.rest_frame_energy_unit),
         ] {
             if let Some(v) = text(key) {
-                combo.set_selected(spectral_unit_index(&v));
+                combo.set_selected(choice_index(key, &v)?);
             }
         }
         if let Some(v) = arg("spectralCutout").and_then(Value::as_bool) {
@@ -491,10 +580,6 @@ impl SearchPage {
         }
 
         if let Some(v) = crate::mcp::tools::opt_u64(args, "maxRecords") {
-            let (lo, hi) = super::MAX_RECORDS_RANGE;
-            if !(lo as u64..=hi as u64).contains(&v) {
-                return Err(format!("maxRecords must be between {lo} and {hi}, got {v}"));
-            }
             self.max_records.set_value(v as f64);
         }
         Ok(())
@@ -793,4 +878,138 @@ fn default_export_path(format: &str) -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("Verbinal");
     dir.join(format!("search_results_{stamp}.{format}"))
+}
+
+#[cfg(test)]
+mod choice_tests {
+    use super::{choice_index, validate_form_patch, ENUM_FIELDS};
+    use serde_json::json;
+
+    /// The properties `set_search_form` publishes.
+    fn schema() -> serde_json::Map<String, serde_json::Value> {
+        crate::mcp::tools::search_ui::form_properties()
+            .as_object()
+            .expect("form_properties is an object")
+            .clone()
+    }
+
+    #[test]
+    fn every_advertised_enum_is_enforced() {
+        // The structural half of this fix. Enforcement is a list of field names,
+        // and a list drifts from the schema it mirrors — so the test walks the
+        // SCHEMA: a new enum field that nothing validates fails here, rather
+        // than silently accepting anything and substituting entry 0.
+        for (field, spec) in schema() {
+            if spec.get("enum").is_none() {
+                continue;
+            }
+            assert!(
+                ENUM_FIELDS.iter().any(|(name, _)| *name == field),
+                "`{field}` advertises an enum but nothing validates it"
+            );
+            let refused = validate_form_patch(&json!({ &field: "definitely-not-a-choice" }));
+            assert!(
+                refused.is_err(),
+                "`{field}` accepted a value outside its own enum"
+            );
+        }
+    }
+
+    #[test]
+    fn every_enforced_field_is_advertised() {
+        // The other direction: validating against a list the schema never
+        // published would refuse values a compliant client had no way to know
+        // about.
+        let schema = schema();
+        for (field, _) in ENUM_FIELDS {
+            let spec = schema
+                .get(*field)
+                .unwrap_or_else(|| panic!("`{field}` is validated but not in the schema"));
+            assert!(
+                spec.get("enum").is_some(),
+                "`{field}` is validated as a choice but advertises no enum"
+            );
+        }
+    }
+
+    #[test]
+    fn the_advertised_choices_are_the_ones_accepted() {
+        // Not just "an enum exists" — the same values. A schema listing a choice
+        // the app refuses is as bad as the reverse: a validating client would
+        // send it in good faith and be rejected.
+        for (field, spec) in schema() {
+            let Some(values) = spec.get("enum").and_then(|e| e.as_array()) else {
+                continue;
+            };
+            for value in values.iter().filter_map(|v| v.as_str()) {
+                assert!(
+                    choice_index(&field, value).is_ok(),
+                    "`{field}` advertises {value:?} but refuses it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_unit_outside_the_list_is_refused_not_substituted() {
+        // The reason this exists. Falling back to entry 0 meant `weeks` selected
+        // SECONDS: a search for exposures longer than 5 weeks ran as 5 seconds,
+        // returned rows, and reported success.
+        let err = validate_form_patch(&json!({ "timeUnit": "weeks" })).unwrap_err();
+        assert!(err.contains("timeUnit must be one of"), "{err}");
+        assert!(err.contains('d'), "the error should name the units: {err}");
+
+        let err = validate_form_patch(&json!({ "spectralUnit": "furlong" })).unwrap_err();
+        assert!(err.contains("spectralUnit must be one of"), "{err}");
+    }
+
+    #[test]
+    fn a_choice_is_matched_regardless_of_case() {
+        // Matching the reference's OrdinalIgnoreCase comparison.
+        assert_eq!(
+            choice_index("intent", "SCIENCE"),
+            choice_index("intent", "science")
+        );
+        assert_eq!(
+            choice_index("resolver", "simbad"),
+            choice_index("resolver", "SIMBAD")
+        );
+    }
+
+    #[test]
+    fn a_spectral_unit_accepts_the_spellings_the_converter_does() {
+        // `Angstrom` and `um` appear in saved searches and in agent prompts; the
+        // converter has always understood them, so refusing them here would be a
+        // gratuitous divergence. They resolve to the canonical entry, never to
+        // entry 0 — which is metres, and 500 metres is not 500 Ångström.
+        let angstrom = choice_index("spectralUnit", "Å").unwrap();
+        assert_eq!(choice_index("spectralUnit", "Angstrom"), Ok(angstrom));
+        assert_ne!(angstrom, 0);
+
+        let micron = choice_index("spectralUnit", "µm").unwrap();
+        assert_eq!(choice_index("spectralUnit", "um"), Ok(micron));
+    }
+
+    #[test]
+    fn an_empty_choice_means_no_constraint() {
+        // "" is a real entry in intent and datePreset — clearing the field, not
+        // an invalid value.
+        assert_eq!(choice_index("intent", ""), Ok(0));
+        assert_eq!(choice_index("datePreset", ""), Ok(0));
+    }
+
+    #[test]
+    fn a_rejected_patch_is_checked_before_anything_is_written() {
+        // Validation runs over the whole patch up front, so a bad field late in
+        // the object refuses the call without the earlier fields having been
+        // applied. Proving the ORDER here needs the live page; what this pins is
+        // that the validator sees every field regardless of position.
+        let err = validate_form_patch(&json!({
+            "target": "M31",
+            "radius": 0.5,
+            "maxRecords": 999_999
+        }))
+        .unwrap_err();
+        assert!(err.contains("maxRecords"), "{err}");
+    }
 }
