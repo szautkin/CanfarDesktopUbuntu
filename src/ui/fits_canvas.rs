@@ -604,30 +604,17 @@ impl FitsCanvas {
                         let (ra_str, dec_str) = WcsInfo::format_coords(ra, dec);
                         let text = format!("RA {}  Dec {}", ra_str, dec_str);
 
-                        cr.select_font_face(
-                            "monospace",
-                            cairo::FontSlant::Normal,
-                            cairo::FontWeight::Normal,
+                        // The same renderer the cube's slice view uses, so the
+                        // two viewers' readouts cannot drift apart in look or in
+                        // edge behaviour.
+                        crate::ui::coord_chip::draw(
+                            cr,
+                            sx,
+                            sy,
+                            std::slice::from_ref(&text),
+                            widget_w as f64,
+                            widget_h as f64,
                         );
-                        cr.set_font_size(11.0);
-
-                        if let Ok(extents) = cr.text_extents(&text) {
-                            let padding = 4.0;
-                            let box_w = extents.width() + padding * 2.0;
-                            let box_h = extents.height() + padding * 2.0;
-                            let box_x = (sx + 8.0).min(widget_w as f64 - box_w - 4.0);
-                            let box_y = (sy + 8.0).min(widget_h as f64 - box_h - 4.0);
-
-                            // Background
-                            cr.set_source_rgba(0.0, 0.0, 0.0, 0.7);
-                            cr.rectangle(box_x, box_y, box_w, box_h);
-                            let _ = cr.fill();
-
-                            // Text
-                            cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
-                            cr.move_to(box_x + padding, box_y + padding + extents.height());
-                            let _ = cr.show_text(&text);
-                        }
                     }
                 }
             });

@@ -47,6 +47,11 @@ struct SliceState {
     pan_y: f64,
     hover: Option<(usize, usize)>,
     last_cursor: (f64, f64),
+    /// The readout for the hovered voxel, painted in the same frame as the
+    /// image. Held here rather than pushed into a widget: an overlay label
+    /// repositioned on every motion event re-runs layout dozens of times a
+    /// second and lands a frame behind its own text.
+    hover_lines: Vec<String>,
     probe: Option<(usize, usize)>,
     spectrum: Vec<f32>,
     playing: bool,
@@ -63,7 +68,6 @@ pub struct CubeSliceView {
     channel_label: gtk::Label,
     coord_label: gtk::Label,
     /// Floating readout chip (lon/lat/spectral/value) that tracks the pointer.
-    cursor_chip: gtk::Label,
     play_btn: gtk::Button,
     vol: Rc<VolumeData>,
     wcs: Rc<CubeWcs>,
@@ -103,24 +107,10 @@ impl CubeSliceView {
         slice_area.set_content_width(vol.nx.clamp(1, 800) as i32);
         slice_area.set_content_height(vol.ny.clamp(1, 600) as i32);
 
-        // Floating cursor chip layered over the slice via an Overlay.
-        ensure_chip_css();
-        let cursor_chip = gtk::Label::new(None);
-        cursor_chip.add_css_class("cube-cursor-chip");
-        cursor_chip.set_halign(gtk::Align::Start);
-        cursor_chip.set_valign(gtk::Align::Start);
-        cursor_chip.set_xalign(0.0);
-        cursor_chip.set_justify(gtk::Justification::Left);
-        cursor_chip.set_visible(false);
-        cursor_chip.set_can_target(false); // never intercept the pointer
-        let slice_overlay = gtk::Overlay::new();
-        slice_overlay.set_hexpand(true);
-        slice_overlay.set_vexpand(true);
-        slice_overlay.set_child(Some(&slice_area));
-        slice_overlay.add_overlay(&cursor_chip);
-        slice_overlay.set_measure_overlay(&cursor_chip, false);
-        slice_overlay.set_clip_overlay(&cursor_chip, true);
-        widget.append(&slice_overlay);
+        // The cursor readout is painted by the draw function (see
+        // `ui::coord_chip`), not layered as a widget — so the slice needs no
+        // overlay at all.
+        widget.append(&slice_area);
 
         // Persistent hover readout bar.
         let coord_label = gtk::Label::new(Some(crate::tr_en!("Hover the slice for coordinates")));
@@ -212,7 +202,6 @@ impl CubeSliceView {
             channel_scale,
             channel_label,
             coord_label,
-            cursor_chip,
             play_btn,
             disp_nx: Cell::new(vol.nx),
             disp_ny: Cell::new(vol.ny),
@@ -231,6 +220,7 @@ impl CubeSliceView {
                 pan_y: 0.0,
                 hover: None,
                 last_cursor: (0.0, 0.0),
+                hover_lines: Vec::new(),
                 probe: None,
                 spectrum: Vec::new(),
                 playing: false,
@@ -520,30 +510,22 @@ impl CubeSliceView {
             lines.push(spec);
         }
         lines.push(value);
-        self.cursor_chip.set_text(&lines.join("\n"));
-        self.cursor_chip.set_visible(true);
-        self.position_chip(px, py);
+        {
+            let mut st = self.state.borrow_mut();
+            st.hover_lines = lines;
+            st.last_cursor = (px, py);
+        }
 
         self.slice_area.queue_draw();
     }
 
-    /// Place the chip near the pointer, clamped inside the slice viewport
-    /// (mirrors `PositionCursorChip`: +16 right, above the pointer).
-    fn position_chip(&self, px: f64, py: f64) {
-        let (_, cw, _, _) = self.cursor_chip.measure(gtk::Orientation::Horizontal, -1);
-        let (_, ch, _, _) = self.cursor_chip.measure(gtk::Orientation::Vertical, cw);
-        let vw = self.slice_area.width();
-        let vh = self.slice_area.height();
-        let cx = (px as i32 + 16).clamp(0, (vw - cw).max(0));
-        let cy = (py as i32 - ch - 12).clamp(0, (vh - ch).max(0));
-        self.cursor_chip.set_margin_start(cx);
-        self.cursor_chip.set_margin_top(cy);
-    }
-
     /// Hide the chip + crosshair and reset the coordinate bar to its hint.
     fn clear_readout(&self) {
-        self.state.borrow_mut().hover = None;
-        self.cursor_chip.set_visible(false);
+        {
+            let mut st = self.state.borrow_mut();
+            st.hover = None;
+            st.hover_lines.clear();
+        }
         self.coord_label
             .set_text(crate::tr_en!("Hover the slice for coordinates"));
         self.slice_area.queue_draw();
@@ -725,9 +707,16 @@ impl CubeSliceView {
             let Some((fit, ox, oy, aw, ah)) = this.fit_params() else {
                 return;
             };
-            let (zoom, pan_x, pan_y, hover) = {
+            let (zoom, pan_x, pan_y, hover, hover_lines, cursor) = {
                 let s = this.state.borrow();
-                (s.zoom, s.pan_x, s.pan_y, s.hover)
+                (
+                    s.zoom,
+                    s.pan_x,
+                    s.pan_y,
+                    s.hover,
+                    s.hover_lines.clone(),
+                    s.last_cursor,
+                )
             };
 
             cr.save().ok();
@@ -759,6 +748,16 @@ impl CubeSliceView {
                 cr.move_to(sx, sy - 8.0);
                 cr.line_to(sx, sy + 8.0);
                 cr.stroke().ok();
+
+                // The readout, in this same frame — see `ui::coord_chip`.
+                crate::ui::coord_chip::draw(
+                    cr,
+                    cursor.0,
+                    cursor.1,
+                    &hover_lines,
+                    w as f64,
+                    h as f64,
+                );
             }
         });
     }
@@ -1059,32 +1058,6 @@ fn map_native_channel(ch: usize, down_nz: usize, orig_nz: usize) -> usize {
     } else {
         ch.min(orig_nz - 1)
     }
-}
-
-/// Register the floating-cursor-chip style once for the whole app.
-fn ensure_chip_css() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let provider = gtk::CssProvider::new();
-        provider.load_from_string(
-            ".cube-cursor-chip { \
-                background-color: rgba(20, 22, 28, 0.85); \
-                color: #eaeef5; \
-                border: 1px solid rgba(255, 255, 255, 0.14); \
-                border-radius: 6px; \
-                padding: 3px 7px; \
-                font-family: monospace; \
-                font-size: 10pt; }",
-        );
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-    });
 }
 
 /// NaN-aware per-channel mean intensity, normalized to `[0, 1]` heights for the
