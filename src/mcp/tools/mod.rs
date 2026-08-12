@@ -40,7 +40,7 @@ pub mod write;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `some_key` → `someKey`. Leaves an already-camelCase key untouched.
-fn camel_case(key: &str) -> String {
+pub(crate) fn camel_case(key: &str) -> String {
     let mut out = String::with_capacity(key.len());
     let mut upper_next = false;
     for c in key.chars() {
@@ -57,7 +57,7 @@ fn camel_case(key: &str) -> String {
 }
 
 /// `someKey` → `some_key`. Leaves an already-snake_case key untouched.
-fn snake_case(key: &str) -> String {
+pub(crate) fn snake_case(key: &str) -> String {
     let mut out = String::with_capacity(key.len() + 4);
     for c in key.chars() {
         if c.is_ascii_uppercase() {

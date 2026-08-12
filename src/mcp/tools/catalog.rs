@@ -316,3 +316,179 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+mod advertised_argument_tests {
+    //! Every argument a tool advertises must be an argument something READS.
+    //!
+    //! This exists because `change_cell_type` advertised `cellType`, required
+    //! it, and forbade additional properties — while the applier read only
+    //! `cell_type`. A compliant client could not call the tool at all, and no
+    //! test noticed, because a schema and the code behind it are checked by
+    //! nothing but a reader's memory. `get_fits_view`/`set_fits_view` had split
+    //! the same way over `zoomPercent`.
+    //!
+    //! A source scan, deliberately coarse: it asks only whether the NAME appears
+    //! as a string literal in the argument-reading code. That is enough to catch
+    //! a name that exists on one side only, which is the whole failure mode.
+
+    use super::*;
+    use crate::mcp::tools::ToolRouter;
+
+    /// Every file that reads tool arguments — the live viewer-command handlers
+    /// and the tool modules themselves.
+    const ARGUMENT_READERS: &[&str] = &[
+        include_str!("../../ui/notebook_host.rs"),
+        include_str!("../../ui/cube_tab_host.rs"),
+        include_str!("../../ui/cube_viewer.rs"),
+        include_str!("../../ui/fits_viewer.rs"),
+        include_str!("../../ui/search_page/mcp.rs"),
+        include_str!("../../ui/search_page/mod.rs"),
+        include_str!("../../ui/workflows_page.rs"),
+        include_str!("viewstate.rs"),
+        include_str!("read.rs"),
+        include_str!("write.rs"),
+        include_str!("vospace.rs"),
+        include_str!("sessions.rs"),
+        include_str!("research.rs"),
+        include_str!("caom2_vizier.rs"),
+        include_str!("fits.rs"),
+        include_str!("cube.rs"),
+        include_str!("notebook.rs"),
+        include_str!("workflows.rs"),
+        include_str!("search_ui.rs"),
+        include_str!("imagediscovery.rs"),
+        include_str!("aiguide_ext.rs"),
+        include_str!("ai_compute.rs"),
+        include_str!("router.rs"),
+    ];
+
+    /// The source with every `#[cfg(test)]` module removed.
+    ///
+    /// Tests name arguments constantly — asserting on them, building payloads
+    /// out of them — and every one of those mentions would answer "yes, it is
+    /// read" for code that reads nothing.
+    fn without_test_modules(source: &str) -> String {
+        let mut out = String::with_capacity(source.len());
+        let mut rest = source;
+        while let Some(at) = rest.find("#[cfg(test)]") {
+            out.push_str(&rest[..at]);
+            let after = &rest[at..];
+            // Skip to the module's opening brace, then past its matching close.
+            let Some(open) = after.find('{') else { break };
+            let mut depth = 0usize;
+            let mut end = after.len();
+            for (i, c) in after[open..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = &after[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The source with every `json!(...)` region removed.
+    ///
+    /// Without this the scan is worthless: a schema declares its own argument
+    /// names, so a name that exists ONLY in the schema would find itself and
+    /// pass. What is left after stripping is the code that reads arguments and
+    /// the code that builds payloads — and an input name appearing only in an
+    /// output payload is exactly the split this looks for.
+    fn without_json_literals(source: &str) -> String {
+        let mut out = String::with_capacity(source.len());
+        let mut rest = source;
+        while let Some(at) = rest.find("json!(") {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + "json!(".len()..];
+            let mut depth = 1usize;
+            let mut end = after.len();
+            for (i, c) in after.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = &after[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn every_advertised_argument_is_read_somewhere() {
+        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+        let (services, _toast_rx) = AppServices::new(rt.handle().clone());
+        let (router, _proposals) = build_router(services);
+
+        let readers: Vec<String> = ARGUMENT_READERS
+            .iter()
+            .map(|src| without_json_literals(&without_test_modules(src)))
+            .collect();
+
+        let mut unread: Vec<String> = Vec::new();
+        for tool in router.external_manifest() {
+            let Some(props) = tool.input_schema["properties"].as_object() else {
+                continue;
+            };
+            for name in props.keys() {
+                // `arg()` bridges the two spellings, so a reader asking for
+                // `max_bytes` does receive `maxBytes`. The scan has to model
+                // that or it reports ten tools that work perfectly — which is
+                // how the first version of this test nearly sent me off to
+                // "fix" them.
+                //
+                // The literal must sit where a LOOKUP puts it — `arg(args, "x")`,
+                // `text("x")`, `.get("x")` — so that prose in a tool description
+                // naming its own argument does not count as reading it. That is
+                // what let the zoomPercent split survive an earlier version of
+                // this scan.
+                let read = |src: &String, spelling: &str| {
+                    let needle = format!("\"{spelling}\"");
+                    src.match_indices(&needle).any(|(at, _)| {
+                        let before = src[..at].trim_end();
+                        // `(` and `,` cover a direct lookup; `[` covers the
+                        // table-driven readers — the seven search facets and the
+                        // event-cursor aliases are read by iterating a list, and
+                        // a rule that only understood direct calls reported both
+                        // as unread.
+                        before.ends_with('(') || before.ends_with(',') || before.ends_with('[')
+                    })
+                };
+                let spellings = [
+                    name.clone(),
+                    crate::mcp::tools::camel_case(name),
+                    crate::mcp::tools::snake_case(name),
+                ];
+                if !readers
+                    .iter()
+                    .any(|src| spellings.iter().any(|s| read(src, s)))
+                {
+                    unread.push(format!("{}.{}", tool.name, name));
+                }
+            }
+        }
+
+        assert!(
+            unread.is_empty(),
+            "these arguments are advertised but never read — a client sending them \
+             is ignored, or rejected by its own schema check: {unread:#?}"
+        );
+    }
+}

@@ -652,10 +652,10 @@ impl NotebookTabHost {
 
             "add_cell" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
-                let cell_type = norm_cell_type(
+                let cell_type = cell_type_arg(
                     crate::mcp::tools::arg(args, "cellType")
                         .or_else(|| crate::mcp::tools::arg(args, "type")),
-                );
+                )?;
                 let count = page.cell_count();
                 let idx = arg_index(args, "index").unwrap_or(count).min(count);
                 page.insert_cell(idx, &cell_type);
@@ -691,13 +691,18 @@ impl NotebookTabHost {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 let idx =
                     arg_index(args, "index").ok_or_else(|| "index is required".to_string())?;
-                let ct = crate::mcp::tools::arg(args, "cell_type")
+                // `cellType` FIRST — it is the name the schema advertises and
+                // requires. This read `cell_type` only, so the documented call
+                // was rejected and the tool was unusable as specified; the two
+                // older spellings stay as tolerated aliases.
+                let ct = crate::mcp::tools::arg(args, "cellType")
+                    .or_else(|| crate::mcp::tools::arg(args, "cell_type"))
                     .or_else(|| crate::mcp::tools::arg(args, "type"))
                     .and_then(|v| v.as_str());
                 let ct = match ct {
-                    Some("code") => "code",
-                    Some("markdown") => "markdown",
-                    _ => return Err("cell_type must be 'code' or 'markdown'".to_string()),
+                    Some(s) if s.eq_ignore_ascii_case("code") => "code",
+                    Some(s) if s.eq_ignore_ascii_case("markdown") => "markdown",
+                    _ => return Err("cellType must be 'code' or 'markdown'".to_string()),
                 };
                 if idx >= page.cell_count() {
                     return Err(format!("cell index {idx} out of range"));
@@ -1723,10 +1728,20 @@ fn arg_index(args: &serde_json::Value, key: &str) -> Option<usize> {
 }
 
 /// Normalise a cell-type argument, defaulting to "code".
-fn norm_cell_type(v: Option<&serde_json::Value>) -> String {
+/// Resolve an `add_cell` cell type, refusing anything the schema does not offer.
+///
+/// The old rule was "markdown, else code", so `cellType: "raw"` — a real Jupyter
+/// cell type — silently produced a CODE cell, and so did a capitalised
+/// `"Markdown"`. An absent value still means code, which is what the schema
+/// documents as the default.
+fn cell_type_arg(v: Option<&serde_json::Value>) -> Result<String, String> {
     match v.and_then(|x| x.as_str()) {
-        Some("markdown") => "markdown".to_string(),
-        _ => "code".to_string(),
+        None => Ok("code".to_string()),
+        Some(s) if s.eq_ignore_ascii_case("markdown") => Ok("markdown".to_string()),
+        Some(s) if s.eq_ignore_ascii_case("code") => Ok("code".to_string()),
+        Some(other) => Err(format!(
+            "cellType must be 'code' or 'markdown', got '{other}'"
+        )),
     }
 }
 

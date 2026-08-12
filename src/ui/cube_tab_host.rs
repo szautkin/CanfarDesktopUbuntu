@@ -365,10 +365,18 @@ impl CubeTabHost {
                 if let Some(bg) =
                     crate::mcp::tools::arg(args, "background").and_then(|x| x.as_str())
                 {
+                    // Refused, not defaulted: the schema advertises three names,
+                    // and quietly applying Dark for a fourth reports success for
+                    // a change the caller never asked for.
                     let rgb = match bg.trim().to_ascii_lowercase().as_str() {
+                        "dark" => [0.06, 0.06, 0.08],
                         "black" => [0.0, 0.0, 0.0],
                         "light" => [0.92, 0.92, 0.94],
-                        _ => [0.06, 0.06, 0.08], // dark (default)
+                        other => {
+                            return Err(format!(
+                                "unknown background '{other}' — use 'dark', 'black' or 'light'"
+                            ))
+                        }
                     };
                     v.gl().set_background(rgb);
                 }
