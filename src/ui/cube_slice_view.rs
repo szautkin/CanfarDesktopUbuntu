@@ -65,6 +65,14 @@ pub struct CubeSliceView {
     spectrum_revealer: gtk::Revealer,
     spectrum_title: gtk::Label,
     channel_scale: gtk::Scale,
+    /// Play + waveform + scrubber + label, hosted by the page rather than by
+    /// this widget so it stays on screen in volume mode too.
+    channel_bar: gtk::Box,
+    /// Notified on every channel change, so the volume's slice-plane marker
+    /// follows the scrubber. The crate's own slot type, which is `Rc` rather
+    /// than `Box` so the handler can be cloned out before it runs — a handler
+    /// that reaches back into this view would otherwise panic on the borrow.
+    on_channel_changed: crate::ui::CallbackSlot<dyn Fn(usize)>,
     channel_label: gtk::Label,
     coord_label: gtk::Label,
     /// Floating readout chip (lon/lat/spectral/value) that tracks the pointer.
@@ -187,7 +195,10 @@ impl CubeSliceView {
 
         // A single-channel cube has nothing to scrub / play.
         bottom_bar.set_visible(nz > 1);
-        widget.append(&bottom_bar);
+        // NOT appended here: the channel bar belongs to BOTH modes — in slice
+        // mode it picks the plane being drawn, in volume mode it drives the
+        // slice-plane marker through the cube. The page places it under the
+        // mode stack; see `CubeSliceView::channel_bar`.
 
         // ── Per-channel mean waveform heights (computed once) ───────────────
         let heights = channel_profile(&vol);
@@ -200,6 +211,8 @@ impl CubeSliceView {
             spectrum_revealer,
             spectrum_title,
             channel_scale,
+            channel_bar: bottom_bar,
+            on_channel_changed: RefCell::new(None),
             channel_label,
             coord_label,
             play_btn,
@@ -405,6 +418,40 @@ impl CubeSliceView {
         self.state.borrow_mut().z = clamped;
         self.render();
         self.update_channel_label();
+        // Tell the page, so the volume's slice-plane marker moves with the
+        // scrubber. There is ONE channel in this viewer; it used to be two —
+        // this view's and the volume's — which is why the marker sat wherever
+        // it was seeded no matter where you scrubbed.
+        let handler = self.on_channel_changed.borrow().clone();
+        if let Some(cb) = handler {
+            cb(clamped);
+        }
+    }
+
+    /// The play + waveform + scrubber + label bar, for the page to place.
+    pub fn channel_bar(&self) -> &gtk::Box {
+        &self.channel_bar
+    }
+
+    /// The channel the slice view is showing.
+    pub fn channel(&self) -> usize {
+        self.state.borrow().z
+    }
+
+    /// Move the scrubber, and with it the slice and the volume marker.
+    ///
+    /// Drives the WIDGET, so the same handler runs as when a person drags it —
+    /// one path into the change rather than two that can disagree.
+    pub fn set_channel_from(&self, z: usize) {
+        let clamped = z.min(self.vol.nz.saturating_sub(1)) as f64;
+        if (self.channel_scale.value() - clamped).abs() > f64::EPSILON {
+            self.channel_scale.set_value(clamped);
+        }
+    }
+
+    /// Called whenever the channel changes, however it changed.
+    pub fn set_on_channel_changed(&self, cb: impl Fn(usize) + 'static) {
+        *self.on_channel_changed.borrow_mut() = Some(std::rc::Rc::new(cb));
     }
 
     fn update_channel_label(&self) {

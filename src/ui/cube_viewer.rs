@@ -47,8 +47,11 @@ pub struct CubeViewer {
     volume_section: gtk::Box,
     /// Transparent wireframe + WCS-caption overlay stacked on the GL surface.
     overlay_area: gtk::DrawingArea,
-    /// Current spectral channel for the slice-plane marker (decoupled from the
-    /// slice view, which owns its own scrubber; seeded to the mid channel).
+    /// Current spectral channel for the slice-plane marker.
+    ///
+    /// Mirrors the scrubber, which is the single source of truth: this used to
+    /// be a SECOND channel, decoupled from the slice view's, so the marker in
+    /// the volume stayed where it was seeded however far you scrubbed.
     current_channel: Cell<usize>,
     // Handles the overlay / colorbar methods read back.
     window_lo: gtk::Scale,
@@ -133,6 +136,15 @@ impl CubeViewer {
         stack.set_visible_child_name("volume");
         left.append(&stack);
 
+        // The channel scrubber sits UNDER the mode stack, not inside the slice
+        // view, so it is on screen in both modes — the reference is explicit
+        // that it "lives in BOTH modes: in slice mode it shows the 2D plane, in
+        // volume mode it drives the slice-plane marker". Ours was reachable only
+        // in slice mode, and the marker it should have driven was a second,
+        // unconnected channel that nothing on screen could move.
+        left.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        left.append(slice.channel_bar());
+
         // ── RIGHT: scrollable control column ────────────────────────────────
         let (controls, ctl) = build_controls(&name);
 
@@ -190,6 +202,7 @@ impl CubeViewer {
         this.apply_transfer();
 
         this.wire_mode_toggle();
+        this.wire_channel();
         this.wire_controls(&ctl);
         this.setup_transfer_editor();
         this.setup_overlay();
@@ -233,6 +246,9 @@ impl CubeViewer {
     /// Move the slice-plane marker to `ch` (clamped to the cube depth) and repaint
     /// the wireframe overlay.
     pub fn set_current_channel(&self, ch: usize) {
+        // Through the scrubber, so an agent's change moves the control a person
+        // is looking at — and so `get_cube_view` reports what the slider shows.
+        self.slice.set_channel_from(ch);
         let c = ch.min(self.vol.nz.saturating_sub(1));
         self.current_channel.set(c);
         self.overlay_area.queue_draw();
@@ -498,6 +514,19 @@ impl CubeViewer {
             let (sw, sh, rgba) = self.slice.export_rgba();
             Some(scale_rgba(&rgba, sw, sh, w, h))
         }
+    }
+
+    /// One channel for the whole viewer: the scrubber moves the 2D plane and the
+    /// volume's slice-plane marker together.
+    fn wire_channel(self: &Rc<Self>) {
+        let this = self.clone();
+        self.slice.set_on_channel_changed(move |ch| {
+            this.current_channel.set(ch);
+            this.overlay_area.queue_draw();
+        });
+        // Seed both from the scrubber's own starting position, rather than
+        // seeding each separately and hoping they agree.
+        self.current_channel.set(self.slice.channel());
     }
 
     // ── Mode switching ───────────────────────────────────────────────────────
@@ -1430,4 +1459,80 @@ fn scale_rgba(src: &[u8], sw: i32, sh: i32, dw: i32, dh: i32) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod channel_wiring_tests {
+    //! The channel is ONE value, and its control belongs to both modes.
+    //!
+    //! It used to be two: this page's `current_channel`, which positions the
+    //! slice-plane marker in the volume, and the slice view's own scrubber
+    //! position. Nothing connected them, and the only control was inside the
+    //! slice view — so in 3D the marker sat wherever it had been seeded and
+    //! there was no way on screen to move it. The reference is explicit that the
+    //! scrubber "lives in BOTH modes: in slice mode it shows the 2D plane, in
+    //! volume mode it drives the slice-plane marker".
+    //!
+    //! A source scan, because the wiring is between GTK widgets a unit test
+    //! cannot build.
+
+    const SOURCE: &str = include_str!("cube_viewer.rs");
+
+    #[test]
+    fn the_channel_bar_lives_outside_the_mode_stack() {
+        // Inside the stack it is a slice-mode control; outside it, it is the
+        // viewer's control.
+        //
+        // The needle is assembled at runtime so this guard does not match
+        // ITSELF — it reads the file it lives in, and the first version passed
+        // against a deliberately broken layout by finding its own assertion.
+        let placement = format!("left.append(slice.{}());", "channel_bar");
+        let bar_at = SOURCE.find(&placement).unwrap_or_else(|| {
+            panic!(
+                "the channel scrubber must be placed under the mode stack, or \
+                 it disappears in 3D"
+            )
+        });
+        let stack_at = SOURCE
+            .find("stack.add_named(slice.widget()")
+            .expect("the slice view is a stack child");
+        assert!(
+            bar_at > stack_at,
+            "the bar should be added after the stack, as a sibling of it"
+        );
+    }
+
+    #[test]
+    fn scrubbing_moves_the_slice_plane_marker() {
+        // The page subscribes to the scrubber and updates the channel the
+        // wireframe overlay draws at.
+        let wiring = SOURCE
+            .split("fn wire_channel")
+            .nth(1)
+            .expect("the channel wiring lives here");
+        assert!(wiring.contains("set_on_channel_changed"));
+        assert!(
+            wiring.contains("current_channel.set(ch)"),
+            "a channel change must move the marker's channel"
+        );
+        assert!(
+            wiring.contains("overlay_area.queue_draw()"),
+            "and repaint the overlay that draws it"
+        );
+    }
+
+    #[test]
+    fn an_agents_channel_change_moves_the_visible_control() {
+        // set_cube_view { channel } drives the scrubber rather than only the
+        // internal value, so what an agent sets is what the slider shows and
+        // what get_cube_view reports.
+        let setter = SOURCE
+            .split("pub fn set_current_channel")
+            .nth(1)
+            .expect("the setter exists");
+        assert!(
+            setter.contains("slice.set_channel_from(ch)"),
+            "an agent's channel change should move the on-screen scrubber"
+        );
+    }
 }
