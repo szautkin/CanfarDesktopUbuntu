@@ -36,10 +36,9 @@ const SESSION_TYPES: &[&str] = &[
 /// Interactive (non-headless) types, surfaced so a caller can tell them apart.
 const INTERACTIVE_TYPES: &[&str] = &["notebook", "desktop", "carta", "contributed", "firefly"];
 
-/// Resource defaults when a `launch_headless_job` proposal omits cores/ram. They
-/// match the schema minimums so an approved proposal always launches a valid job.
-const DEFAULT_CORES: u32 = 1;
-const DEFAULT_RAM: u32 = 1;
+use crate::models::session_launch_params::{
+    agent_session_name, DEFAULT_CORES, DEFAULT_GPUS, DEFAULT_RAM_GB,
+};
 
 /// Hard cap on ids accepted by `delete_sessions_bulk` (mirrors the C#
 /// `DeleteSessionsBulkTool.MaxBatchSize`).
@@ -421,9 +420,9 @@ async fn apply_launch_headless_job(
         return Err("launch_headless_job payload missing image".to_string());
     }
     let cores = opt_u32(payload, "cores").unwrap_or(DEFAULT_CORES);
-    let ram = opt_u32(payload, "ram").unwrap_or(DEFAULT_RAM);
-    let gpus = opt_u32(payload, "gpus").unwrap_or(0);
-    let name = str_arg(payload, "name");
+    let ram = opt_u32(payload, "ram").unwrap_or(DEFAULT_RAM_GB);
+    let gpus = opt_u32(payload, "gpus").unwrap_or(DEFAULT_GPUS);
+    let name = agent_session_name(&str_arg(payload, "name"), "headless");
 
     let cmd = str_arg(payload, "cmd");
     let cmd = if cmd.is_empty() { None } else { Some(cmd) };
@@ -447,11 +446,7 @@ async fn apply_launch_headless_job(
     let replicas = opt_u32(payload, "replicas").map(|n| n.clamp(lo, hi));
 
     let params = SessionLaunchParams {
-        name: if name.is_empty() {
-            "headless-job".to_string()
-        } else {
-            name
-        },
+        name,
         image,
         session_type: "headless".to_string(),
         cores,

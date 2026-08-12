@@ -21,6 +21,30 @@ pub struct SessionLaunchParams {
     pub replicas: Option<u32>,
 }
 
+/// What an agent gets when it launches a session without saying how big.
+///
+/// The reference's two appliers both default to 2 cores / 8 GB / 0 GPUs; ours
+/// used 1 and 1 "to match the schema minimums", so the identical call produced a
+/// job with an eighth of the memory — enough to turn a working notebook into one
+/// that dies loading its first cube.
+pub const DEFAULT_CORES: u32 = 2;
+pub const DEFAULT_RAM_GB: u32 = 8;
+pub const DEFAULT_GPUS: u32 = 0;
+
+/// A name for a session an agent launched without choosing one.
+///
+/// Suffixed, because the bare type is not a name: two agent-launched notebooks
+/// would both be called "notebook", and the session list is how a user finds the
+/// one to stop. Mirrors the reference's `SessionName`.
+pub fn agent_session_name(requested: &str, session_type: &str) -> String {
+    let requested = requested.trim();
+    if !requested.is_empty() {
+        return requested.to_string();
+    }
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("{session_type}-agent-{}", &suffix[..6])
+}
+
 /// How many identical headless replicas one launch may request.
 ///
 /// One constant for the launch form's spin button, the `launch_headless_job`
@@ -36,15 +60,22 @@ impl SessionLaunchParams {
     /// Shared by the interactive and headless builders so a field added to one
     /// cannot go missing from the other.
     fn base_form_pairs(&self, name: &str) -> Vec<(&'static str, String)> {
-        // Cores/RAM are sent verbatim: a value of 0 means "platform-managed"
-        // (flexible allocation), matching the reference's flexible-mode contract.
         let mut pairs = vec![
             ("name", name.to_string()),
             ("image", self.image.clone()),
             ("type", self.session_type.clone()),
-            ("cores", self.cores.to_string()),
-            ("ram", self.ram.to_string()),
         ];
+        // Flexible allocation means the fields are ABSENT, not zero. Both of the
+        // reference's builders say so explicitly — "only include cores/ram/gpus
+        // for fixed resources — omit entirely for flexible" — while this sent
+        // `cores=0&ram=0` under a comment claiming that WAS the flexible
+        // contract. Asking Skaha for zero cores is not asking it to choose.
+        if self.cores > 0 {
+            pairs.push(("cores", self.cores.to_string()));
+        }
+        if self.ram > 0 {
+            pairs.push(("ram", self.ram.to_string()));
+        }
         if self.gpus > 0 {
             pairs.push(("gpus", self.gpus.to_string()));
         }
@@ -241,6 +272,22 @@ mod tests {
     }
 
     #[test]
+    fn an_unnamed_agent_session_is_still_distinguishable() {
+        // Two agent-launched notebooks both called "notebook" are two rows a
+        // user cannot tell apart, and the session list is how they find the one
+        // to stop.
+        let a = agent_session_name("", "notebook");
+        let b = agent_session_name("", "notebook");
+        assert!(a.starts_with("notebook-agent-"), "{a}");
+        assert_ne!(a, b, "two unnamed launches must not collide");
+    }
+
+    #[test]
+    fn a_name_the_caller_chose_is_kept_verbatim() {
+        assert_eq!(agent_session_name("  my-run  ", "notebook"), "my-run");
+    }
+
+    #[test]
     fn the_replica_count_is_at_least_one() {
         let mut params = base_params();
         assert_eq!(params.replica_count(), 1, "an absent count means one job");
@@ -251,13 +298,34 @@ mod tests {
     }
 
     #[test]
-    fn flexible_sends_zero_cores_and_ram() {
+    fn flexible_omits_cores_and_ram_rather_than_sending_zero() {
+        // "Let the platform choose" is the ABSENCE of the field. This used to
+        // send cores=0&ram=0 — a request for zero cores — under a comment
+        // claiming that was the reference's flexible contract; the reference
+        // says the opposite, in both of its builders.
         let mut params = base_params();
         params.cores = 0;
         params.ram = 0;
+        params.gpus = 0;
         let pairs = params.to_form_pairs();
-        assert!(pairs.contains(&("cores", "0".to_string())));
-        assert!(pairs.contains(&("ram", "0".to_string())));
+        for field in ["cores", "ram", "gpus"] {
+            assert!(
+                !pairs.iter().any(|(k, _)| *k == field),
+                "`{field}` should be absent under flexible allocation"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_resources_are_sent() {
+        let mut params = base_params();
+        params.cores = 4;
+        params.ram = 16;
+        params.gpus = 1;
+        let pairs = params.to_form_pairs();
+        assert!(pairs.contains(&("cores", "4".to_string())));
+        assert!(pairs.contains(&("ram", "16".to_string())));
+        assert!(pairs.contains(&("gpus", "1".to_string())));
     }
 
     #[test]

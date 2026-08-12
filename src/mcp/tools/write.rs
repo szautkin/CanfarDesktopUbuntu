@@ -27,11 +27,9 @@ use std::sync::Arc;
 /// `SessionWriteHelpers.InteractiveTypes`).
 const INTERACTIVE_TYPES: &[&str] = &["notebook", "desktop", "carta", "contributed", "firefly"];
 
-/// Resource defaults used when a `launch_session` proposal omits cores/ram. These
-/// match the JSON-Schema minimums so an approved proposal always launches a valid
-/// (if modest) session even when the agent left the sizing unspecified.
-const DEFAULT_CORES: u32 = 1;
-const DEFAULT_RAM: u32 = 1;
+use crate::models::session_launch_params::{
+    agent_session_name, DEFAULT_CORES, DEFAULT_GPUS, DEFAULT_RAM_GB,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manifest
@@ -92,8 +90,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     },
                     "image": { "type": "string", "description": "Container image id to launch." },
                     "name": { "type": "string", "description": "Optional display name for the session." },
-                    "cores": { "type": "integer", "minimum": 1, "description": "CPU cores." },
-                    "ram": { "type": "integer", "minimum": 1, "description": "RAM in GB." }
+                    "cores": { "type": "integer", "minimum": 1, "description": "CPU cores (default 2)." },
+                    "ram": { "type": "integer", "minimum": 1, "description": "RAM in GB (default 8)." },
+                    "gpus": { "type": "integer", "minimum": 0, "description": "GPUs (default 0)." }
                 },
                 "required": ["kind", "image"],
                 "additionalProperties": false
@@ -220,6 +219,7 @@ fn propose_launch_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) 
         Err(e) => return ToolResult::Failed(e),
     };
     let name = str_arg(args, "name");
+    let gpus = crate::mcp::tools::opt_u32(args, "gpus");
 
     let mut payload = json!({ "kind": kind, "image": image });
     if !name.is_empty() {
@@ -227,6 +227,9 @@ fn propose_launch_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) 
     }
     if let Some(c) = cores {
         payload["cores"] = json!(c);
+    }
+    if let Some(g) = gpus {
+        payload["gpus"] = json!(g);
     }
     if let Some(r) = ram {
         payload["ram"] = json!(r);
@@ -317,17 +320,17 @@ pub async fn apply(services: &AppServices, proposal: &PendingProposal) -> Result
             if kind.is_empty() || image.is_empty() {
                 return Err("launch_session payload missing kind/image".to_string());
             }
-            let name = str_arg(payload, "name");
-            let name = if name.is_empty() { kind.clone() } else { name };
+            let name = agent_session_name(&str_arg(payload, "name"), &kind);
             let cores = opt_u32(payload, "cores").unwrap_or(DEFAULT_CORES);
-            let ram = opt_u32(payload, "ram").unwrap_or(DEFAULT_RAM);
+            let ram = opt_u32(payload, "ram").unwrap_or(DEFAULT_RAM_GB);
+            let gpus = opt_u32(payload, "gpus").unwrap_or(DEFAULT_GPUS);
             let params = SessionLaunchParams {
                 name: name.clone(),
                 image,
                 session_type: kind,
                 cores,
                 ram,
-                gpus: 0,
+                gpus,
                 cmd: None,
                 env: None,
                 registry_username: None,
