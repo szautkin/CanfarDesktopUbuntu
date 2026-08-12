@@ -2,6 +2,64 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [1.3.3] - 2026-08-12
+
+Parity with the CanfarDesktop 1.3.2 + 1.3.3 (Windows) generation. 1.3.2 was
+reliability work; 1.3.3 was MCP full-UI coverage. Both are in.
+
+### Added
+- **Full MCP tool parity** — the surface now advertises the reference's **137
+  tool names**, enforced by a test that diffs the live manifest against them.
+  Search gained its 15-tool family over the view-state bridge, so an agent
+  drives the same widgets a person does; the FITS and Cube viewers gained every
+  control their panels expose.
+- **Research bundle: `includeFiles`** — the export can now carry the downloaded
+  data files themselves, under `research/files/`. They are STREAMED by a new
+  ZIP64-capable writer, so a multi-gigabyte cube is fine; a bundle that needs no
+  ZIP64 record still carries none, and opens in any reader.
+- **Headless replicas, properly** — one launch per replica, each named `job-N`
+  and told which one it is via `REPLICA_ID` / `REPLICA_COUNT`. The launch form's
+  Replicas control previously asked for N jobs and produced one.
+- **Search**: a per-row preview popover, a pinned results header, per-field
+  spectral units (14 of them, not 4), live column filters, date presets that
+  fill the visible date field, and a row-limit notice when the answer was
+  truncated.
+- **Research / CAOM2**: citation fields (proposal id / PI / title / data
+  release) in the export the README already told users to cite, a junk-quality
+  chip on the plane header, "View on CADC" in the detail header, an inline
+  progress bar for artifact downloads, and Sign-in (not Retry) on the
+  proprietary-data panel.
+- **Workflows**: the VOSpace tier end to end — list, fetch, publish — plus
+  editor validation, copy-prompt, clickable tool chips and a current-step
+  highlight.
+
+### Fixed
+- **Silent wrongness in the query builder**: one-sided spectral coverage asked
+  containment where the archive wants overlap (a search above 500 nm excluded a
+  400–900 nm observation); an inline unit (`500nm`) dropped the constraint
+  entirely; an observation ID matched as a substring.
+- **Units and choices decoded by position** — six dropdowns decoded a selection
+  against a second list, and MCP enum arguments fell back to entry 0, so
+  `timeUnit: "weeks"` searched in SECONDS. An unadvertised value is refused now.
+- **Session launch wire format**: flexible allocation omits `cores`/`ram`
+  instead of sending zero, an agent's unsized launch gets the reference's 2
+  cores / 8 GB rather than 1 and 1, and an unnamed agent session is
+  distinguishable rather than "notebook".
+- **`get_session`** reads the session's own URL, so a finished headless job is
+  no longer reported as never having existed.
+- **`fits` is a default feature** — following the README used to produce a
+  binary that could not open a FITS file.
+- Clearing the research archive now removes its notes; export options
+  (`includeNotes`, `includeSearchHistory`, `maxRec`) are read by the names the
+  schemas advertise rather than silently ignored.
+
+### Changed
+- Test suite: 841 → **1,139**, including invariant tests that walk the live tool
+  manifest — every advertised argument is read by something, everything settable
+  is readable, and every payload key an applier reads is one a proposer writes.
+- CI lints every target (`--all-targets`) and builds the way the README
+  documents; README and CONTRIBUTING quote the gate's exact commands.
+
 ## [1.3.1] - 2026-07-07
 
 One-to-one parity with the CanfarDesktop 1.3.0 + 1.3.1 (Windows) generation.
