@@ -67,3 +67,4 @@ pub type CallbackSlot<F> = RefCell<Option<Rc<F>>>;
 /// A [`CallbackSlot`] shared across clones of a widget handle — the same slot
 /// seen by every closure that captured the widget.
 pub type SharedCallbackSlot<F> = Rc<CallbackSlot<F>>;
+pub mod viewer_shell;

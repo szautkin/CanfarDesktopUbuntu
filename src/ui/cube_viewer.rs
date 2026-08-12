@@ -18,6 +18,7 @@ use crate::helpers::transfer_function::TransferFunctionModel;
 use crate::models::volume_data::{native_to_resident, resident_to_native, VolumeData};
 use crate::ui::cube_slice_view::CubeSliceView;
 use crate::ui::cube_volume_gl::CubeVolumeGl;
+use crate::ui::viewer_shell::{self, labeled};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -148,14 +149,7 @@ impl CubeViewer {
         // ── RIGHT: scrollable control column ────────────────────────────────
         let (controls, ctl) = build_controls(&name);
 
-        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_hexpand(true);
-        paned.set_vexpand(true);
-        paned.set_wide_handle(true);
-        paned.set_start_child(Some(&left));
-        paned.set_end_child(Some(&controls.scroll));
-        paned.set_resize_end_child(false);
-        paned.set_shrink_end_child(false);
+        let paned = viewer_shell::shell(&left, &controls.scroll);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_hexpand(true);
@@ -1103,15 +1097,10 @@ struct Controls {
 }
 
 fn build_controls(_name: &str) -> (Controls, Controls) {
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    column.set_margin_start(12);
-    column.set_margin_end(12);
-    column.set_margin_top(12);
-    column.set_margin_bottom(12);
-    column.set_width_request(280);
+    let (column, scroll) = viewer_shell::control_column();
 
     // ── DISPLAY ─────────────────────────────────────────────────────────────
-    column.append(&section_header(crate::tr_en!("DISPLAY")));
+    column.append(&viewer_shell::section_header(crate::tr_en!("DISPLAY")));
 
     let colormap = gtk::DropDown::from_strings(cube_colormaps::NAMES);
     let cmap_default = cube_colormaps::NAMES
@@ -1177,7 +1166,7 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
 
     // ── VOLUME (hidden in Slice mode) ───────────────────────────────────────
     let volume_section = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    volume_section.append(&section_header(crate::tr_en!("VOLUME")));
+    volume_section.append(&viewer_shell::section_header(crate::tr_en!("VOLUME")));
 
     let density = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.1, 3.0, 0.05);
     density.set_value(1.0);
@@ -1262,11 +1251,6 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
     export.set_hexpand(true);
     column.append(&export);
 
-    let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    scroll.set_vexpand(true);
-    scroll.set_child(Some(&column));
-
     let controls = Controls {
         scroll,
         colormap,
@@ -1293,25 +1277,6 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
         export,
     };
     (controls.clone(), controls)
-}
-
-fn section_header(text: &str) -> gtk::Label {
-    let label = gtk::Label::new(Some(text));
-    label.add_css_class("caption-heading");
-    label.add_css_class("dim-label");
-    label.set_halign(gtk::Align::Start);
-    label
-}
-
-/// A caption label stacked above its control.
-fn labeled(text: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let label = gtk::Label::new(Some(text));
-    label.add_css_class("caption");
-    label.set_halign(gtk::Align::Start);
-    b.append(&label);
-    b.append(child);
-    b
 }
 
 /// Populate the Info grid: dimensions, spectral axis, object / instrument, unit
