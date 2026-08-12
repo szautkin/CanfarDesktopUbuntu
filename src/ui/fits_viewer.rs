@@ -124,11 +124,49 @@ impl FitsViewer {
         widget.set_hexpand(true);
 
         // ── Toolbar ──────────────────────────────────────────────────────────
-        // GNOME HIG: frequent controls inline — Open, stretch, colormap, zoom,
-        // blink — with everything else grouped in one "Display options" popover
-        // of boxed-list rows.
+        // Everything the viewer can do is VISIBLE here, because a capability
+        // behind an unlabelled icon is a capability nobody finds. This once had
+        // six controls on the bar and eleven more inside a "Display options"
+        // popover whose icon said nothing about what it held; the reference puts
+        // thirteen affordances on its toolbar, and that difference — not any
+        // missing feature — is what "the Linux app has less in it" meant.
+        //
+        // The two popovers that remain are labelled with WORDS and group things
+        // that belong together: Crosshair (what to do with the marker) and
+        // Compare (everything that acts across tabs).
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         toolbar.add_css_class("toolbar");
+
+        // One shape for every icon control on this bar, so a new one cannot
+        // arrive with a different size, alignment or missing tooltip — the bar
+        // had five near-identical blocks before.
+        let icon_toggle = |icon: &str, tooltip: &str| {
+            let b = gtk::ToggleButton::new();
+            b.set_icon_name(icon);
+            b.add_css_class("flat");
+            b.set_valign(gtk::Align::Center);
+            b.set_tooltip_text(Some(tooltip));
+            b
+        };
+        let icon_button = |icon: &str, tooltip: &str| {
+            let b = gtk::Button::from_icon_name(icon);
+            b.add_css_class("flat");
+            b.set_valign(gtk::Align::Center);
+            b.set_tooltip_text(Some(tooltip));
+            b
+        };
+        // A slider with its name above it, as the reference labels its cuts.
+        let labelled_scale = |title: &str, scale: &gtk::Scale| {
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let label = gtk::Label::new(Some(title));
+            label.add_css_class("caption");
+            label.add_css_class("dim-label");
+            label.set_xalign(0.0);
+            column.append(&label);
+            column.append(scale);
+            column.set_valign(gtk::Align::Center);
+            column
+        };
 
         let open_btn = gtk::Button::new();
         let open_content = adw::ButtonContent::new();
@@ -191,56 +229,99 @@ impl FitsViewer {
 
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-        // Blink toggle — the viewer's signature compare mode, kept inline.
-        let blink_btn = gtk::ToggleButton::new();
-        blink_btn.set_icon_name("media-playlist-repeat-symbolic");
-        blink_btn.add_css_class("flat");
-        blink_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Cross-fade blink against another tab (Space pause · Left/Right show A/B · Esc stop)"
-        )));
-        toolbar.append(&blink_btn);
-
-        // ── "Display options" popover ────────────────────────────────────────
+        // ── Display levels, inline and labelled, as the reference has them ───
         let min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
-        min_scale.set_width_request(160);
+        min_scale.set_width_request(120);
         min_scale.set_draw_value(false);
-        min_scale.set_valign(gtk::Align::Center);
+        min_scale.set_tooltip_text(Some(crate::tr_en!(
+            "Black point — pixels at or below render black"
+        )));
 
         let max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
-        max_scale.set_width_request(160);
+        max_scale.set_width_request(120);
         max_scale.set_draw_value(false);
-        max_scale.set_valign(gtk::Align::Center);
-
-        let reset_btn = gtk::Button::with_label(crate::tr_en!("Reset stretch"));
-        reset_btn.add_css_class("flat");
-        reset_btn.set_halign(gtk::Align::End);
-
-        let header_btn = gtk::ToggleButton::new();
-        header_btn.set_icon_name("view-list-symbolic");
-        header_btn.add_css_class("flat");
-        header_btn.set_valign(gtk::Align::Center);
-        header_btn.set_tooltip_text(Some(crate::tr_en!("Toggle FITS header panel")));
-
-        let north_up_btn = gtk::ToggleButton::new();
-        north_up_btn.set_icon_name("go-up-symbolic");
-        north_up_btn.add_css_class("flat");
-        north_up_btn.set_valign(gtk::Align::Center);
-        north_up_btn.set_tooltip_text(Some(crate::tr_en!("Rotate so north is up")));
-
-        let link_btn = gtk::ToggleButton::new();
-        link_btn.set_icon_name("insert-link-symbolic");
-        link_btn.add_css_class("flat");
-        link_btn.set_valign(gtk::Align::Center);
-        link_btn.set_active(true);
-        link_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Link crosshair across tabs by sky position (auto-enables North Up)"
+        max_scale.set_tooltip_text(Some(crate::tr_en!(
+            "White point — pixels at or above render white"
         )));
 
-        let coords_btn = gtk::ToggleButton::new();
-        coords_btn.set_icon_name("starred-symbolic");
-        coords_btn.add_css_class("flat");
-        coords_btn.set_valign(gtk::Align::Center);
-        coords_btn.set_tooltip_text(Some(crate::tr_en!("Toggle saved coordinates panel")));
+        toolbar.append(&labelled_scale(crate::tr_en!("Min cut"), &min_scale));
+        toolbar.append(&labelled_scale(crate::tr_en!("Max cut"), &max_scale));
+
+        let reset_btn = icon_button(
+            "view-refresh-symbolic",
+            crate::tr_en!("Reset the stretch and cut levels to the automatic values"),
+        );
+        toolbar.append(&reset_btn);
+
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        // ── Panels + orientation ─────────────────────────────────────────────
+        let header_btn = icon_toggle(
+            "view-list-symbolic",
+            crate::tr_en!("FITS header and image info panel"),
+        );
+        toolbar.append(&header_btn);
+
+        let coords_btn = icon_toggle(
+            "starred-symbolic",
+            crate::tr_en!("Saved coordinates: bookmarks and go-to"),
+        );
+        toolbar.append(&coords_btn);
+
+        let north_up_btn = icon_toggle("go-up-symbolic", crate::tr_en!("Rotate so north is up"));
+        toolbar.append(&north_up_btn);
+
+        // ── Crosshair menu ───────────────────────────────────────────────────
+        let copy_radec_btn = icon_button(
+            "edit-copy-symbolic",
+            crate::tr_en!("Copy crosshair RA/Dec to clipboard"),
+        );
+        let clear_crosshair_btn =
+            icon_button("edit-clear-symbolic", crate::tr_en!("Clear crosshair"));
+
+        let crosshair_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        crosshair_box.set_margin_start(12);
+        crosshair_box.set_margin_end(12);
+        crosshair_box.set_margin_top(12);
+        crosshair_box.set_margin_bottom(12);
+        let crosshair_hint = gtk::Label::new(Some(crate::tr_en!(
+            "Right-click the image to place the crosshair."
+        )));
+        crosshair_hint.add_css_class("caption");
+        crosshair_hint.add_css_class("dim-label");
+        crosshair_hint.set_wrap(true);
+        crosshair_hint.set_xalign(0.0);
+        crosshair_hint.set_max_width_chars(28);
+        crosshair_box.append(&crosshair_hint);
+        let crosshair_actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        crosshair_actions.add_css_class("linked");
+        crosshair_actions.set_halign(gtk::Align::Start);
+        crosshair_actions.append(&copy_radec_btn);
+        crosshair_actions.append(&clear_crosshair_btn);
+        crosshair_box.append(&crosshair_actions);
+
+        let crosshair_pop = gtk::Popover::new();
+        crosshair_pop.set_child(Some(&crosshair_box));
+        let crosshair_btn = gtk::MenuButton::new();
+        let crosshair_content = adw::ButtonContent::new();
+        crosshair_content.set_icon_name("find-location-symbolic");
+        crosshair_content.set_label(crate::tr_en!("Crosshair"));
+        crosshair_btn.set_child(Some(&crosshair_content));
+        crosshair_btn.add_css_class("flat");
+        crosshair_btn.set_valign(gtk::Align::Center);
+        crosshair_btn.set_tooltip_text(Some(crate::tr_en!("Crosshair tools")));
+        crosshair_btn.set_popover(Some(&crosshair_pop));
+        toolbar.append(&crosshair_btn);
+
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        // ── Compare: everything that acts ACROSS tabs, under one word ────────
+        let blink_btn = icon_toggle(
+            "media-playlist-repeat-symbolic",
+            crate::tr_en!(
+                "Cross-fade blink against another tab (Space pause · Left/Right show A/B · Esc stop)"
+            ),
+        );
 
         let blink_target_btn = gtk::MenuButton::new();
         blink_target_btn.set_label(crate::tr_en!("vs…"));
@@ -256,26 +337,24 @@ impl FitsViewer {
         blink_interval_scale.set_valign(gtk::Align::Center);
         blink_interval_scale.set_tooltip_text(Some(crate::tr_en!("Blink fade interval (ms)")));
 
-        let sync_fov_btn = gtk::ToggleButton::new();
-        sync_fov_btn.set_icon_name("zoom-fit-best-symbolic");
-        sync_fov_btn.add_css_class("flat");
-        sync_fov_btn.set_tooltip_text(Some(crate::tr_en!(
-            "Sync zoom across tabs — match the current image's angular field (re-applied as you switch tabs)"
-        )));
+        let link_btn = icon_toggle(
+            "insert-link-symbolic",
+            crate::tr_en!("Link crosshair across tabs by sky position (auto-enables North Up)"),
+        );
+        link_btn.set_active(true);
 
-        let copy_radec_btn = gtk::Button::from_icon_name("edit-copy-symbolic");
-        copy_radec_btn.add_css_class("flat");
-        copy_radec_btn.set_tooltip_text(Some(crate::tr_en!("Copy crosshair RA/Dec to clipboard")));
+        let sync_fov_btn = icon_toggle(
+            "zoom-fit-best-symbolic",
+            crate::tr_en!(
+                "Sync zoom across tabs — match the current image's angular field (re-applied as you switch tabs)"
+            ),
+        );
 
-        let clear_crosshair_btn = gtk::Button::from_icon_name("edit-clear-symbolic");
-        clear_crosshair_btn.add_css_class("flat");
-        clear_crosshair_btn.set_tooltip_text(Some(crate::tr_en!("Clear crosshair")));
-
-        let group_label = |text: &str| {
-            let l = gtk::Label::new(Some(text));
-            l.add_css_class("caption-heading");
-            l.set_xalign(0.0);
-            l
+        let boxed_list = || {
+            let list = gtk::ListBox::new();
+            list.set_selection_mode(gtk::SelectionMode::None);
+            list.add_css_class("boxed-list");
+            list
         };
         let action_row = |title: &str, subtitle: Option<&str>, suffix: &gtk::Widget| {
             let row = adw::ActionRow::new();
@@ -286,90 +365,56 @@ impl FitsViewer {
             row.add_suffix(suffix);
             row
         };
-        let boxed_list = || {
-            let list = gtk::ListBox::new();
-            list.set_selection_mode(gtk::SelectionMode::None);
-            list.add_css_class("boxed-list");
-            list
-        };
 
-        let levels_list = boxed_list();
-        levels_list.append(&action_row(
-            crate::tr_en!("Min cut"),
-            None,
-            min_scale.upcast_ref(),
+        let compare_list = boxed_list();
+        compare_list.append(&action_row(
+            crate::tr_en!("Blink"),
+            Some(crate::tr_en!("Cross-fade this tab against another")),
+            blink_btn.upcast_ref(),
         ));
-        levels_list.append(&action_row(
-            crate::tr_en!("Max cut"),
-            None,
-            max_scale.upcast_ref(),
-        ));
-
-        let view_list = boxed_list();
-        view_list.append(&action_row(
-            crate::tr_en!("Header panel"),
-            None,
-            header_btn.upcast_ref(),
-        ));
-        view_list.append(&action_row(
-            crate::tr_en!("North up"),
-            None,
-            north_up_btn.upcast_ref(),
-        ));
-        view_list.append(&action_row(
-            crate::tr_en!("Link crosshair across tabs"),
-            Some(crate::tr_en!("Also enables North Up")),
-            link_btn.upcast_ref(),
-        ));
-        view_list.append(&action_row(
-            crate::tr_en!("Coordinates panel"),
-            None,
-            coords_btn.upcast_ref(),
-        ));
-
-        let blink_list = boxed_list();
-        blink_list.append(&action_row(
+        compare_list.append(&action_row(
             crate::tr_en!("Compare against"),
             None,
             blink_target_btn.upcast_ref(),
         ));
-        blink_list.append(&action_row(
+        compare_list.append(&action_row(
             crate::tr_en!("Fade speed"),
             None,
             blink_interval_scale.upcast_ref(),
         ));
+        compare_list.append(&action_row(
+            crate::tr_en!("Link crosshair across tabs"),
+            Some(crate::tr_en!("Also enables North Up")),
+            link_btn.upcast_ref(),
+        ));
+        compare_list.append(&action_row(
+            crate::tr_en!("Sync zoom across tabs"),
+            Some(crate::tr_en!("Match the angular field")),
+            sync_fov_btn.upcast_ref(),
+        ));
 
-        let tools_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        tools_box.add_css_class("linked");
-        tools_box.set_halign(gtk::Align::Start);
-        tools_box.append(&sync_fov_btn);
-        tools_box.append(&copy_radec_btn);
-        tools_box.append(&clear_crosshair_btn);
+        let compare_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        compare_box.set_margin_start(12);
+        compare_box.set_margin_end(12);
+        compare_box.set_margin_top(12);
+        compare_box.set_margin_bottom(12);
+        compare_box.set_size_request(320, -1);
+        compare_box.append(&compare_list);
 
-        let display_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        display_box.set_margin_start(12);
-        display_box.set_margin_end(12);
-        display_box.set_margin_top(12);
-        display_box.set_margin_bottom(12);
-        display_box.set_size_request(300, -1);
-        display_box.append(&group_label(crate::tr_en!("Levels")));
-        display_box.append(&levels_list);
-        display_box.append(&reset_btn);
-        display_box.append(&group_label(crate::tr_en!("View")));
-        display_box.append(&view_list);
-        display_box.append(&group_label(crate::tr_en!("Blink")));
-        display_box.append(&blink_list);
-        display_box.append(&group_label(crate::tr_en!("Crosshair tools")));
-        display_box.append(&tools_box);
-
-        let display_pop = gtk::Popover::new();
-        display_pop.set_child(Some(&display_box));
-        let display_btn = gtk::MenuButton::new();
-        display_btn.set_icon_name("preferences-desktop-display-symbolic");
-        display_btn.add_css_class("flat");
-        display_btn.set_tooltip_text(Some(crate::tr_en!("Display options")));
-        display_btn.set_popover(Some(&display_pop));
-        toolbar.append(&display_btn);
+        let compare_pop = gtk::Popover::new();
+        compare_pop.set_child(Some(&compare_box));
+        let compare_btn = gtk::MenuButton::new();
+        let compare_content = adw::ButtonContent::new();
+        compare_content.set_icon_name("view-dual-symbolic");
+        compare_content.set_label(crate::tr_en!("Compare"));
+        compare_btn.set_child(Some(&compare_content));
+        compare_btn.add_css_class("flat");
+        compare_btn.set_valign(gtk::Align::Center);
+        compare_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Compare tabs: blink, linked crosshair and synced zoom"
+        )));
+        compare_btn.set_popover(Some(&compare_pop));
+        toolbar.append(&compare_btn);
 
         // Spacer pushes the status caption to the trailing edge.
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -2142,5 +2187,80 @@ mod tests {
         // And nonsense is still refused, rather than silently defaulting.
         assert!(stretch_from_str("rainbow").is_none());
         assert!(colormap_from_str("nonsense").is_none());
+    }
+}
+
+#[cfg(test)]
+mod toolbar_visibility_tests {
+    //! What the viewer can do has to be VISIBLE, not merely reachable.
+    //!
+    //! This viewer once put six controls on its toolbar and eleven more inside a
+    //! popover behind an unlabelled monitor icon. Every feature worked, an agent
+    //! could drive all of them over MCP, and a user still reported the app as
+    //! having less in it than the Windows reference — because a capability
+    //! behind an unlabelled icon is a capability nobody finds.
+    //!
+    //! So: parity is measured against the reference's toolbar
+    //! (`Views/FitsViewer/FitsTabHost.xaml`), which is the list below.
+
+    const SOURCE: &str = include_str!("fits_viewer.rs");
+
+    /// The part of `FitsViewer::new` that builds the bar, so a control merely
+    /// mentioned in a popover or a handler does not count as visible.
+    fn toolbar_section() -> &'static str {
+        let start = SOURCE
+            .find("let toolbar = gtk::Box::new")
+            .expect("the toolbar is built here");
+        let end = SOURCE[start..]
+            .find("widget.append(&toolbar);")
+            .expect("the toolbar is added to the page");
+        &SOURCE[start..start + end]
+    }
+
+    #[test]
+    fn every_reference_toolbar_affordance_is_on_our_toolbar() {
+        // Left of each pair: what the reference's toolbar shows. Right: the
+        // binding we place on ours. A popover is allowed to HOLD a control, but
+        // the thing that opens it has to be on the bar and carry a word.
+        let expected = [
+            ("Open FITS", "open_btn"),
+            ("Stretch", "stretch_combo"),
+            ("Colormap", "colormap_combo"),
+            // The cut sliders go on the bar wrapped in their captions, which is
+            // how the reference labels them.
+            ("Min cut", "labelled_scale(crate::tr_en!(\"Min cut\")"),
+            ("Max cut", "labelled_scale(crate::tr_en!(\"Max cut\")"),
+            ("Reset", "reset_btn"),
+            ("Header panel", "header_btn"),
+            ("North up", "north_up_btn"),
+            ("Bookmarks panel", "coords_btn"),
+            ("Crosshair tools", "crosshair_btn"),
+            ("Blink / link / sync", "compare_btn"),
+            ("Zoom", "zoom_box"),
+        ];
+        let bar = toolbar_section();
+        for (affordance, binding) in expected {
+            let placed = format!("toolbar.append(&{binding}");
+            assert!(
+                bar.contains(&placed),
+                "`{affordance}` is not on the toolbar — the reference shows it, \
+                 and a control users cannot see is one they do not have"
+            );
+        }
+    }
+
+    #[test]
+    fn no_control_hides_behind_an_unlabelled_popover() {
+        // Both remaining popovers are opened by a button carrying a WORD:
+        // "Crosshair" and "Compare". The one this replaced said only
+        // "Display options" in a tooltip nobody hovers.
+        let bar = toolbar_section();
+        for label in ["Crosshair", "Compare"] {
+            let set_label = format!("set_label(crate::tr_en!(\"{label}\"))");
+            assert!(
+                bar.contains(&set_label),
+                "the {label} menu button should carry a visible label"
+            );
+        }
     }
 }

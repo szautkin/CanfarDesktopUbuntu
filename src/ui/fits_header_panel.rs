@@ -103,7 +103,9 @@ impl FitsHeaderPanel {
 
         // Wrap in a revealer for collapsible animation
         let widget = gtk::Revealer::new();
-        widget.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+        // Slides in from the trailing edge, where the panel now lives — a
+        // SlideRight on a right-hand panel animates away from its own edge.
+        widget.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
         widget.set_transition_duration(200);
         widget.set_reveal_child(false);
         widget.set_child(Some(&container));

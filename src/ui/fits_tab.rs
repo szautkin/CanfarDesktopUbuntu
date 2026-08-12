@@ -67,10 +67,14 @@ impl FitsTab {
         let header_panel =
             FitsHeaderPanel::new_with_info(data.header_ordered.clone(), data.image_info_rows());
 
-        // Layout: header panel (left) | canvas (right)
-        widget.append(header_panel.widget());
-        widget.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        // Layout: canvas | header panel (RIGHT), matching the reference, which
+        // puts every side panel on the trailing edge. On the left the collapsed
+        // panel pushed the image away from the edge it should sit against, and a
+        // reader seeing a band of empty space beside their data reasonably reads
+        // it as something broken rather than something closed.
         widget.append(canvas.widget());
+        widget.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        widget.append(header_panel.widget());
 
         // Precompute the North-Up rotation (radians). Windows' NorthAngle uses the
         // atan2(-Cd1_2, Cd2_2) convention; to show North up, rotate by -NorthAngle.
