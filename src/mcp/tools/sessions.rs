@@ -213,11 +213,13 @@ async fn get_session(services: &AppServices, args: &Value) -> ToolResult {
         Some(t) => t,
         None => return not_signed_in(),
     };
-    match services.sessions.get_sessions(&token).await {
-        Ok(sessions) => match sessions.iter().find(|s| s.id == id) {
-            Some(s) => ToolResult::Data(session_json(s)),
-            None => ToolResult::Failed(format!("no session with id '{id}'")),
-        },
+    // The session's own URL, not a filter over the live list: a headless job is
+    // dropped from that list once it is reaped, so an agent asking "did my job
+    // finish?" — the likeliest question there is — was told the job never
+    // existed.
+    match services.sessions.get_session(&token, &id).await {
+        Ok(Some(s)) => ToolResult::Data(session_json(&s)),
+        Ok(None) => ToolResult::Failed(format!("no session with id '{id}'")),
         Err(e) => ToolResult::Failed(format!("could not fetch session '{id}': {e}")),
     }
 }

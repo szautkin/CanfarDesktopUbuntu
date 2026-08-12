@@ -14,6 +14,22 @@ pub struct HeadlessLaunchError {
     pub launched: Vec<String>,
 }
 
+/// Read one session out of a `GET /session/{id}` body.
+///
+/// Skaha answers with the bare record, but has been seen to wrap it in a
+/// single-element array; accepting either beats failing to parse a session that
+/// is plainly there. A body that is neither is "no such session", not an error —
+/// the caller's question was whether the job exists.
+fn parse_session_body(body: &str) -> Option<Session> {
+    if let Ok(one) = serde_json::from_str::<SkahaSessionResponse>(body) {
+        return Some(Session::from(one));
+    }
+    serde_json::from_str::<Vec<SkahaSessionResponse>>(body)
+        .ok()
+        .and_then(|many| many.into_iter().next())
+        .map(Session::from)
+}
+
 impl std::fmt::Display for HeadlessLaunchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.launched.is_empty() {
@@ -38,6 +54,37 @@ pub struct SessionService {
 impl SessionService {
     pub fn new(client: Client, endpoints: Arc<ApiEndpoints>) -> Self {
         SessionService { client, endpoints }
+    }
+
+    /// One session by id, or `None` when Skaha does not know it.
+    ///
+    /// A GET on the session's own URL, as the reference does — not a filter over
+    /// `get_sessions`. The list is the user's LIVE sessions and drops a headless
+    /// job once it is reaped, so filtering it answers "no such session" for a
+    /// job that finished ten minutes ago, which is the single most likely thing
+    /// to ask about a batch job.
+    pub async fn get_session(&self, token: &str, id: &str) -> Result<Option<Session>, ApiError> {
+        let url = self.endpoints.session_url(id);
+        let resp = self.client.get(&url).bearer_auth(token).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = check_response(resp).await?;
+        // Skaha answers with the bare record here, but has been seen to wrap it
+        // in a single-element array; accept either rather than failing to parse
+        // a session that is plainly there.
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ApiError::Parse(e.to_string()))?;
+        let raw: SkahaSessionResponse = match serde_json::from_str::<SkahaSessionResponse>(&body) {
+            Ok(one) => one,
+            Err(_) => match serde_json::from_str::<Vec<SkahaSessionResponse>>(&body) {
+                Ok(mut many) if !many.is_empty() => many.remove(0),
+                _ => return Ok(None),
+            },
+        };
+        Ok(Some(Session::from(raw)))
     }
 
     pub async fn get_sessions(&self, token: &str) -> Result<Vec<Session>, ApiError> {
@@ -203,5 +250,43 @@ impl SessionService {
         } else {
             Err(format!("Failed to get logs ({})", resp.status()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_session_body;
+
+    const RECORD: &str = r#"{"id":"abc123","userid":"u","image":"images.canfar.net/skaha/notebook:1","type":"headless","status":"Succeeded","name":"stack-1","startTime":"2026-08-12T10:00:00Z"}"#;
+
+    #[test]
+    fn a_bare_record_parses() {
+        let s = parse_session_body(RECORD).expect("the record is a session");
+        assert_eq!(s.id, "abc123");
+        assert_eq!(s.status, "Succeeded");
+    }
+
+    #[test]
+    fn a_single_element_array_parses_too() {
+        // Skaha has been seen to wrap it; failing to read a session that is
+        // plainly in the body would report the job as missing.
+        let body = format!("[{RECORD}]");
+        assert_eq!(
+            parse_session_body(&body).map(|s| s.id),
+            Some("abc123".into())
+        );
+    }
+
+    #[test]
+    fn an_empty_array_is_no_such_session() {
+        assert!(parse_session_body("[]").is_none());
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_session_is_no_such_session() {
+        // The caller asked whether the job exists; "no" is an answer, and it
+        // must not arrive as a parse error the agent has to interpret.
+        assert!(parse_session_body("not json").is_none());
+        assert!(parse_session_body("").is_none());
     }
 }
