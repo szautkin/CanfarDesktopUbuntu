@@ -285,21 +285,35 @@ fn build_header(obs: &CAOM2Observation) -> gtk::Box {
     hb.set_margin_top(12);
     hb.set_margin_bottom(8);
 
+    // Title block on the left, the archive link on the right — the reference
+    // puts it in the header as well as on the Files tab, and the header is the
+    // one place it can be reached from every tab.
+    let top_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let titles = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    titles.set_hexpand(true);
+
     let title = gtk::Label::new(Some(&obs.observation_id));
     title.add_css_class("title-2");
     title.set_halign(gtk::Align::Start);
     title.set_xalign(0.0);
     title.set_wrap(true);
     title.set_selectable(true);
-    hb.append(&title);
+    titles.append(&title);
 
     if !obs.collection.is_empty() {
         let sub = gtk::Label::new(Some(&obs.collection));
         sub.add_css_class("dim-label");
         sub.add_css_class("caption");
         sub.set_halign(gtk::Align::Start);
-        hb.append(&sub);
+        titles.append(&sub);
     }
+    top_row.append(&titles);
+
+    let view_on_cadc = cadc_link_button(crate::tr_en!("View on CADC"));
+    view_on_cadc.set_valign(gtk::Align::Center);
+    view_on_cadc.set_tooltip_text(Some(crate::tr_en!("View observation on CADC website")));
+    top_row.append(&view_on_cadc);
+    hb.append(&top_row);
 
     let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     chips.set_halign(gtk::Align::Start);
@@ -605,6 +619,7 @@ fn build_coverage(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             &content,
             plane_box,
             plane_expander_title(plane),
+            is_junk(plane),
             multi,
             i == 0,
         );
@@ -683,18 +698,13 @@ fn build_files(
                 }
             }
             let title = format!("{} · {} file(s)", plane.product_id, plane.artifacts.len());
-            append_plane(&content, plane_box, title, multi, i == 0);
+            append_plane(&content, plane_box, title, is_junk(plane), multi, i == 0);
         }
     }
 
     // "View all files on CADC" opens the archive search in the default browser.
-    let link = gtk::Button::with_label(crate::tr_en!("View all files on CADC"));
-    link.add_css_class("flat");
-    link.set_halign(gtk::Align::Start);
+    let link = cadc_link_button(crate::tr_en!("View all files on CADC"));
     link.set_margin_top(6);
-    link.connect_clicked(|_| {
-        let _ = open::that("https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/en/search/");
-    });
     content.append(&link);
 
     scrolled(&content)
@@ -1148,6 +1158,7 @@ fn build_provenance(obs: &CAOM2Observation) -> gtk::ScrolledWindow {
             &content,
             plane_box,
             plane_expander_title(plane),
+            is_junk(plane),
             multi,
             i == 0,
         );
@@ -1428,6 +1439,23 @@ fn dim_label(text: &str) -> gtk::Label {
     l
 }
 
+/// The CADC archive search page — where every "View on CADC" action lands.
+const CADC_SEARCH_URL: &str = "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/en/search/";
+
+/// A flat button opening the CADC archive search in the default browser.
+///
+/// Two of these exist — the header and the Files tab — as in the reference. One
+/// helper, so they cannot end up pointing at different pages.
+fn cadc_link_button(label: &str) -> gtk::Button {
+    let b = gtk::Button::with_label(label);
+    b.add_css_class("flat");
+    b.set_halign(gtk::Align::Start);
+    b.connect_clicked(|_| {
+        let _ = open::that(CADC_SEARCH_URL);
+    });
+    b
+}
+
 fn chip(text: &str, css: &str) -> gtk::Label {
     let l = gtk::Label::new(Some(text));
     l.add_css_class(css);
@@ -1446,15 +1474,29 @@ fn pill_button(label: &str) -> gtk::Button {
 
 /// Append a plane's content to a tab: bare when single, wrapped in an `Expander`
 /// (first one expanded) when multiple planes exist.
+///
+/// `junk` adds the archive's own quality warning to the header. It rides on the
+/// expander because that is the one line visible with the plane collapsed —
+/// the Quality row inside says the same thing, to a reader who has already
+/// opened the plane they should have been warned about.
 fn append_plane(
     container: &gtk::Box,
     plane_box: gtk::Box,
     title: String,
+    junk: bool,
     multi: bool,
     expanded: bool,
 ) {
     if multi {
-        let exp = gtk::Expander::new(Some(&title));
+        let exp = gtk::Expander::new(None);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let label = gtk::Label::new(Some(&title));
+        label.add_css_class("heading");
+        header.append(&label);
+        if junk {
+            header.append(&chip(crate::tr_en!("Junk"), "badge-junk"));
+        }
+        exp.set_label_widget(Some(&header));
         exp.set_hexpand(true);
         exp.set_expanded(expanded);
         exp.set_child(Some(&plane_box));
@@ -1462,6 +1504,18 @@ fn append_plane(
     } else {
         container.append(&plane_box);
     }
+}
+
+/// Whether a plane carries the archive's `junk` quality flag.
+///
+/// Case-insensitive, as the reference's comparison is — the flag arrives as
+/// free text from the archive, and a `Junk` that failed to match would hide
+/// exactly the warning this exists to show.
+fn is_junk(plane: &crate::models::caom2::Caom2Plane) -> bool {
+    plane
+        .quality
+        .as_deref()
+        .is_some_and(|q| q.trim().eq_ignore_ascii_case("junk"))
 }
 
 fn plane_expander_title(plane: &crate::models::caom2::Caom2Plane) -> String {
@@ -1828,5 +1882,38 @@ fn trim_float(v: f64, decimals: usize) -> String {
         trimmed.to_string()
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::is_junk;
+    use crate::models::caom2::Caom2Plane;
+
+    fn plane(quality: Option<&str>) -> Caom2Plane {
+        Caom2Plane {
+            quality: quality.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_archives_junk_flag_is_recognised_however_it_is_cased() {
+        // The flag is free text from the archive; a `Junk` that failed to match
+        // would hide exactly the warning the chip exists to show.
+        for flag in ["junk", "Junk", "JUNK", " junk "] {
+            assert!(is_junk(&plane(Some(flag))), "{flag:?} should read as junk");
+        }
+    }
+
+    #[test]
+    fn every_other_quality_is_not_junk() {
+        for flag in ["good", "", "   ", "junky", "not-junk"] {
+            assert!(
+                !is_junk(&plane(Some(flag))),
+                "{flag:?} should not read as junk"
+            );
+        }
+        assert!(!is_junk(&plane(None)), "an absent flag is not a warning");
     }
 }

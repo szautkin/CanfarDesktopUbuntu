@@ -156,3 +156,15 @@ label.warning { color: @warning_color; }
     border: 1px solid alpha(@success_color, 0.4);
     font-size: 0.8em;
 }
+
+/* A plane the archive itself marks as junk. Critical colouring, matching the
+   reference's SystemFillColorCriticalBrush chip: this is the one plane badge
+   that warns rather than describes. */
+.badge-junk {
+    background-color: alpha(@error_color, 0.15);
+    color: @error_color;
+    border-radius: 4px;
+    padding: 2px 8px;
+    border: 1px solid alpha(@error_color, 0.4);
+    font-size: 0.8em;
+}
