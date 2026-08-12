@@ -47,5 +47,6 @@ pub mod transfer_function;
 pub mod unit_converter;
 pub mod vospace_parser;
 pub mod workflow_format;
+pub mod zip_writer;
 
 pub use image_parser::ImageParser;

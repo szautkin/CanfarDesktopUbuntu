@@ -1485,10 +1485,17 @@ impl ResearchPage {
         include_notes.set_active(true);
         let include_history = gtk::CheckButton::with_label(crate::tr_en!("Include search history"));
         include_history.set_active(true);
+        // Off by default, as the reference's checkbox is: a library of cubes
+        // turns a kilobyte bundle into a hundred gigabytes, and that should be
+        // a decision, never a default.
+        let include_files =
+            gtk::CheckButton::with_label(crate::tr_en!("Include downloaded data files (large)"));
+        include_files.set_active(false);
         let upload_vospace = gtk::CheckButton::with_label(crate::tr_en!("Upload to VOSpace"));
         upload_vospace.set_active(false);
         content.append(&include_notes);
         content.append(&include_history);
+        content.append(&include_files);
         content.append(&upload_vospace);
 
         let opt_dialog = adw::MessageDialog::builder()
@@ -1511,6 +1518,7 @@ impl ResearchPage {
         let options = crate::helpers::research_exporter::BundleOptions {
             include_notes: include_notes.is_active(),
             include_search_history: include_history.is_active(),
+            include_files: include_files.is_active(),
         };
         let do_upload = upload_vospace.is_active();
 

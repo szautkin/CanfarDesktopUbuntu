@@ -27,7 +27,7 @@
 use crate::models::observation_note::ObservationNote;
 use crate::models::search_result::{RecentSearch, SavedQuery};
 use crate::services::observation_store::DownloadedObservation;
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -100,6 +100,13 @@ pub struct BundleOptions {
     pub include_notes: bool,
     /// Include `search/recent_searches.json` (recent-search history).
     pub include_search_history: bool,
+    /// Copy each downloaded observation's data file into `research/files/`.
+    ///
+    /// Refused until the bundle writer could stream: a multi-gigabyte member in
+    /// a writer that buffers, with 32-bit size fields, either exhausts RAM or
+    /// wraps into an archive that unpacks to garbage. `helpers::zip_writer`
+    /// streams and emits ZIP64 when a member needs it, so the option is real.
+    pub include_files: bool,
 }
 
 /// Item counts + the bundle's base folder name, returned so the caller can toast
@@ -111,6 +118,11 @@ pub struct BundleSummary {
     pub note_count: usize,
     pub saved_count: usize,
     pub recent_count: usize,
+    /// Data files copied in, when `include_files` was asked for.
+    pub file_count: usize,
+    /// Files that could not be read. Named, not counted: "3 files failed" tells
+    /// the user nothing they can act on.
+    pub file_failures: Vec<String>,
 }
 
 const EXPORT_VERSION: &str = "1.0";
@@ -228,6 +240,10 @@ struct ModuleBuild {
 pub struct WrappedBundle {
     /// (zip entry path, bytes) — e.g. `("Verbinal-Export-…/research/observations.json", …)`.
     pub entries: Vec<(String, Vec<u8>)>,
+    /// (zip entry path, source file) for the observation data files, which are
+    /// STREAMED rather than held here: the whole point is that they can be
+    /// gigabytes.
+    pub attachments: Vec<(String, std::path::PathBuf)>,
     pub summary: BundleSummary,
 }
 
@@ -297,12 +313,36 @@ pub fn build_wrapped_bundle(req: &BundleRequest) -> WrappedBundle {
     // ── Manifest ────────────────────────────────────────────────────────
     let mut manifest_modules: Vec<ExportManifestModule> = Vec::new();
     let mut all_files: Vec<String> = Vec::new();
+    // Data-file copies, when asked for: only observations whose file is
+    // actually on disk, matching the reference's `Where(o => o.FileExists)`.
+    // A record pointing at a file someone deleted is not a copy failure — there
+    // is nothing to copy.
+    let mut attachments: Vec<(String, std::path::PathBuf)> = Vec::new();
+    if options.include_files {
+        for obs in observations.iter() {
+            let path = std::path::PathBuf::from(&obs.local_path);
+            if obs.local_path.is_empty() || !path.is_file() {
+                continue;
+            }
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| obs.id.clone());
+            attachments.push((format!("{base}/research/files/{file_name}"), path));
+        }
+    }
+
     for m in &modules {
         let mut rel: Vec<String> = m
             .files
             .iter()
             .map(|(name, _)| format!("{}/{}", m.id, name))
             .collect();
+        // The reference lists the directory once rather than every copy, so a
+        // manifest stays readable for a bundle carrying two hundred cubes.
+        if m.id == "research" && !attachments.is_empty() {
+            rel.push("research/files/".to_string());
+        }
         rel.sort(); // stable, ordinal-ish order for the manifest
         all_files.extend(rel.iter().cloned());
         manifest_modules.push(ExportManifestModule {
@@ -352,8 +392,13 @@ pub fn build_wrapped_bundle(req: &BundleRequest) -> WrappedBundle {
             } else {
                 0
             },
+            // Counted by the writer, which is the only place that knows which
+            // copies actually succeeded.
+            file_count: 0,
+            file_failures: Vec::new(),
         },
         entries,
+        attachments,
     }
 }
 
@@ -364,13 +409,29 @@ pub fn write_research_bundle_zip(
     req: &BundleRequest,
 ) -> Result<BundleSummary, String> {
     let wrapped = build_wrapped_bundle(req);
-    let entries: Vec<(&str, &[u8])> = wrapped
-        .entries
-        .iter()
-        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
-        .collect();
-    write_zip(path, &entries)?;
-    Ok(wrapped.summary)
+    let mut summary = wrapped.summary;
+
+    let mut zip = crate::helpers::zip_writer::ZipWriter::create(path)?;
+    for (name, bytes) in &wrapped.entries {
+        zip.add_bytes(name, bytes)?;
+    }
+    // Data files are streamed one at a time. A file that cannot be read is
+    // NAMED and the bundle continues: the metadata is the part a collaborator
+    // cannot reconstruct, and losing all of it because one cube moved would be
+    // the wrong trade. Mirrors the reference's copyFailures list.
+    for (name, source) in &wrapped.attachments {
+        match zip.add_file(name, source) {
+            Ok(_) => summary.file_count += 1,
+            Err(_) => summary.file_failures.push(
+                source
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| source.display().to_string()),
+            ),
+        }
+    }
+    zip.finish()?;
+    Ok(summary)
 }
 
 /// Render the bundle `README.md`. Port of `ExportService.RenderReadme`.
@@ -667,124 +728,6 @@ fn iso_or_raw(s: &str) -> String {
 // Minimal store-only ZIP writer
 // ---------------------------------------------------------------------------
 
-/// Write `entries` (name, bytes) to `path` as a store-only (method 0) ZIP.
-///
-/// **Bounded by design, and the bound is real.** The whole archive is assembled
-/// in memory and the header fields are 32-bit, so this is fit for the bundle's
-/// JSON and markdown — kilobytes — and NOT for the observations' FITS files.
-/// Packing those needs a streaming writer and ZIP64 first; without both, a
-/// multi-gigabyte member either exhausts RAM or wraps the size field and yields
-/// an archive that unpacks to garbage. That is why `includeFiles` is refused
-/// rather than attempted.
-///
-/// Each entry is stored uncompressed with its CRC-32; a central directory and
-/// end-of-central-directory record follow. Atomic-ish: writes the whole archive
-/// in one `std::fs::write`.
-fn write_zip(path: &Path, entries: &[(&str, &[u8])]) -> Result<(), String> {
-    let (dos_time, dos_date) = dos_datetime_now();
-    let mut out: Vec<u8> = Vec::new();
-    let mut central: Vec<u8> = Vec::new();
-
-    for (name, data) in entries {
-        let name_bytes = name.as_bytes();
-        let crc = crc32(data);
-        let size = data.len() as u32;
-        let offset = out.len() as u32;
-
-        // ── Local file header ──
-        push_u32(&mut out, 0x0403_4b50);
-        push_u16(&mut out, 20); // version needed to extract
-        push_u16(&mut out, 0); // general-purpose bit flag
-        push_u16(&mut out, 0); // compression method: 0 = stored
-        push_u16(&mut out, dos_time);
-        push_u16(&mut out, dos_date);
-        push_u32(&mut out, crc);
-        push_u32(&mut out, size); // compressed size
-        push_u32(&mut out, size); // uncompressed size
-        push_u16(&mut out, name_bytes.len() as u16);
-        push_u16(&mut out, 0); // extra field length
-        out.extend_from_slice(name_bytes);
-        out.extend_from_slice(data);
-
-        // ── Central directory header ──
-        push_u32(&mut central, 0x0201_4b50);
-        push_u16(&mut central, 20); // version made by
-        push_u16(&mut central, 20); // version needed to extract
-        push_u16(&mut central, 0); // general-purpose bit flag
-        push_u16(&mut central, 0); // compression method
-        push_u16(&mut central, dos_time);
-        push_u16(&mut central, dos_date);
-        push_u32(&mut central, crc);
-        push_u32(&mut central, size); // compressed size
-        push_u32(&mut central, size); // uncompressed size
-        push_u16(&mut central, name_bytes.len() as u16);
-        push_u16(&mut central, 0); // extra field length
-        push_u16(&mut central, 0); // file comment length
-        push_u16(&mut central, 0); // disk number start
-        push_u16(&mut central, 0); // internal file attributes
-        push_u32(&mut central, 0); // external file attributes
-        push_u32(&mut central, offset); // relative offset of local header
-        central.extend_from_slice(name_bytes);
-    }
-
-    let central_offset = out.len() as u32;
-    let central_size = central.len() as u32;
-    out.extend_from_slice(&central);
-
-    // ── End of central directory record ──
-    push_u32(&mut out, 0x0605_4b50);
-    push_u16(&mut out, 0); // number of this disk
-    push_u16(&mut out, 0); // disk where central directory starts
-    push_u16(&mut out, entries.len() as u16); // central dir records on this disk
-    push_u16(&mut out, entries.len() as u16); // total central dir records
-    push_u32(&mut out, central_size);
-    push_u32(&mut out, central_offset);
-    push_u16(&mut out, 0); // ZIP file comment length
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(path, &out).map_err(|e| e.to_string())
-}
-
-#[inline]
-fn push_u16(buf: &mut Vec<u8>, v: u16) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-#[inline]
-fn push_u32(buf: &mut Vec<u8>, v: u32) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-/// Standard IEEE CRC-32 (bit-by-bit, polynomial 0xEDB88320).
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
-
-/// Current local time packed into MS-DOS (time, date) fields for the ZIP header.
-fn dos_datetime_now() -> (u16, u16) {
-    let now = chrono::Local::now();
-    let year = now.year();
-    let dos_year = if year < 1980 {
-        0u16
-    } else {
-        (year - 1980) as u16
-    };
-    let date = (dos_year << 9) | ((now.month() as u16) << 5) | (now.day() as u16);
-    let time =
-        ((now.hour() as u16) << 11) | ((now.minute() as u16) << 5) | ((now.second() as u16) / 2);
-    (time, date)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -935,6 +878,7 @@ mod tests {
             options: BundleOptions {
                 include_notes: true,
                 include_search_history: false,
+                include_files: false,
             },
             now: fixed_now(),
             app_version: "1.3.1",
@@ -995,13 +939,6 @@ mod tests {
         assert_eq!(stars(9), "★★★★★");
     }
 
-    #[test]
-    fn crc32_known_vector() {
-        // The canonical CRC-32 test vector.
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b""), 0);
-    }
-
     fn req<'a>(
         observations: &'a [DownloadedObservation],
         notes: &'a [ObservationNote],
@@ -1024,7 +961,124 @@ mod tests {
         BundleOptions {
             include_notes,
             include_search_history: include_history,
+            include_files: false,
         }
+    }
+
+    #[test]
+    fn data_files_are_attached_only_when_asked_for_and_only_when_present() {
+        let dir = std::env::temp_dir().join(format!(
+            "verbinal_bundle_files_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let present = dir.join("1234567p.fits");
+        std::fs::write(&present, b"FITS").unwrap();
+
+        let mut with_file = obs("ivo://x?1", "M31", "CFHT", "1234567p");
+        with_file.local_path = present.display().to_string();
+        // A record whose file someone deleted is not a copy failure — there is
+        // nothing to copy, and naming it would send the user looking for a bug.
+        let mut missing = obs("ivo://x?2", "M51", "CFHT", "7654321p");
+        missing.local_path = dir.join("gone.fits").display().to_string();
+        let observations = vec![with_file, missing];
+
+        let request = |include_files: bool| BundleRequest {
+            observations: &observations,
+            notes: &[],
+            saved: &[],
+            recent: &[],
+            options: BundleOptions {
+                include_notes: false,
+                include_search_history: false,
+                include_files,
+            },
+            now: fixed_now(),
+            app_version: "1.3.1",
+            host_name: "test-host",
+        };
+
+        let off = build_wrapped_bundle(&request(false));
+        assert!(
+            off.attachments.is_empty(),
+            "nothing asked for, nothing packed"
+        );
+        assert!(!off
+            .entries
+            .iter()
+            .any(|(name, _)| name.contains("research/files/")));
+
+        let on = build_wrapped_bundle(&request(true));
+        assert_eq!(on.attachments.len(), 1, "only the file that exists");
+        assert!(on.attachments[0]
+            .0
+            .ends_with("research/files/1234567p.fits"));
+
+        // The manifest lists the DIRECTORY once, as the reference does, so a
+        // bundle of two hundred cubes stays readable.
+        let manifest =
+            String::from_utf8(entry(&on, "manifest.json").expect("a manifest").1.clone()).unwrap();
+        assert!(manifest.contains("research/files/"), "{manifest}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_written_bundle_carries_its_data_files_and_names_what_it_could_not_read() {
+        // End to end, through the real writer: the bundle is only worth
+        // building if another tool can open it, so `unzip -t` judges the result.
+        let dir = std::env::temp_dir().join(format!(
+            "verbinal_bundle_write_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data = dir.join("1234567p.fits");
+        std::fs::write(&data, vec![7u8; 200_000]).unwrap();
+
+        let mut o = obs("ivo://x?1", "M31", "CFHT", "1234567p");
+        o.local_path = data.display().to_string();
+        let observations = vec![o];
+
+        let archive = dir.join("bundle.zip");
+        let summary = write_research_bundle_zip(
+            &archive,
+            &BundleRequest {
+                observations: &observations,
+                notes: &[],
+                saved: &[],
+                recent: &[],
+                options: BundleOptions {
+                    include_notes: false,
+                    include_search_history: false,
+                    include_files: true,
+                },
+                now: fixed_now(),
+                app_version: "1.3.1",
+                host_name: "test-host",
+            },
+        )
+        .expect("the bundle should be written");
+
+        assert_eq!(summary.file_count, 1);
+        assert!(summary.file_failures.is_empty());
+
+        if let Ok(out) = std::process::Command::new("unzip")
+            .arg("-t")
+            .arg(&archive)
+            .output()
+        {
+            assert!(out.status.success(), "unzip rejected the bundle");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Find a wrapped-bundle entry whose path ends with `suffix`.

@@ -246,13 +246,13 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 `path` (the full .zip path) or `destFolder` (a folder to write \
                 research-bundle-<date>.zip into). Non-destructive: queues for the user to apply, \
                 then writes the archive (creating parent folders). Set includeNotes / \
-                includeSearchHistory to false to omit those sections. The bundle carries METADATA, \
-                not the FITS files themselves — each observation's publisher id, filename and size \
-                are recorded, which is what download_observation needs to re-fetch it. Set \
-                uploadToVospace to also \
-                publish the .zip to Verbinal-Exports/ in the user's VOSpace for collaborators \
-                (requires sign-in). Packing the downloaded FITS files themselves (includeFiles) is \
-                not supported yet."
+                includeSearchHistory to false to omit those sections. By default the bundle carries \
+                METADATA only — each observation's publisher id, filename and size are recorded, \
+                which is what download_observation needs to re-fetch it. Set includeFiles to copy \
+                the downloaded data files in as well, under research/files/; they are streamed, so \
+                a multi-gigabyte cube is fine, but the bundle grows to match. Set uploadToVospace \
+                to also publish the .zip to Verbinal-Exports/ in the user's VOSpace for \
+                collaborators (requires sign-in)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -272,6 +272,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "includeSearchHistory": {
                         "type": "boolean",
                         "description": "Include saved + recent searches (default true)."
+                    },
+                    "includeFiles": {
+                        "type": "boolean",
+                        "description": "Copy the downloaded data files into research/files/ (default false). They are streamed, so a multi-gigabyte cube is fine — but the bundle grows to match."
                     },
                     "uploadToVospace": {
                         "type": "boolean",
@@ -636,24 +640,11 @@ fn export_zip_path(args: &Value) -> Result<String, String> {
 }
 
 fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
-    // `includeFiles` is still unimplemented. Refuse it loudly rather than
-    // ignoring it: an export that silently omits the data files the caller
-    // asked for is worse than one that says it cannot.
-    // Refused rather than attempted: the bundle writer assembles the whole
-    // archive in memory with 32-bit sizes, so a FITS cube would either exhaust
-    // RAM or silently wrap past the ZIP 4 GB limit and produce an archive that
-    // unpacks to garbage. A corrupt bundle is worse than an honest refusal —
-    // and worse still because it would not be noticed until someone opened it.
-    if crate::mcp::tools::bool_arg(args, "includeFiles") {
-        return ToolResult::Failed(
-            "includeFiles is not supported: the bundle writer cannot yet stream \
-             files, so a multi-gigabyte FITS would exceed the ZIP size limit. \
-             Re-run without it — the bundle records each observation's publisher \
-             id, filename and size, which is enough to re-fetch the data with \
-             download_observation."
-                .to_string(),
-        );
-    }
+    // `includeFiles` was refused while the bundle writer buffered the whole
+    // archive in memory with 32-bit sizes — a FITS cube would have exhausted RAM
+    // or wrapped past 4 GB into an archive that unpacks to garbage. It streams
+    // and emits ZIP64 now, so the option is honoured.
+    let include_files = crate::mcp::tools::bool_arg(args, "includeFiles");
     let upload_to_vospace = crate::mcp::tools::bool_arg(args, "uploadToVospace");
 
     let path = match export_zip_path(args) {
@@ -672,15 +663,24 @@ fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolR
         "path": path,
         "includeNotes": include_notes,
         "includeSearchHistory": include_history,
+        "includeFiles": include_files,
         "uploadToVospace": upload_to_vospace,
     });
     // The summary is what the user approves, so it has to say when the bundle
     // will ALSO leave the machine — that is a different decision from writing a
     // file locally.
-    let summary = if upload_to_vospace {
-        format!("Export research bundle to {path} and upload it to VOSpace")
+    // The summary says when the bundle will carry the DATA as well: that turns
+    // a kilobyte file into a possibly enormous one, and it is what the user is
+    // approving.
+    let with_files = if include_files {
+        " with the downloaded data files"
     } else {
-        format!("Export research bundle to {path}")
+        ""
+    };
+    let summary = if upload_to_vospace {
+        format!("Export research bundle{with_files} to {path} and upload it to VOSpace")
+    } else {
+        format!("Export research bundle{with_files} to {path}")
     };
     let p = proposals.enqueue("export_research_bundle", &summary, false, payload);
     ToolResult::Proposed(p)
@@ -880,14 +880,18 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
     if path_str.is_empty() {
         return Err("export_research_bundle payload missing path".to_string());
     }
-    let include_notes = payload
-        .get("include_notes")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let include_history = payload
-        .get("include_search_history")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    // Through `arg`, which bridges the two spellings: the proposer writes
+    // `includeNotes` and this read `include_notes` off the map directly, so both
+    // options were silently ignored and every bundle carried notes and history
+    // whatever the caller asked for.
+    let opt_bool = |key: &str| {
+        crate::mcp::tools::arg(payload, key)
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    };
+    let include_notes = opt_bool("includeNotes");
+    let include_history = opt_bool("includeSearchHistory");
+    let include_files = crate::mcp::tools::bool_arg(payload, "includeFiles");
 
     let observations = services.observation_store.load_async().await;
     let saved = services.search_store.load_saved();
@@ -925,6 +929,7 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
                 options: crate::helpers::research_exporter::BundleOptions {
                     include_notes,
                     include_search_history: include_history,
+                    include_files,
                 },
                 now,
                 app_version: &app_version,
@@ -935,7 +940,7 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
     .await
     .map_err(|e| format!("export task failed: {e}"))?;
 
-    write_result?;
+    let summary = write_result?;
 
     let mut status = format!(
         "Exported research bundle to {} ({} observation{}, {} saved quer{}, {} recent search{})",
@@ -947,6 +952,19 @@ async fn apply_export(services: &AppServices, payload: &Value) -> Result<String,
         recent_count,
         if recent_count == 1 { "" } else { "es" },
     );
+
+    // Data copies are reported separately, and failures are NAMED: "3 files
+    // failed" tells the reader nothing they can act on, and the bundle they now
+    // hold is missing exactly those.
+    if include_files {
+        status.push_str(&format!(", {} data file(s)", summary.file_count));
+        if !summary.file_failures.is_empty() {
+            status.push_str(&format!(
+                " — could not read: {}",
+                summary.file_failures.join(", ")
+            ));
+        }
+    }
 
     if payload
         .get("uploadToVospace")
@@ -1368,24 +1386,29 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_export_option_is_refused_not_ignored() {
-        // `includeFiles` is still unimplemented. Silently dropping it would
-        // produce a bundle missing the data files the caller asked for, and
-        // nothing in the result would say so.
+    fn the_data_files_option_reaches_the_payload_and_the_summary() {
+        // It was refused while the bundle writer buffered the archive in memory
+        // with 32-bit sizes. It streams now, so the option is honoured — and the
+        // summary says so, because approving "export a bundle" and receiving a
+        // hundred gigabytes is not the decision the user made.
         let store = Arc::new(InMemoryProposalStore::new());
         let args = json!({ "path": "/tmp/b.zip", "includeFiles": true });
         match propose_export(&args, &store) {
-            ToolResult::Failed(m) => assert!(m.contains("includeFiles"), "{m}"),
-            _ => panic!("includeFiles must be refused, not ignored"),
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["includeFiles"], true);
+                assert!(p.summary.contains("data files"), "{}", p.summary);
+            }
+            _ => panic!("includeFiles must be honoured, not refused"),
         }
-        assert_eq!(store.pending_count(), 0, "nothing should have been queued");
 
-        // Explicitly false is not a request for the feature, so it proceeds.
-        let args = json!({ "path": "/tmp/b.zip", "includeFiles": false });
-        assert!(matches!(
-            propose_export(&args, &store),
-            ToolResult::Proposed(_)
-        ));
+        let args = json!({ "path": "/tmp/b.zip" });
+        match propose_export(&args, &store) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["includeFiles"], false);
+                assert!(!p.summary.contains("data files"), "{}", p.summary);
+            }
+            _ => panic!("expected a queued proposal"),
+        }
     }
 
     #[test]
