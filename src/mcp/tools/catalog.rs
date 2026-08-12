@@ -343,6 +343,15 @@ mod read_back_tests {
         ),
     ];
 
+    // `set_search_results_view` and `set_search_constraints` are deliberately
+    // NOT here, and the reason is worth writing down because adding them looks
+    // like an improvement: both report their state, under different names.
+    // `page` reads back as `currentPage`, `setFilters` as `filters`,
+    // `showColumns`/`hideColumns` as `columns[].visible`, and the seven facets
+    // are keys the snapshot builds by iterating `FACETS` rather than literals.
+    // A name-matching scan calls all of that missing, and "fixing" it would mean
+    // renaming payload keys the reference already fixes.
+
     /// Arguments that DO something instead of holding a value.
     const ACTIONS: &[&str] = &[
         "reset",
