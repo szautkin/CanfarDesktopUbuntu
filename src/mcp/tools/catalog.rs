@@ -318,6 +318,80 @@ mod tests {
 }
 
 #[cfg(test)]
+mod read_back_tests {
+    //! What an agent can SET, it must be able to READ.
+    //!
+    //! Not pedantry: an agent that changes the user's view is expected to put it
+    //! back, and it can only do that if the getter reports what the setter took.
+    //! The cube's snapshot carried a comment promising exactly this — "read back
+    //! everything set_cube_view can change" — while omitting density, MIP, the
+    //! background and auto-orbit.
+    //!
+    //! Actions are exempt by name: `reset`, `clearCrosshair` and their like do
+    //! something rather than hold a value, and there is nothing to read back.
+
+    use super::*;
+    use crate::mcp::tools::ToolRouter;
+
+    /// (setter tool, the source that builds the matching getter's payload).
+    const PAIRS: &[(&str, &str)] = &[
+        ("set_fits_view", include_str!("../../ui/fits_viewer.rs")),
+        ("set_cube_view", include_str!("../../ui/cube_tab_host.rs")),
+        (
+            "set_search_form",
+            include_str!("../../ui/search_page/mcp.rs"),
+        ),
+    ];
+
+    /// Arguments that DO something instead of holding a value.
+    const ACTIONS: &[&str] = &[
+        "reset",
+        "resetCamera",
+        "clearCrosshair",
+        "windowPreset",
+        "runSearch",
+    ];
+
+    #[test]
+    fn every_settable_control_can_be_read_back() {
+        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+        let (services, _toast_rx) = AppServices::new(rt.handle().clone());
+        let (router, _proposals) = build_router(services);
+        let manifest = router.external_manifest();
+
+        let mut missing: Vec<String> = Vec::new();
+        for (setter, snapshot_source) in PAIRS {
+            let tool = manifest
+                .iter()
+                .find(|d| d.name == *setter)
+                .unwrap_or_else(|| panic!("`{setter}` is declared"));
+            let props = tool.input_schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("`{setter}` declares properties"));
+
+            for name in props.keys() {
+                if ACTIONS.contains(&name.as_str()) {
+                    continue;
+                }
+                // The payload is built with `"name":` literals, so that is what
+                // the scan looks for — the snapshot function runs against a live
+                // widget no test can build.
+                let key = format!("\"{name}\":");
+                if !snapshot_source.contains(&key) {
+                    missing.push(format!("{setter}.{name}"));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "these controls can be set but never read back, so an agent cannot \
+             restore what it changed: {missing:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod advertised_argument_tests {
     //! Every argument a tool advertises must be an argument something READS.
     //!

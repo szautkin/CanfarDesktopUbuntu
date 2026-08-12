@@ -107,7 +107,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     },
                     "mip": { "type": "boolean", "description": "Max-intensity projection on/off." },
                     "renderMode": { "type": "string", "description": "Volume render mode: \"emission\" or \"max-intensity\" (alias for the MIP toggle)." },
-                    "background": { "type": "string", "enum": ["dark", "black", "light"], "description": "3D background preset." },
+                    "background": { "type": "string", "enum": crate::ui::cube_volume_gl::BACKGROUND_NAMES, "description": "3D background preset." },
                     "colormap": {
                         "type": "string",
                         "enum": crate::helpers::cube_colormaps::NAMES,

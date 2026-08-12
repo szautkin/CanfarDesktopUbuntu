@@ -111,6 +111,48 @@ pub const DENSITY_MIN: f32 = 0.01;
 // setting that renders an empty frame.
 const _: () = assert!(DENSITY_MIN > 0.0);
 
+/// The background presets, name → RGB.
+///
+/// One table, read by the tool schema, by the applier that sets a background,
+/// and by the snapshot that reports it back: an agent must be able to read the
+/// name it just wrote, and three copies of these colours is three chances for
+/// "what did I set it to?" to answer wrongly.
+pub const BACKGROUNDS: [(&str, [f32; 3]); 3] = [
+    ("dark", [0.06, 0.06, 0.08]),
+    ("black", [0.0, 0.0, 0.0]),
+    ("light", [0.92, 0.92, 0.94]),
+];
+
+/// The names [`BACKGROUNDS`] offers, for the tool schema's enum.
+pub const BACKGROUND_NAMES: [&str; 3] = [BACKGROUNDS[0].0, BACKGROUNDS[1].0, BACKGROUNDS[2].0];
+
+/// The RGB for a preset name, case-insensitively, or `None` when it names none.
+pub fn background_rgb(name: &str) -> Option<[f32; 3]> {
+    let needle = name.trim();
+    BACKGROUNDS
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(needle))
+        .map(|(_, rgb)| *rgb)
+}
+
+/// The preset name for an RGB triple, or `"custom"` when it matches none.
+///
+/// A free function so it is testable without a GL context: the widget cannot be
+/// built in a unit test, and this mapping is exactly the part worth testing.
+pub fn background_name_for(rgb: [f32; 3]) -> &'static str {
+    const EPS: f32 = 0.01;
+    BACKGROUNDS
+        .iter()
+        .find(|(_, preset)| {
+            preset
+                .iter()
+                .zip(rgb.iter())
+                .all(|(a, b)| (a - b).abs() < EPS)
+        })
+        .map(|(name, _)| *name)
+        .unwrap_or("custom")
+}
+
 /// Camera elevation, radians. Just short of the poles, where the orbit basis
 /// degenerates and the volume flips.
 pub const ELEVATION_RANGE: (f32, f32) = (-1.4, 1.4);
@@ -441,6 +483,31 @@ impl CubeVolumeGl {
     /// Current base ray-march step budget (quality).
     pub fn steps(&self) -> f32 {
         self.state.borrow().steps
+    }
+
+    /// Current opacity multiplier.
+    pub fn density(&self) -> f32 {
+        self.state.borrow().density
+    }
+
+    /// Whether maximum-intensity projection is on.
+    pub fn mip(&self) -> bool {
+        self.state.borrow().mip != 0
+    }
+
+    /// Whether the camera is orbiting on its own.
+    pub fn auto_orbit(&self) -> bool {
+        self.state.borrow().auto_orbit
+    }
+
+    /// The background preset currently applied, by the name `set_cube_view`
+    /// takes.
+    ///
+    /// The NAME, not the RGB triple: the agent set it by name, and a triple it
+    /// would have to reverse-engineer is not a read-back of what it did.
+    pub fn background_name(&self) -> &'static str {
+        let bg = self.state.borrow().bg_color;
+        background_name_for([bg[0], bg[1], bg[2]])
     }
 
     /// Render the current view offscreen and read it back as straight RGBA8

@@ -368,16 +368,12 @@ impl CubeTabHost {
                     // Refused, not defaulted: the schema advertises three names,
                     // and quietly applying Dark for a fourth reports success for
                     // a change the caller never asked for.
-                    let rgb = match bg.trim().to_ascii_lowercase().as_str() {
-                        "dark" => [0.06, 0.06, 0.08],
-                        "black" => [0.0, 0.0, 0.0],
-                        "light" => [0.92, 0.92, 0.94],
-                        other => {
-                            return Err(format!(
-                                "unknown background '{other}' — use 'dark', 'black' or 'light'"
-                            ))
-                        }
-                    };
+                    let rgb = crate::ui::cube_volume_gl::background_rgb(bg).ok_or_else(|| {
+                        format!(
+                            "unknown background '{bg}' — use one of: {}",
+                            crate::ui::cube_volume_gl::BACKGROUND_NAMES.join(", ")
+                        )
+                    })?;
                     v.gl().set_background(rgb);
                 }
                 if let Some(on) =
@@ -860,6 +856,15 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
         "windowHi": window_hi,
         "showCaptions": v.captions_visible(),
         "showSlicePlane": v.slice_plane_visible(),
+        // The renderer's own settings, which the comment above has always
+        // promised and this payload did not carry: an agent could set density,
+        // MIP, the background and auto-orbit, and then had no way to learn what
+        // they had been — so it could not put the user's view back.
+        "density": v.gl().density(),
+        "mip": v.gl().mip(),
+        "renderMode": if v.gl().mip() { "max-intensity" } else { "composite" },
+        "background": v.gl().background_name(),
+        "autoOrbit": v.gl().auto_orbit(),
     })
 }
 
