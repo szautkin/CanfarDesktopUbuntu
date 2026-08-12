@@ -55,6 +55,9 @@ pub struct FitsViewer {
     widget: gtk::Box,
     notebook: gtk::Notebook,
     tabs: Rc<RefCell<Vec<Rc<FitsTab>>>>,
+    /// "Search here" in the CROSSHAIR section — the same action the coordinates
+    /// panel offers, where a reader looks for it.
+    search_here_btn: gtk::Button,
     /// Live MCP bookmarks (in-memory Vec on the viewer).
     bookmarks: RefCell<Vec<FitsBookmark>>,
     /// Cross-tab shared crosshair/hover state, linked by sky (RA/Dec).
@@ -287,6 +290,21 @@ impl FitsViewer {
         crosshair_actions.append(&clear_crosshair_btn);
         column.append(&crosshair_actions);
 
+        // Search the archive at the crosshair. It has always existed, inside the
+        // coordinates panel — which is closed by default, so unless you opened
+        // that panel the feature did not appear to be there. The reference
+        // offers it from the crosshair menu, which is where a reader looks.
+        let search_here_btn = gtk::Button::new();
+        let search_here_content = adw::ButtonContent::new();
+        search_here_content.set_icon_name("system-search-symbolic");
+        search_here_content.set_label(crate::tr_en!("Search here"));
+        search_here_btn.set_child(Some(&search_here_content));
+        search_here_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Search the CADC archive at the crosshair's RA/Dec"
+        )));
+        search_here_btn.set_sensitive(false);
+        column.append(&search_here_btn);
+
         // ── COMPARE ─────────────────────────────────────────────────────────
         // Everything that acts across tabs, together.
         column.append(&viewer_shell::section_header(crate::tr_en!("COMPARE")));
@@ -468,6 +486,7 @@ impl FitsViewer {
             blink_interval_ms: Rc::new(Cell::new(1500)),
             blink_target: Rc::new(Cell::new(1)),
             coords_panel,
+            search_here_btn,
             stretch_combo,
             colormap_combo,
             min_scale,
@@ -718,6 +737,12 @@ impl FitsViewer {
             });
         }
         // Copy the crosshair RA/Dec to the clipboard.
+        {
+            let v = viewer.clone();
+            viewer.search_here_btn.connect_clicked(move |_| {
+                v.coords_panel.search_here();
+            });
+        }
         {
             let v = viewer.clone();
             copy_radec_btn.connect_clicked(move |btn| {
@@ -1370,11 +1395,17 @@ impl FitsViewer {
     /// go-to and right-click targets stay on-screen).
     fn wire_tab_callbacks(&self, tab: &Rc<FitsTab>) {
         let coords_panel = self.coords_panel.clone();
+        let search_here_btn = self.search_here_btn.clone();
         let wcs = tab.data().wcs.clone();
         // Weak ref avoids a canvas→callback→canvas reference cycle.
         let canvas_weak = Rc::downgrade(tab.canvas());
         tab.canvas().set_on_crosshair_placed(move |pos| {
             coords_panel.set_current_crosshair(pos, wcs.as_ref());
+            // Searchable only when the crosshair has a sky position — an image
+            // with no WCS has a marker but no coordinates to search at, and a
+            // button that looks available and then does nothing is worse than
+            // one that is plainly not yet applicable.
+            search_here_btn.set_sensitive(coords_panel.has_sky_position());
             if let Some((px, py)) = pos {
                 if let Some(canvas) = canvas_weak.upgrade() {
                     if canvas.zoom_scale() > 1.05 {
@@ -2166,6 +2197,10 @@ mod control_visibility_tests {
             ("Sync zoom", "sync_fov_btn"),
             ("Copy RA/Dec", "copy_radec_btn"),
             ("Clear crosshair", "clear_crosshair_btn"),
+            // The reference offers this from its crosshair menu. Ours had it
+            // only inside the coordinates panel, which is closed by default —
+            // so the feature existed and did not appear to.
+            ("Search here", "search_here_btn"),
         ];
         let column = column_section();
         for (affordance, binding) in expected {
@@ -2194,6 +2229,7 @@ mod control_visibility_tests {
             "Fade speed",
             "Link crosshair",
             "Sync zoom",
+            "Search here",
         ] {
             let caption = format!("crate::tr_en!(\"{label}\")");
             assert!(

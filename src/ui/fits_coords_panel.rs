@@ -14,7 +14,10 @@ use std::rc::Rc;
 
 type GoToCallback = Rc<RefCell<Option<Box<dyn Fn(f64, f64)>>>>;
 type SaveBookmarkCallback = Rc<RefCell<Option<Box<dyn Fn() -> Option<(f64, f64, String)>>>>>;
-type SearchHereCallback = Rc<RefCell<Option<Box<dyn Fn(f64, f64)>>>>;
+/// `Rc` rather than `Box` so the handler can be cloned out before it runs — a
+/// handler that reaches back into this panel would otherwise panic on the
+/// borrow.
+type SearchHereCallback = Rc<RefCell<Option<Rc<dyn Fn(f64, f64)>>>>;
 
 pub struct FitsCoordsPanel {
     widget: gtk::Revealer,
@@ -145,11 +148,7 @@ impl FitsCoordsPanel {
         {
             let p = panel.clone();
             panel.search_here_btn.connect_clicked(move |_| {
-                if let Some((ra, dec)) = *p.current_radec.borrow() {
-                    if let Some(cb) = p.on_search_here.borrow().as_ref() {
-                        cb(ra, dec);
-                    }
-                }
+                p.search_here();
             });
         }
 
@@ -236,8 +235,30 @@ impl FitsCoordsPanel {
 
     /// Register a callback invoked when "Search Here" is pressed, with the
     /// crosshair's `(ra, dec)` in degrees.
+    /// Search the archive at the crosshair, if one is placed on an image with a
+    /// WCS.
+    ///
+    /// Public because the control column offers the same action: the crosshair
+    /// section is where a reader looks for it, and this panel is where the
+    /// position lives. One path, two entry points — a second copy would be a
+    /// second answer to "which crosshair?".
+    pub fn search_here(&self) {
+        let Some((ra, dec)) = *self.current_radec.borrow() else {
+            return;
+        };
+        let handler = self.on_search_here.borrow().clone();
+        if let Some(cb) = handler {
+            cb(ra, dec);
+        }
+    }
+
+    /// Whether a crosshair with sky coordinates is currently placed.
+    pub fn has_sky_position(&self) -> bool {
+        self.current_radec.borrow().is_some()
+    }
+
     pub fn set_on_search_here(&self, cb: impl Fn(f64, f64) + 'static) {
-        *self.on_search_here.borrow_mut() = Some(Box::new(cb));
+        *self.on_search_here.borrow_mut() = Some(Rc::new(cb));
     }
 
     pub fn set_on_go_to(&self, cb: impl Fn(f64, f64) + 'static) {
