@@ -301,12 +301,20 @@ impl LaunchFormView {
             .build();
         headless_group.add(&headless_args_entry);
 
-        let headless_replicas = gtk::SpinButton::with_range(1.0, 20.0, 1.0);
+        // The same range `launch_headless_job` advertises — a spinner that
+        // stopped short would silently rewrite a count an agent had validated.
+        let (replicas_lo, replicas_hi) = crate::models::session_launch_params::REPLICAS_RANGE;
+        let headless_replicas =
+            gtk::SpinButton::with_range(replicas_lo as f64, replicas_hi as f64, 1.0);
         headless_replicas.set_value(1.0);
         headless_replicas.set_valign(gtk::Align::Center);
         let replicas_row = adw::ActionRow::builder()
             .title(crate::tr_en!("Replicas"))
-            .subtitle(crate::tr_en!("1–20 identical jobs"))
+            .subtitle(crate::tr_fmt!(
+                "{}–{} identical jobs",
+                replicas_lo,
+                replicas_hi
+            ))
             .build();
         replicas_row.add_suffix(&headless_replicas);
         headless_group.add(&replicas_row);

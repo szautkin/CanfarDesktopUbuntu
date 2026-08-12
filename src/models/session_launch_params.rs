@@ -15,10 +15,20 @@ pub struct SessionLaunchParams {
     /// Headless-job command arguments (each becomes a repeated `args` form field).
     #[serde(default)]
     pub args: Option<Vec<String>>,
-    /// Headless-job replica count (1–20); `None` for interactive sessions.
+    /// Headless-job replica count ([`REPLICAS_RANGE`]); `None` for interactive
+    /// sessions.
     #[serde(default)]
     pub replicas: Option<u32>,
 }
+
+/// How many identical headless replicas one launch may request.
+///
+/// One constant for the launch form's spin button, the `launch_headless_job`
+/// schema and the applier's clamp. The reference's own two disagree — its UI
+/// clamps to 20 while its MCP schema advertises 50 — and a schema that promises
+/// more than the applier delivers is the widget-vs-schema divergence in reverse:
+/// a client validates 40 as fine, sends it, and gets 20.
+pub const REPLICAS_RANGE: (u32, u32) = (1, 20);
 
 impl SessionLaunchParams {
     pub fn to_form_pairs(&self) -> Vec<(&str, String)> {

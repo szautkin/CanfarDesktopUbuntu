@@ -79,6 +79,7 @@ static FMT_PAIRS: &[(&str, &str)] = &[
     ("Welcome, {}",                                 "Bienvenue, {}"),
     ("Welcome back, {}!",                           "Bon retour, {} !"),
     ("Found {} observations",                       "{} observations trouvées"),
+    ("{}–{} identical jobs",                        "{} à {} tâches identiques"),
     ("Found {} observations (row limit {} reached — raise Max Records to see more)",
      "{} observations trouvées (limite de {} lignes atteinte — augmentez Max Records pour en voir plus)"),
     ("{} offline",                                  "{} hors ligne"),

@@ -117,17 +117,27 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         write_tool(
             "launch_headless_job",
             "Propose launching a headless (batch) Skaha job from a container image, with optional \
-             command (`cmd`, the executable the container runs), an `args` string, and CPU/RAM(GB). \
-             Queues for the user to apply (a destructive change — it spends quota); after it applies, \
-             track it via list_headless_jobs.",
+             command (`cmd`, the executable the container runs), an `args` string, CPU/RAM(GB), \
+             GPUs, a job `name`, and `replicas` to run the same job several times over (each replica \
+             gets REPLICA_ID / REPLICA_COUNT in its environment). Queues for the user to apply (a \
+             destructive change — it spends quota); after it applies, track it via \
+             list_headless_jobs.",
             json!({
                 "type": "object",
                 "properties": {
                     "image": { "type": "string", "description": "Container image id to launch." },
+                    "name":  { "type": "string", "description": "Job name (default `headless-job`)." },
                     "cores": { "type": "integer", "minimum": 1, "description": "CPU cores." },
                     "ram":   { "type": "integer", "minimum": 1, "description": "RAM in GB." },
+                    "gpus":  { "type": "integer", "minimum": 0, "description": "GPUs (default 0)." },
                     "cmd":   { "type": "string", "description": "Executable the container runs." },
-                    "args":  { "type": "string", "description": "Arguments passed to cmd." }
+                    "args":  { "type": "string", "description": "Arguments passed to cmd." },
+                    "replicas": {
+                        "type": "integer",
+                        "minimum": crate::models::session_launch_params::REPLICAS_RANGE.0,
+                        "maximum": crate::models::session_launch_params::REPLICAS_RANGE.1,
+                        "description": "How many identical jobs to launch (default 1)."
+                    }
                 },
                 "required": ["image"],
                 "additionalProperties": false
@@ -297,6 +307,22 @@ fn propose_launch_headless_job(args: &Value, proposals: &Arc<InMemoryProposalSto
     };
     let cmd = str_arg(args, "cmd");
     let cmd_args = str_arg(args, "args");
+    let name = str_arg(args, "name");
+    let gpus = crate::mcp::tools::opt_u32(args, "gpus");
+    // Refused here, not clamped at apply time: the user is about to approve
+    // "launch 40 jobs", and quietly launching 20 is not what they read.
+    let replicas = match crate::mcp::tools::opt_u32(args, "replicas") {
+        Some(n) => {
+            let (lo, hi) = crate::models::session_launch_params::REPLICAS_RANGE;
+            if !(lo..=hi).contains(&n) {
+                return ToolResult::Failed(format!(
+                    "replicas must be between {lo} and {hi}, got {n}"
+                ));
+            }
+            Some(n)
+        }
+        None => None,
+    };
 
     let mut payload = json!({ "image": image });
     if let Some(c) = cores {
@@ -305,19 +331,29 @@ fn propose_launch_headless_job(args: &Value, proposals: &Arc<InMemoryProposalSto
     if let Some(r) = ram {
         payload["ram"] = json!(r);
     }
+    if let Some(g) = gpus {
+        payload["gpus"] = json!(g);
+    }
     if !cmd.is_empty() {
         payload["cmd"] = json!(cmd);
     }
     if !cmd_args.is_empty() {
         payload["args"] = json!(cmd_args);
     }
+    if !name.is_empty() {
+        payload["name"] = json!(name);
+    }
+    if let Some(n) = replicas {
+        payload["replicas"] = json!(n);
+    }
 
-    let p = proposals.enqueue(
-        "launch_headless_job",
-        &format!("Launch headless job: {image}"),
-        true,
-        payload,
-    );
+    // The count belongs in the summary: approving "launch a headless job" and
+    // getting forty is not the confirmation the user gave.
+    let summary = match replicas {
+        Some(n) if n > 1 => format!("Launch {n} headless replicas: {image}"),
+        _ => format!("Launch headless job: {image}"),
+    };
+    let p = proposals.enqueue("launch_headless_job", &summary, true, payload);
     ToolResult::Proposed(p)
 }
 
@@ -386,6 +422,8 @@ async fn apply_launch_headless_job(
     }
     let cores = opt_u32(payload, "cores").unwrap_or(DEFAULT_CORES);
     let ram = opt_u32(payload, "ram").unwrap_or(DEFAULT_RAM);
+    let gpus = opt_u32(payload, "gpus").unwrap_or(0);
+    let name = str_arg(payload, "name");
 
     let cmd = str_arg(payload, "cmd");
     let cmd = if cmd.is_empty() { None } else { Some(cmd) };
@@ -403,15 +441,22 @@ async fn apply_launch_headless_job(
         }
         _ => None,
     };
-    let replicas = opt_u32(payload, "replicas").map(|n| n.clamp(1, 20));
+    // Clamped here as a backstop; the proposer refuses an out-of-range count
+    // outright, so a payload reaching this point is already in range.
+    let (lo, hi) = crate::models::session_launch_params::REPLICAS_RANGE;
+    let replicas = opt_u32(payload, "replicas").map(|n| n.clamp(lo, hi));
 
     let params = SessionLaunchParams {
-        name: "headless-job".to_string(),
+        name: if name.is_empty() {
+            "headless-job".to_string()
+        } else {
+            name
+        },
         image,
         session_type: "headless".to_string(),
         cores,
         ram,
-        gpus: 0,
+        gpus,
         cmd,
         env: None,
         registry_username: None,
@@ -420,7 +465,10 @@ async fn apply_launch_headless_job(
         replicas,
     };
     let id = services.sessions.launch_session(&token, &params).await?;
-    Ok(format!("Launched headless job (id {id})"))
+    match replicas {
+        Some(n) if n > 1 => Ok(format!("Launched {n} headless replicas (first id {id})")),
+        _ => Ok(format!("Launched headless job (id {id})")),
+    }
 }
 
 async fn apply_delete_sessions_bulk(
@@ -567,6 +615,80 @@ mod tests {
             _ => panic!("expected a Proposed result"),
         }
         assert_eq!(store.pending_count(), 1);
+    }
+
+    #[test]
+    fn a_replica_count_reaches_the_payload_and_the_summary() {
+        // The applier has always read `replicas`; nothing ever wrote it, so an
+        // agent could not launch what the launch form offers and the service
+        // supports. The count also belongs in the summary: approving "launch a
+        // headless job" and getting forty is not the confirmation given.
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_launch_headless_job(&json!({ "image": "img:1", "replicas": 4 }), &store) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["replicas"], 4);
+                assert!(p.summary.contains('4'), "{}", p.summary);
+                assert!(p.summary.contains("replicas"), "{}", p.summary);
+            }
+            _ => panic!("expected a Proposed result"),
+        }
+    }
+
+    #[test]
+    fn one_replica_reads_as_a_single_job() {
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_launch_headless_job(&json!({ "image": "img:1", "replicas": 1 }), &store) {
+            ToolResult::Proposed(p) => {
+                assert!(!p.summary.contains("replicas"), "{}", p.summary);
+            }
+            _ => panic!("expected a Proposed result"),
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_replica_count_is_refused_not_clamped() {
+        // Clamping would show the user "launch 40 jobs", then launch 20.
+        let store = Arc::new(InMemoryProposalStore::new());
+        let (_, hi) = crate::models::session_launch_params::REPLICAS_RANGE;
+        match propose_launch_headless_job(&json!({ "image": "img:1", "replicas": hi + 20 }), &store)
+        {
+            ToolResult::Failed(m) => assert!(m.contains("replicas must be between"), "{m}"),
+            _ => panic!("expected a refusal"),
+        }
+        assert_eq!(store.pending_count(), 0);
+    }
+
+    #[test]
+    fn the_advertised_replica_range_is_the_one_enforced() {
+        // Three places need this range: the launch form's spin button, the
+        // schema, and the proposer's check. The reference's own two disagree —
+        // its UI clamps to 20 while its MCP advertises 50 — which is how a
+        // client validates 40 as fine and receives 20.
+        let schema = descriptors()
+            .into_iter()
+            .find(|d| d.name == "launch_headless_job")
+            .expect("the tool is declared")
+            .input_schema;
+        let (lo, hi) = crate::models::session_launch_params::REPLICAS_RANGE;
+        assert_eq!(schema["properties"]["replicas"]["minimum"], lo);
+        assert_eq!(schema["properties"]["replicas"]["maximum"], hi);
+    }
+
+    #[test]
+    fn a_job_name_and_gpu_count_survive_to_the_payload() {
+        // Both are in the reference's schema and both were droppable here: the
+        // applier hard-coded "headless-job" and zero GPUs.
+        let store = Arc::new(InMemoryProposalStore::new());
+        match propose_launch_headless_job(
+            &json!({ "image": "img:1", "name": "stack-run", "gpus": 2 }),
+            &store,
+        ) {
+            ToolResult::Proposed(p) => {
+                assert_eq!(p.payload["name"], "stack-run");
+                assert_eq!(p.payload["gpus"], 2);
+            }
+            _ => panic!("expected a Proposed result"),
+        }
     }
 
     #[test]
