@@ -471,6 +471,10 @@ impl NotebookPage {
         self.mark_modified();
         self.rebuild_cell_list();
         self.set_active_cell(insert_at);
+        // A new cell is empty and is there to be typed into. `rebuild_cell_list`
+        // has just replaced every widget, so whatever had focus no longer
+        // exists — without this the next keystroke goes nowhere.
+        self.focus_active_cell();
     }
 
     /// Delete the cell at `index`.
@@ -658,10 +662,14 @@ impl NotebookPage {
                 CellWidget::Code(code)
             };
 
-            // Wrap in a ListBoxRow
+            // Wrap in a ListBoxRow. The row must not be focusable: a
+            // `GtkListBoxRow` takes focus on click by default, and it is a
+            // container, so the keyboard would land on the row while the cell's
+            // text view — the thing with a cursor in it — never got focus.
             let row = gtk::ListBoxRow::new();
             row.set_selectable(false);
             row.set_activatable(false);
+            row.set_focusable(false);
             row.set_child(Some(cell_widget.widget()));
             self.cell_list.append(&row);
 
@@ -674,14 +682,40 @@ impl NotebookPage {
                 });
             }
 
-            // Click to activate cell
+            // Which cell is active, and whether the keyboard is inside it, are
+            // both answers to "where is the focus?" — so both are read from it
+            // rather than tracked alongside it. The click gesture that used to
+            // set the mode is gone: a `GestureClick` on the cell is CANCELLED
+            // when the text view underneath claims the press for its cursor, so
+            // it never ran on the one click that mattered, and the page stayed
+            // in Command mode swallowing every letter typed.
             {
-                let gesture = gtk::GestureClick::new();
+                let focus = gtk::EventControllerFocus::new();
                 let page = self.clone();
                 let idx = i;
-                gesture.connect_pressed(move |_, _, _, _| {
+                focus.connect_enter(move |_| {
                     page.set_active_cell(idx);
                     *page.mode.borrow_mut() = CellMode::Edit;
+                });
+                let page = self.clone();
+                focus.connect_leave(move |_| {
+                    *page.mode.borrow_mut() = CellMode::Command;
+                });
+                cell_widget.text_view().add_controller(focus);
+            }
+
+            // A click anywhere in the cell — the gutter, the output area, the
+            // margin beside the text — puts the keyboard in that cell, which is
+            // what clicking a cell means. Capture phase, so it runs even when
+            // the text view goes on to claim the press.
+            {
+                let gesture = gtk::GestureClick::new();
+                gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+                let view = cell_widget.text_view().clone();
+                gesture.connect_pressed(move |_, _, _, _| {
+                    if !view.has_focus() {
+                        view.grab_focus();
+                    }
                 });
                 cell_widget.widget().add_controller(gesture);
             }
@@ -698,6 +732,18 @@ impl NotebookPage {
     }
 
     /// Set the active cell index and update UI highlights.
+    /// Put the keyboard in the active cell's editor.
+    ///
+    /// Used by Enter (command mode) and after inserting a cell — inserting one
+    /// and leaving the caret elsewhere means the next keystroke goes somewhere
+    /// the user is not looking.
+    fn focus_active_cell(&self) {
+        let idx = *self.active_cell.borrow();
+        if let Some(w) = self.cell_widgets.borrow().get(idx) {
+            w.focus_editor();
+        }
+    }
+
     fn set_active_cell(&self, index: usize) {
         let prev = *self.active_cell.borrow();
         let len = self.cell_widgets.borrow().len();
@@ -817,9 +863,11 @@ impl NotebookPage {
 
             match mode {
                 CellMode::Command => match key {
-                    // Enter → switch to edit mode
+                    // Enter → start editing the active cell. Moving the focus
+                    // is what puts it in Edit mode; setting the flag here would
+                    // be a second opinion about where the keyboard is.
                     gtk::gdk::Key::Return if !ctrl && !shift => {
-                        *page.mode.borrow_mut() = CellMode::Edit;
+                        page.focus_active_cell();
                         glib::Propagation::Stop
                     }
                     // A → insert above
@@ -898,7 +946,8 @@ impl NotebookPage {
                 },
 
                 CellMode::Edit => match key {
-                    // Escape → command mode
+                    // Escape → leave the cell. Focus moves to the page, whose
+                    // focus-out handler is what sets Command mode.
                     gtk::gdk::Key::Escape => {
                         let idx = *page.active_cell.borrow();
                         let widgets = page.cell_widgets.borrow();
@@ -906,7 +955,7 @@ impl NotebookPage {
                             md.enter_preview_mode();
                         }
                         drop(widgets);
-                        *page.mode.borrow_mut() = CellMode::Command;
+                        page.widget.grab_focus();
                         glib::Propagation::Stop
                     }
                     // Ctrl+Enter → run and stay
@@ -1241,5 +1290,75 @@ impl NotebookPage {
             tabs.set_tab(i, gtk::pango::TabAlign::Left, step * (i + 1));
         }
         tv.set_tabs(&tabs);
+    }
+}
+
+#[cfg(test)]
+mod input_path_tests {
+    //! The notebook had a mode flag saying whether the keyboard was inside a
+    //! cell, kept in step by a click gesture — and the gesture was cancelled by
+    //! the very click that mattered, because the text view underneath claims a
+    //! press for its cursor. So the page stayed in command mode, where a bare
+    //! letter is a shortcut: typing "abc" inserted two cells and converted one
+    //! to markdown instead of writing three characters.
+    //!
+    //! GTK already knows where the keyboard is. These guard the rule that it is
+    //! the only thing asked.
+
+    const SOURCE: &str = include_str!("notebook_page.rs");
+
+    /// The body of `fn name(`, up to the start of the next `\n    fn `/`pub fn`.
+    fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let at = source
+            .find(name)
+            .unwrap_or_else(|| panic!("{name} is gone — this guard is scanning nothing"));
+        let rest = &source[at..];
+        let end = rest[1..]
+            .find("\n    fn ")
+            .or_else(|| rest[1..].find("\n    pub fn "))
+            .map(|o| o + 1)
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    #[test]
+    fn the_keyboard_handler_never_sets_the_mode_itself() {
+        let body = function_body(crate::testing::code(SOURCE), "fn setup_keyboard_shortcuts");
+        assert!(
+            !body.contains("mode.borrow_mut()"),
+            "a key handler is assigning the cell mode. Enter and Escape move the \
+             FOCUS; the mode follows from that. Setting it here is a second \
+             opinion about where the keyboard is, and the two will disagree."
+        );
+        // And it does still move the focus, or Enter does nothing at all.
+        assert!(body.contains("focus_active_cell()") && body.contains("grab_focus()"));
+    }
+
+    #[test]
+    fn every_cell_reports_its_own_focus() {
+        let code = crate::testing::code(SOURCE);
+        assert!(
+            code.contains("EventControllerFocus::new()"),
+            "cells no longer report focus, so nothing keeps the mode true"
+        );
+        for edge in ["connect_enter", "connect_leave"] {
+            assert!(
+                code.contains(edge),
+                "focus {edge} is unhandled — the mode would stick on one side"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_row_cannot_take_the_focus_from_its_editor() {
+        // A GtkListBoxRow is focusable by default and is a container: focus
+        // lands on it, the text view never gets it, and every keystroke goes to
+        // the page's shortcut handler instead of into the cell.
+        let body = function_body(crate::testing::code(SOURCE), "fn rebuild_cell_list");
+        assert!(
+            body.contains("row.set_focusable(false)"),
+            "the cell row is focusable again; the editor inside it will not \
+             receive typing"
+        );
     }
 }

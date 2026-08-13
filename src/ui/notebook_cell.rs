@@ -495,6 +495,27 @@ impl CellWidget {
             CellWidget::Markdown(m) => m.set_active(active),
         }
     }
+
+    /// The editable text view, whichever kind of cell this is.
+    ///
+    /// The page needs it to answer one question: *where is the keyboard
+    /// pointing?* A markdown cell in preview mode still owns its view — it is
+    /// simply not the visible stack child, so it cannot hold focus, which is
+    /// the right answer rather than a special case.
+    pub fn text_view(&self) -> &gtk::TextView {
+        match self {
+            CellWidget::Code(c) => c.text_view(),
+            CellWidget::Markdown(m) => m.text_view(),
+        }
+    }
+
+    /// Put the keyboard in this cell.
+    pub fn focus_editor(&self) {
+        if let CellWidget::Markdown(m) = self {
+            m.enter_edit_mode();
+        }
+        self.text_view().grab_focus();
+    }
 }
 
 // ---------------------------------------------------------------------------
