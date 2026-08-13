@@ -9,8 +9,11 @@
 //! column from here now, so a control looks and behaves the same whichever one
 //! you are in.
 
+use gtk4::glib::prelude::ToValue;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
+use libadwaita as adw;
+use libadwaita::prelude::*;
 
 /// Width of a viewer's control column.
 ///
@@ -68,20 +71,80 @@ pub fn control_column() -> (gtk::Box, gtk::ScrolledWindow) {
     (column, scroll)
 }
 
+/// Below this width the column stops taking space from the image and floats
+/// over it instead.
+///
+/// Chosen so the image keeps roughly two thirds of a small laptop's width:
+/// below it, a 280 px column is taking a third of the picture.
+const COLLAPSE_WIDTH_SP: f64 = 900.0;
+
 /// Put the image and the control column side by side.
 ///
-/// The column keeps its width when the window resizes — the image takes the
-/// change, because the image is what the reader is looking at.
-pub fn shell(image: &impl IsA<gtk::Widget>, column: &gtk::ScrolledWindow) -> gtk::Paned {
-    let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-    paned.set_hexpand(true);
-    paned.set_vexpand(true);
-    paned.set_wide_handle(true);
-    paned.set_start_child(Some(image));
-    paned.set_end_child(Some(column));
-    paned.set_resize_end_child(false);
-    paned.set_shrink_end_child(false);
-    paned
+/// An `OverlaySplitView` rather than a `Paned`: on a wide window the column is
+/// docked beside the image, and on a narrow one it floats over the image
+/// instead of squeezing it. A fixed 280 px column on a 1024-wide laptop takes a
+/// third of the picture, which is the wrong third to give up.
+///
+/// The breakpoint lives in an `adw::BreakpointBin` so the rule is the shell's
+/// own: a viewer is a page inside a window it does not own, and asking the
+/// window to know about a viewer's sidebar would be the coupling this module
+/// exists to avoid.
+pub struct ViewerShell {
+    /// The whole shell — put this in the page.
+    pub widget: adw::BreakpointBin,
+    /// Shows and hides the control column. Useful at any width, and the only way
+    /// back to the controls once the window is narrow enough to hide them.
+    pub sidebar_toggle: gtk::ToggleButton,
+}
+
+pub fn shell(image: &impl IsA<gtk::Widget>, column: &gtk::ScrolledWindow) -> ViewerShell {
+    let split = adw::OverlaySplitView::new();
+    split.set_content(Some(image));
+    split.set_sidebar(Some(column));
+    split.set_sidebar_position(gtk::PackType::End);
+    split.set_show_sidebar(true);
+    split.set_hexpand(true);
+    split.set_vexpand(true);
+
+    let bin = adw::BreakpointBin::new();
+    bin.set_hexpand(true);
+    bin.set_vexpand(true);
+    // A BreakpointBin refuses to allocate smaller than its child's minimum, so
+    // the child must be allowed to shrink to the width the breakpoint watches
+    // for — otherwise the condition can never be met.
+    bin.set_size_request(360, 200);
+    bin.set_child(Some(&split));
+
+    let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+        adw::BreakpointConditionLengthType::MaxWidth,
+        COLLAPSE_WIDTH_SP,
+        adw::LengthUnit::Sp,
+    ));
+    breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
+    // Hidden as well as collapsed: a narrow window should give the whole width
+    // to the image, and the toggle brings the controls back over it. Overlaying
+    // them the moment the window narrows would cover the picture uninvited.
+    breakpoint.add_setter(&split, "show-sidebar", Some(&false.to_value()));
+    bin.add_breakpoint(breakpoint);
+
+    let sidebar_toggle = gtk::ToggleButton::new();
+    sidebar_toggle.set_icon_name("sidebar-show-right-symbolic");
+    sidebar_toggle.add_css_class("flat");
+    sidebar_toggle.set_valign(gtk::Align::Center);
+    sidebar_toggle.set_tooltip_text(Some(crate::tr_en!("Show or hide the controls")));
+    // Bound both ways: the button reflects a collapse the breakpoint caused, and
+    // pressing it moves the same property. A separate bool would be a second
+    // opinion about whether the column is on screen.
+    split
+        .bind_property("show-sidebar", &sidebar_toggle, "active")
+        .bidirectional()
+        .sync_create()
+        .build();
+
+    ViewerShell {
+        widget: bin,
+        sidebar_toggle,
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +215,19 @@ mod tests {
             assert!(
                 !source.contains(&legacy),
                 "the {name} viewer is back on a Notebook"
+            );
+        }
+    }
+
+    #[test]
+    fn both_viewers_can_get_their_controls_back() {
+        // The column hides itself on a narrow window, so both viewers must show
+        // the toggle that brings it back — a hidden sidebar with no way to
+        // reopen it is a viewer with no controls at all.
+        for (name, source) in [("cube", CUBE), ("fits", FITS)] {
+            assert!(
+                source.contains("shell.sidebar_toggle"),
+                "the {name} viewer never places the control-column toggle"
             );
         }
     }

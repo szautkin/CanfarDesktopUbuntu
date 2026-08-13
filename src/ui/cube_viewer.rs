@@ -149,12 +149,15 @@ impl CubeViewer {
         // ── RIGHT: scrollable control column ────────────────────────────────
         let (controls, ctl) = build_controls(&name);
 
-        let paned = viewer_shell::shell(&left, &controls.scroll);
+        let shell = viewer_shell::shell(&left, &controls.scroll);
+        // The controls toggle sits with the mode buttons: both decide what the
+        // left pane is showing you.
+        mode_bar.append(&shell.sidebar_toggle);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_hexpand(true);
         widget.set_vexpand(true);
-        widget.append(&paned);
+        widget.append(&shell.widget);
 
         // ── Seed the Info expander from the cube metadata ───────────────────
         fill_info(&ctl.info_grid, &vol, &wcs, &name);

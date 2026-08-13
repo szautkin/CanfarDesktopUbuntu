@@ -484,7 +484,9 @@ impl FitsViewer {
 
         // Image on the left, controls docked on the right — the cube viewer's
         // shape, from the same module.
-        widget.append(&viewer_shell::shell(&body, &control_scroll));
+        let shell = viewer_shell::shell(&body, &control_scroll);
+        toolbar.append(&shell.sidebar_toggle);
+        widget.append(&shell.widget);
 
         let viewer = Rc::new(FitsViewer {
             widget,
@@ -2264,7 +2266,15 @@ mod control_visibility_tests {
         // The bar carries the Open button and the status caption. Anything else
         // is a control that escaped the column and lost its label on the way —
         // and the escape would be silent, since it would still work.
-        let allowed = ["&open_btn", "&spacer", "&status_label"];
+        // The sidebar toggle earns its place: it is not a display control, it
+        // is the control that reveals the display controls, and on a narrow
+        // window it is the only way back to them.
+        let allowed = [
+            "&open_btn",
+            "&spacer",
+            "&status_label",
+            "&shell.sidebar_toggle",
+        ];
         // Assembled at runtime so the scan does not match its OWN mention of
         // the call — the fourth time that trap has caught a guard in this repo.
         let needle = format!("toolbar.{}(", "append");
