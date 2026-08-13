@@ -94,6 +94,21 @@ _Updated 2026-08-12, after the work._
 | 4 — One tab strip | **Done.** `adw::TabView` + `TabBar` in both. The Notebook's per-tab close button — a closure that walked every page comparing label widgets to find its own — is one `close-page` handler, and the empty state is a stack child rather than a tab that had to be removed. |
 | 5 — One guard for both | **Done.** Both viewers build from the shell, neither keeps a private copy of the helpers, and neither may open a popover from a control with no visible word. |
 
+### The audit continued past the viewers
+
+The lens the plan established — *a capability is only real if a person can see it* — was then applied
+to the pages it had not covered, by diffing each against the reference's `x:Uid` set. Three more pages
+had gaps of the same shape:
+
+| Page | Found | Fixed |
+|---|---|---|
+| **Workflows** | Adopting a template was offered only as "Duplicate to Local" — the mechanism, not the intent; and the shared VOSpace tier was read once at startup with no way to re-read it, so a collaborator's new workflow stayed invisible until restart. | "Use this workflow" as the primary action (both copy paths share one function), and a refresh on the VOSpace section header. |
+| **AI Guide** | 137 tools in seventeen categories, with no way to read them all: you opened each category in turn, or invented a search matching everything. | The reference's Tiles / See everything switch, rendering through the same row builder the other two views use. |
+| **Local files** | Three affordances against the reference's twelve. A folder of hundreds of frames had to be scrolled, and anything outside home was unreachable. | Filter box, folder chooser, and a row menu with Copy Path / Show in Files. Create, rename and delete are refused on purpose, with a test that says why. |
+
+Checked and found **ahead** of the reference, needing nothing: Storage (rename, share, open-in-notebook
+and save-as beyond the reference's set), Search, Cube.
+
 Found and fixed along the way, outside the plan: **Search here** was reachable only from inside the
 saved-coordinates panel, which is closed by default — an action the reference offers from its
 crosshair menu did not appear to exist. It is in the `CROSSHAIR` section now, running the panel's own
