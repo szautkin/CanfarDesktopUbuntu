@@ -171,13 +171,6 @@ impl WcsInfo {
         Some((self.crpix1 + dx, self.crpix2 + dy))
     }
 
-    /// Infallible inverse (falls back to the reference pixel) for callers that
-    /// don't need the domain check. Prefer [`world_to_pixel`] when bounds matter.
-    pub fn sky_to_pixel(&self, ra: f64, dec: f64) -> (f64, f64) {
-        self.world_to_pixel(ra, dec)
-            .unwrap_or((self.crpix1, self.crpix2))
-    }
-
     /// A short human label for the WCS solution kind (for the Image Info panel).
     pub fn solution_kind(&self) -> &'static str {
         if self.is_approximate {

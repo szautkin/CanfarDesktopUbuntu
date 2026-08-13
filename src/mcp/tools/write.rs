@@ -466,7 +466,7 @@ mod tests {
 
         // Agent-originated proposal (origin set by the router) → stamped.
         let agent = store.enqueue("save_query", "Save query: NGC 224", false, json!({}));
-        store.set_origin(&agent.id, Some("Claude Desktop".to_string()));
+        store.stamp_source(&agent.id, "save_query", Some("Claude Desktop".to_string()));
         let agent = store.get(&agent.id).unwrap();
         let attr =
             AgentAttribution::for_applied_proposal(&agent).expect("agent origin must be stamped");

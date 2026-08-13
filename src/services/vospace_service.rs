@@ -216,11 +216,6 @@ impl VoSpaceService {
         Ok(())
     }
 
-    /// Get the download URL for a file.
-    pub fn download_url(&self, username: &str, path: &str) -> String {
-        self.endpoints.vospace_files_url(username, path)
-    }
-
     /// Download a file's contents into memory (e.g. to parse a VOSpace-stored
     /// workflow document without touching disk).
     #[allow(dead_code)]

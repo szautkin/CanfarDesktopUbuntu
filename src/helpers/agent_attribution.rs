@@ -67,10 +67,6 @@ impl AgentAttribution {
             .as_ref()
             .map(|_| Self::for_proposal(proposal, chrono::Utc::now().to_rfc3339()))
     }
-
-    pub fn fingerprint(&self) -> String {
-        crate::models::agent_attribution::fingerprint(&self.origin)
-    }
 }
 
 #[cfg(test)]
@@ -99,7 +95,7 @@ mod tests {
             false,
             serde_json::json!({}),
         );
-        store.set_origin(&agent.id, Some("Claude Desktop".to_string()));
+        store.stamp_source(&agent.id, "save_query", Some("Claude Desktop".to_string()));
         let agent = store.get(&agent.id).unwrap();
         let attr = AgentAttribution::for_applied_proposal(&agent).expect("must be stamped");
         assert_eq!(attr.origin, "Claude Desktop");
@@ -120,7 +116,7 @@ mod tests {
             false,
             serde_json::json!({}),
         );
-        store.set_origin(&p.id, Some("Claude Code".to_string()));
+        store.stamp_source(&p.id, "save_query", Some("Claude Code".to_string()));
         let p = store.get(&p.id).unwrap();
         let attr = AgentAttribution::for_applied_proposal(&p).unwrap();
 
@@ -144,7 +140,7 @@ mod tests {
             false,
             json!({"name": "M31"}),
         );
-        store.set_origin(&p.id, origin.map(|s| s.to_string()));
+        store.stamp_source(&p.id, "save_query", origin.map(|s| s.to_string()));
         store.get(&p.id).unwrap()
     }
 
@@ -160,11 +156,10 @@ mod tests {
 
     #[test]
     fn fingerprint_is_six_hex_derived_from_origin() {
-        let p = proposal_with_origin(Some("Claude Desktop"));
-        let attr = AgentAttribution::for_proposal(&p, "t".to_string());
-        let fp = attr.fingerprint();
+        let fp = crate::models::agent_attribution::fingerprint("Claude Desktop");
         assert_eq!(fp.len(), 6);
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+        // Stable: the same label always yields the same badge.
         assert_eq!(
             fp,
             crate::models::agent_attribution::fingerprint("Claude Desktop")

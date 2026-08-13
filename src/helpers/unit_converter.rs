@@ -187,14 +187,6 @@ pub fn to_degrees(value: f64, unit: &str) -> Option<f64> {
     }
 }
 
-/// Returns true if the unit represents frequency or energy (inverse relationship to wavelength).
-pub fn is_inverse_unit(unit: &str) -> bool {
-    matches!(
-        unit.to_lowercase().as_str(),
-        "hz" | "khz" | "mhz" | "ghz" | "ev" | "kev" | "mev" | "gev"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,12 +359,5 @@ mod tests {
     fn degrees_conversion() {
         let d = to_degrees(1.0, "arcsec").unwrap();
         assert!((d - 1.0 / 3600.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn inverse_units() {
-        assert!(is_inverse_unit("GHz"));
-        assert!(is_inverse_unit("eV"));
-        assert!(!is_inverse_unit("nm"));
     }
 }

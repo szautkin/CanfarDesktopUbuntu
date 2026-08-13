@@ -94,25 +94,6 @@ pub fn parse_range(input: &str) -> Option<ParsedRange> {
     })
 }
 
-/// Extract trailing unit suffix from a value string.
-/// Returns (numeric_part, unit) or (original, None).
-pub fn extract_unit_suffix(raw: &str) -> (&str, Option<&str>) {
-    let suffixes = [
-        "GHz", "MHz", "kHz", "GeV", "MeV", "keV", "arcsec", "arcmin", "nm", "um", "mm", "cm", "Hz",
-        "eV", "deg", "s", "m", "h", "d",
-    ];
-    let trimmed = raw.trim();
-    for suffix in &suffixes {
-        if let Some(prefix) = trimmed.strip_suffix(suffix) {
-            let prefix = prefix.trim();
-            if !prefix.is_empty() {
-                return (prefix, Some(suffix));
-            }
-        }
-    }
-    (trimmed, None)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,26 +131,5 @@ mod tests {
     fn parse_empty() {
         assert!(parse_range("").is_none());
         assert!(parse_range("   ").is_none());
-    }
-
-    #[test]
-    fn extract_suffix_nm() {
-        let (num, unit) = extract_unit_suffix("500nm");
-        assert_eq!(num, "500");
-        assert_eq!(unit, Some("nm"));
-    }
-
-    #[test]
-    fn extract_suffix_none() {
-        let (num, unit) = extract_unit_suffix("500");
-        assert_eq!(num, "500");
-        assert_eq!(unit, None);
-    }
-
-    #[test]
-    fn extract_suffix_arcsec() {
-        let (num, unit) = extract_unit_suffix("0.5arcsec");
-        assert_eq!(num, "0.5");
-        assert_eq!(unit, Some("arcsec"));
     }
 }

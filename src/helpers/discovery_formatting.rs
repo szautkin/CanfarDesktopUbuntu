@@ -70,24 +70,6 @@ pub fn time_ago(rfc3339: &str, now_rfc3339: &str) -> String {
     }
 }
 
-/// True when a timed-out attempt might still be rescued by the coordinator's
-/// background grace poll (the manifest may yet land at VOSpace). Conservative
-/// 10-minute window from the attempt start, matching the macOS grace budget.
-///
-/// Both arguments are RFC-3339 timestamps; the category gate (only `JobTimedOut`
-/// qualifies) is applied by the caller. Future / clock-skewed `started` values
-/// count as still recovering. Unparseable input returns `false`. Mirrors the
-/// macOS `isLikelyStillRecovering` / `DiscoveryFormatting.IsLikelyStillRecovering`.
-pub fn is_likely_still_recovering(started_rfc3339: &str, now_rfc3339: &str) -> bool {
-    match (
-        DateTime::parse_from_rfc3339(started_rfc3339),
-        DateTime::parse_from_rfc3339(now_rfc3339),
-    ) {
-        (Ok(started), Ok(now)) => now.signed_duration_since(started).num_seconds() < 10 * 60,
-        _ => false,
-    }
-}
-
 /// Total installed packages across every ecosystem (dpkg + rpm + apk + python + R).
 ///
 /// Mirrors `DiscoveryFormatting.PackageCount`. Uses the flat `python` list (not
@@ -145,16 +127,6 @@ mod tests {
             time_ago("2026-06-23T12:00:00Z", "garbage"),
             "2026-06-23T12:00:00Z"
         );
-    }
-
-    #[test]
-    fn is_likely_still_recovering_only_within_ten_minutes() {
-        let now = "2026-06-23T12:00:00Z";
-        assert!(is_likely_still_recovering("2026-06-23T11:55:00Z", now)); // 5m
-        assert!(!is_likely_still_recovering("2026-06-23T11:45:00Z", now)); // 15m
-        assert!(!is_likely_still_recovering("2026-06-23T11:50:00Z", now)); // exactly 10m -> false
-        assert!(is_likely_still_recovering("2026-06-23T12:05:00Z", now)); // future / skew
-        assert!(!is_likely_still_recovering("bad", now)); // unparseable -> false
     }
 
     #[test]

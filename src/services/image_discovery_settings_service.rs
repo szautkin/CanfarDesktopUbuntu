@@ -143,13 +143,6 @@ impl ImageDiscoverySettingsService {
         }
     }
 
-    /// Clear the secret and reset all settings to defaults (persisting them).
-    pub fn reset_to_defaults(&mut self) {
-        self.clear_secret();
-        self.settings = ImageDiscoverySettings::default();
-        let _ = self.save();
-    }
-
     /// Verify the stored credentials against the configured registry
     /// (Docker V2 token-auth). Uses a plain client — never the CADC token.
     pub async fn test_registry_credentials(&self) -> CredTestResult {
@@ -271,22 +264,6 @@ mod tests {
         let svc = ImageDiscoverySettingsService::with_path(p.clone());
         // Default settings have an empty username → never touches the keychain.
         assert!(svc.current_auth_header().is_none());
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[test]
-    fn reset_to_defaults_restores_settings() {
-        let p = temp_path("reset");
-        let mut svc = ImageDiscoverySettingsService::with_path(p.clone());
-        svc.set_username("bob");
-        svc.set_registry_repository("skaha");
-        assert!(!svc.settings().is_all_defaults());
-        svc.reset_to_defaults();
-        assert_eq!(*svc.settings(), ImageDiscoverySettings::default());
-        assert!(svc.settings().is_all_defaults());
-        // Persisted file is defaults too.
-        let reloaded = ImageDiscoverySettingsService::with_path(p.clone());
-        assert!(reloaded.settings().is_all_defaults());
         let _ = std::fs::remove_file(&p);
     }
 }

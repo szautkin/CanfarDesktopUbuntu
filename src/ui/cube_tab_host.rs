@@ -477,7 +477,7 @@ impl CubeTabHost {
                 Ok(json!({
                     "points": points
                         .iter()
-                        .map(|(x, y)| json!({ "x": x, "y": y }))
+                        .map(|(x, y)| serde_json::json!({ "x": x, "y": y }))
                         .collect::<Vec<_>>(),
                 }))
             }
@@ -865,6 +865,14 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
         "renderMode": if v.gl().mip() { "max-intensity" } else { "composite" },
         "background": v.gl().background_name(),
         "autoOrbit": v.gl().auto_orbit(),
+        // The opacity curve. `set_cube_transfer`'s own description — in the
+        // reference and in ours — tells the agent "the current curve is in
+        // get_cube_view's transferPoints", and this payload did not carry it:
+        // the one control an agent could set and then not read.
+        "transferPoints": v.transfer_points()
+            .into_iter()
+            .map(|(x, y)| serde_json::json!({ "x": x, "y": y }))
+            .collect::<Vec<_>>(),
     })
 }
 

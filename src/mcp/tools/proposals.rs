@@ -130,14 +130,6 @@ impl InMemoryProposalStore {
         proposal
     }
 
-    /// Stamp the originating client label on a just-enqueued proposal (called by
-    /// the router before it emits `ProposalArrived` / runs the applier).
-    pub fn set_origin(&self, id: &str, origin: Option<String>) {
-        if let Some(p) = self.inner.lock().unwrap().by_id.get_mut(id) {
-            p.origin = origin;
-        }
-    }
-
     /// Stamp both router-known fields at once: the tool the caller invoked and
     /// the client label it came from.
     ///
@@ -320,7 +312,7 @@ mod tests {
         let store = InMemoryProposalStore::new();
         let events = store.events();
         let p = store.enqueue("save_query", "Save M31", false, json!({}));
-        store.set_origin(&p.id, Some("agent-A".into()));
+        store.stamp_source(&p.id, "save_query", Some("agent-A".into()));
         store.resolve(&p.id, ProposalState::Withdrawn);
         let (evs, cursor) = events.since(0);
         assert_eq!(evs.len(), 1);

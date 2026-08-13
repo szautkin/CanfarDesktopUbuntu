@@ -101,16 +101,6 @@ pub fn scale(sx: f32, sy: f32, sz: f32) -> Mat4 {
     ]
 }
 
-/// Translation matrix (column-vector convention: translation lives in column 3).
-pub fn translate(x: f32, y: f32, z: f32) -> Mat4 {
-    [
-        1.0, 0.0, 0.0, 0.0, // col 0
-        0.0, 1.0, 0.0, 0.0, // col 1
-        0.0, 0.0, 1.0, 0.0, // col 2
-        x, y, z, 1.0, // col 3
-    ]
-}
-
 /// Multiply two true-math matrices: `result = a · b` (so `result · v = a · (b · v)`),
 /// matching the Swift `proj * view * model` ordering. Column-major indexing.
 pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
@@ -207,29 +197,6 @@ pub fn invert(m: &Mat4) -> Option<Mat4> {
     Some(std::array::from_fn(|i| (inv[i] * inv_det) as f32))
 }
 
-/// Transform a 3D point through a matrix and apply the perspective divide,
-/// returning the resulting coordinates (NDC when `m` is a view-projection).
-///
-/// The point is promoted to homogeneous `(x, y, z, 1)`, multiplied by `m`
-/// (column-vector convention, matching the GPU's `mat * vec`), then divided by
-/// the resulting `w`. This is the CPU analog the axis-caption overlay uses to
-/// project box corners into normalized device coordinates with the exact same
-/// matrix the GPU uses. If `w` is ~0 (point on the camera plane) the raw,
-/// undivided coordinates are returned to avoid a division blow-up.
-pub fn transform_point(m: &Mat4, p: [f32; 3]) -> [f32; 3] {
-    let (px, py, pz) = (p[0], p[1], p[2]);
-    // Row r of the column-major matrix is [m[r], m[4+r], m[8+r], m[12+r]].
-    let x = m[0] * px + m[4] * py + m[8] * pz + m[12];
-    let y = m[1] * px + m[5] * py + m[9] * pz + m[13];
-    let z = m[2] * px + m[6] * py + m[10] * pz + m[14];
-    let w = m[3] * px + m[7] * py + m[11] * pz + m[15];
-    if w.abs() < 1e-6 {
-        return [x, y, z];
-    }
-    let inv_w = 1.0 / w;
-    [x * inv_w, y * inv_w, z * inv_w]
-}
-
 /// Camera eye position for an orbit camera about `center`. Port of the Swift
 /// `cameraPosition()`: `offset = d·(cosEl·sinAz, sinEl, cosEl·cosAz)`, with the
 /// orbit center added (the C# reference always orbits the origin; this port
@@ -285,6 +252,45 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 #[cfg(test)]
 mod tests {
+    //! `translate` and `transform_point` live here because nothing but these
+    //! tests ever needed them: one builds a matrix to check `mul` and
+    //! `invert_perspective` against, the other projects a point the way the
+    //! GPU does so a projection assertion means something. As public API
+    //! they read as renderer helpers the renderer does not use.
+
+    /// Translation matrix (column-vector convention: translation lives in column 3).
+    fn translate(x: f32, y: f32, z: f32) -> Mat4 {
+        [
+            1.0, 0.0, 0.0, 0.0, // col 0
+            0.0, 1.0, 0.0, 0.0, // col 1
+            0.0, 0.0, 1.0, 0.0, // col 2
+            x, y, z, 1.0, // col 3
+        ]
+    }
+
+    /// Transform a 3D point through a matrix and apply the perspective divide,
+    /// returning the resulting coordinates (NDC when `m` is a view-projection).
+    ///
+    /// The point is promoted to homogeneous `(x, y, z, 1)`, multiplied by `m`
+    /// (column-vector convention, matching the GPU's `mat * vec`), then divided by
+    /// the resulting `w`. This is the CPU analog the axis-caption overlay uses to
+    /// project box corners into normalized device coordinates with the exact same
+    /// matrix the GPU uses. If `w` is ~0 (point on the camera plane) the raw,
+    /// undivided coordinates are returned to avoid a division blow-up.
+    fn transform_point(m: &Mat4, p: [f32; 3]) -> [f32; 3] {
+        let (px, py, pz) = (p[0], p[1], p[2]);
+        // Row r of the column-major matrix is [m[r], m[4+r], m[8+r], m[12+r]].
+        let x = m[0] * px + m[4] * py + m[8] * pz + m[12];
+        let y = m[1] * px + m[5] * py + m[9] * pz + m[13];
+        let z = m[2] * px + m[6] * py + m[10] * pz + m[14];
+        let w = m[3] * px + m[7] * py + m[11] * pz + m[15];
+        if w.abs() < 1e-6 {
+            return [x, y, z];
+        }
+        let inv_w = 1.0 / w;
+        [x * inv_w, y * inv_w, z * inv_w]
+    }
+
     use super::*;
 
     fn approx(a: f32, b: f32, eps: f32) -> bool {

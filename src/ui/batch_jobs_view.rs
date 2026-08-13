@@ -83,10 +83,13 @@ impl BatchJobsView {
         grid.set_margin_end(12);
         grid.set_margin_bottom(12);
 
-        let (pending_btn, pending_label) = make_stat_tile("Pending", "batch-dot-pending");
-        let (running_btn, running_label) = make_stat_tile("Running", "batch-dot-running");
-        let (completed_btn, completed_label) = make_stat_tile("Completed", "batch-dot-completed");
-        let (failed_btn, failed_label) = make_stat_tile("Failed", "batch-dot-failed");
+        // Name and colour both come from the state itself. Spelling the four
+        // CSS classes out here duplicated a mapping `BatchJobState` already
+        // owns, and the four names reached the user untranslated.
+        let (pending_btn, pending_label) = make_stat_tile(BatchJobState::Pending);
+        let (running_btn, running_label) = make_stat_tile(BatchJobState::Running);
+        let (completed_btn, completed_label) = make_stat_tile(BatchJobState::Completed);
+        let (failed_btn, failed_label) = make_stat_tile(BatchJobState::Failed);
 
         grid.attach(&pending_btn, 0, 0, 1, 1);
         grid.attach(&running_btn, 1, 0, 1, 1);
@@ -304,7 +307,7 @@ fn short_image(image: &str) -> String {
     image.rsplit('/').next().unwrap_or(image).to_string()
 }
 
-fn make_stat_tile(name: &str, dot_class: &str) -> (gtk::Button, gtk::Label) {
+fn make_stat_tile(state: BatchJobState) -> (gtk::Button, gtk::Label) {
     let btn = gtk::Button::new();
     btn.add_css_class("flat");
 
@@ -319,14 +322,14 @@ fn make_stat_tile(name: &str, dot_class: &str) -> (gtk::Button, gtk::Label) {
     hbox.set_halign(gtk::Align::Center);
 
     let dot = gtk::Label::new(Some("●"));
-    dot.add_css_class(dot_class);
+    dot.add_css_class(state.css_class());
     hbox.append(&dot);
 
     let count_label = gtk::Label::new(Some("0"));
     count_label.add_css_class("title-3");
     hbox.append(&count_label);
 
-    let name_label = gtk::Label::new(Some(name));
+    let name_label = gtk::Label::new(Some(crate::tr_en!(state.label())));
     name_label.add_css_class("caption");
     name_label.add_css_class("dim-label");
     hbox.append(&name_label);
