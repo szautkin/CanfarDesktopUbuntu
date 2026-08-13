@@ -77,6 +77,9 @@ type OpenFileCb = Box<dyn Fn(PathBuf, FileType)>;
 pub struct FilePanel {
     widget: gtk::Box,
     list_box: gtk::ListBox,
+    /// Narrows the current folder's listing. Held so `populate` can read it —
+    /// the filter is part of what "the current listing" means.
+    filter_entry: gtk::SearchEntry,
     path_label: gtk::Label,
     current_path: Rc<RefCell<PathBuf>>,
     entries: Rc<RefCell<Vec<DirEntry>>>,
@@ -128,10 +131,27 @@ impl FilePanel {
         refresh_btn.add_css_class("flat");
         refresh_btn.add_css_class("circular");
 
+        // Browse somewhere other than home. Without it this panel could only
+        // walk down from the home directory — a cube on an external disk was
+        // unreachable from here however many times you pressed Up.
+        let open_folder_btn = gtk::Button::from_icon_name("folder-open-symbolic");
+        open_folder_btn.set_tooltip_text(Some(crate::tr_en!("Browse another folder…")));
+        open_folder_btn.add_css_class("flat");
+        open_folder_btn.add_css_class("circular");
+
         header.append(&path_label);
+        header.append(&open_folder_btn);
         header.append(&home_btn);
         header.append(&up_btn);
         header.append(&refresh_btn);
+
+        // A directory of a few hundred frames is the normal case for this panel,
+        // and scrolling one to find `1234567p` is not finding it.
+        let filter_entry = gtk::SearchEntry::new();
+        filter_entry.set_placeholder_text(Some(crate::tr_en!("Filter this folder…")));
+        filter_entry.set_margin_start(12);
+        filter_entry.set_margin_end(12);
+        filter_entry.set_margin_bottom(6);
 
         let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
 
@@ -153,6 +173,7 @@ impl FilePanel {
         scrolled.set_child(Some(&list_box));
 
         widget.append(&header);
+        widget.append(&filter_entry);
         widget.append(&sep);
         widget.append(&scrolled);
 
@@ -163,6 +184,7 @@ impl FilePanel {
         let panel = Rc::new(FilePanel {
             widget,
             list_box,
+            filter_entry,
             path_label,
             current_path,
             entries,
@@ -202,6 +224,32 @@ impl FilePanel {
             let p = Rc::clone(&panel);
             refresh_btn.connect_clicked(move |_| {
                 p.populate();
+            });
+        }
+        {
+            let p = panel.clone();
+            panel.filter_entry.connect_search_changed(move |_| {
+                p.populate();
+            });
+        }
+        // Browse elsewhere: a portal folder chooser, so the panel can reach a
+        // mounted disk or a scratch directory rather than only what lies under
+        // home.
+        {
+            let p = panel.clone();
+            open_folder_btn.connect_clicked(move |btn| {
+                let root = btn.root().and_downcast::<gtk::Window>();
+                let dialog = gtk::FileDialog::builder()
+                    .title(crate::tr_en!("Browse another folder"))
+                    .build();
+                let p = p.clone();
+                dialog.select_folder(root.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                    if let Some(folder) = result.ok().and_then(|f| f.path()) {
+                        *p.current_path.borrow_mut() = folder;
+                        p.filter_entry.set_text("");
+                        p.populate();
+                    }
+                });
             });
         }
 
@@ -271,9 +319,17 @@ impl FilePanel {
 
         match std::fs::read_dir(&path) {
             Ok(rd) => {
+                // Case-insensitive substring, the same rule the other filter
+                // boxes in this app use — a reader who learned it once should
+                // not have to learn a second one here.
+                let needle = self.filter_entry.text().to_string().to_lowercase();
                 for entry_result in rd.flatten() {
                     let entry_path = entry_result.path();
                     let name = entry_result.file_name().to_string_lossy().to_string();
+
+                    if !needle.is_empty() && !name.to_lowercase().contains(&needle) {
+                        continue;
+                    }
 
                     // Skip hidden entries (dot-files)
                     if name.starts_with('.') {
@@ -353,9 +409,74 @@ fn build_row(entry: &DirEntry) -> gtk::ListBoxRow {
         row_box.append(&size_label);
     }
 
+    // Right-click actions, as the reference's context menu offers: copy the
+    // path, and hand the file to the desktop's own file manager. Creating,
+    // renaming and deleting are deliberately NOT here — this panel exists to
+    // open a file in the app, and the system file manager is a better file
+    // manager than a 280 px sidebar will ever be. (VOSpace is different: the
+    // Storage page does manage files, because for a remote store there is no
+    // other tool.)
+    let menu = gtk::gio::Menu::new();
+    menu.append(Some(crate::tr_en!("Copy Path")), Some("row.copy-path"));
+    menu.append(
+        Some(crate::tr_en!("Show in Files")),
+        Some("row.show-in-files"),
+    );
+
+    let actions = gtk::gio::SimpleActionGroup::new();
+    {
+        let path = entry.path.clone();
+        let copy = gtk::gio::SimpleAction::new("copy-path", None);
+        let row_box_for_copy = row_box.clone();
+        copy.connect_activate(move |_, _| {
+            row_box_for_copy
+                .clipboard()
+                .set_text(path.to_str().unwrap_or_default());
+        });
+        actions.add_action(&copy);
+    }
+    {
+        let path = entry.path.clone();
+        let show = gtk::gio::SimpleAction::new("show-in-files", None);
+        show.connect_activate(move |_, _| {
+            // The containing folder for a file, the folder itself for a folder —
+            // "show me this" means the place you can see it.
+            let target = if path.is_dir() {
+                path.clone()
+            } else {
+                path.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| path.clone())
+            };
+            let _ = open::that(target);
+        });
+        actions.add_action(&show);
+    }
+
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
+
     let row = gtk::ListBoxRow::new();
     row.set_child(Some(&row_box));
     row.set_tooltip_text(Some(entry.path.to_str().unwrap_or(&entry.name)));
+    row.insert_action_group("row", Some(&actions));
+    popover.set_parent(&row);
+
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+    {
+        let popover = popover.clone();
+        gesture.connect_pressed(move |_, _, x, y| {
+            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.popup();
+        });
+    }
+    row.add_controller(gesture);
+    // The popover is parented to the row, so it must go when the row does —
+    // otherwise every repopulate leaks one, and this list repopulates on every
+    // keystroke in the filter.
+    row.connect_destroy(move |_| popover.unparent());
     row
 }
 
@@ -376,4 +497,60 @@ fn format_path(path: &std::path::Path) -> String {
         }
     }
     path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod affordance_tests {
+    //! What this panel is FOR, and what it deliberately is not.
+    //!
+    //! It exists to open a local file in the app. The reference's equivalent
+    //! (`LocalFileBrowserPanel`) offers twelve affordances; ours offered three —
+    //! home, up, refresh — so a folder of three hundred frames had to be
+    //! scrolled, and anything outside the home directory was unreachable however
+    //! many times you pressed Up.
+
+    fn source() -> &'static str {
+        crate::testing::code(include_str!("file_panel.rs"))
+    }
+
+    #[test]
+    fn a_crowded_folder_can_be_narrowed() {
+        assert!(
+            source().contains(r#"crate::tr_en!("Filter this folder…")"#),
+            "a folder of hundreds of frames needs a filter, or finding one is scrolling"
+        );
+    }
+
+    #[test]
+    fn somewhere_other_than_home_can_be_reached() {
+        assert!(
+            source().contains("select_folder("),
+            "without a folder chooser this panel can only walk down from home"
+        );
+    }
+
+    #[test]
+    fn a_row_offers_the_two_actions_that_are_ours_to_offer() {
+        let code = source();
+        for action in ["row.copy-path", "row.show-in-files"] {
+            assert!(code.contains(action), "the row menu is missing {action}");
+        }
+    }
+
+    #[test]
+    fn file_management_is_left_to_the_file_manager() {
+        // The reference's menu also creates, renames and deletes. Deliberately
+        // not here: a 280 px sidebar whose job is "open this file" is a worse
+        // file manager than the one the desktop already ships, and we hand the
+        // file to it. VOSpace is the opposite case — the Storage page DOES
+        // manage files, because for a remote store there is no other tool.
+        let code = source();
+        for absent in ["row.delete", "row.rename", "row.new-folder"] {
+            assert!(
+                !code.contains(absent),
+                "{absent} appeared; if local file management is wanted, decide it \
+                 deliberately rather than by accretion"
+            );
+        }
+    }
 }
