@@ -127,6 +127,36 @@ mod tests {
     }
 
     #[test]
+    fn both_viewers_use_the_same_tab_machinery() {
+        // The FITS viewer used a `gtk::Notebook` where the cube used an
+        // `adw::TabView` — two tab strips that looked and behaved differently in
+        // one application, and the Notebook needed a hand-rolled close button
+        // that walked every page comparing label widgets to find its own.
+        const HOSTS: &[(&str, &str)] = &[
+            ("cube", include_str!("cube_tab_host.rs")),
+            ("fits", include_str!("fits_viewer.rs")),
+        ];
+        for (name, source) in HOSTS {
+            assert!(
+                source.contains("adw::TabView::new()"),
+                "the {name} viewer should host its tabs in an adw::TabView"
+            );
+            assert!(
+                source.contains("adw::TabBar::new()"),
+                "the {name} viewer should show the adw::TabBar strip"
+            );
+        }
+        // And nobody has gone back.
+        let legacy = format!("gtk::{}::new()", "Notebook");
+        for (name, source) in HOSTS {
+            assert!(
+                !source.contains(&legacy),
+                "the {name} viewer is back on a Notebook"
+            );
+        }
+    }
+
+    #[test]
     fn neither_viewer_keeps_its_own_copy_of_the_helpers() {
         // Assembled at runtime so this guard does not match itself.
         let local = format!("fn {}(text: &str) -> gtk::Label", "section_header");

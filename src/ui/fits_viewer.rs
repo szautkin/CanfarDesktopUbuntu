@@ -1,8 +1,8 @@
 //! Top-level FITS viewer widget.
 //!
-//! Owns a unified toolbar (all image controls), a `gtk::Notebook` of FitsTabs,
-//! and a collapsible `FitsCoordsPanel` on the right side. Switching tabs
-//! synchronises the toolbar widgets to the newly-active tab's state.
+//! Owns an `adw::TabView` of FitsTabs and the control column beside it — the
+//! same shape the cube viewer has, built from `ui::viewer_shell`. Switching tabs
+//! synchronises every control in the column to the newly-active tab's state.
 
 use crate::helpers::fits_loader;
 use crate::helpers::fits_renderer::{ColorMap, Stretch};
@@ -54,7 +54,10 @@ type BlinkRestore = (Rc<FitsTab>, f64, f64, f64);
 
 pub struct FitsViewer {
     widget: gtk::Box,
-    notebook: gtk::Notebook,
+    tab_view: adw::TabView,
+    /// Swaps between the empty state and the tab strip, so "no file open" is a
+    /// state of the page rather than a tab that has to be removed.
+    content_stack: gtk::Stack,
     tabs: Rc<RefCell<Vec<Rc<FitsTab>>>>,
     /// "Search here" in the CROSSHAIR section — the same action the coordinates
     /// panel offers, where a reader looks for it.
@@ -106,7 +109,7 @@ pub struct FitsViewer {
     hdu_current_pos: Rc<RefCell<u32>>,
     /// Prevents feedback loops when syncing toolbar widgets on tab switch.
     suppress_sync: Rc<RefCell<bool>>,
-    /// Guards the notebook `switch-page` handler during an in-place HDU swap.
+    /// Guards the selected-page handler during an in-place HDU swap.
     suppress_page_switch: Rc<RefCell<bool>>,
     /// Persistent sync-zoom toggle (mirrors Windows `IsSyncZoomEnabled`): when on,
     /// every tab is re-zoomed to a shared angular field as it becomes active.
@@ -432,18 +435,34 @@ impl FitsViewer {
         hdu_bar.set_visible(false);
         widget.append(&hdu_bar);
 
-        // ── Main area: notebook (center) + coords panel (right) ─────────────
+        // ── Main area: the tab strip; the controls dock beside it ───────────
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         body.set_vexpand(true);
         body.set_hexpand(true);
 
-        let notebook = gtk::Notebook::new();
-        notebook.set_vexpand(true);
-        notebook.set_hexpand(true);
-        notebook.set_scrollable(true);
-        notebook.set_show_border(false);
+        // The same tab machinery the cube host uses: an `adw::TabBar` over an
+        // `adw::TabView`. It brings the close button, reordering and the tab
+        // overview with it — the Notebook this replaces had a hand-rolled close
+        // button that searched every page for its own label to find out which
+        // tab it belonged to.
+        let tab_view = adw::TabView::new();
+        tab_view.set_vexpand(true);
+        tab_view.set_hexpand(true);
 
-        // Empty state (HIG: StatusPage with a primary call to action)
+        let tab_bar = adw::TabBar::new();
+        tab_bar.set_view(Some(&tab_view));
+        tab_bar.set_autohide(false);
+
+        let tabs_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        tabs_box.set_vexpand(true);
+        tabs_box.set_hexpand(true);
+        tabs_box.append(&tab_bar);
+        tabs_box.append(&tab_view);
+
+        // Empty state (HIG: StatusPage with a primary call to action). A STACK
+        // child, not a tab: as a tab it had to be removed when the first file
+        // opened, which made page 0 mean two different things depending on how
+        // much was open.
         let empty_open_btn = gtk::Button::with_label(crate::tr_en!("Open FITS…"));
         empty_open_btn.add_css_class("suggested-action");
         empty_open_btn.add_css_class("pill");
@@ -453,12 +472,15 @@ impl FitsViewer {
         empty_status.set_title(crate::tr_en!("No FITS File Open"));
         empty_status.set_description(Some(crate::tr_en!("Open a FITS file to get started")));
         empty_status.set_child(Some(&empty_open_btn));
-        notebook.append_page(
-            &empty_status,
-            Some(&gtk::Label::new(Some(crate::tr_en!("Welcome")))),
-        );
 
-        body.append(&notebook);
+        let content_stack = gtk::Stack::new();
+        content_stack.set_vexpand(true);
+        content_stack.set_hexpand(true);
+        content_stack.add_named(&empty_status, Some("empty"));
+        content_stack.add_named(&tabs_box, Some("tabs"));
+        content_stack.set_visible_child_name("empty");
+
+        body.append(&content_stack);
 
         // Image on the left, controls docked on the right — the cube viewer's
         // shape, from the same module.
@@ -466,7 +488,8 @@ impl FitsViewer {
 
         let viewer = Rc::new(FitsViewer {
             widget,
-            notebook,
+            tab_view,
+            content_stack,
             tabs: Rc::new(RefCell::new(Vec::new())),
             bookmarks: RefCell::new(Vec::new()),
             shared: Rc::new(RefCell::new(SharedSky {
@@ -776,27 +799,52 @@ impl FitsViewer {
         // Tab switch → sync toolbar to the newly-active tab
         {
             let v = viewer.clone();
-            viewer
-                .notebook
-                .connect_switch_page(move |_, _page, page_idx| {
-                    if *v.suppress_page_switch.borrow() {
-                        return;
-                    }
-                    // page_idx is 0-based over real pages; tab indices map directly
-                    // once the welcome page has been removed.
-                    let tab = v.tabs.borrow().get(page_idx as usize).cloned();
-                    if let Some(tab) = tab {
-                        // Apply the shared view FIRST (mirrors ApplySharedViewToActivePage):
-                        // reposition the linked crosshair onto this tab's sky, then match the
-                        // shared angular zoom, THEN sync the toolbar so the zoom % reflects it.
-                        tab.apply_linked_crosshair();
-                        v.apply_shared_view_to_active(&tab);
-                        v.sync_controls_to_tab(&tab);
-                        v.update_hdu_and_banner(&tab);
-                    }
-                    // The active index changed, so the MCP snapshot is stale.
-                    v.publish_open_tabs();
-                });
+            viewer.tab_view.connect_selected_page_notify(move |_| {
+                if *v.suppress_page_switch.borrow() {
+                    return;
+                }
+                // The tab list is kept in page order, so the selected page's
+                // position indexes it directly.
+                let tab = v
+                    .selected_index()
+                    .and_then(|i| v.tabs.borrow().get(i).cloned());
+                if let Some(tab) = tab {
+                    // Apply the shared view FIRST (mirrors ApplySharedViewToActivePage):
+                    // reposition the linked crosshair onto this tab's sky, then match the
+                    // shared angular zoom, THEN sync the toolbar so the zoom % reflects it.
+                    tab.apply_linked_crosshair();
+                    v.apply_shared_view_to_active(&tab);
+                    v.sync_controls_to_tab(&tab);
+                    v.update_hdu_and_banner(&tab);
+                }
+                // The active index changed, so the MCP snapshot is stale.
+                v.publish_open_tabs();
+            });
+        }
+
+        // Per-tab ✕ → drop the backing tab and finish the close. One handler
+        // for every tab, instead of one closure per tab that had to find its own
+        // page by comparing label widgets.
+        {
+            let tabs = viewer.tabs.clone();
+            viewer.tab_view.connect_close_page(move |view, page| {
+                let child = page.child();
+                tabs.borrow_mut()
+                    .retain(|t| t.widget().clone().upcast::<gtk::Widget>() != child);
+                view.close_page_finish(page, true);
+                // Closing a NON-active tab changes no selection, so the MCP
+                // snapshot has to be republished here or it keeps the closed file.
+                publish_fits_tabs(view, &tabs);
+                glib::Propagation::Stop
+            });
+        }
+        // Empty state is a page count, not a tab that gets removed.
+        {
+            let v = viewer.clone();
+            viewer.tab_view.connect_n_pages_notify(move |tv| {
+                v.content_stack
+                    .set_visible_child_name(if tv.n_pages() == 0 { "empty" } else { "tabs" });
+            });
         }
 
         // Wire coords panel → active tab
@@ -850,7 +898,7 @@ impl FitsViewer {
                         "no FITS tab at index {index} ({count} open) — list_open_tabs shows them"
                     ));
                 }
-                self.notebook.set_current_page(Some(index as u32));
+                self.select_index(index);
                 let tab = self
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
@@ -1202,7 +1250,7 @@ impl FitsViewer {
             "showBookmarksPanel": self.coords_expander.is_expanded(),
             "blink": self.blink_state(),
             // Which tab this is, so a reader can correlate with list_open_tabs.
-            "tabIndex": self.notebook.current_page().unwrap_or(0),
+            "tabIndex": self.selected_index().unwrap_or(0),
             "tabCount": self.tabs.borrow().len(),
             "status": self.status_label.text().to_string(),
         })
@@ -1214,9 +1262,27 @@ impl FitsViewer {
         self.coords_panel.set_on_search_here(cb);
     }
 
+    /// Position of the selected tab, or `None` when nothing is open.
+    ///
+    /// `adw::TabView` addresses pages by object where the rest of this viewer
+    /// works in indices (the tab list, the blink target, the MCP payload). The
+    /// conversion lives here, once, rather than at each of the dozen call sites.
+    fn selected_index(&self) -> Option<usize> {
+        let page = self.tab_view.selected_page()?;
+        Some(self.tab_view.page_position(&page) as usize)
+    }
+
+    /// Select the tab at `index`, if there is one.
+    fn select_index(&self, index: usize) {
+        if index < self.tab_view.n_pages() as usize {
+            let page = self.tab_view.nth_page(index as i32);
+            self.tab_view.set_selected_page(&page);
+        }
+    }
+
     fn current_tab(&self) -> Option<Rc<FitsTab>> {
-        let idx = self.notebook.current_page()?;
-        self.tabs.borrow().get(idx as usize).cloned()
+        let idx = self.selected_index()?;
+        self.tabs.borrow().get(idx).cloned()
     }
 
     /// Sync every control in the column to the given tab's current state.
@@ -1316,50 +1382,15 @@ impl FitsViewer {
                     .unwrap_or(1);
                 tab.set_hdu_context(hdus, initial_hdu);
 
-                // Remove welcome page if it's the first real tab
-                if self.tabs.borrow().is_empty() && self.notebook.n_pages() > 0 {
-                    self.notebook.remove_page(Some(0));
-                }
-
-                // Add close button to tab label
-                let tab_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-                let tab_label = gtk::Label::new(Some(&filename));
-                tab_box.append(&tab_label);
-                let close_btn = gtk::Button::from_icon_name("window-close-symbolic");
-                close_btn.add_css_class("flat");
-                close_btn.add_css_class("circular");
-                tab_box.append(&close_btn);
-
-                let page_num = self.notebook.append_page(tab.widget(), Some(&tab_box));
-                self.notebook.set_current_page(Some(page_num));
-
-                // Close button handler
-                let notebook = self.notebook.clone();
-                let tabs = self.tabs.clone();
-                let tab_box_clone = tab_box.clone();
-                close_btn.connect_clicked(move |_| {
-                    let n = notebook.n_pages();
-                    for i in 0..n {
-                        if let Some(page) = notebook.nth_page(Some(i)) {
-                            if let Some(tab_label_widget) = notebook.tab_label(&page) {
-                                if tab_label_widget.eq(&tab_box_clone) {
-                                    notebook.remove_page(Some(i));
-                                    {
-                                        let mut t = tabs.borrow_mut();
-                                        if (i as usize) < t.len() {
-                                            t.remove(i as usize);
-                                        }
-                                    }
-                                    // Closing a NON-active tab does not fire
-                                    // switch-page, so republish here too or the
-                                    // MCP tab list keeps the closed file.
-                                    publish_fits_tabs(&notebook, &tabs);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                });
+                // The tab strip owns its own close button, reordering and
+                // overview. The Notebook this replaced needed a hand-rolled
+                // close button that walked every page comparing label widgets to
+                // discover which tab it belonged to — and a separate republish,
+                // because closing a non-active tab fired no switch signal.
+                let page = self.tab_view.append(tab.widget());
+                page.set_title(&filename);
+                page.set_tooltip(path.to_string_lossy().as_ref());
+                self.tab_view.set_selected_page(&page);
 
                 self.tabs.borrow_mut().push(tab.clone());
                 self.publish_open_tabs();
@@ -1486,13 +1517,13 @@ impl FitsViewer {
     }
 
     /// Reload a different image HDU of the active tab's file, replacing the
-    /// current notebook page's content in place (mirrors Windows `SelectHdu`).
+    /// current tab's content in place (mirrors Windows `SelectHdu`).
     fn switch_hdu(&self, hdu_index: usize) {
-        let page_idx = match self.notebook.current_page() {
+        let page_idx = match self.selected_index() {
             Some(i) => i,
             None => return,
         };
-        let old_tab = match self.tabs.borrow().get(page_idx as usize).cloned() {
+        let old_tab = match self.tabs.borrow().get(page_idx).cloned() {
             Some(t) => t,
             None => return,
         };
@@ -1519,18 +1550,22 @@ impl FitsViewer {
         new_tab.set_hdu_context(old_tab.hdus(), hdu_index);
         self.wire_tab_callbacks(&new_tab);
 
-        // Replace the page child in place, reusing the same tab label (so the
-        // existing close-button handler keeps matching this page).
-        let tab_label = self.notebook.tab_label(old_tab.widget());
+        // Swap the page's content, keeping its position and title. `insert`
+        // takes the position directly, so the replacement lands where the old
+        // one was rather than at the end.
+        let old_page = self.tab_view.page(old_tab.widget());
+        let title = old_page.title();
+        let tooltip = old_page.tooltip().unwrap_or_default();
         *self.suppress_page_switch.borrow_mut() = true;
-        self.notebook.remove_page(Some(page_idx));
-        let new_pos =
-            self.notebook
-                .insert_page(new_tab.widget(), tab_label.as_ref(), Some(page_idx));
-        if let Some(slot) = self.tabs.borrow_mut().get_mut(page_idx as usize) {
+        self.tab_view.close_page(&old_page);
+        self.tab_view.close_page_finish(&old_page, true);
+        let new_page = self.tab_view.insert(new_tab.widget(), page_idx as i32);
+        new_page.set_title(&title);
+        new_page.set_tooltip(&tooltip);
+        if let Some(slot) = self.tabs.borrow_mut().get_mut(page_idx) {
             *slot = new_tab.clone();
         }
-        self.notebook.set_current_page(Some(new_pos));
+        self.tab_view.set_selected_page(&new_page);
         *self.suppress_page_switch.borrow_mut() = false;
 
         self.sync_controls_to_tab(&new_tab);
@@ -1543,8 +1578,8 @@ impl FitsViewer {
     /// matched angular scale + orientation before the overlay is built.
     fn start_blink(&self) {
         // Resolve A (active) and B (target) tabs.
-        let a_idx = match self.notebook.current_page() {
-            Some(i) => i as usize,
+        let a_idx = match self.selected_index() {
+            Some(i) => i,
             None => {
                 self.cancel_blink_toggle(crate::tr_en!("Blink needs two open tabs"));
                 return;
@@ -1676,7 +1711,7 @@ impl FitsViewer {
                 if partner >= count {
                     return Err(format!("no FITS tab at index {partner} ({count} open)"));
                 }
-                let active = self.notebook.current_page().unwrap_or(0) as usize;
+                let active = self.selected_index().unwrap_or(0);
                 if partner == active {
                     return Err(
                         "withTabIndex must be a DIFFERENT tab than the active one".to_string()
@@ -1825,7 +1860,7 @@ impl FitsViewer {
     /// Basenames of every open tab (for the blink target picker).
     /// Push the open-tab list + active index into the MCP view state.
     fn publish_open_tabs(&self) {
-        publish_fits_tabs(&self.notebook, &self.tabs);
+        publish_fits_tabs(&self.tab_view, &self.tabs);
     }
 
     fn tab_names(&self) -> Vec<String> {
@@ -1862,7 +1897,7 @@ impl FitsViewer {
         vbox.set_margin_start(4);
         vbox.set_margin_end(4);
 
-        let cur = self.notebook.current_page().map(|i| i as usize);
+        let cur = self.selected_index();
         let mut any = false;
         for (i, name) in self.tab_names().into_iter().enumerate() {
             if Some(i) == cur {
@@ -1904,18 +1939,18 @@ impl FitsViewer {
 /// `list_open_tabs` reads that snapshot, and its setters had NO callers — so the
 /// tool answered with empty arrays no matter how many files were open, an
 /// advertised tool that always lied. Free-standing rather than a method because
-/// the tab-close closure captures only the notebook and the tab list, not the
+/// the tab-close closure captures only the tab view and the tab list, not the
 /// viewer (capturing the viewer there would be a reference cycle through a
 /// widget the viewer owns).
-fn publish_fits_tabs(notebook: &gtk::Notebook, tabs: &Rc<RefCell<Vec<Rc<FitsTab>>>>) {
+fn publish_fits_tabs(tab_view: &adw::TabView, tabs: &Rc<RefCell<Vec<Rc<FitsTab>>>>) {
     let paths: Vec<String> = tabs
         .borrow()
         .iter()
         .map(|t| t.source_file().to_string())
         .collect();
-    let active = notebook
-        .current_page()
-        .map(|i| i as usize)
+    let active = tab_view
+        .selected_page()
+        .map(|p| tab_view.page_position(&p) as usize)
         .filter(|i| *i < paths.len());
     crate::mcp::view_state::set_open_fits(paths, active);
 }
