@@ -841,7 +841,7 @@ impl SearchPage {
 
         let had_facets = self.load_from_form_state(&entry.form_state);
         self.status_label
-            .set_text(&format!("Loaded search: {}", entry.summary));
+            .set_text(&crate::tr_fmt!("Loaded search: {}", entry.summary));
         Ok(json!({
             "loaded": true,
             "summary": entry.summary,

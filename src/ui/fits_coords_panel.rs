@@ -204,15 +204,21 @@ impl FitsCoordsPanel {
                 if let Some(w) = wcs {
                     let (ra, dec) = w.pixel_to_sky(px, py);
                     let (ra_str, dec_str) = WcsInfo::format_coords(ra, dec);
-                    self.crosshair_label.set_text(&format!(
-                        "Pixel ({:.1}, {:.1})\nRA  {}\nDec {}",
-                        px, py, ra_str, dec_str
+                    self.crosshair_label.set_text(&crate::tr_fmt!(
+                        "Pixel ({}, {})\nRA  {}\nDec {}",
+                        format!("{:.1}", px),
+                        format!("{:.1}", py),
+                        ra_str,
+                        dec_str
                     ));
                     *self.current_radec.borrow_mut() = Some((ra, dec));
                     self.search_here_btn.set_sensitive(true);
                 } else {
-                    self.crosshair_label
-                        .set_text(&format!("Pixel ({:.1}, {:.1})\nNo WCS", px, py));
+                    self.crosshair_label.set_text(&crate::tr_fmt!(
+                        "Pixel ({}, {})\nNo WCS",
+                        format!("{:.1}", px),
+                        format!("{:.1}", py)
+                    ));
                     *self.current_radec.borrow_mut() = None;
                     self.search_here_btn.set_sensitive(false);
                 }

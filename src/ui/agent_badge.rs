@@ -25,7 +25,7 @@ pub fn agent_badge(attr: &AgentAttribution) -> gtk::Box {
     button.set_valign(gtk::Align::Center);
     button.add_css_class("flat");
     button.add_css_class("circular");
-    button.set_tooltip_text(Some(&format!("Created by {}", attr.client)));
+    button.set_tooltip_text(Some(&crate::tr_fmt!("Created by {}", attr.client)));
 
     let popover = build_popover(attr);
     button.set_popover(Some(&popover));

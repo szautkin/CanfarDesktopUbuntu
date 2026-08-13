@@ -146,7 +146,7 @@ impl BatchJobsView {
             glib::spawn_future_local(async move {
                 loop {
                     for remaining in (1..=POLL_SECS).rev() {
-                        countdown_label.set_text(&format!("refresh in {}s", remaining));
+                        countdown_label.set_text(&crate::tr_fmt!("refresh in {}s", remaining));
                         glib::timeout_future_seconds(1).await;
                     }
                     countdown_label.set_text(crate::tr_en!("refreshing…"));

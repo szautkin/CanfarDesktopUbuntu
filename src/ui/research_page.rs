@@ -505,11 +505,8 @@ impl ResearchPage {
 
         self.content_stack.set_visible_child_name("list");
         let n = observations.len();
-        self.count_label.set_text(&format!(
-            "{} observation{}",
-            n,
-            if n == 1 { "" } else { "s" }
-        ));
+        self.count_label
+            .set_text(&crate::tr_plural!(n, "{} observation", "{} observations"));
 
         for obs in observations {
             let row = self.build_row(obs);
@@ -833,7 +830,7 @@ impl ResearchPage {
                         gtk::gio::AppLaunchContext::NONE,
                     ) {
                         svc.toast
-                            .toast(format!("Could not open file manager: {}", e));
+                            .toast(crate::tr_fmt!("Could not open file manager: {}", e));
                     }
                 } else {
                     svc.toast
@@ -1123,11 +1120,7 @@ impl ResearchPage {
             let btn = gtk::Button::new();
             btn.add_css_class("flat");
             btn.set_child(Some(&gtk::Image::from_icon_name("non-starred-symbolic")));
-            btn.set_tooltip_text(Some(&format!(
-                "{} star{}",
-                i + 1,
-                if i == 0 { "" } else { "s" }
-            )));
+            btn.set_tooltip_text(Some(&crate::tr_plural!(i + 1, "{} star", "{} stars")));
             let this = Rc::clone(self);
             btn.connect_clicked(move |_| {
                 let clicked = i + 1;
@@ -1387,7 +1380,7 @@ impl ResearchPage {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 self.services
                     .toast
-                    .toast(format!("Cannot create storage directory: {}", e));
+                    .toast(crate::tr_fmt!("Cannot create storage directory: {}", e));
                 self.show_detail(obs);
                 return;
             }
@@ -1399,7 +1392,9 @@ impl ResearchPage {
         } else {
             publisher_id.clone()
         };
-        self.services.toast.toast(format!("Downloading {}…", label));
+        self.services
+            .toast
+            .toast(crate::tr_fmt!("Downloading {}…", label));
 
         let svc = self.services.clone();
         let url_clone = science_url.clone();
@@ -1424,7 +1419,9 @@ impl ResearchPage {
         let file_size = match dl {
             Ok(n) => n,
             Err(e) => {
-                self.services.toast.toast(format!("Download failed: {}", e));
+                self.services
+                    .toast
+                    .toast(crate::tr_fmt!("Download failed: {}", e));
                 self.show_detail(obs);
                 return;
             }
@@ -1451,7 +1448,9 @@ impl ResearchPage {
             }
         }
 
-        self.services.toast.toast(format!("Downloaded {}", label));
+        self.services
+            .toast
+            .toast(crate::tr_fmt!("Downloaded {}", label));
         // Re-render the detail pane — the Open / Open as Cube actions now appear.
         self.show_detail(&updated);
     }
@@ -1611,25 +1610,32 @@ impl ResearchPage {
         let summary = match result {
             Ok(s) => s,
             Err(e) => {
-                self.services.toast.toast(format!("Export failed: {e}"));
+                self.services
+                    .toast
+                    .toast(crate::tr_fmt!("Export failed: {}", e));
                 return;
             }
         };
 
-        self.services.toast.toast(format!(
-            "Exported {} ({} observation{}, {} note{}, {} quer{}, {} recent) to {}",
+        // Each count is pluralized on its own, because "quer{y|ies}" is a stem
+        // change no single template can express in two languages at once. The
+        // parenthetical is then one argument, so a translator moves the whole
+        // list where their sentence needs it.
+        let contents = [
+            crate::tr_plural!(
+                summary.observation_count,
+                "{} observation",
+                "{} observations"
+            ),
+            crate::tr_plural!(summary.note_count, "{} note", "{} notes"),
+            crate::tr_plural!(summary.saved_count, "{} query", "{} queries"),
+            crate::tr_fmt!("{} recent", summary.recent_count),
+        ]
+        .join(", ");
+        self.services.toast.toast(crate::tr_fmt!(
+            "Exported {} ({}) to {}",
             summary.bundle_name,
-            summary.observation_count,
-            if summary.observation_count == 1 {
-                ""
-            } else {
-                "s"
-            },
-            summary.note_count,
-            if summary.note_count == 1 { "" } else { "s" },
-            summary.saved_count,
-            if summary.saved_count == 1 { "y" } else { "ies" },
-            summary.recent_count,
+            contents,
             path.display()
         ));
 
@@ -1680,14 +1686,16 @@ impl ResearchPage {
         match result {
             Ok(_) => {
                 let user = self.services.get_username().await.unwrap_or_default();
-                self.services
-                    .toast
-                    .toast(format!("Uploaded to vos:{user}/{remote_path}"));
+                self.services.toast.toast(crate::tr_fmt!(
+                    "Uploaded to vos:{}/{}",
+                    user,
+                    remote_path
+                ));
             }
             Err(e) => self
                 .services
                 .toast
-                .toast(format!("VOSpace upload failed: {e}")),
+                .toast(crate::tr_fmt!("VOSpace upload failed: {}", e)),
         }
     }
 }

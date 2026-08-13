@@ -229,8 +229,10 @@ impl ObservationDetailPage {
                 self.stack.set_visible_child_name("auth");
             }
             Caom2Status::NotFound | Caom2Status::InvalidId => {
-                self.notfound_page
-                    .set_description(Some(&format!("No observation found for {}", publisher_id)));
+                self.notfound_page.set_description(Some(&crate::tr_fmt!(
+                    "No observation found for {}",
+                    publisher_id
+                )));
                 self.stack.set_visible_child_name("notfound");
             }
             Caom2Status::Parse | Caom2Status::ServerError => {
@@ -1673,7 +1675,7 @@ fn status_downloaded_fits(
 ) {
     status_reset(status_box);
 
-    let done = gtk::Label::new(Some(&format!("Downloaded {}", name)));
+    let done = gtk::Label::new(Some(&crate::tr_fmt!("Downloaded {}", name)));
     done.add_css_class("caption");
     done.add_css_class("dim-label");
     done.set_halign(gtk::Align::Start);
@@ -1769,7 +1771,7 @@ fn status_downloaded_fits(
 fn status_downloaded_other(status_box: &gtk::Box, name: &str, path: &str) {
     status_reset(status_box);
 
-    let done = gtk::Label::new(Some(&format!("Downloaded {}", name)));
+    let done = gtk::Label::new(Some(&crate::tr_fmt!("Downloaded {}", name)));
     done.add_css_class("caption");
     done.add_css_class("dim-label");
     done.set_halign(gtk::Align::Start);

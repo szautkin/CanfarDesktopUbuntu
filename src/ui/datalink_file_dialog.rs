@@ -22,7 +22,7 @@ pub async fn show_datalink_file_dialog(
     }
 
     let dialog = adw::Window::builder()
-        .title(format!("Select File ({} available)", files.len()))
+        .title(crate::tr_fmt!("Select File ({} available)", files.len()))
         .default_width(520)
         .default_height(420)
         .modal(true)

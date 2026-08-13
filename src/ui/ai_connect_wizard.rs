@@ -243,7 +243,7 @@ picks this up the next time it launches."
         Rc::new(move |n: i32| {
             let n = n.clamp(0, (TITLES.len() - 1) as i32);
             step.set(n);
-            header_label.set_text(&format!(
+            header_label.set_text(&crate::tr_fmt!(
                 "Step {} of {} — {}",
                 n + 1,
                 TITLES.len(),
@@ -324,14 +324,16 @@ picks this up the next time it launches."
         let config_result = config_result.clone();
         move |_| match crate::mcp::config::apply_to_claude_desktop() {
             Ok(()) => {
-                services
-                    .toast
-                    .toast("Claude Desktop configured — restart it to connect.");
+                services.toast.toast(crate::tr_en!(
+                    "Claude Desktop configured — restart it to connect."
+                ));
                 config_result.remove_css_class("error");
                 config_result.set_text(crate::tr_en!("✓ Configuration written."));
             }
             Err(e) => {
-                services.toast.toast(format!("Couldn't write config: {e}"));
+                services
+                    .toast
+                    .toast(crate::tr_fmt!("Couldn't write config: {}", e));
                 config_result.add_css_class("error");
                 config_result.set_text(&format!("✗ {e}"));
             }
@@ -344,7 +346,9 @@ picks this up the next time it launches."
         let cmd = code_cmd.clone();
         move |btn| {
             btn.display().clipboard().set_text(&cmd);
-            services.toast.toast("Command copied to clipboard.");
+            services
+                .toast
+                .toast(crate::tr_en!("Command copied to clipboard."));
         }
     });
 

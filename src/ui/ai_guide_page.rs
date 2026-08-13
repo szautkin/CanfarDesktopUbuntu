@@ -615,11 +615,11 @@ impl AiGuidePage {
             .count();
 
         self.tools_chip
-            .set_text(&format!("{} tools", self.total_tools));
+            .set_text(&crate::tr_fmt!("{} tools", self.total_tools));
         self.categories_chip
-            .set_text(&format!("{} categories", self.categories.len()));
+            .set_text(&crate::tr_fmt!("{} categories", self.categories.len()));
         self.overridden_chip
-            .set_text(&format!("{} overridden", overridden));
+            .set_text(&crate::tr_fmt!("{} overridden", overridden));
         self.overridden_chip_box.set_visible(overridden > 0);
     }
 
@@ -827,7 +827,7 @@ impl AiGuidePage {
             self.search_container.remove(&child);
         }
 
-        self.match_count.set_text(&format!(
+        self.match_count.set_text(&crate::tr_fmt!(
             "{} of {} tools match \u{201c}{}\u{201d}",
             matches.len(),
             self.total_tools,
@@ -891,7 +891,7 @@ impl AiGuidePage {
         content.set_margin_top(12);
         content.set_margin_bottom(12);
 
-        let default_label = gtk::Label::new(Some(&format!("Built-in: {}", d.description)));
+        let default_label = gtk::Label::new(Some(&crate::tr_fmt!("Built-in: {}", d.description)));
         default_label.set_wrap(true);
         default_label.set_xalign(0.0);
         default_label.add_css_class("dim-label");
@@ -996,7 +996,7 @@ impl AiGuidePage {
 
             let chars = g.body.trim().chars().count();
             if chars > 0 {
-                let info = gtk::Label::new(Some(&format!("returns {chars} chars")));
+                let info = gtk::Label::new(Some(&crate::tr_fmt!("returns {} chars", chars)));
                 info.add_css_class("dim-label");
                 info.add_css_class("caption");
                 info.set_valign(gtk::Align::Center);
@@ -1255,7 +1255,7 @@ async fn show_guide_dialog(
                     "Enter a name using letters, numbers, spaces, or underscores."
                 ));
             } else {
-                slug_label.set_text(&format!("The agent will see: {slug}"));
+                slug_label.set_text(&crate::tr_fmt!("The agent will see: {}", slug));
             }
         }
     };

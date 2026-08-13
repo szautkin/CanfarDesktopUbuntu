@@ -126,19 +126,19 @@ impl PlatformLoadView {
         }
 
         if let Some(ref instances) = stats.instances {
-            let label = gtk::Label::new(Some(&format!(
+            let label = gtk::Label::new(Some(&crate::tr_fmt!(
                 "Instances: {} total ({} sessions, {} desktop apps, {} headless)",
                 instances.total.unwrap_or(0),
                 instances.session.unwrap_or(0),
                 instances.desktop_app.unwrap_or(0),
-                instances.headless.unwrap_or(0),
+                instances.headless.unwrap_or(0)
             )));
             label.set_halign(gtk::Align::Start);
             label.add_css_class("caption");
             self.content_box.append(&label);
         }
 
-        let updated = gtk::Label::new(Some(&format!(
+        let updated = gtk::Label::new(Some(&crate::tr_fmt!(
             "last update: {} UTC",
             chrono::Utc::now().format("%Y-%m-%d %H:%M")
         )));

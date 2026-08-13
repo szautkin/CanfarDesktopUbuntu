@@ -234,7 +234,7 @@ impl CanfarImagesView {
             }
             Err(e) => {
                 self.subtitle
-                    .set_text(&format!("Failed to load images: {e}"));
+                    .set_text(&crate::tr_fmt!("Failed to load images: {}", e));
             }
         }
     }
@@ -425,8 +425,11 @@ impl CanfarImagesView {
                     .unwrap_or(false)
             })
             .count();
-        self.subtitle
-            .set_text(&format!("Discovered {discovered} of {total} images"));
+        self.subtitle.set_text(&crate::tr_fmt!(
+            "Discovered {} of {} images",
+            discovered,
+            total
+        ));
     }
 }
 

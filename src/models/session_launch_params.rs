@@ -31,6 +31,18 @@ pub const DEFAULT_CORES: u32 = 2;
 pub const DEFAULT_RAM_GB: u32 = 8;
 pub const DEFAULT_GPUS: u32 = 0;
 
+/// The name the launch form's "Generate name" buttons propose: the session type
+/// followed by the next free ordinal (`notebook3`, `headless2`).
+///
+/// It lives here rather than in the form because it is **not UI text** — it is a
+/// value the user submits to Skaha, so it must read the same in every language,
+/// and the two tabs that generate one must agree on what a generated name looks
+/// like. Both wrote their own `format!` into an entry, which put a
+/// server-bound identifier in the same shape as a translatable string.
+pub fn numbered_session_name(session_type: &str, existing: usize) -> String {
+    format!("{session_type}{}", existing + 1)
+}
+
 /// A name for a session an agent launched without choosing one.
 ///
 /// Suffixed, because the bare type is not a name: two agent-launched notebooks
@@ -280,6 +292,14 @@ mod tests {
         let b = agent_session_name("", "notebook");
         assert!(a.starts_with("notebook-agent-"), "{a}");
         assert_ne!(a, b, "two unnamed launches must not collide");
+    }
+
+    #[test]
+    fn a_generated_name_is_the_type_and_the_next_ordinal() {
+        // The name goes to Skaha, so it stays ASCII and identical in every
+        // language — this is why it is not built with `tr_fmt!`.
+        assert_eq!(numbered_session_name("notebook", 2), "notebook3");
+        assert_eq!(numbered_session_name("headless", 0), "headless1");
     }
 
     #[test]

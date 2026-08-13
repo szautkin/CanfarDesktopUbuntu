@@ -1553,7 +1553,7 @@ impl NotebookTabHost {
                         .unwrap_or_else(|e| {
                             h.services
                                 .toast
-                                .toast(format!("Could not open the log folder: {e}"));
+                                .toast(crate::tr_fmt!("Could not open the log folder: {}", e));
                         });
                     }
                     None => h

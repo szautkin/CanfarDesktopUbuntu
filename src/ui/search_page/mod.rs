@@ -1554,10 +1554,10 @@ impl SearchPage {
                     self.capture_resolver_provenance(&r, &state.resolver_service);
                     state.resolver_service_used = self.resolver_service_used.borrow().clone();
                     state.resolution_epoch = self.resolution_epoch.borrow().clone();
-                    self.resolver_status.set_text(&format!(
-                        "RA: {:.5}  Dec: {:.5} ({})",
-                        r.ra,
-                        r.dec,
+                    self.resolver_status.set_text(&crate::tr_fmt!(
+                        "RA: {}  Dec: {} ({})",
+                        format!("{:.5}", r.ra),
+                        format!("{:.5}", r.dec),
                         r.service.as_deref().unwrap_or("?")
                     ));
                 }
@@ -1565,7 +1565,7 @@ impl SearchPage {
                     self.search_spinner.stop();
                     self.search_spinner.set_visible(false);
                     self.status_label
-                        .set_text(&format!("Resolve failed: {}", e));
+                        .set_text(&crate::tr_fmt!("Resolve failed: {}", e));
                     return;
                 }
             }
@@ -1621,8 +1621,11 @@ impl SearchPage {
         match result {
             Ok(results) => {
                 let count = results.total_rows();
-                self.results_count_label
-                    .set_text(&format!("{} observations", count));
+                self.results_count_label.set_text(&crate::tr_plural!(
+                    count,
+                    "{} observation",
+                    "{} observations"
+                ));
                 self.status_label
                     .set_text(&search_status(count, max_records));
 
@@ -1727,7 +1730,7 @@ impl SearchPage {
         drop(store);
 
         if total < raw_total {
-            self.page_label.set_text(&format!(
+            self.page_label.set_text(&crate::tr_fmt!(
                 "Page {} of {} ({}-{} of {}, filtered from {})",
                 page + 1,
                 total_pages.max(1),
@@ -1737,7 +1740,7 @@ impl SearchPage {
                 raw_total
             ));
         } else {
-            self.page_label.set_text(&format!(
+            self.page_label.set_text(&crate::tr_fmt!(
                 "Page {} of {} ({}-{} of {})",
                 page + 1,
                 total_pages.max(1),
@@ -1890,7 +1893,7 @@ impl SearchPage {
                     cell_btn.set_size_request(column_width(&col.key), -1);
                     cell_btn.set_halign(gtk::Align::Start);
                     cell_btn.set_margin_end(RESULT_COLUMN_GAP);
-                    cell_btn.set_tooltip_text(Some(&format!("Narrow to: {}", raw)));
+                    cell_btn.set_tooltip_text(Some(&crate::tr_fmt!("Narrow to: {}", raw)));
 
                     let filters_rc = self.column_filters.clone();
                     let apply_btn = self.apply_filters_btn.clone();
@@ -2196,9 +2199,11 @@ impl SearchPage {
                             .filter(|s| !s.trim().is_empty())
                             .map(|s| format!(" ({})", s))
                             .unwrap_or_default();
-                        page.resolver_status.set_text(&format!(
-                            "RA: {:.4}  Dec: {:.4}{}",
-                            r.ra, r.dec, type_suffix
+                        page.resolver_status.set_text(&crate::tr_fmt!(
+                            "RA: {}  Dec: {}{}",
+                            format!("{:.4}", r.ra),
+                            format!("{:.4}", r.dec),
+                            type_suffix
                         ));
                     }
                     Err(_) => {
@@ -2375,7 +2380,7 @@ impl SearchPage {
         filters.append(&filter);
 
         let dialog = gtk::FileDialog::builder()
-            .title(format!("Export as {}", ext.to_uppercase()))
+            .title(crate::tr_fmt!("Export as {}", ext.to_uppercase()))
             .initial_name(format!("search_results.{}", ext))
             .filters(&filters)
             .build();
@@ -2384,13 +2389,14 @@ impl SearchPage {
             if let Some(path) = file.path() {
                 match std::fs::write(&path, &content) {
                     Ok(()) => {
-                        self.status_label.set_text(&format!(
+                        self.status_label.set_text(&crate::tr_fmt!(
                             "Exported to {}",
                             path.file_name().unwrap_or_default().to_string_lossy()
                         ));
                     }
                     Err(e) => {
-                        self.status_label.set_text(&format!("Export failed: {}", e));
+                        self.status_label
+                            .set_text(&crate::tr_fmt!("Export failed: {}", e));
                     }
                 }
             }
@@ -2608,7 +2614,7 @@ impl SearchPage {
                     page_rc.load_from_form_state(&state);
                     page_rc
                         .status_label
-                        .set_text(&format!("Loaded search: {}", summary_text));
+                        .set_text(&crate::tr_fmt!("Loaded search: {}", summary_text));
                 });
             }
 
@@ -2792,7 +2798,7 @@ impl SearchPage {
                 self.train_manager.borrow_mut().load(entry.data);
                 self.refresh_train_ui();
                 self.status_label
-                    .set_text(&format!("Data train loaded ({} entries)", count));
+                    .set_text(&crate::tr_fmt!("Data train loaded ({} entries)", count));
                 self.services
                     .health
                     .set(ServiceName::Tap, ServiceStatus::Reachable);
@@ -2820,7 +2826,7 @@ impl SearchPage {
                 self.train_manager.borrow_mut().load(rows);
                 self.refresh_train_ui();
                 self.status_label
-                    .set_text(&format!("Data train loaded ({} entries)", count));
+                    .set_text(&crate::tr_fmt!("Data train loaded ({} entries)", count));
                 self.services
                     .health
                     .set(ServiceName::Tap, ServiceStatus::Reachable);
@@ -2840,17 +2846,18 @@ impl SearchPage {
                         .unwrap_or_else(|| crate::tr_en!("unknown").into());
                     self.train_manager.borrow_mut().load(entry.data);
                     self.refresh_train_ui();
-                    self.status_label.set_text(&format!(
+                    self.status_label.set_text(&crate::tr_fmt!(
                         "Data train loaded from cache ({} entries, last updated {})",
-                        count, time_label
+                        count,
+                        time_label
                     ));
-                    self.services.toast.toast(format!(
+                    self.services.toast.toast(crate::tr_fmt!(
                         "Archive unreachable — showing cached filters from {}",
                         time_label
                     ));
                 } else {
                     self.status_label
-                        .set_text(&format!("Data train failed: {}", e));
+                        .set_text(&crate::tr_fmt!("Data train failed: {}", e));
                     self.services.toast.toast_persistent(crate::tr_en!(
                         "Search filters unavailable — archive unreachable"
                     ));
@@ -3305,7 +3312,7 @@ async fn save_to_research(
     }
 
     // ── Resolve DataLink ──────────────────────────────────────────────
-    services.toast.toast(format!(
+    services.toast.toast(crate::tr_fmt!(
         "Resolving DataLink for {}…",
         short_pub_id(publisher_id)
     ));
@@ -3397,7 +3404,7 @@ async fn save_to_research(
     if let Err(e) = std::fs::create_dir_all(&managed_dir) {
         services
             .toast
-            .toast(format!("Cannot create storage directory: {}", e));
+            .toast(crate::tr_fmt!("Cannot create storage directory: {}", e));
         return;
     }
 
@@ -3435,7 +3442,7 @@ async fn save_to_research(
     };
     services
         .toast
-        .toast(format!("Downloading {}…", display_name));
+        .toast(crate::tr_fmt!("Downloading {}…", display_name));
 
     // Choose a filename: prefer DataLink's name, fall back to URL extraction,
     // finally to "{obs_id}.fits". Computed up front because the stream writes
@@ -3473,7 +3480,9 @@ async fn save_to_research(
         Err(e) => {
             // Clean up partial managed dir (the helper already removed its .tmp).
             crate::services::delete_managed_dir(&obs_id);
-            services.toast.toast(format!("Download failed: {}", e));
+            services
+                .toast
+                .toast(crate::tr_fmt!("Download failed: {}", e));
             return;
         }
     };
@@ -3506,7 +3515,7 @@ async fn save_to_research(
             // Leave the downloaded files on disk — the user can try again
             services
                 .toast
-                .toast(format!("Saved files, but store write failed: {}", e));
+                .toast(crate::tr_fmt!("Saved files, but store write failed: {}", e));
         }
     }
 }

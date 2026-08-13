@@ -209,6 +209,81 @@ prend en compte à son prochain démarrage."),
     ("Spectrum at ({}, {})",                        "Spectre à ({}, {})"),
     ("Saved {}",                                    "Enregistré {}"),
     ("Export failed: {}",                           "Échec de l’exportation : {}"),
+    // Templates that were `format!` until the guard below started reading the
+    // sinks they were poured into.
+    ("Created by {}",                               "Créé par {}"),
+    ("Applied: {}",                                 "Appliqué : {}"),
+    ("Apply failed: {}",                            "Échec de l’application : {}"),
+    ("Step {} of {} — {}",                          "Étape {} sur {} — {}"),
+    ("Couldn't write config: {}",                   "Impossible d’écrire la configuration : {}"),
+    ("{} tools",                                    "{} outils"),
+    ("{} categories",                               "{} catégories"),
+    ("{} overridden",                               "{} redéfinis"),
+    ("{} of {} tools match “{}”",                   "{} outils sur {} correspondent à « {} »"),
+    ("Built-in: {}",                                "Intégré : {}"),
+    ("returns {} chars",                            "renvoie {} caractères"),
+    ("The agent will see: {}",                      "L’agent verra : {}"),
+    ("No {} jobs",                                  "Aucune tâche {}"),
+    ("ID: {}",                                      "ID : {}"),
+    ("refresh in {}s",                              "actualisation dans {} s"),
+    ("Discovered {} of {} images",                  "{} images découvertes sur {}"),
+    ("Select File ({} available)",                  "Sélectionner un fichier ({} disponibles)"),
+    ("Pixel ({}, {})\nRA  {}\nDec {}",              "Pixel ({}, {})\nAD  {}\nDéc {}"),
+    ("Pixel ({}, {})\nNo WCS",                      "Pixel ({}, {})\nAucun WCS"),
+    ("Available {}: {} / {}{}",                     "{} disponible : {} / {}{}"),
+    ("Could not open the log folder: {}",           "Impossible d’ouvrir le dossier des journaux : {}"),
+    ("Downloaded {}",                               "{} téléchargé"),
+    ("No observation found for {}",                 "Aucune observation trouvée pour {}"),
+    ("Instances: {} total ({} sessions, {} desktop apps, {} headless)",
+     "Instances : {} au total ({} sessions, {} applications de bureau, {} sans interface)"),
+    ("last update: {} UTC",                         "dernière mise à jour : {} UTC"),
+    ("{} observation",                              "{} observation"),
+    ("{} observations",                             "{} observations"),
+    ("{} note",                                     "{} note"),
+    ("{} notes",                                    "{} notes"),
+    ("{} query",                                    "{} requête"),
+    ("{} queries",                                  "{} requêtes"),
+    ("{} recent",                                   "{} récentes"),
+    ("{} star",                                     "{} étoile"),
+    ("{} stars",                                    "{} étoiles"),
+    ("Cannot create storage directory: {}",         "Impossible de créer le dossier de stockage : {}"),
+    ("Downloading {}…",                             "Téléchargement de {}…"),
+    ("Download failed: {}",                         "Échec du téléchargement : {}"),
+    ("Exported {} ({}) to {}",                      "{} exporté ({}) vers {}"),
+    ("Uploaded to vos:{}/{}",                       "Téléversé vers vos:{}/{}"),
+    ("VOSpace upload failed: {}",                   "Échec du téléversement VOSpace : {}"),
+    ("Could not open file manager: {}",             "Impossible d’ouvrir le gestionnaire de fichiers : {}"),
+    ("Query: {}",                                   "Requête : {}"),
+    ("Loaded search: {}",                           "Recherche chargée : {}"),
+    ("RA: {}  Dec: {} ({})",                        "AD : {}  Déc : {} ({})"),
+    ("RA: {}  Dec: {}{}",                           "AD : {}  Déc : {}{}"),
+    ("Resolve failed: {}",                          "Échec de la résolution : {}"),
+    ("Page {} of {} ({}-{} of {})",                 "Page {} sur {} ({}-{} sur {})"),
+    ("Page {} of {} ({}-{} of {}, filtered from {})",
+     "Page {} sur {} ({}-{} sur {}, filtrés depuis {})"),
+    ("Narrow to: {}",                               "Restreindre à : {}"),
+    ("Export as {}",                                "Exporter en {}"),
+    ("Exported to {}",                              "Exporté vers {}"),
+    ("Data train loaded ({} entries)",              "Train de données chargé ({} entrées)"),
+    ("Data train loaded from cache ({} entries, last updated {})",
+     "Train de données chargé depuis le cache ({} entrées, dernière mise à jour {})"),
+    ("Archive unreachable — showing cached filters from {}",
+     "Archive injoignable — affichage des filtres en cache du {}"),
+    ("Data train failed: {}",                       "Échec du train de données : {}"),
+    ("Resolving DataLink for {}…",                  "Résolution DataLink pour {}…"),
+    ("Saved files, but store write failed: {}",
+     "Fichiers enregistrés, mais l’écriture dans la bibliothèque a échoué : {}"),
+    ("Share {}",                                    "Partager {}"),
+    ("Could not copy the workflow: {}",             "Impossible de copier le flux de travail : {}"),
+    ("Time: {}",                                    "Durée : {}"),
+    ("{}/{} done",                                  "{}/{} terminées"),
+    ("Go to {}",                                    "Aller à {}"),
+    ("Could not update step: {}",                   "Impossible de mettre à jour l’étape : {}"),
+    ("Could not create local copy: {}",             "Impossible de créer la copie locale : {}"),
+    ("Save failed: {}",                             "Échec de l’enregistrement : {}"),
+    ("Could not create workflow: {}",               "Impossible de créer le flux de travail : {}"),
+    ("Import failed: {}",                           "Échec de l’importation : {}"),
+    ("Could not read file: {}",                     "Impossible de lire le fichier : {}"),
 ];
 
 /// Reverse index over [`HAND_PAIRS`]: an English string → its French form.
@@ -368,7 +443,7 @@ macro_rules! tr_en {
 /// English `&'static str`, usually a literal) via [`tr_fmt_template`], then fill
 /// the placeholders with `args`, each formatted with `Display`. Returns a `String`
 /// and is a drop-in for the equivalent `format!` call, adding French translation
-/// (English fallback when the template has no French entry in [`FMT_PAIRS`]).
+/// (English fallback when the template has no French entry in [`HAND_PAIRS`]).
 ///
 /// Pre-format any argument that needs a format spec, e.g.
 /// `tr_fmt!("Used: {} GB", format!("{:.1}", gb))` — the template keeps a plain `{}`.
@@ -380,6 +455,27 @@ macro_rules! tr_fmt {
             &[$(&$arg as &dyn ::std::fmt::Display),*],
         )
     };
+}
+
+/// `tr_plural!(n, "{} observation", "{} observations")` — pick the template by
+/// count, then localize and fill it exactly as [`tr_fmt!`] does. `n` is always
+/// the first argument substituted; any extra `args` follow it.
+///
+/// The alternative this replaces was `tr_fmt!("{} observation{}", n, if n == 1
+/// { "" } else { "s" })` — English morphology decided at the *call site*, which
+/// no translation can undo: the French for that suffix argument is "s" for
+/// "note" and "s" for "requête", but the call site was passing "ies". Choosing
+/// between two whole templates moves the decision into the thing that gets
+/// translated, so each language states its own plural.
+#[macro_export]
+macro_rules! tr_plural {
+    ($n:expr, $one:expr, $many:expr $(, $arg:expr)* $(,)?) => {{
+        let n = $n;
+        $crate::i18n::tr_fmt_apply(
+            $crate::i18n::tr_fmt_template(if n == 1 { $one } else { $many }),
+            &[&n as &dyn ::std::fmt::Display $(, &$arg as &dyn ::std::fmt::Display)*],
+        )
+    }};
 }
 
 /// `tr!("Key")` -> [`tr`]; `tr!("Key", a, b)` -> [`tr_args`].
@@ -412,6 +508,17 @@ fn decode_rust_string_literal(body: &str) -> String {
             Some('r') => out.push('\r'),
             Some('"') => out.push('"'),
             Some('\\') => out.push('\\'),
+            // `\u{201c}` — the one escape whose body contains braces, so a
+            // decoder that skipped it would also hand the placeholder scanner a
+            // `{201c}` it would count as a slot.
+            Some('u') if chars.peek() == Some(&'{') => {
+                chars.next();
+                let hex: String = chars.by_ref().take_while(|c| *c != '}').collect();
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(c) => out.push(c),
+                    None => out.push_str(&format!("\\u{{{hex}}}")),
+                }
+            }
             // Line continuation: swallow the newline and the indent that follows.
             Some('\n') => {
                 while chars.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
@@ -426,6 +533,63 @@ fn decode_rust_string_literal(body: &str) -> String {
         }
     }
     out
+}
+
+/// The comma-separated arguments of the call whose `(` is at `src[at]`.
+///
+/// Depth-aware and literal-aware, so a nested call or a comma inside a string
+/// does not split an argument. `None` if the parentheses never balance.
+#[cfg(test)]
+fn call_args(src: &str, at: usize) -> Option<Vec<String>> {
+    let bytes = src.as_bytes();
+    if bytes.get(at) != Some(&b'(') {
+        return None;
+    }
+    let mut args = vec![String::new()];
+    let mut depth = 0usize;
+    let mut i = at;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth > 1 {
+                    args.last_mut()?.push(c);
+                }
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(
+                        args.into_iter()
+                            .map(|a| a.trim().to_string())
+                            .filter(|a| !a.is_empty())
+                            .collect(),
+                    );
+                }
+                args.last_mut()?.push(c);
+            }
+            ',' if depth == 1 => args.push(String::new()),
+            '"' => {
+                // Copy the literal verbatim; a comma or paren inside it is text.
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 1,
+                        b'"' => break,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                args.last_mut()?
+                    .push_str(&src[start..=i.min(bytes.len() - 1)]);
+            }
+            _ => args.last_mut()?.push(c),
+        }
+        i += 1;
+    }
+    None
 }
 
 /// The Rust string literal starting at `src[at]` (which must be its opening
@@ -467,6 +631,10 @@ mod tests {
 
         // An unrecognised escape is left intact rather than silently dropped.
         assert_eq!(decode_rust_string_literal(r"\q"), r"\q");
+
+        // A unicode escape becomes the character, so the pair a contributor
+        // writes with a real “ matches the call site that spells it \u{201c}.
+        assert_eq!(decode_rust_string_literal(r"say \u{201c}hi\u{201d}"), "say “hi”");
     }
 
     /// Every source file that can contain a call site: this module is skipped
@@ -478,15 +646,19 @@ mod tests {
             .filter(|(path, _)| !path.ends_with("i18n/mod.rs"))
     }
 
-    /// Every `tr_fmt!` template in the codebase must have a French pair.
+    /// Every template a formatting macro carries must have a French pair.
     ///
     /// `HAND_PAIRS` asks contributors to add one when they introduce a template,
     /// but nothing enforced it — so a missed pair silently shipped English into
     /// the French UI, which no test and no compiler could see. A source scan is
     /// the only place this is visible: the templates are macro arguments, not
     /// values any runtime check can enumerate.
+    ///
+    /// `tr_plural!` carries two templates, so both are checked: a plural form
+    /// with no French pair is the same defect as a singular one, and the count
+    /// that selects it is exactly the case nobody exercises by hand.
     #[test]
-    fn every_tr_fmt_template_has_a_french_translation() {
+    fn every_formatted_template_has_a_french_translation() {
         // Decoding matters most for line continuations (`\` + newline + indent):
         // they are idiomatic throughout this codebase, and a scan that ignored
         // them would fail every wrapped template — a guard that cries wolf gets
@@ -496,39 +668,57 @@ mod tests {
         let mut missing: Vec<String> = Vec::new();
         let mut scanned = 0usize;
         for (path, text) in call_sites() {
-            for (start, _) in text.match_indices("tr_fmt!(") {
-                let open = start + "tr_fmt!(".len();
-                let open = open + (text[open..].len() - text[open..].trim_start().len());
-                // Only a directly-quoted template can be checked; a variable
-                // template is out of scope for a source scan.
-                let Some(decoded) = literal_at(&text, open) else {
+            for (start, _) in text
+                .match_indices("tr_fmt!(")
+                .chain(text.match_indices("tr_plural!("))
+            {
+                let open = start + text[start..].find('(').unwrap_or(0);
+                // Every literal argument of the call: one template for
+                // `tr_fmt!`, two for `tr_plural!`. A literal in a *value*
+                // position is text the user reads too, so it wants a pair
+                // just as much.
+                let Some(args) = call_args(&text, open) else {
                     continue;
                 };
-                scanned += 1;
-                if !have.contains(decoded.as_str()) {
-                    missing.push(format!("{}: {decoded:?}", path.display()));
+                let mut at = open + 1;
+                for arg in args {
+                    let start_of_arg = text[at..].find(&arg).map(|o| at + o).unwrap_or(at);
+                    at = start_of_arg + arg.len();
+                    // Only a directly-quoted template can be checked; a variable
+                    // template is out of scope for a source scan.
+                    let Some(decoded) = literal_at(&text, start_of_arg) else {
+                        continue;
+                    };
+                    scanned += 1;
+                    if !have.contains(decoded.as_str()) {
+                        let line = text[..start].lines().count();
+                        missing.push(format!("{}:{line}: {decoded:?}", path.display()));
+                    }
                 }
             }
         }
 
-        assert!(scanned > 0, "found no tr_fmt! call sites — did src/ move?");
+        assert!(
+            scanned > 0,
+            "found no formatting call sites — did src/ move?"
+        );
         missing.sort();
         missing.dedup();
         assert!(
             missing.is_empty(),
-            "tr_fmt! template(s) with no French pair in HAND_PAIRS — French users \
+            "template(s) with no French pair in HAND_PAIRS — French users \
              would see English here: {missing:#?}"
         );
     }
 
     use super::*;
 
-    /// GTK calls that put a string in front of a person.
+    /// Calls that put a string in front of a person.
     ///
-    /// Each is a prefix; whatever follows it, if it is a quoted literal, is text
-    /// the user reads. Every one of these is used with `tr_en!` hundreds of times
-    /// over in this codebase — that is what makes the bare form a defect rather
-    /// than a style, and what makes this list checkable rather than a guess.
+    /// Each is a prefix; what follows it is text the user reads. Every one of
+    /// these is used with `tr_en!` or `tr_fmt!` many times over in this codebase
+    /// — that is what makes the un-localized form a defect rather than a style,
+    /// and what makes this list checkable rather than a guess.
     const TEXT_SETTERS: &[&str] = &[
         "Label::new(Some(",
         ".set_label(",
@@ -545,23 +735,97 @@ mod tests {
         ".heading(",
         ".body(",
         "Toast::new(",
+        ".toast(",
     ];
 
-    /// Nothing the user reads may be a bare literal.
+    /// Does this string carry words, or is it punctuation and placeholders?
+    ///
+    /// `"Downloaded {}"` is prose and needs French; `"{}  ({})"`, `"v{}"` and
+    /// `"—"` are composition — there is nothing in them to translate, and
+    /// demanding a pair for them would be the kind of false alarm that gets a
+    /// guard worked around instead of obeyed. Placeholders are removed first, so
+    /// a template is judged on the words it contributes itself.
+    fn is_prose(text: &str) -> bool {
+        let mut outside = String::with_capacity(text.len());
+        let mut depth = 0usize;
+        for c in text.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => outside.push(c),
+                _ => {}
+            }
+        }
+        outside.chars().filter(|c| c.is_alphabetic()).count() >= 2
+    }
+
+    /// A `tr_fmt!` call must pass one argument per placeholder.
+    ///
+    /// [`tr_fmt_apply`] deliberately tolerates a mismatch — the *French*
+    /// template is chosen at runtime and its placeholder count can drift, and a
+    /// panic in a toast would be worse than a stray `{}`. The cost of that
+    /// tolerance is that a call site which drops an argument compiles, ships,
+    /// and shows a literal `{}` to the user. Nothing else can see it: the
+    /// arguments are macro inputs, so the compiler's own `format!` arity check
+    /// never runs on them.
+    #[test]
+    fn every_tr_fmt_call_passes_one_argument_per_placeholder() {
+        let mut wrong: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+        for (path, text) in call_sites() {
+            let code = crate::testing::code(&text);
+            for (start, _) in code.match_indices("tr_fmt!") {
+                let open = start + "tr_fmt!".len();
+                let Some(args) = call_args(code, open) else {
+                    continue;
+                };
+                let Some(template) = args.first().and_then(|_| literal_at(code, open + 1)) else {
+                    continue; // a variable template: out of scope for a scan
+                };
+                checked += 1;
+                let slots = template.match_indices("{}").count();
+                if slots != args.len() - 1 {
+                    let line = code[..start].lines().count();
+                    wrong.push(format!(
+                        "{}:{line}: {template:.40?} has {slots} placeholder(s) but {} argument(s)",
+                        path.display(),
+                        args.len() - 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            checked > 50,
+            "only {checked} tr_fmt! calls found — scan broken"
+        );
+        wrong.sort();
+        assert!(
+            wrong.is_empty(),
+            "tr_fmt! call(s) whose arguments do not match the template — the user \
+             sees a bare {{}} here: {wrong:#?}"
+        );
+    }
+
+    /// Nothing the user reads may skip the catalog.
     ///
     /// The app advertises French, and the catalog has 1,271 keys — but a call
     /// site that never asks gets English regardless of language, and no compiler
     /// or runtime check can see it. Whole screens shipped that way: the AI
     /// connect wizard, image discovery, the template manager, the proposals
-    /// dialog. Fourteen of them already had French sitting unused in the
-    /// catalog, which is the tell — the strings were translated, the call sites
+    /// dialog. Fourteen of those strings already had French sitting unused in
+    /// the catalog, which is the tell — they were translated, the call sites
     /// simply never looked.
+    ///
+    /// Two shapes reach a person, so the guard knows two: a literal, which must
+    /// be `tr_en!`, and a `format!`, which must be `tr_fmt!`. They are one rule
+    /// — *text a user reads is localized* — and splitting them into two guards
+    /// would let a screen fail one while passing the other.
     ///
     /// The rule has no exceptions, brands included. `tr_en!("Verbinal")` returns
     /// "Verbinal" in both languages, so wrapping costs nothing, whereas an
     /// exception list is the place the next untranslated string would hide.
     #[test]
-    fn nothing_the_user_reads_is_a_bare_literal() {
+    fn nothing_the_user_reads_skips_the_catalog() {
         let mut bare: Vec<String> = Vec::new();
         let mut localized = 0usize;
         for (path, text) in call_sites() {
@@ -570,25 +834,28 @@ mod tests {
             for setter in TEXT_SETTERS {
                 for (start, _) in code.match_indices(setter) {
                     let after = start + setter.len();
-                    let arg = code[after..].trim_start();
+                    let arg = code[after..].trim_start().trim_start_matches('&');
                     let at = code.len() - arg.len();
-                    if arg.starts_with("crate::tr_en!(") || arg.starts_with("tr_en!(") {
+                    if arg.starts_with("crate::tr_en!(") || arg.starts_with("crate::tr_fmt!(") {
                         localized += 1;
                         continue;
                     }
-                    // Anything that is not a plain literal — a variable, a
-                    // `format!`, `tr!`, `tr_fmt!` — is either localized already
-                    // or beyond what a source scan can judge.
-                    let Some(literal) = literal_at(code, at) else {
+                    // A `format!` builds the string the sink will show, so the
+                    // template inside it is the text — `tr_fmt!` is the same call
+                    // with the template localized first.
+                    let found = if let Some(rest) = arg.strip_prefix("format!(") {
+                        let open = code.len() - rest.trim_start().len();
+                        literal_at(code, open)
+                    } else {
+                        // Anything else that is not a plain literal — a variable,
+                        // a `tr!` — is localized already or beyond a source scan.
+                        literal_at(code, at)
+                    };
+                    let Some(text) = found.filter(|t| is_prose(t)) else {
                         continue;
                     };
-                    // A string with no word in it is a glyph, a number or a
-                    // separator: "—", "0", "•". Nothing to translate.
-                    if literal.chars().filter(|c| c.is_alphabetic()).count() < 2 {
-                        continue;
-                    }
                     let line = code[..start].lines().count();
-                    bare.push(format!("{}:{line}: {literal:.60?}", path.display()));
+                    bare.push(format!("{}:{line}: {text:.60?}", path.display()));
                 }
             }
         }

@@ -35,16 +35,19 @@ impl MetricBar {
         let available = total - used;
         let used_fraction = if total > 0.0 { used / total } else { 0.0 };
         self.progress.set_fraction(used_fraction.clamp(0.0, 1.0));
-        self.heading_label.set_text(&format!(
-            "Available {}: {:.1} / {:.1}{}",
+        // The numbers are pre-formatted: `tr_fmt!` templates carry plain `{}`,
+        // so a French translator can reorder the words without owning the
+        // precision of the value.
+        self.heading_label.set_text(&crate::tr_fmt!(
+            "Available {}: {} / {}{}",
             label,
-            available,
-            total,
+            format!("{:.1}", available),
+            format!("{:.1}", total),
             if unit.is_empty() {
                 String::new()
             } else {
                 format!(" {}", unit)
-            },
+            }
         ));
 
         self.progress.remove_css_class("warning");

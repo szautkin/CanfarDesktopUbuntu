@@ -445,7 +445,7 @@ impl WorkflowsPage {
             Err(e) => self
                 .services
                 .toast
-                .toast(format!("Could not copy the workflow: {}", e)),
+                .toast(crate::tr_fmt!("Could not copy the workflow: {}", e)),
         }
     }
 
@@ -664,7 +664,7 @@ impl WorkflowsPage {
 
         if let Some(t) = info.doc.metadata_get("Time") {
             if !t.is_empty() {
-                let time_lbl = gtk::Label::new(Some(&format!("Time: {}", t)));
+                let time_lbl = gtk::Label::new(Some(&crate::tr_fmt!("Time: {}", t)));
                 time_lbl.add_css_class("caption");
                 time_lbl.add_css_class("dim-label");
                 time_lbl.set_valign(gtk::Align::Center);
@@ -680,7 +680,7 @@ impl WorkflowsPage {
         let n = info.doc.steps.len();
         let done = info.doc.done_count();
         if local && n > 0 {
-            let prog_lbl = gtk::Label::new(Some(&format!("{}/{} done", done, n)));
+            let prog_lbl = gtk::Label::new(Some(&crate::tr_fmt!("{}/{} done", done, n)));
             prog_lbl.add_css_class("caption");
             prog_lbl.add_css_class("dim-label");
             prog_lbl.set_halign(gtk::Align::Start);
@@ -839,7 +839,9 @@ impl WorkflowsPage {
                             return;
                         }
                         if let Err(e) = page.store.delete(&id) {
-                            page.services.toast.toast(format!("Delete failed: {}", e));
+                            page.services
+                                .toast
+                                .toast(crate::tr_fmt!("Delete failed: {}", e));
                             return;
                         }
                         *page.selected_id.borrow_mut() = None;
@@ -957,7 +959,7 @@ impl WorkflowsPage {
         // "Go to <view>" deep-link (only for known views)
         if let Some(view) = &step.view {
             if !view.is_empty() && KNOWN_VIEWS.contains(&view.as_str()) {
-                let go_btn = gtk::Button::with_label(&format!("Go to {}", view));
+                let go_btn = gtk::Button::with_label(&crate::tr_fmt!("Go to {}", view));
                 go_btn.set_halign(gtk::Align::Start);
                 go_btn.add_css_class("flat");
                 {
@@ -1021,7 +1023,7 @@ impl WorkflowsPage {
                 if let Err(e) = self.store.set_step_done(id, index, done) {
                     self.services
                         .toast
-                        .toast(format!("Could not update step: {}", e));
+                        .toast(crate::tr_fmt!("Could not update step: {}", e));
                 }
                 self.reload_and_render();
             }
@@ -1038,7 +1040,7 @@ impl WorkflowsPage {
                 Err(e) => self
                     .services
                     .toast
-                    .toast(format!("Could not create local copy: {}", e)),
+                    .toast(crate::tr_fmt!("Could not create local copy: {}", e)),
             },
             WorkflowSource::VoSpace => { /* read-only source — ignore */ }
         }
@@ -1125,7 +1127,9 @@ impl WorkflowsPage {
                     .text(&buf.start_iter(), &buf.end_iter(), false)
                     .to_string();
                 if let Err(e) = page.store.update_text(&id, &text) {
-                    page.services.toast.toast(format!("Save failed: {}", e));
+                    page.services
+                        .toast
+                        .toast(crate::tr_fmt!("Save failed: {}", e));
                     return;
                 }
                 *page.editing.borrow_mut() = false;
@@ -1155,7 +1159,7 @@ impl WorkflowsPage {
             Err(e) => self
                 .services
                 .toast
-                .toast(format!("Could not create workflow: {}", e)),
+                .toast(crate::tr_fmt!("Could not create workflow: {}", e)),
         }
     }
 
@@ -1190,13 +1194,16 @@ impl WorkflowsPage {
                                     .toast(crate::tr_en!("Imported workflow"));
                                 self.reload_and_render();
                             }
-                            Err(e) => self.services.toast.toast(format!("Import failed: {}", e)),
+                            Err(e) => self
+                                .services
+                                .toast
+                                .toast(crate::tr_fmt!("Import failed: {}", e)),
                         }
                     }
                     Err(e) => self
                         .services
                         .toast
-                        .toast(format!("Could not read file: {}", e)),
+                        .toast(crate::tr_fmt!("Could not read file: {}", e)),
                 }
             }
         }
@@ -1327,7 +1334,7 @@ fn workflow_row(info: &WorkflowInfo) -> gtk::ListBoxRow {
 
     let n = info.doc.steps.len();
     let done = info.doc.done_count();
-    let caption = gtk::Label::new(Some(&format!("{}/{} done", done, n)));
+    let caption = gtk::Label::new(Some(&crate::tr_fmt!("{}/{} done", done, n)));
     caption.add_css_class("caption");
     caption.add_css_class("dim-label");
     caption.set_valign(gtk::Align::Center);

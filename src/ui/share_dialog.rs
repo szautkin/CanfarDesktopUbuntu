@@ -32,7 +32,7 @@ pub async fn show_share_dialog(
     group_write: &[String],
 ) -> Option<ShareResult> {
     let dialog = adw::Window::builder()
-        .title(format!("Share {}", node_name))
+        .title(crate::tr_fmt!("Share {}", node_name))
         .default_width(480)
         .modal(true)
         .build();

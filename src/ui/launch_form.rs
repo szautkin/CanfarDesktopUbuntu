@@ -765,7 +765,8 @@ impl LaunchFormView {
 
         // Auto-generate session name: type + (count of that type + 1)
         let count = self.session_count_for_type(&session_type);
-        let name = format!("{}{}", session_type, count + 1);
+        let name =
+            crate::models::session_launch_params::numbered_session_name(&session_type, count);
         self.name_entry.set_text(&name);
     }
 
@@ -803,7 +804,7 @@ impl LaunchFormView {
     fn update_advanced_name(&self) {
         let session_type = self.advanced_session_type();
         let count = self.session_count_for_type(session_type);
-        let name = format!("{}{}", session_type, count + 1);
+        let name = crate::models::session_launch_params::numbered_session_name(session_type, count);
         self.adv_name_entry.set_text(&name);
     }
 
@@ -811,8 +812,9 @@ impl LaunchFormView {
     /// Headless tab's "Generate name" button. Mirrors GenerateHeadlessSessionName.
     fn generate_headless_name(&self) {
         let count = self.session_count_for_type("headless");
-        self.headless_name_entry
-            .set_text(&format!("headless{}", count + 1));
+        self.headless_name_entry.set_text(
+            &crate::models::session_launch_params::numbered_session_name("headless", count),
+        );
     }
 
     /// Re-derive the Standard-tab session name from its selected type
@@ -822,8 +824,9 @@ impl LaunchFormView {
     fn generate_session_name(&self) {
         let session_type = self.selected_type();
         let count = self.session_count_for_type(&session_type);
-        self.name_entry
-            .set_text(&format!("{}{}", session_type, count + 1));
+        self.name_entry.set_text(
+            &crate::models::session_launch_params::numbered_session_name(&session_type, count),
+        );
     }
 
     /// Inject an image chosen via the discovery dialog into the launch path.

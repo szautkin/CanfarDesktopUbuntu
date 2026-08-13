@@ -87,7 +87,10 @@ fn build_state_tab(
     let filtered = batch_jobs_helper::filter_by_state(all_sessions, state);
 
     if filtered.is_empty() {
-        let empty = gtk::Label::new(Some(&format!("No {} jobs", state.label().to_lowercase())));
+        let empty = gtk::Label::new(Some(&crate::tr_fmt!(
+            "No {} jobs",
+            state.label().to_lowercase()
+        )));
         empty.add_css_class("dim-label");
         empty.set_margin_top(24);
         empty.set_margin_bottom(24);
@@ -134,7 +137,7 @@ fn build_job_row(
     image_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     vbox.append(&image_label);
 
-    let id_label = gtk::Label::new(Some(&format!("ID: {}", job.id)));
+    let id_label = gtk::Label::new(Some(&crate::tr_fmt!("ID: {}", job.id)));
     id_label.add_css_class("caption");
     id_label.add_css_class("dim-label");
     id_label.set_halign(gtk::Align::Start);
@@ -220,7 +223,7 @@ fn build_job_row(
                     })
                     .await;
                 btn.set_sensitive(false);
-                services.toast.toast(format!("Deleted {}", job_name));
+                services.toast.toast(crate::tr_fmt!("Deleted {}", job_name));
             });
         });
     }

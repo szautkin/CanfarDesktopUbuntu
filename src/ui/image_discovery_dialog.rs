@@ -190,7 +190,8 @@ pub fn show_image_discovery_dialog(
                     *ui.all_images.borrow_mut() = ImageParser::parse_all(&raw);
                 }
                 Err(e) => {
-                    ui.subtitle.set_text(&format!("Failed to load images: {e}"));
+                    ui.subtitle
+                        .set_text(&crate::tr_fmt!("Failed to load images: {}", e));
                 }
             }
             ui.loaded.set(true);
@@ -543,8 +544,11 @@ impl DiscoveryUi {
                     .unwrap_or(false)
             })
             .count();
-        self.subtitle
-            .set_text(&format!("Discovered {discovered} of {total} images"));
+        self.subtitle.set_text(&crate::tr_fmt!(
+            "Discovered {} of {} images",
+            discovered,
+            total
+        ));
     }
 }
 
