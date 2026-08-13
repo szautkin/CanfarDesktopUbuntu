@@ -31,7 +31,7 @@ impl TemplateManager {
         header_box.set_margin_end(12);
         header_box.set_margin_top(12);
 
-        let title = gtk::Label::new(Some("Session Templates"));
+        let title = gtk::Label::new(Some(crate::tr_en!("Session Templates")));
         title.add_css_class("title-4");
         title.set_hexpand(true);
         title.set_halign(gtk::Align::Start);
@@ -49,7 +49,9 @@ impl TemplateManager {
 
         list_box.set_placeholder(Some(
             &gtk::Label::builder()
-                .label("No saved templates — save one from the launch form")
+                .label(crate::tr_en!(
+                    "No saved templates — save one from the launch form"
+                ))
                 .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
                 .margin_start(12)
                 .margin_end(12)
@@ -107,7 +109,7 @@ impl TemplateManager {
         row.add_prefix(&gtk::Image::from_icon_name("document-properties-symbolic"));
 
         let launch_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
-        launch_btn.set_tooltip_text(Some("Launch from template"));
+        launch_btn.set_tooltip_text(Some(crate::tr_en!("Launch from template")));
         launch_btn.set_valign(gtk::Align::Center);
         launch_btn.add_css_class("flat");
         let on_launch = self.on_launch.clone();
@@ -120,7 +122,7 @@ impl TemplateManager {
         row.add_suffix(&launch_btn);
 
         let delete_btn = gtk::Button::from_icon_name("user-trash-symbolic");
-        delete_btn.set_tooltip_text(Some("Delete template"));
+        delete_btn.set_tooltip_text(Some(crate::tr_en!("Delete template")));
         delete_btn.set_valign(gtk::Align::Center);
         delete_btn.add_css_class("flat");
         let services = self.services.clone();

@@ -52,7 +52,7 @@ pub fn export_image_dialog(parent: &impl IsA<gtk::Widget>, width: i32, height: i
         filters.append(&pdf);
 
         let dialog = gtk::FileDialog::builder()
-            .title("Export Figure")
+            .title(crate::tr_en!("Export Figure"))
             .modal(true)
             .initial_name("cube.png")
             .filters(&filters)

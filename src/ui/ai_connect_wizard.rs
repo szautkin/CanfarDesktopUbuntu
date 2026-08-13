@@ -29,7 +29,7 @@ const PAGES: [&str; 4] = ["enable", "client", "configure", "verify"];
 /// server is intentionally durable — it keeps running after the wizard closes.
 pub fn show_connect_wizard(parent: &impl IsA<gtk::Widget>, services: Arc<AppServices>) {
     let window = adw::Window::builder()
-        .title("Connect an AI agent")
+        .title(crate::tr_en!("Connect an AI agent"))
         .default_width(540)
         .default_height(560)
         .width_request(400)
@@ -67,15 +67,15 @@ pub fn show_connect_wizard(parent: &impl IsA<gtk::Widget>, services: Arc<AppServ
     status_label.set_xalign(0.0);
     status_label.set_wrap(true);
     status_label.add_css_class("dim-label");
-    let start_btn = gtk::Button::with_label("Start MCP server");
+    let start_btn = gtk::Button::with_label(crate::tr_en!("Start MCP server"));
     start_btn.add_css_class("suggested-action");
     let enable_page = {
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let intro = gtk::Label::new(Some(
+        let intro = gtk::Label::new(Some(crate::tr_en!(
             "The Model Context Protocol (MCP) lets an AI agent such as Claude talk to \
 Verbinal — browsing your CADC storage, running searches, and preparing session \
-launches on your behalf. Start the local MCP server so Verbinal becomes reachable.",
-        ));
+launches on your behalf. Start the local MCP server so Verbinal becomes reachable."
+        )));
         intro.set_wrap(true);
         intro.set_xalign(0.0);
         page.append(&intro);
@@ -89,13 +89,15 @@ launches on your behalf. Start the local MCP server so Verbinal becomes reachabl
     stack.add_named(&enable_page, Some(PAGES[0]));
 
     // ── Step 2: Pick your client ────────────────────────────────────────────
-    let desktop_radio = gtk::CheckButton::with_label("Claude Desktop");
-    let code_radio = gtk::CheckButton::with_label("Claude Code CLI");
+    let desktop_radio = gtk::CheckButton::with_label(crate::tr_en!("Claude Desktop"));
+    let code_radio = gtk::CheckButton::with_label(crate::tr_en!("Claude Code CLI"));
     code_radio.set_group(Some(&desktop_radio));
     desktop_radio.set_active(true);
     let client_page = {
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let intro = gtk::Label::new(Some("Which AI client will connect to Verbinal?"));
+        let intro = gtk::Label::new(Some(crate::tr_en!(
+            "Which AI client will connect to Verbinal?"
+        )));
         intro.set_wrap(true);
         intro.set_xalign(0.0);
         page.append(&intro);
@@ -117,14 +119,14 @@ launches on your behalf. Start the local MCP server so Verbinal becomes reachabl
     config_result.add_css_class("dim-label");
 
     // Desktop sub-panel: write the config file for the user.
-    let write_btn = gtk::Button::with_label("Write config");
+    let write_btn = gtk::Button::with_label(crate::tr_en!("Write config"));
     write_btn.add_css_class("suggested-action");
     let desktop_box = {
         let b = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        let intro = gtk::Label::new(Some(
+        let intro = gtk::Label::new(Some(crate::tr_en!(
             "Register Verbinal in Claude Desktop's configuration file. Claude Desktop \
-picks this up the next time it launches.",
-        ));
+picks this up the next time it launches."
+        )));
         intro.set_wrap(true);
         intro.set_xalign(0.0);
         b.append(&intro);
@@ -143,12 +145,12 @@ picks this up the next time it launches.",
     };
 
     // Code sub-panel: show the command for the user to run.
-    let copy_btn = gtk::Button::with_label("Copy command");
+    let copy_btn = gtk::Button::with_label(crate::tr_en!("Copy command"));
     let code_box = {
         let b = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        let intro = gtk::Label::new(Some(
-            "Add Verbinal to Claude Code by running this command in your terminal:",
-        ));
+        let intro = gtk::Label::new(Some(crate::tr_en!(
+            "Add Verbinal to Claude Code by running this command in your terminal:"
+        )));
         intro.set_wrap(true);
         intro.set_xalign(0.0);
         b.append(&intro);
@@ -181,7 +183,7 @@ picks this up the next time it launches.",
     stack.add_named(&configure_page, Some(PAGES[2]));
 
     // ── Step 4: Verify ──────────────────────────────────────────────────────
-    let test_btn = gtk::Button::with_label("Test connection");
+    let test_btn = gtk::Button::with_label(crate::tr_en!("Test connection"));
     test_btn.add_css_class("suggested-action");
     let spinner = gtk::Spinner::new();
     spinner.set_visible(false);
@@ -191,9 +193,9 @@ picks this up the next time it launches.",
     verify_label.add_css_class("dim-label");
     let verify_page = {
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let intro = gtk::Label::new(Some(
-            "Dial the MCP server the way your AI client will, and confirm it answers.",
-        ));
+        let intro = gtk::Label::new(Some(crate::tr_en!(
+            "Dial the MCP server the way your AI client will, and confirm it answers."
+        )));
         intro.set_wrap(true);
         intro.set_xalign(0.0);
         page.append(&intro);
@@ -214,10 +216,10 @@ picks this up the next time it launches.",
     // proceed button is always visible even on short / HiDPI-scaled displays.
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     footer.set_margin_top(6);
-    let back_btn = gtk::Button::with_label("Back");
+    let back_btn = gtk::Button::with_label(crate::tr_en!("Back"));
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
-    let next_btn = gtk::Button::with_label("Next");
+    let next_btn = gtk::Button::with_label(crate::tr_en!("Next"));
     next_btn.add_css_class("suggested-action");
     footer.append(&back_btn);
     footer.append(&spacer);
@@ -286,7 +288,7 @@ picks this up the next time it launches.",
             let s = step.get();
             if s == 0 && !services.mcp_host.is_running() {
                 status_label.add_css_class("error");
-                status_label.set_text("Start the MCP server to continue.");
+                status_label.set_text(crate::tr_en!("Start the MCP server to continue."));
                 return;
             }
             if s as usize >= TITLES.len() - 1 {
@@ -310,9 +312,9 @@ picks this up the next time it launches.",
             crate::services::mcp_settings_service::McpSettingsService::new()
                 .set_server_enabled(true);
             status_label.remove_css_class("error");
-            status_label.set_text("MCP server is running.");
+            status_label.set_text(crate::tr_en!("MCP server is running."));
             btn.set_sensitive(false);
-            btn.set_label("Server running");
+            btn.set_label(crate::tr_en!("Server running"));
         }
     });
 
@@ -326,7 +328,7 @@ picks this up the next time it launches.",
                     .toast
                     .toast("Claude Desktop configured — restart it to connect.");
                 config_result.remove_css_class("error");
-                config_result.set_text("✓ Configuration written.");
+                config_result.set_text(crate::tr_en!("✓ Configuration written."));
             }
             Err(e) => {
                 services.toast.toast(format!("Couldn't write config: {e}"));
@@ -356,7 +358,7 @@ picks this up the next time it launches.",
             spinner.set_visible(true);
             spinner.start();
             verify_label.remove_css_class("error");
-            verify_label.set_text("Testing…");
+            verify_label.set_text(crate::tr_en!("Testing…"));
             let services = services.clone();
             let verify_label = verify_label.clone();
             let spinner = spinner.clone();
@@ -390,11 +392,11 @@ picks this up the next time it launches.",
     // Reflect current server state on the Enable step before first paint.
     let running = services.mcp_host.is_running();
     if running {
-        status_label.set_text("MCP server is running.");
+        status_label.set_text(crate::tr_en!("MCP server is running."));
         start_btn.set_sensitive(false);
-        start_btn.set_label("Server running");
+        start_btn.set_label(crate::tr_en!("Server running"));
     } else {
-        status_label.set_text("MCP server is stopped.");
+        status_label.set_text(crate::tr_en!("MCP server is stopped."));
     }
 
     // Resume at the furthest sensible step, mirroring the Windows wizard.

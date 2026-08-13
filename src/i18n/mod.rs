@@ -46,17 +46,77 @@ static EN_TO_FR: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m
 });
 
-/// Hand-maintained French translations for the dynamic `{}`-placeholder *templates*
-/// introduced by the [`tr_fmt!`] sweep (toasts / status / labels built at runtime).
+/// Hand-maintained French translations for every English string this app shows
+/// that the generated catalog cannot supply.
 ///
-/// These live here rather than in the generated `catalog.rs` because they use Rust
-/// `{}` placeholders and have no counterpart in the reference RESW files, so the
-/// `scripts/gen_i18n_catalog.py` generator (which reads those RESW files) cannot
-/// emit them. When adding a new `tr_fmt!("…{}…", …)` call site whose English
-/// template is not already listed here, add the `(english, french)` pair below —
-/// the English literal must match the call-site template byte-for-byte.
+/// Two kinds live here, and they are one kind for the purpose that matters:
+/// dynamic `{}`-placeholder templates ([`tr_fmt!`]), and plain literals
+/// ([`tr_en!`]) on screens Verbinal has and the reference does not. Both are
+/// absent from `catalog.rs` for the same reason — `scripts/gen_i18n_catalog.py`
+/// reads the reference's RESW files, so it can only emit what the reference also
+/// says. Two tables of identical shape, consulted by two functions that resolved
+/// identically, were one table pretending to be two: a contributor adding a
+/// French string had to know which kind it was before knowing where to put it.
+///
+/// When you introduce a `tr_en!` / `tr_fmt!` call site whose English is not in
+/// the catalog, add the `(english, french)` pair below — the English must match
+/// the call site byte-for-byte. A pair the catalog already covers is not needed
+/// (and a brand — "Verbinal", "Claude Desktop" — needs no pair at all: an
+/// unmatched string falls back to English, which is the correct French for it).
 #[rustfmt::skip]
-static FMT_PAIRS: &[(&str, &str)] = &[
+static HAND_PAIRS: &[(&str, &str)] = &[
+    // Plain literals — screens with no reference counterpart.
+    ("Created by AI agent",                         "Créé par un agent IA"),
+    ("No pending proposals",                        "Aucune proposition en attente"),
+    ("Destructive",                                 "Irréversible"),
+    ("Which AI client will connect to Verbinal?",   "Quel client IA se connectera à Verbinal ?"),
+    ("Start MCP server",                            "Démarrer le serveur MCP"),
+    ("Write config",                                "Écrire la configuration"),
+    ("Copy command",                                "Copier la commande"),
+    ("Test connection",                             "Tester la connexion"),
+    ("Testing…",                                    "Test en cours…"),
+    ("Start the MCP server to continue.",           "Démarrez le serveur MCP pour continuer."),
+    ("MCP server is running.",                      "Le serveur MCP est en cours d’exécution."),
+    ("MCP server is stopped.",                      "Le serveur MCP est arrêté."),
+    ("Server running",                              "Serveur actif"),
+    ("✓ Configuration written.",                    "✓ Configuration écrite."),
+    ("View events & logs",                          "Afficher les évènements et journaux"),
+    ("Delete job",                                  "Supprimer la tâche"),
+    ("refreshing…",                                 "actualisation…"),
+    ("Filter packages…",                            "Filtrer les paquets…"),
+    ("Active filters",                              "Filtres actifs"),
+    ("Clear all",                                   "Tout effacer"),
+    ("Search images…",                              "Rechercher des images…"),
+    ("Loading images…",                             "Chargement des images…"),
+    ("Discovering…",                                "Découverte en cours…"),
+    ("Kernel: not started",                         "Noyau : non démarré"),
+    ("Failed to load platform data",                "Échec du chargement des données de la plateforme"),
+    ("Session Templates",                           "Modèles de session"),
+    ("Launch from template",                        "Lancer depuis un modèle"),
+    ("Delete template",                             "Supprimer le modèle"),
+    ("No saved templates — save one from the launch form",
+     "Aucun modèle enregistré — enregistrez-en un depuis le formulaire de lancement"),
+    ("Export Figure",                                "Exporter la figure"),
+    ("Find image by package",                        "Trouver une image par paquet"),
+    ("Destructive changes requested by an AI agent are held here until you approve them. \
+Reversible writes are applied automatically.",
+     "Les modifications irréversibles demandées par un agent IA sont retenues ici jusqu’à votre \
+approbation. Les écritures réversibles sont appliquées automatiquement."),
+    ("The Model Context Protocol (MCP) lets an AI agent such as Claude talk to \
+Verbinal — browsing your CADC storage, running searches, and preparing session launches on your \
+behalf. Start the local MCP server so Verbinal becomes reachable.",
+     "Le Model Context Protocol (MCP) permet à un agent IA tel que Claude de dialoguer avec \
+Verbinal — parcourir votre stockage CADC, lancer des recherches et préparer des sessions en votre \
+nom. Démarrez le serveur MCP local pour rendre Verbinal accessible."),
+    ("Register Verbinal in Claude Desktop's configuration file. Claude Desktop \
+picks this up the next time it launches.",
+     "Enregistrez Verbinal dans le fichier de configuration de Claude Desktop. Claude Desktop le \
+prend en compte à son prochain démarrage."),
+    ("Add Verbinal to Claude Code by running this command in your terminal:",
+     "Ajoutez Verbinal à Claude Code en exécutant cette commande dans votre terminal :"),
+    ("Dial the MCP server the way your AI client will, and confirm it answers.",
+     "Contactez le serveur MCP comme le fera votre client IA, et vérifiez qu’il répond."),
+    // `{}`-placeholder templates.
     ("Error: {}",                                   "Erreur : {}"),
     ("Failed to load images: {}",                   "Échec du chargement des images : {}"),
     ("Selected image: {}",                          "Image sélectionnée : {}"),
@@ -151,9 +211,9 @@ static FMT_PAIRS: &[(&str, &str)] = &[
     ("Export failed: {}",                           "Échec de l’exportation : {}"),
 ];
 
-/// Reverse index for [`tr_fmt`]: an English `{}`-template → its French form.
-static FMT_EN_TO_FR: Lazy<HashMap<&'static str, &'static str>> =
-    Lazy::new(|| FMT_PAIRS.iter().copied().collect());
+/// Reverse index over [`HAND_PAIRS`]: an English string → its French form.
+static HAND_EN_TO_FR: Lazy<HashMap<&'static str, &'static str>> =
+    Lazy::new(|| HAND_PAIRS.iter().copied().collect());
 
 // GTK runs on a single thread, but a global RwLock keeps `set_lang`/`current_lang`
 // callable from anywhere without unsafe.
@@ -225,33 +285,33 @@ fn leak_key(key: &str) -> &'static str {
     Box::leak(key.to_string().into_boxed_str())
 }
 
-/// Localize an English UI literal by reverse lookup. In English (or when the
-/// string isn't in the catalog) returns the input unchanged; in French returns
-/// the matching translation. Because a string literal is `'static`, the fallback
-/// can be returned directly — so `tr_en!("Login")` is a drop-in for `"Login"`.
+/// Localize an English UI string by reverse lookup: the hand-maintained
+/// [`HAND_PAIRS`] first, then the generated catalog, then the input unchanged.
+///
+/// Hand pairs win so a string this app words differently from the reference can
+/// be corrected here without editing the generated file. Because a string
+/// literal is `'static`, the fallback is returned directly — `tr_en!("Login")`
+/// is a drop-in for `"Login"`.
 pub fn tr_en(english: &'static str) -> &'static str {
     match current_lang() {
         Lang::En => english,
-        Lang::Fr => EN_TO_FR.get(english).copied().unwrap_or(english),
-    }
-}
-
-/// Reverse-lookup the French form of an English `{}`-placeholder *template*, the
-/// dynamic-string analogue of [`tr_en`]. Checks the hand-maintained [`FMT_PAIRS`]
-/// map first, then the generated catalog's reverse index (so a template that also
-/// happens to be a catalog value still localizes), then falls back to `english`.
-///
-/// Because the template is `'static`, the English fallback is returned directly —
-/// so `tr_fmt!` always has a `'static` template to substitute into, in any language.
-pub fn tr_fmt_template(english: &'static str) -> &'static str {
-    match current_lang() {
-        Lang::En => english,
-        Lang::Fr => FMT_EN_TO_FR
+        Lang::Fr => HAND_EN_TO_FR
             .get(english)
             .copied()
             .or_else(|| EN_TO_FR.get(english).copied())
             .unwrap_or(english),
     }
+}
+
+/// The French form of an English `{}`-placeholder *template*.
+///
+/// A template resolves exactly as a plain literal does — same tables, same
+/// order, same fallback — so this is [`tr_en`]. It stays as its own name
+/// because that is what `tr_fmt!` reads as at the call site, and because the
+/// two macros' inputs differ in a way worth keeping visible: one is a finished
+/// string, the other has holes still to fill.
+pub fn tr_fmt_template(english: &'static str) -> &'static str {
+    tr_en(english)
 }
 
 /// Substitute sequential `{}` placeholders in `template` with `args`, formatting
@@ -368,6 +428,27 @@ fn decode_rust_string_literal(body: &str) -> String {
     out
 }
 
+/// The Rust string literal starting at `src[at]` (which must be its opening
+/// quote), decoded to the value the compiler would produce.
+///
+/// `None` when `at` is not a plain `"…"` literal — a raw string, a variable, a
+/// macro call. Both source-scanning guards below need exactly this, and a second
+/// copy would be a second opinion about what counts as a literal.
+#[cfg(test)]
+fn literal_at(src: &str, at: usize) -> Option<String> {
+    let body = src.get(at..)?.strip_prefix('"')?;
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(decode_rust_string_literal(&body[..i])),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -388,77 +469,44 @@ mod tests {
         assert_eq!(decode_rust_string_literal(r"\q"), r"\q");
     }
 
+    /// Every source file that can contain a call site: this module is skipped
+    /// because it CONTAINS the table, so its own literals would match every scan
+    /// and drown the result.
+    fn call_sites() -> impl Iterator<Item = (std::path::PathBuf, String)> {
+        crate::testing::rust_sources()
+            .into_iter()
+            .filter(|(path, _)| !path.ends_with("i18n/mod.rs"))
+    }
+
     /// Every `tr_fmt!` template in the codebase must have a French pair.
     ///
-    /// `FMT_PAIRS` asks contributors to add one when they introduce a template,
+    /// `HAND_PAIRS` asks contributors to add one when they introduce a template,
     /// but nothing enforced it — so a missed pair silently shipped English into
     /// the French UI, which no test and no compiler could see. A source scan is
     /// the only place this is visible: the templates are macro arguments, not
     /// values any runtime check can enumerate.
     #[test]
     fn every_tr_fmt_template_has_a_french_translation() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let have: std::collections::HashSet<&str> = FMT_PAIRS.iter().map(|(en, _)| *en).collect();
+        // Decoding matters most for line continuations (`\` + newline + indent):
+        // they are idiomatic throughout this codebase, and a scan that ignored
+        // them would fail every wrapped template — a guard that cries wolf gets
+        // worked around instead of obeyed.
+        let have: std::collections::HashSet<&str> = HAND_PAIRS.iter().map(|(en, _)| *en).collect();
 
         let mut missing: Vec<String> = Vec::new();
         let mut scanned = 0usize;
-        let mut stack = vec![root];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                    continue;
-                }
-                // Skip this file: it CONTAINS the table, so its own literals
-                // would match the scan and drown the result.
-                if path.ends_with("i18n/mod.rs") {
-                    continue;
-                }
-                let Ok(text) = std::fs::read_to_string(&path) else {
+        for (path, text) in call_sites() {
+            for (start, _) in text.match_indices("tr_fmt!(") {
+                let open = start + "tr_fmt!(".len();
+                let open = open + (text[open..].len() - text[open..].trim_start().len());
+                // Only a directly-quoted template can be checked; a variable
+                // template is out of scope for a source scan.
+                let Some(decoded) = literal_at(&text, open) else {
                     continue;
                 };
-                for (start, _) in text.match_indices("tr_fmt!(") {
-                    let rest = &text[start + "tr_fmt!(".len()..];
-                    let rest = rest.trim_start();
-                    // Only a directly-quoted template can be checked; a variable
-                    // template is out of scope for a source scan.
-                    let Some(body) = rest.strip_prefix('"') else {
-                        continue;
-                    };
-                    // Find the closing quote, honouring escapes.
-                    let mut end = None;
-                    let bytes = body.as_bytes();
-                    let mut i = 0;
-                    while i < bytes.len() {
-                        match bytes[i] {
-                            b'\\' => i += 2,
-                            b'"' => {
-                                end = Some(i);
-                                break;
-                            }
-                            _ => i += 1,
-                        }
-                    }
-                    let Some(end) = end else { continue };
-                    let template = &body[..end];
-                    scanned += 1;
-                    // Decode the Rust source literal to the value the compiler
-                    // sees, which is what FMT_PAIRS holds. Line continuations
-                    // (`\` + newline + indent) matter most: they are idiomatic
-                    // throughout this codebase, and a decoder that ignored them
-                    // would fail every wrapped template — a guard that cries wolf
-                    // gets worked around instead of obeyed.
-                    let decoded = decode_rust_string_literal(template);
-                    if !have.contains(decoded.as_str()) {
-                        missing.push(format!("{}: {decoded:?}", path.display()));
-                    }
+                scanned += 1;
+                if !have.contains(decoded.as_str()) {
+                    missing.push(format!("{}: {decoded:?}", path.display()));
                 }
             }
         }
@@ -468,12 +516,96 @@ mod tests {
         missing.dedup();
         assert!(
             missing.is_empty(),
-            "tr_fmt! template(s) with no French pair in FMT_PAIRS — French users \
+            "tr_fmt! template(s) with no French pair in HAND_PAIRS — French users \
              would see English here: {missing:#?}"
         );
     }
 
     use super::*;
+
+    /// GTK calls that put a string in front of a person.
+    ///
+    /// Each is a prefix; whatever follows it, if it is a quoted literal, is text
+    /// the user reads. Every one of these is used with `tr_en!` hundreds of times
+    /// over in this codebase — that is what makes the bare form a defect rather
+    /// than a style, and what makes this list checkable rather than a guess.
+    const TEXT_SETTERS: &[&str] = &[
+        "Label::new(Some(",
+        ".set_label(",
+        "with_label(",
+        ".set_title(",
+        ".set_subtitle(",
+        ".set_tooltip_text(Some(",
+        ".set_placeholder_text(Some(",
+        ".set_text(",
+        ".set_description(Some(",
+        ".set_heading(Some(",
+        ".label(",
+        ".title(",
+        ".heading(",
+        ".body(",
+        "Toast::new(",
+    ];
+
+    /// Nothing the user reads may be a bare literal.
+    ///
+    /// The app advertises French, and the catalog has 1,271 keys — but a call
+    /// site that never asks gets English regardless of language, and no compiler
+    /// or runtime check can see it. Whole screens shipped that way: the AI
+    /// connect wizard, image discovery, the template manager, the proposals
+    /// dialog. Fourteen of them already had French sitting unused in the
+    /// catalog, which is the tell — the strings were translated, the call sites
+    /// simply never looked.
+    ///
+    /// The rule has no exceptions, brands included. `tr_en!("Verbinal")` returns
+    /// "Verbinal" in both languages, so wrapping costs nothing, whereas an
+    /// exception list is the place the next untranslated string would hide.
+    #[test]
+    fn nothing_the_user_reads_is_a_bare_literal() {
+        let mut bare: Vec<String> = Vec::new();
+        let mut localized = 0usize;
+        for (path, text) in call_sites() {
+            // Test code is not shipped, and a fixture label needs no French.
+            let code = crate::testing::code(&text);
+            for setter in TEXT_SETTERS {
+                for (start, _) in code.match_indices(setter) {
+                    let after = start + setter.len();
+                    let arg = code[after..].trim_start();
+                    let at = code.len() - arg.len();
+                    if arg.starts_with("crate::tr_en!(") || arg.starts_with("tr_en!(") {
+                        localized += 1;
+                        continue;
+                    }
+                    // Anything that is not a plain literal — a variable, a
+                    // `format!`, `tr!`, `tr_fmt!` — is either localized already
+                    // or beyond what a source scan can judge.
+                    let Some(literal) = literal_at(code, at) else {
+                        continue;
+                    };
+                    // A string with no word in it is a glyph, a number or a
+                    // separator: "—", "0", "•". Nothing to translate.
+                    if literal.chars().filter(|c| c.is_alphabetic()).count() < 2 {
+                        continue;
+                    }
+                    let line = code[..start].lines().count();
+                    bare.push(format!("{}:{line}: {literal:.60?}", path.display()));
+                }
+            }
+        }
+
+        // If a refactor moved the app onto different setters, this guard would
+        // pass by scanning nothing. It has to keep finding the localized calls.
+        assert!(
+            localized > 300,
+            "only {localized} localized call sites found — TEXT_SETTERS has gone stale"
+        );
+        bare.sort();
+        assert!(
+            bare.is_empty(),
+            "user-visible string(s) that never reach the catalog — French users \
+             see English here: {bare:#?}"
+        );
+    }
 
     #[test]
     fn en_fr_key_sets_are_identical() {
@@ -527,7 +659,7 @@ mod tests {
     #[test]
     fn tr_fmt_french_template_substitutes() {
         // The FR reverse-lookup + substitution path a `tr_fmt!` in French mode takes.
-        let fr = FMT_EN_TO_FR.get("Error: {}").copied().unwrap();
+        let fr = HAND_EN_TO_FR.get("Error: {}").copied().unwrap();
         assert_eq!(
             tr_fmt_apply(fr, &[&"boom" as &dyn std::fmt::Display]),
             "Erreur : boom"
@@ -541,7 +673,7 @@ mod tests {
         fn slots(s: &str) -> usize {
             s.match_indices("{}").count()
         }
-        for (en, fr) in FMT_PAIRS {
+        for (en, fr) in HAND_PAIRS {
             assert_eq!(
                 slots(en),
                 slots(fr),

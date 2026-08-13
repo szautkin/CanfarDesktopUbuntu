@@ -149,7 +149,7 @@ impl BatchJobsView {
                         countdown_label.set_text(&format!("refresh in {}s", remaining));
                         glib::timeout_future_seconds(1).await;
                     }
-                    countdown_label.set_text("refreshing…");
+                    countdown_label.set_text(crate::tr_en!("refreshing…"));
                     match weak.upgrade() {
                         Some(v) => v.refresh().await,
                         None => break,

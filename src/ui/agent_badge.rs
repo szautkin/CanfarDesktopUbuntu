@@ -52,7 +52,7 @@ fn build_popover(attr: &AgentAttribution) -> gtk::Popover {
     heading_row.set_valign(gtk::Align::Center);
     let heading_icon = gtk::Image::from_icon_name("applications-science-symbolic");
     heading_icon.add_css_class("accent");
-    let heading_label = gtk::Label::new(Some("Created by AI agent"));
+    let heading_label = gtk::Label::new(Some(crate::tr_en!("Created by AI agent")));
     heading_label.add_css_class("heading");
     heading_label.set_halign(gtk::Align::Start);
     heading_row.append(&heading_icon);

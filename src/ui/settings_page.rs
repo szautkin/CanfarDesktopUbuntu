@@ -1490,7 +1490,7 @@ impl SettingsPage {
 
     fn build_about_group(&self) {
         let group = adw::PreferencesGroup::new();
-        group.set_title("About");
+        group.set_title(crate::tr_en!("About"));
 
         let version_row = adw::ActionRow::builder()
             .title(crate::tr_en!("Version"))

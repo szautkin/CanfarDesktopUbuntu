@@ -24,7 +24,7 @@ pub async fn show_batch_jobs_dialog(
     initial_state: BatchJobState,
 ) {
     let window = gtk::Window::builder()
-        .title("Batch Jobs")
+        .title(crate::tr_en!("Batch Jobs"))
         .default_width(720)
         .default_height(520)
         .modal(true)
@@ -145,7 +145,7 @@ fn build_job_row(
     // Action buttons
     let events_btn = gtk::Button::from_icon_name("text-x-generic-symbolic");
     events_btn.add_css_class("flat");
-    events_btn.set_tooltip_text(Some("View events & logs"));
+    events_btn.set_tooltip_text(Some(crate::tr_en!("View events & logs")));
     {
         let window = window.clone();
         let services = services.clone();
@@ -192,7 +192,7 @@ fn build_job_row(
     let delete_btn = gtk::Button::from_icon_name("user-trash-symbolic");
     delete_btn.add_css_class("flat");
     delete_btn.add_css_class("destructive-action");
-    delete_btn.set_tooltip_text(Some("Delete job"));
+    delete_btn.set_tooltip_text(Some(crate::tr_en!("Delete job")));
     {
         let window = window.clone();
         let services = services.clone();

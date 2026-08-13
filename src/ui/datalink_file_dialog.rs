@@ -105,10 +105,10 @@ pub async fn show_datalink_file_dialog(
     // Bottom action bar: Cancel + Download
     let action_bar = gtk::ActionBar::new();
 
-    let cancel_btn = gtk::Button::with_label("Cancel");
+    let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
     action_bar.pack_start(&cancel_btn);
 
-    let download_btn = gtk::Button::with_label("Download");
+    let download_btn = gtk::Button::with_label(crate::tr_en!("Download"));
     download_btn.add_css_class("suggested-action");
     action_bar.pack_end(&download_btn);
 

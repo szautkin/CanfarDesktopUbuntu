@@ -1678,7 +1678,7 @@ fn build_welcome_page(
     app_icon.set_halign(gtk::Align::Center);
     header_box.append(&app_icon);
 
-    let title = gtk::Label::new(Some("Verbinal"));
+    let title = gtk::Label::new(Some(crate::tr_en!("Verbinal")));
     title.add_css_class("title-1");
     title.set_halign(gtk::Align::Center);
     header_box.append(&title);

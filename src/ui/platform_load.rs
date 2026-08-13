@@ -91,7 +91,8 @@ impl PlatformLoadView {
             self.update_data(stats);
             self.status_label.set_visible(false);
         } else {
-            self.status_label.set_text("Failed to load platform data");
+            self.status_label
+                .set_text(crate::tr_en!("Failed to load platform data"));
             self.status_label.set_visible(true);
         }
 

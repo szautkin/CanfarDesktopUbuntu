@@ -143,7 +143,7 @@ impl NotebookPage {
         status_bar.set_margin_top(4);
         status_bar.set_margin_bottom(4);
 
-        let kernel_status = gtk::Label::new(Some("Kernel: not started"));
+        let kernel_status = gtk::Label::new(Some(crate::tr_en!("Kernel: not started")));
         kernel_status.add_css_class("dim-label");
         kernel_status.add_css_class("caption");
         kernel_status.set_halign(gtk::Align::Start);

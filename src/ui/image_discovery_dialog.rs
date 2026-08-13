@@ -49,7 +49,7 @@ pub fn show_image_discovery_dialog(
     on_pick: Rc<dyn Fn(String)>,
 ) {
     let window = adw::Window::builder()
-        .title("Find image by package")
+        .title(crate::tr_en!("Find image by package"))
         .default_width(1040)
         .default_height(700)
         .modal(true)
@@ -76,15 +76,15 @@ pub fn show_image_discovery_dialog(
     left.set_margin_bottom(12);
 
     let pkg_search = gtk::SearchEntry::new();
-    pkg_search.set_placeholder_text(Some("Filter packages…"));
+    pkg_search.set_placeholder_text(Some(crate::tr_en!("Filter packages…")));
     left.append(&pkg_search);
 
     let chips_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let chips_title = gtk::Label::new(Some("Active filters"));
+    let chips_title = gtk::Label::new(Some(crate::tr_en!("Active filters")));
     chips_title.add_css_class("heading");
     chips_title.set_halign(gtk::Align::Start);
     chips_title.set_hexpand(true);
-    let clear_btn = gtk::Button::with_label("Clear all");
+    let clear_btn = gtk::Button::with_label(crate::tr_en!("Clear all"));
     clear_btn.add_css_class("flat");
     chips_header.append(&chips_title);
     chips_header.append(&clear_btn);
@@ -112,10 +112,10 @@ pub fn show_image_discovery_dialog(
     right.set_margin_bottom(12);
 
     let img_search = gtk::SearchEntry::new();
-    img_search.set_placeholder_text(Some("Search images…"));
+    img_search.set_placeholder_text(Some(crate::tr_en!("Search images…")));
     right.append(&img_search);
 
-    let subtitle = gtk::Label::new(Some("Loading images…"));
+    let subtitle = gtk::Label::new(Some(crate::tr_en!("Loading images…")));
     subtitle.add_css_class("dim-label");
     subtitle.set_halign(gtk::Align::Start);
     right.append(&subtitle);
@@ -454,7 +454,7 @@ impl DiscoveryUi {
         discover_btn.set_valign(gtk::Align::Center);
         discover_btn.set_sensitive(!is_running);
         if is_running {
-            discover_btn.set_label("Discovering…");
+            discover_btn.set_label(crate::tr_en!("Discovering…"));
         }
         {
             let ui = self.clone();
@@ -465,7 +465,7 @@ impl DiscoveryUi {
             });
         }
 
-        let use_btn = gtk::Button::with_label("Use this image");
+        let use_btn = gtk::Button::with_label(crate::tr_en!("Use this image"));
         use_btn.add_css_class("suggested-action");
         use_btn.set_valign(gtk::Align::Center);
         {

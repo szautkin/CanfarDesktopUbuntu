@@ -25,7 +25,7 @@ pub fn pending_count(services: &AppServices) -> usize {
 /// Show the modal proposals-review dialog.
 pub fn show_agent_proposals(parent: &impl IsA<gtk::Widget>, services: Arc<AppServices>) {
     let dialog = adw::Window::builder()
-        .title("Agent proposals")
+        .title(crate::tr_en!("Agent proposals"))
         .default_width(540)
         .default_height(460)
         .modal(true)
@@ -43,10 +43,10 @@ pub fn show_agent_proposals(parent: &impl IsA<gtk::Widget>, services: Arc<AppSer
     outer.set_margin_top(12);
     outer.set_margin_bottom(12);
 
-    let caption = gtk::Label::new(Some(
+    let caption = gtk::Label::new(Some(crate::tr_en!(
         "Destructive changes requested by an AI agent are held here until you approve them. \
-Reversible writes are applied automatically.",
-    ));
+Reversible writes are applied automatically."
+    )));
     caption.add_css_class("dim-label");
     caption.set_wrap(true);
     caption.set_xalign(0.0);
@@ -91,7 +91,7 @@ impl ProposalsContent {
 
         if pending.is_empty() {
             let empty = adw::ActionRow::new();
-            empty.set_title("No pending proposals");
+            empty.set_title(crate::tr_en!("No pending proposals"));
             self.list.append(&empty);
             return;
         }
@@ -101,13 +101,15 @@ impl ProposalsContent {
             row.set_title(&p.kind);
             row.set_subtitle(&p.summary);
             if p.destructive {
-                let badge = gtk::Label::new(Some("destructive"));
+                // Capitalized: it is a badge the user reads, not the field name
+                // it was copied from.
+                let badge = gtk::Label::new(Some(crate::tr_en!("Destructive")));
                 badge.add_css_class("error");
                 badge.add_css_class("caption");
                 row.add_prefix(&badge);
             }
 
-            let reject_btn = gtk::Button::with_label("Reject");
+            let reject_btn = gtk::Button::with_label(crate::tr_en!("Reject"));
             reject_btn.add_css_class("destructive-action");
             reject_btn.set_valign(gtk::Align::Center);
             {
@@ -119,7 +121,7 @@ impl ProposalsContent {
                 });
             }
 
-            let apply_btn = gtk::Button::with_label("Apply");
+            let apply_btn = gtk::Button::with_label(crate::tr_en!("Apply"));
             apply_btn.add_css_class("suggested-action");
             apply_btn.set_valign(gtk::Align::Center);
             {
