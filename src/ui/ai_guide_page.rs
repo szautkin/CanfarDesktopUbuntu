@@ -321,6 +321,10 @@ mod catalog {
 /// A category with its resolved tool descriptors — built once from the live tool
 /// surface and stored on the page (the descriptors never change; only overrides do).
 struct CatData {
+    /// Read only by the grouping test, which names a category by its stable id
+    /// rather than its display title — the title is localized, so asserting on
+    /// it would make the test fail in French.
+    #[allow(dead_code)]
     id: &'static str,
     title: &'static str,
     icon: &'static str,

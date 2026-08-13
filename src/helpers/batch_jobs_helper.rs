@@ -57,16 +57,7 @@ pub struct BatchJobCounts {
     pub failed: usize,
 }
 
-impl BatchJobCounts {
-    pub fn get(&self, state: BatchJobState) -> usize {
-        match state {
-            BatchJobState::Pending => self.pending,
-            BatchJobState::Running => self.running,
-            BatchJobState::Completed => self.completed,
-            BatchJobState::Failed => self.failed,
-        }
-    }
-}
+impl BatchJobCounts {}
 
 /// Filter to headless jobs and count by state.
 pub fn group_by_state(sessions: &[Session]) -> BatchJobCounts {

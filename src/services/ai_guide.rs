@@ -58,11 +58,6 @@ pub struct AiGuideSnapshot {
 }
 
 impl AiGuideSnapshot {
-    /// The empty snapshot (no overrides, no guides).
-    pub fn empty() -> Self {
-        AiGuideSnapshot::default()
-    }
-
     /// Effective description for a built-in tool: the override if present, else
     /// the caller's built-in default.
     pub fn description_for_tool(&self, name: &str, default: &str) -> String {
@@ -267,6 +262,7 @@ impl AiGuideService {
         }
     }
 
+    #[cfg(test)]
     /// All overrides as `(tool, description)` pairs, sorted by tool name for a
     /// stable UI ordering.
     pub fn list_overrides(&self) -> Vec<(String, String)> {

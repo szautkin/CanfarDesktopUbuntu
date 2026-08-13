@@ -82,6 +82,7 @@ impl NotebookStore {
         self.write(&entries)
     }
 
+    #[cfg(test)]
     /// Remove the entry at `index` from the list (0-based).
     ///
     /// Returns `Err` if the index is out of range.
@@ -98,16 +99,19 @@ impl NotebookStore {
         self.write(&entries)
     }
 
+    #[cfg(test)]
     /// Clear the entire list.
     pub fn clear(&self) -> Result<(), String> {
         self.write(&[])
     }
 
+    #[cfg(test)]
     /// Return the number of recent-notebook entries currently stored.
     pub fn len(&self) -> usize {
         self.load().len()
     }
 
+    #[cfg(test)]
     /// Return `true` if there are no recent-notebook entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0

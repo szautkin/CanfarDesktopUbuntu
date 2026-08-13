@@ -17,13 +17,14 @@ for contributing to the project.
    ```bash
    cargo build
    cargo test
-   cargo clippy --all-targets -- -D warnings -A dead_code
+   cargo clippy --all-targets -- -D warnings
    ```
 
 ## Code Style
 
 - Run `cargo fmt` before committing
-- Run `cargo clippy --all-targets -- -D warnings -A dead_code` (the command CI runs — `--all-targets` lints the tests too) and fix all warnings
+- Run `cargo clippy --all-targets -- -D warnings` (the command CI runs — `--all-targets` lints the tests too) and fix all warnings
+- A `dead_code` warning is a question, not noise: is this unwired, or unneeded? Wire it, delete it, or mark it `#[cfg(test)]` / `#[allow(dead_code)]` **with the reason**
 - Follow existing code patterns and naming conventions
 - Keep changes focused — one feature or fix per PR
 

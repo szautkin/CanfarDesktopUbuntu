@@ -26,12 +26,8 @@ pub enum Freshness {
 #[derive(Debug, Clone)]
 pub enum CacheKey {
     DataTrainRows,
-    ResolverResult { target: String, service: String },
-    ContainerImages,
-    SessionContext,
     VoSpaceNodes { path: String },
     Sessions,
-    StorageQuotaCached { username: String },
 }
 
 impl CacheKey {
@@ -39,12 +35,6 @@ impl CacheKey {
     fn to_path(&self) -> PathBuf {
         match self {
             CacheKey::DataTrainRows => PathBuf::from("data_train.json"),
-            CacheKey::ResolverResult { target, service } => {
-                let safe = sanitize_filename(&format!("{}_{}", target, service));
-                PathBuf::from("resolver").join(format!("{}.json", safe))
-            }
-            CacheKey::ContainerImages => PathBuf::from("images.json"),
-            CacheKey::SessionContext => PathBuf::from("context.json"),
             CacheKey::VoSpaceNodes { path } => {
                 let safe = sanitize_filename(path);
                 let safe = if safe.is_empty() {
@@ -55,9 +45,6 @@ impl CacheKey {
                 PathBuf::from("vospace").join(format!("{}.json", safe))
             }
             CacheKey::Sessions => PathBuf::from("sessions.json"),
-            CacheKey::StorageQuotaCached { username } => {
-                PathBuf::from(format!("quota_{}.json", sanitize_filename(username)))
-            }
         }
     }
 
@@ -68,18 +55,6 @@ impl CacheKey {
                 Duration::from_secs(24 * 3600),            // 24h fresh
                 Some(Duration::from_secs(30 * 24 * 3600)), // 30 days max stale
             ),
-            CacheKey::ResolverResult { .. } => (
-                Duration::from_secs(7 * 24 * 3600), // 7 days fresh
-                None,                               // never expire
-            ),
-            CacheKey::ContainerImages => (
-                Duration::from_secs(3600),                // 1h fresh
-                Some(Duration::from_secs(7 * 24 * 3600)), // 7 days max stale
-            ),
-            CacheKey::SessionContext => (
-                Duration::from_secs(6 * 3600),            // 6h fresh
-                Some(Duration::from_secs(7 * 24 * 3600)), // 7 days max stale
-            ),
             CacheKey::VoSpaceNodes { .. } => (
                 Duration::from_secs(300),        // 5 min fresh
                 Some(Duration::from_secs(3600)), // 1h max stale
@@ -87,10 +62,6 @@ impl CacheKey {
             CacheKey::Sessions => (
                 Duration::from_secs(30),        // 30s fresh
                 Some(Duration::from_secs(600)), // 10min max stale
-            ),
-            CacheKey::StorageQuotaCached { .. } => (
-                Duration::from_secs(900),            // 15min fresh
-                Some(Duration::from_secs(6 * 3600)), // 6h max stale
             ),
         }
     }
@@ -116,14 +87,6 @@ impl CacheService {
         let path = self.cache_dir.join(key.to_path());
         let bytes = std::fs::read(&path).ok()?;
         serde_json::from_slice(&bytes).ok()
-    }
-
-    /// Check freshness of a cached entry without deserialising the full payload.
-    pub fn freshness_of<T: DeserializeOwned>(&self, key: &CacheKey) -> Freshness {
-        match self.read::<T>(key) {
-            None => Freshness::Expired,
-            Some(entry) => self.entry_freshness(key, &entry),
-        }
     }
 
     /// Compute freshness for an already-loaded entry.
@@ -210,7 +173,7 @@ mod tests {
         let svc = CacheService {
             cache_dir: std::env::temp_dir().join("verbinal_test_cache_miss"),
         };
-        let result: Option<CacheEntry<Vec<String>>> = svc.read(&CacheKey::ContainerImages);
+        let result: Option<CacheEntry<Vec<String>>> = svc.read(&CacheKey::Sessions);
         assert!(result.is_none());
     }
 

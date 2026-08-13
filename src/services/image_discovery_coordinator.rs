@@ -85,6 +85,7 @@ impl ImageDiscoveryCoordinator {
         }
     }
 
+    #[cfg(test)]
     /// The backing manifest cache (shared `Arc`), for the search/facet UI.
     pub fn store(&self) -> Arc<JsonManifestStore> {
         Arc::clone(&self.store)

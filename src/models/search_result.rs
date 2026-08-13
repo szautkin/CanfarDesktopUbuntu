@@ -11,7 +11,6 @@ use std::collections::HashMap;
 pub struct SearchResults {
     pub columns: Vec<String>,
     pub rows: Vec<SearchResultRow>,
-    pub query: Option<String>,
 }
 
 impl SearchResults {
@@ -277,6 +276,7 @@ impl DataLinkFile {
         self.url.rsplit('/').next().unwrap_or("unknown").to_string()
     }
 
+    #[cfg(test)]
     pub fn size_display(&self) -> String {
         match self.size {
             Some(b) if b < 1024 => format!("{} B", b),
@@ -491,11 +491,12 @@ pub fn default_columns() -> Vec<ResultColumnInfo> {
 // ---------------------------------------------------------------------------
 
 /// Parse a CSV response from the TAP service into SearchResults.
-pub fn parse_csv(csv: &str, query: Option<&str>) -> SearchResults {
-    let mut result = SearchResults {
-        query: query.map(|s| s.to_string()),
-        ..Default::default()
-    };
+///
+/// The ADQL that produced it used to ride along in a `query` field nothing ever
+/// read — the search page keeps the text it sent, in the editor the user typed
+/// it into.
+pub fn parse_csv(csv: &str) -> SearchResults {
+    let mut result = SearchResults::default();
 
     let lines: Vec<&str> = csv.lines().filter(|l| !l.is_empty()).collect();
     if lines.is_empty() {
@@ -889,7 +890,7 @@ mod tests {
     #[test]
     fn parse_csv_basic() {
         let csv = "col1,col2,col3\nval1,val2,val3\na,b,c";
-        let result = parse_csv(csv, None);
+        let result = parse_csv(csv);
         assert_eq!(result.columns, vec!["col1", "col2", "col3"]);
         assert_eq!(result.total_rows(), 2);
         assert_eq!(result.rows[0].get("col1"), "val1");
@@ -901,7 +902,7 @@ mod tests {
         // Regression: filter/sort key by the CLEANED key ("targetname"), but values
         // were only stored under the raw header ("Target Name") → always missed.
         let csv = "Target Name,RA (deg)\nM31,10.68\nNGC 224,10.68";
-        let result = parse_csv(csv, None);
+        let result = parse_csv(csv);
         // Raw header still works (cell rendering path).
         assert_eq!(result.rows[0].get("Target Name"), "M31");
         // Cleaned key now works (filter/sort path).
@@ -913,7 +914,7 @@ mod tests {
     #[test]
     fn parse_csv_quoted_fields() {
         let csv = "name,desc\n\"hello, world\",test";
-        let result = parse_csv(csv, None);
+        let result = parse_csv(csv);
         assert_eq!(result.rows[0].get("name"), "hello, world");
     }
 
@@ -921,13 +922,13 @@ mod tests {
     fn parse_csv_escaped_double_quotes() {
         // RFC 4180: doubled quotes inside quoted fields represent a literal quote
         let csv = "name,desc\n\"value with \"\"quotes\"\"\",test";
-        let result = parse_csv(csv, None);
+        let result = parse_csv(csv);
         assert_eq!(result.rows[0].get("name"), "value with \"quotes\"");
     }
 
     #[test]
     fn parse_csv_empty() {
-        let result = parse_csv("", None);
+        let result = parse_csv("");
         assert_eq!(result.total_rows(), 0);
     }
 

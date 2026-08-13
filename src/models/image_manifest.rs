@@ -73,6 +73,7 @@ impl Default for ImageManifest {
 }
 
 impl ImageManifest {
+    #[cfg(test)]
     /// Normalize in place: trim + lowercase every entry, drop blanks, then sort and de-duplicate
     /// every package/capability list (including each per-env python list) and the OS/kernel
     /// strings. Idempotent — re-sanitizing a normalized manifest is a no-op. Produces a canonical,
@@ -357,6 +358,7 @@ pub struct LastOutcome {
 }
 
 impl LastOutcome {
+    #[cfg(test)]
     /// Record a successful discovery for `manifest`, timestamped `discovered_at` (RFC-3339).
     pub fn success(manifest: ImageManifest, discovered_at: impl Into<String>) -> Self {
         LastOutcome {
@@ -366,6 +368,7 @@ impl LastOutcome {
         }
     }
 
+    #[cfg(test)]
     /// Record a typed failure for `image_id`, timestamped `discovered_at` (RFC-3339).
     pub fn failure(
         image_id: impl Into<String>,
@@ -400,6 +403,7 @@ impl LastOutcome {
 // helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn normalize_list(list: &mut Vec<String>) {
     for s in list.iter_mut() {
         *s = s.trim().to_lowercase();
@@ -409,6 +413,7 @@ fn normalize_list(list: &mut Vec<String>) {
     list.dedup();
 }
 
+#[cfg(test)]
 fn normalize_opt(value: &mut Option<String>) {
     if let Some(v) = value {
         let normalized = v.trim().to_lowercase();

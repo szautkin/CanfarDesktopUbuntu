@@ -1111,9 +1111,14 @@ pub fn build_main_window(
                         status_lbl.set_text(crate::tr_en!("Online"));
                         status_lbl.add_css_class("success");
                     }
-                    ServiceStatus::Unreachable { since, .. } => {
+                    ServiceStatus::Unreachable { since, reason } => {
                         let local: chrono::DateTime<chrono::Local> = (*since).into();
                         row.set_subtitle(&crate::tr_fmt!("Last seen {}", local.format("%H:%M")));
+                        // Every failure has recorded WHY since the tracker was
+                        // written, and the row showed only that something was
+                        // offline. A user debugging their connection wants the
+                        // sentence, not the adjective.
+                        row.set_tooltip_text(Some(reason));
                         status_lbl.set_text(crate::tr_en!("Offline"));
                         status_lbl.add_css_class("error");
                     }

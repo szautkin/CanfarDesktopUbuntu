@@ -10,7 +10,7 @@
 //! All tools are `agent_safe`.
 
 use super::{ToolDescriptor, ToolResult, VerbClass};
-use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
+use crate::mcp::tools::proposals::InMemoryProposalStore;
 use crate::mcp::view_state::viewer_command;
 use crate::state::AppServices;
 use serde_json::{json, Value};
@@ -245,11 +245,6 @@ pub async fn dispatch(
         "get_fits_wcs" => Some(to_tool_result(get_fits_wcs(args))),
         _ => None,
     }
-}
-
-/// FITS tools execute directly (agent-safe) — they never enqueue proposals.
-pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<String, String>> {
-    None
 }
 
 /// Map a JSON result into a `ToolResult`, promoting an `imageBase64` payload to

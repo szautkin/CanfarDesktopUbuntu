@@ -4566,7 +4566,6 @@ mod export_tests {
                     SearchResultRow { values }
                 })
                 .collect(),
-            query: None,
         }
     }
 

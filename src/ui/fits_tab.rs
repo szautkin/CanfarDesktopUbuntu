@@ -129,14 +129,6 @@ impl FitsTab {
         *self.vmax.borrow()
     }
 
-    pub fn auto_vmin(&self) -> f64 {
-        self.auto_vmin
-    }
-
-    pub fn auto_vmax(&self) -> f64 {
-        self.auto_vmax
-    }
-
     pub fn data_min(&self) -> f64 {
         self.data.min_val
     }

@@ -19,11 +19,7 @@ impl fmt::Display for ApiError {
     }
 }
 
-impl ApiError {
-    pub fn is_unauthorized(&self) -> bool {
-        matches!(self, ApiError::Unauthorized)
-    }
-}
+impl ApiError {}
 
 /// Check an HTTP response for auth/server errors before consuming the body.
 /// Returns the response if OK, or an ApiError.

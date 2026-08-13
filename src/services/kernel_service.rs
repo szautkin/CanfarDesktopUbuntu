@@ -332,6 +332,7 @@ impl LocalKernelService {
         &self.state
     }
 
+    #[cfg(test)]
     /// Number of cells executed since the last `start` / `restart`.
     pub fn exec_count(&self) -> u32 {
         self.exec_count

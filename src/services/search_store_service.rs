@@ -18,6 +18,7 @@ impl SearchStoreService {
         SearchStoreService { data_dir }
     }
 
+    #[cfg(test)]
     /// Point the store at an arbitrary directory.
     ///
     /// Exists so tests never touch the real user data dir — a test that cleared

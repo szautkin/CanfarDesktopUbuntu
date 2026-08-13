@@ -61,6 +61,7 @@ impl ImageDiscoverySettings {
         )
     }
 
+    #[cfg(test)]
     /// True when nothing user-configured is meaningfully set (the settings UI
     /// shows/hides the Reset affordance on this). Mirrors the C# `IsAllDefaults`
     /// minus the secret check (secret presence is a service-layer concern).

@@ -41,6 +41,7 @@ fn find_nearest_pow2_index(powers: &[u32], value: u32) -> usize {
     best_idx
 }
 
+#[cfg(test)]
 /// Snap `value` to the nearest power-of-two present in `powers`. Convenience
 /// wrapper over [`find_nearest_pow2_index`]; returns `value` unchanged when
 /// `powers` is empty.

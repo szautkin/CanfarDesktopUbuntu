@@ -57,6 +57,7 @@ pub enum ServiceStatus {
 }
 
 impl ServiceStatus {
+    #[cfg(test)]
     pub fn is_reachable(&self) -> bool {
         matches!(self, ServiceStatus::Reachable)
     }
@@ -94,6 +95,7 @@ impl ServiceHealthTracker {
             .unwrap_or(ServiceStatus::Unknown)
     }
 
+    #[cfg(test)]
     pub fn any_unreachable(&self) -> bool {
         self.inner
             .read()

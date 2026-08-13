@@ -142,43 +142,6 @@ impl CellSource {
             CellSource::Lines(lines) => lines.concat(),
         }
     }
-
-    /// Return the source as an owned `Vec<String>` of lines.
-    ///
-    /// When the source is already an array it is cloned directly.
-    /// When it is a single string it is split on `\n`, re-attaching the
-    /// newline to every line except the last (matching nbformat convention).
-    pub fn lines(&self) -> Vec<String> {
-        match self {
-            CellSource::Lines(v) => v.clone(),
-            CellSource::Single(s) => {
-                if s.is_empty() {
-                    return Vec::new();
-                }
-                let mut result: Vec<String> = s.split('\n').map(|part| part.to_string()).collect();
-                // Re-attach newlines to all lines except the last.
-                let last = result.len().saturating_sub(1);
-                for (i, line) in result.iter_mut().enumerate() {
-                    if i < last {
-                        line.push('\n');
-                    }
-                }
-                // Drop trailing empty string produced by a terminal newline.
-                if result.last().map(|l| l.is_empty()).unwrap_or(false) {
-                    result.pop();
-                }
-                result
-            }
-        }
-    }
-
-    /// Return `true` if the source contains no text.
-    pub fn is_empty(&self) -> bool {
-        match self {
-            CellSource::Single(s) => s.is_empty(),
-            CellSource::Lines(v) => v.is_empty() || v.iter().all(|l| l.is_empty()),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,28 +247,6 @@ mod tests {
     fn cell_source_lines_joined() {
         let src = CellSource::Lines(vec!["hello\n".to_string(), "world".to_string()]);
         assert_eq!(src.joined(), "hello\nworld");
-    }
-
-    #[test]
-    fn cell_source_single_to_lines() {
-        let src = CellSource::Single("hello\nworld".to_string());
-        let lines = src.lines();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "hello\n");
-        assert_eq!(lines[1], "world");
-    }
-
-    #[test]
-    fn cell_source_empty_single() {
-        let src = CellSource::Single(String::new());
-        assert!(src.is_empty());
-        assert!(src.lines().is_empty());
-    }
-
-    #[test]
-    fn cell_source_lines_is_empty() {
-        let src = CellSource::Lines(vec!["".to_string()]);
-        assert!(src.is_empty());
     }
 
     // --- Serialisation round-trip ---

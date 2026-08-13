@@ -165,8 +165,6 @@ pub struct CubeWcs {
     pub rest_frequency_hz: Option<f64>,
     /// Spectral reference frame (SPECSYS — LSRK/BARYCENT/TOPOCENT/…).
     pub spectral_frame: String,
-    /// Observer frame (SSYSOBS), when stated.
-    pub observer_frame: String,
     /// Synthesized beam (degrees): major/minor axis + position angle (BMAJ/BMIN/BPA).
     pub beam_major_deg: Option<f64>,
     pub beam_minor_deg: Option<f64>,
@@ -190,11 +188,6 @@ impl CubeWcs {
         } else {
             "DEC"
         }
-    }
-
-    /// Rest frequency in GHz, if known.
-    pub fn rest_frequency_ghz(&self) -> Option<f64> {
-        self.rest_frequency_hz.map(|hz| hz / 1e9)
     }
 }
 
@@ -223,7 +216,6 @@ impl CubeWcs {
             galactic,
             rest_frequency_hz: get_f64("RESTFRQ").or_else(|| get_f64("RESTFREQ")),
             spectral_frame: get_str("SPECSYS"),
-            observer_frame: get_str("SSYSOBS"),
             beam_major_deg: get_f64("BMAJ"),
             beam_minor_deg: get_f64("BMIN"),
             beam_pa_deg: get_f64("BPA"),

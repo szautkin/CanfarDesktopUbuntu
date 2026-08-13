@@ -109,12 +109,18 @@ pub struct VolumeData {
     /// NaN = blank/BLANK.
     pub data: Vec<f32>,
     /// A short human-readable label (file name or "Synthetic …").
+    ///
+    /// Read by tests only: the viewer titles its tab from the path it opened,
+    /// not from the volume. Kept because every loader sets it and a volume that
+    /// cannot say what it is would be worse than an unread string.
+    #[allow(dead_code)]
     pub name: String,
     /// WCS + value statistics for a real FITS cube (`None` for the synthetic volume).
     pub meta: Option<CubeMetadata>,
 }
 
 impl VolumeData {
+    #[cfg(test)]
     /// Construct from an already-normalized, x-fastest voxel buffer.
     ///
     /// Debug builds assert the buffer length matches `nx*ny*nz`.
@@ -143,6 +149,7 @@ impl VolumeData {
         }
     }
 
+    #[cfg(test)]
     /// Total voxel count (`nx*ny*nz`).
     #[inline]
     pub fn voxel_count(&self) -> usize {
@@ -163,6 +170,7 @@ impl VolumeData {
         self.data[self.index(x, y, z)]
     }
 
+    #[cfg(test)]
     /// Normalize physical voxel values into `[0, 1]` against a display cut
     /// `[lo, hi]`, clamping in-range values and **preserving NaN** (blank/BLANK)
     /// voxels. Mirrors the FITS cube reader's `p0.5…p99.5` normalization so the
@@ -182,6 +190,7 @@ impl VolumeData {
             .collect()
     }
 
+    #[cfg(test)]
     /// Generate a synthetic procedural "nebula" volume: a soft Gaussian core
     /// modulated by multi-octave value noise plus a couple of off-center clumps,
     /// so the 3D ray-march has genuine internal structure to orbit around.
@@ -278,13 +287,16 @@ impl VolumeData {
 // Synthetic-noise helpers (module-private).
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 /// Edge length of the hash-noise lattice (matches the reference `const lattice = 24`).
 const LATTICE: usize = 24;
 
+#[cfg(test)]
 /// A tiny deterministic xorshift64 PRNG used only to fill the noise lattice.
 /// (.NET `Random` is not reproducible in Rust, so we substitute this.)
 struct Xorshift64(u64);
 
+#[cfg(test)]
 impl Xorshift64 {
     fn new(seed: u64) -> Self {
         // Ensure a nonzero state (xorshift is undefined at 0); mix the seed.
@@ -313,11 +325,13 @@ impl Xorshift64 {
     }
 }
 
+#[cfg(test)]
 #[inline]
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+#[cfg(test)]
 /// Trilinearly sample the wrapped noise lattice at fractional coordinates.
 fn sample_lattice(noise: &[f32], fx: f32, fy: f32, fz: f32) -> f32 {
     let l = LATTICE as f32;
@@ -350,6 +364,7 @@ fn sample_lattice(noise: &[f32], fx: f32, fy: f32, fz: f32) -> f32 {
     lerp(c0, c1, tz)
 }
 
+#[cfg(test)]
 /// 4-octave fractional Brownian motion over the noise lattice (~`[0, 1)`).
 fn fbm(noise: &[f32], x: f32, y: f32, z: f32) -> f32 {
     let mut sum = 0.0f32;

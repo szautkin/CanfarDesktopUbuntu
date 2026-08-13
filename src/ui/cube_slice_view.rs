@@ -634,11 +634,6 @@ impl CubeSliceView {
         self.spectrum_revealer.set_reveal_child(false);
     }
 
-    /// Whether the spectrum panel is currently open.
-    pub fn spectrum_visible(&self) -> bool {
-        self.spectrum_revealer.reveals_child()
-    }
-
     fn probe_at(&self, px: f64, py: f64) {
         let Some((dx, dy)) = self.map_to_pixel(px, py) else {
             return;

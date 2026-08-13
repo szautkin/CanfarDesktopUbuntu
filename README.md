@@ -90,9 +90,10 @@ cargo test
 
 ```bash
 # Lint — the exact command CI runs, so a green local run means a green CI run.
-# `--all-targets` includes the tests; `-A dead_code` is deliberate (a good deal
-# of the surface is live only under one feature configuration).
-cargo clippy --all-targets -- -D warnings -A dead_code
+# `--all-targets` includes the tests. `dead_code` is NOT suppressed: an unused
+# function is usually a feature that was written and never wired up, which is
+# how several shipped defects here stayed invisible.
+cargo clippy --all-targets -- -D warnings
 
 # Format check
 cargo fmt -- --check

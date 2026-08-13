@@ -30,6 +30,7 @@ impl ObservationNoteStore {
         ObservationNoteStore { data_path }
     }
 
+    #[cfg(test)]
     /// Point the store at an arbitrary file.
     ///
     /// Exists so callers that must not touch the user's real notes — tests, and
@@ -44,6 +45,7 @@ impl ObservationNoteStore {
         self.load_map().remove(publisher_id)
     }
 
+    #[cfg(test)]
     /// Remove the note for `publisher_id`, if there is one.
     ///
     /// Saving an empty note happens to have the same effect, but only as a side

@@ -10,7 +10,7 @@
 //! Tool names are identical to the bridge ops, so dispatch forwards by name.
 
 use super::{ToolDescriptor, ToolResult, VerbClass};
-use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
+use crate::mcp::tools::proposals::InMemoryProposalStore;
 use crate::mcp::tools::str_arg;
 use crate::mcp::view_state;
 use crate::state::AppServices;
@@ -206,7 +206,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
              app data dir and opens it in the editor.",
             json!({"type":"object","properties":{
                 "publisherId":{"type":"string","description":"The observation's CADC publisher id (from list_downloaded_observations)"},
-                "template":{"type":"string","enum":["image","photometry","cube","auto"],"description":"Template stub (default image)"}
+                // The enum comes from the builder's own list: an advertised
+                // template the builder does not know is a tool call that fails,
+                // and one it knows but does not advertise is refused by the
+                // schema. "auto" is not a stub, it is "pick one for me".
+                "template":{"type":"string","enum":crate::helpers::analysis_notebook::TEMPLATES.iter().chain(["auto"].iter()).collect::<Vec<_>>(),"description":"Template stub (default image)"}
             },"required":["publisherId"],"additionalProperties":false}),
             VerbClass::Write,
         ),
@@ -354,11 +358,6 @@ async fn create_analysis_notebook(services: &AppServices, args: &Value) -> ToolR
             "note": format!("notebook written but not opened in the editor: {e}"),
         })),
     }
-}
-
-/// Notebook tools apply live through the bridge — they never enqueue proposals.
-pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<String, String>> {
-    None
 }
 
 #[cfg(test)]

@@ -121,6 +121,7 @@ impl McpSettingsService {
         McpSettingsService { path, state }
     }
 
+    #[cfg(test)]
     /// A clone of the current settings.
     pub fn settings(&self) -> McpSettings {
         self.state.borrow().clone()
@@ -218,6 +219,7 @@ impl PortalDefaultsService {
         PortalDefaultsService { path, state }
     }
 
+    #[cfg(test)]
     /// A clone of the current defaults.
     pub fn defaults(&self) -> PortalDefaults {
         self.state.borrow().clone()

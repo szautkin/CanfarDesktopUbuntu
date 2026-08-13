@@ -19,7 +19,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{read, write, ToolContext, ToolDescriptor, ToolResult, ToolRouter, VerbClass};
-use crate::mcp::audit::{payload_hash, AuditRecord, AuditSink, RingAuditSink};
+use crate::mcp::audit::{payload_hash, AuditRecord, AuditSink, LoggingAuditSink};
 use crate::mcp::tools::proposals::InMemoryProposalStore;
 use crate::state::AppServices;
 
@@ -28,8 +28,8 @@ use crate::state::AppServices;
 pub struct McpToolRouter {
     services: Arc<AppServices>,
     proposals: Arc<InMemoryProposalStore>,
-    /// PII-safe per-dispatch audit ring (payloads stored only as SHA-256 hashes).
-    audit: Arc<RingAuditSink>,
+    /// PII-safe per-dispatch audit log (payloads appear only as SHA-256 hashes).
+    audit: Arc<LoggingAuditSink>,
 }
 
 impl McpToolRouter {
@@ -37,19 +37,8 @@ impl McpToolRouter {
         McpToolRouter {
             services,
             proposals,
-            audit: Arc::new(RingAuditSink::default()),
+            audit: Arc::new(LoggingAuditSink),
         }
-    }
-
-    /// The PII-safe audit ring (for diagnostics / a future audit viewer).
-    pub fn audit(&self) -> Arc<RingAuditSink> {
-        Arc::clone(&self.audit)
-    }
-
-    /// The shared proposal store this router enqueues write proposals into. The
-    /// host hands the same `Arc` to the review UI / apply path.
-    pub fn proposals(&self) -> Arc<InMemoryProposalStore> {
-        Arc::clone(&self.proposals)
     }
 
     /// The FULL descriptor set (read ++ write ++ lifecycle), including
@@ -453,8 +442,17 @@ impl ToolRouter for McpToolRouter {
             // auto-apply above and never accumulate.)
             let mut result = result;
             if let ToolResult::Proposed(p) = &result {
+                // Through `can_accept`, which is the tested rule. Inlining it as
+                // `pending_count() > cap()` was a SECOND rule that disagreed by
+                // one: it accepted the proposal that took the queue to cap, so
+                // the queue settled one over the cap it advertises. The count
+                // here already includes the proposal just enqueued, so the
+                // question is whether it could have been accepted.
                 if ctx.is_external()
-                    && self.proposals.pending_count() > self.services.proposal_budget.cap()
+                    && !self
+                        .services
+                        .proposal_budget
+                        .can_accept(self.proposals.pending_count().saturating_sub(1))
                 {
                     let id = p.id.clone();
                     self.proposals
@@ -500,6 +498,27 @@ impl ToolRouter for McpToolRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cap is a cap on what the queue HOLDS.
+    ///
+    /// The router used to ask `pending_count() > cap`, having tested
+    /// `can_accept` (`pending < cap`) instead — two rules, disagreeing by one,
+    /// so a queue capped at N settled at N+1. This pins the boundary in the
+    /// units the router works in: the count already includes the proposal that
+    /// has just been enqueued.
+    #[test]
+    fn the_queue_may_reach_the_cap_and_not_pass_it() {
+        let budget = crate::mcp::budget::ProposalBudget::new(3);
+        let would_withdraw = |pending_including_new: usize| {
+            !budget.can_accept(pending_including_new.saturating_sub(1))
+        };
+        assert!(!would_withdraw(1));
+        assert!(
+            !would_withdraw(3),
+            "the third proposal fills the cap, it does not break it"
+        );
+        assert!(would_withdraw(4), "the fourth is one past the cap");
+    }
 
     #[test]
     fn a_resume_token_is_read_from_a_string_as_the_reference_sends_it() {

@@ -79,6 +79,7 @@ impl AIComputeSettings {
         )
     }
 
+    #[cfg(test)]
     /// True when nothing user-configured is meaningfully set (the settings UI
     /// shows/hides the Reset affordance on this). Mirrors the C# `IsAllDefaults`.
     pub fn is_all_defaults(&self) -> bool {
@@ -196,10 +197,6 @@ impl RunCodeContract {
     /// creating a multi-level path whose parents don't yet exist).
     pub fn inbox_tree_levels() -> [&'static str; 3] {
         [".verbinal", ".verbinal/exec", ".verbinal/exec/inbox"]
-    }
-
-    pub fn out_tree_levels() -> [&'static str; 3] {
-        [".verbinal", ".verbinal/exec", ".verbinal/exec/out"]
     }
 }
 

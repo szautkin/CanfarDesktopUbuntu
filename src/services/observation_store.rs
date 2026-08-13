@@ -108,11 +108,6 @@ impl DownloadedObservation {
         self.local_path.is_empty()
     }
 
-    /// True when `local_path` points to a file that currently exists on disk.
-    pub fn has_fits(&self) -> bool {
-        !self.local_path.is_empty() && std::path::Path::new(&self.local_path).exists()
-    }
-
     /// True when `local_preview_path` points to a file that currently exists on disk.
     pub fn has_local_preview(&self) -> bool {
         !self.local_preview_path.is_empty()
@@ -322,30 +317,6 @@ impl ObservationStore {
         })
         .await
         .unwrap_or_default()
-    }
-
-    /// Returns `true` if an observation with the given CADC publisher ID already exists.
-    pub fn contains_publisher_id(&self, publisher_id: &str) -> bool {
-        self.load().iter().any(|o| o.publisher_id == publisher_id)
-    }
-
-    /// Return observations whose collection, observation_id, target, or instrument
-    /// contain `text` (case-insensitive).  An empty `text` returns everything.
-    pub fn filter(&self, text: &str) -> Vec<DownloadedObservation> {
-        let list = self.load();
-        if text.is_empty() {
-            return list;
-        }
-        let needle = text.to_lowercase();
-        list.into_iter()
-            .filter(|o| {
-                o.collection.to_lowercase().contains(&needle)
-                    || o.observation_id.to_lowercase().contains(&needle)
-                    || o.target_name.to_lowercase().contains(&needle)
-                    || o.instrument.to_lowercase().contains(&needle)
-                    || o.filter.to_lowercase().contains(&needle)
-            })
-            .collect()
     }
 
     // -----------------------------------------------------------------------

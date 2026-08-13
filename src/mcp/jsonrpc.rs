@@ -12,7 +12,6 @@ pub mod error_code {
     pub const INVALID_REQUEST: i64 = -32600;
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
-    pub const INTERNAL: i64 = -32603;
     /// MCP: a `tools/*` request arrived before `initialize`.
     pub const SERVER_NOT_INITIALIZED: i64 = -32002;
     /// MCP: the connecting client was not approved by the user.

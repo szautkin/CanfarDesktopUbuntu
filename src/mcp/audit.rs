@@ -2,12 +2,15 @@
 //!
 //! One [`AuditRecord`] is emitted per tool dispatch. The raw arguments are
 //! **NEVER** stored — only a SHA-256 payload hash — so credentials, queries and
-//! other sensitive fields can't leak into the audit trail. Records live in a
-//! bounded ring ([`RingAuditSink`]) so an in-app activity view (or a test) can
-//! read the most recent N without the buffer growing without bound.
+//! other sensitive fields can't leak into the audit trail.
+//!
+//! The app runs a [`LoggingAuditSink`]: one line per dispatch, as the
+//! reference's does. [`RingAuditSink`] is the test double.
 
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::VecDeque;
+#[cfg(test)]
 use std::sync::Mutex;
 
 /// One PII-safe audit record per tool dispatch. Contains only a SHA-256 hex
@@ -23,20 +26,62 @@ pub struct AuditRecord {
     pub payload_sha256: String,
 }
 
+impl AuditRecord {
+    /// One diagnostic line, the reference's `AuditEntry.Line()` shape.
+    ///
+    /// The payload appears as the first 8 hex of its hash and never as itself —
+    /// an audit line is written to a log a user may paste into a bug report.
+    pub fn line(&self) -> String {
+        format!(
+            "[{}] {} ({}) -> {} {}ms #{}",
+            self.origin,
+            self.tool,
+            self.verb,
+            self.outcome,
+            self.duration_ms,
+            &self.payload_sha256[..self.payload_sha256.len().min(8)]
+        )
+    }
+}
+
 /// A destination for audit records. Implementations must be cheap and
 /// non-blocking on the dispatch path.
 pub trait AuditSink: Send + Sync {
     fn record(&self, rec: AuditRecord);
 }
 
-/// In-memory, bounded audit sink. Keeps at most `cap` most-recent records;
+/// The sink the app runs with: every dispatch becomes one line on stderr.
+///
+/// The reference's `LoggingAuditSink` does exactly this. Ours used to be a
+/// 512-record ring in the router, which nobody read — a buffer whose only
+/// observable behaviour was holding memory. If an in-app audit viewer is ever
+/// wanted, [`RingAuditSink`] is still here and still tested; it just is not
+/// pretending to be wired to something today.
+#[derive(Default)]
+pub struct LoggingAuditSink;
+
+impl AuditSink for LoggingAuditSink {
+    fn record(&self, rec: AuditRecord) {
+        eprintln!("[mcp-audit] {}", rec.line());
+    }
+}
+
+/// In-memory, bounded audit sink — a test double, and the shape an in-app audit
+/// viewer would use if one is ever wanted.
+///
+/// `#[cfg(test)]` because it is honest: nothing in the shipped app reads it, and
+/// a sink that only holds memory is worse than no sink at all.
+///
+/// Keeps at most `cap` most-recent records;
 /// pushing beyond `cap` evicts the oldest. Used for tests and an in-app
 /// activity ring.
+#[cfg(test)]
 pub struct RingAuditSink {
     buf: Mutex<VecDeque<AuditRecord>>,
     cap: usize,
 }
 
+#[cfg(test)]
 impl RingAuditSink {
     /// Create a ring holding at most `cap` records. A `cap` of 0 is clamped to
     /// 1 so the buffer always retains the latest record.
@@ -65,6 +110,7 @@ impl RingAuditSink {
     }
 }
 
+#[cfg(test)]
 impl AuditSink for RingAuditSink {
     fn record(&self, rec: AuditRecord) {
         let mut buf = self.buf.lock().unwrap();
@@ -75,6 +121,7 @@ impl AuditSink for RingAuditSink {
     }
 }
 
+#[cfg(test)]
 impl Default for RingAuditSink {
     fn default() -> Self {
         Self::new(512)

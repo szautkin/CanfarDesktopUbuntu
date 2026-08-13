@@ -409,11 +409,6 @@ impl FitsCanvas {
         *self.on_crosshair_placed.borrow_mut() = Some(Box::new(cb));
     }
 
-    /// Return the optional WCS (needed by the coordinate panel for validation).
-    pub fn wcs(&self) -> Option<&WcsInfo> {
-        self.wcs.as_ref()
-    }
-
     pub fn img_width(&self) -> usize {
         self.img_width
     }

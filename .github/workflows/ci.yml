@@ -47,8 +47,16 @@ jobs:
       # sees only the binary, and three lints sat unnoticed in test code that
       # `cargo test` happily compiled — the same shape as the `--features fits`
       # divergence above: a gate that checks less than the repo contains.
+      # `dead_code` is no longer suppressed in the shipping configuration. It
+      # was, on the grounds that "some of the surface is live only under one
+      # feature configuration" — true of the no-default-features build below,
+      # and an 89-warning blanket over the default one. Under that blanket:
+      # the function that gives a notebook cell the keyboard, the two that
+      # would have told an agent who is signed in, a proposal-budget check
+      # whose tests passed on a copy of the code the router did not run, and
+      # two whole reference features whose halves shipped uncalled.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings -A dead_code
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --release
@@ -59,5 +67,7 @@ jobs:
       # The opt-out path packagers use when cfitsio is unavailable. Only a
       # compile check — without cfitsio there is no FITS to exercise — but it
       # keeps the `#[cfg(not(feature = "fits"))]` arms from rotting.
+      # `-A dead_code` genuinely applies HERE: with the fits feature off, the
+      # code behind it is unreachable and says so.
       - name: Check the build without cfitsio
         run: cargo check --no-default-features --all-targets

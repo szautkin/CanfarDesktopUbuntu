@@ -321,6 +321,12 @@ pub enum OperationOrigin {
     /// An external MCP client (an AI agent). Subject to the agent-safe gate.
     External(String),
     /// The app itself (user-initiated). May reach user-only tools.
+    ///
+    /// Never constructed today — the UI calls its services directly rather than
+    /// dispatching through the router. It stays because `is_external` is a
+    /// SECURITY check, and a single-variant enum would make it read as always
+    /// true: the gate would look like a formality instead of a decision.
+    #[allow(dead_code)]
     Internal,
 }
 
@@ -329,8 +335,6 @@ pub struct ToolContext {
     pub origin: OperationOrigin,
     /// A unique id for this call (audit + proposal correlation).
     pub request_id: String,
-    /// Proposal sink for write tools (None for read-only contexts / tests).
-    pub proposals: Option<std::sync::Arc<proposals::InMemoryProposalStore>>,
 }
 
 impl ToolContext {
@@ -338,7 +342,6 @@ impl ToolContext {
         ToolContext {
             origin: OperationOrigin::External(client_id),
             request_id,
-            proposals: None,
         }
     }
 
@@ -386,9 +389,11 @@ pub trait ToolRouter: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>>;
 }
 
+#[cfg(test)]
 /// A router with no tools — used by transport/server unit tests.
 pub struct NullRouter;
 
+#[cfg(test)]
 impl ToolRouter for NullRouter {
     fn external_manifest(&self) -> Vec<ToolDescriptor> {
         Vec::new()

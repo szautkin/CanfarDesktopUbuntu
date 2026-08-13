@@ -433,11 +433,6 @@ impl MarkdownCellWidget {
         self.stack.set_visible_child_name("preview");
     }
 
-    /// Whether the cell is currently in edit mode.
-    pub fn is_editing(&self) -> bool {
-        self.edit_mode.get()
-    }
-
     /// Highlight or un-highlight the active-cell frame.
     pub fn set_active(&self, active: bool) {
         if active {
@@ -477,14 +472,6 @@ impl CellWidget {
         match self {
             CellWidget::Code(c) => c.get_source(),
             CellWidget::Markdown(m) => m.get_source(),
-        }
-    }
-
-    /// Set the source text.
-    pub fn set_source(&self, text: &str) {
-        match self {
-            CellWidget::Code(c) => c.set_source(text),
-            CellWidget::Markdown(m) => m.set_source(text),
         }
     }
 

@@ -101,6 +101,7 @@ impl RecentCubesService {
         let _ = self.save_entries(&entries);
     }
 
+    #[cfg(test)]
     /// Drop a specific cube path from the store.
     pub fn remove(&self, p: &Path) {
         let path_str = p.to_string_lossy().into_owned();
@@ -112,6 +113,7 @@ impl RecentCubesService {
         }
     }
 
+    #[cfg(test)]
     /// Forget every recent cube.
     pub fn clear(&self) {
         if self.file_path.exists() {

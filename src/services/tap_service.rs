@@ -52,7 +52,7 @@ impl TAPService {
             .await
             .map_err(|e| ApiError::Parse(e.to_string()))?;
 
-        Ok(parse_csv(&csv, Some(adql)))
+        Ok(parse_csv(&csv))
     }
 
     /// Resolve a target name to RA/Dec coordinates using the CADC name resolver.

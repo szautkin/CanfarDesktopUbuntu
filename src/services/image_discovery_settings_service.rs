@@ -12,7 +12,6 @@
 //! the stored credentials against the registry
 //! ([`ImageDiscoverySettingsService::test_registry_credentials`]).
 
-use crate::helpers::registry_credential_test::{test_registry_credentials, CredTestResult};
 use crate::models::image_discovery_settings::{
     ImageDiscoverySettings, DEFAULT_INSPECTOR_IMAGE, DEFAULT_REGISTRY_HOST,
 };
@@ -141,18 +140,6 @@ impl ImageDiscoverySettingsService {
         if let Some(entry) = self.secret_entry(&self.settings.username) {
             let _ = entry.delete_credential();
         }
-    }
-
-    /// Verify the stored credentials against the configured registry
-    /// (Docker V2 token-auth). Uses a plain client — never the CADC token.
-    pub async fn test_registry_credentials(&self) -> CredTestResult {
-        let secret = self.read_secret().unwrap_or_default();
-        test_registry_credentials(
-            &self.settings.registry_host,
-            &self.settings.username,
-            &secret,
-        )
-        .await
     }
 
     // -- internals ----------------------------------------------------------

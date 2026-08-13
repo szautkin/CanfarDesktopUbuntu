@@ -563,6 +563,13 @@ impl CubeTabHost {
                         })
                     })
                     .collect();
+                // The physics the caller needs to do anything with these numbers,
+                // as the reference's `CubeSpectrumResult` carries: the beam is how
+                // Jy/beam becomes Jy, and the rest frequency is how frequency
+                // becomes velocity. `CubeWcs` has parsed all five from the header
+                // since it was written; nothing had ever asked it for them.
+                let wcs = v.wcs();
+                let arcsec = |deg: Option<f64>| deg.map(|d| d * 3600.0);
                 Ok(json!({
                     "x": x,
                     "y": y,
@@ -570,6 +577,11 @@ impl CubeTabHost {
                     "blankedChannels": blanked,
                     "downsampled": v.is_downsampled(),
                     "unit": v.value_unit(),
+                    "spectralFrame": (!wcs.spectral_frame.is_empty()).then(|| wcs.spectral_frame.clone()),
+                    "restFrequencyGHz": wcs.rest_frequency_hz.map(|hz| hz / 1e9),
+                    "beamMajorArcsec": arcsec(wcs.beam_major_deg),
+                    "beamMinorArcsec": arcsec(wcs.beam_minor_deg),
+                    "beamPaDeg": wcs.beam_pa_deg,
                     "spectrum": samples,
                 }))
             }

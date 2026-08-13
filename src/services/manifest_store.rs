@@ -174,6 +174,7 @@ impl JsonManifestStore {
         results
     }
 
+    #[cfg(test)]
     /// Forget `image_id`: drop the in-memory entry and delete its cache file.
     pub fn invalidate(&self, image_id: &str) {
         let mut inner = self.lock();
@@ -185,6 +186,7 @@ impl JsonManifestStore {
         }
     }
 
+    #[cfg(test)]
     /// Forget everything: empty the mirror and delete every cache file.
     pub fn clear(&self) {
         let mut inner = self.lock();
@@ -200,6 +202,7 @@ impl JsonManifestStore {
         }
     }
 
+    #[cfg(test)]
     /// Number of cached outcomes (successes and failures).
     pub fn count(&self) -> usize {
         let mut inner = self.lock();

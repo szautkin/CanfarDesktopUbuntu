@@ -565,16 +565,6 @@ impl NotebookPage {
         });
     }
 
-    /// Return the tab title (filename or "Untitled Notebook").
-    pub fn tab_title(&self) -> String {
-        self.file_path
-            .borrow()
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Untitled Notebook".to_string())
-    }
-
     /// Return `true` if there are unsaved changes.
     pub fn is_modified(&self) -> bool {
         *self.modified.borrow()

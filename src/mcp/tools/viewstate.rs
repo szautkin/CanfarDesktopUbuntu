@@ -6,7 +6,7 @@
 //! (agent-safe) rather than going through the write-proposal pipeline.
 
 use super::{ToolDescriptor, ToolResult, VerbClass};
-use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
+use crate::mcp::tools::proposals::InMemoryProposalStore;
 use crate::mcp::view_state;
 use crate::state::AppServices;
 use serde_json::{json, Value};
@@ -230,14 +230,6 @@ pub async fn dispatch(
         }),
         _ => None,
     }
-}
-
-/// View-state tools never enqueue proposals — they execute directly.
-pub async fn apply(
-    _services: &AppServices,
-    _proposal: &PendingProposal,
-) -> Option<Result<String, String>> {
-    None
 }
 
 #[cfg(test)]

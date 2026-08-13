@@ -33,9 +33,11 @@ pub trait ApprovalGate: Send + Sync {
     fn permit<'a>(&'a self, client_id: &'a str) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 }
 
+#[cfg(test)]
 /// A gate that admits every client. Used on the trusted local socket and in tests.
 pub struct AllowAllGate;
 
+#[cfg(test)]
 impl ApprovalGate for AllowAllGate {
     fn permit<'a>(
         &'a self,

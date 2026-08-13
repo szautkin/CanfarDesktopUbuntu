@@ -12,7 +12,7 @@
 //! live-viewer control surface).
 
 use super::{ToolDescriptor, ToolResult, VerbClass};
-use crate::mcp::tools::proposals::{InMemoryProposalStore, PendingProposal};
+use crate::mcp::tools::proposals::InMemoryProposalStore;
 use crate::mcp::view_state;
 use crate::state::AppServices;
 use serde_json::{json, Value};
@@ -291,11 +291,6 @@ pub async fn dispatch(
         Err(e) => ToolResult::Failed(e),
     };
     Some(result)
-}
-
-/// Cube tools never enqueue write proposals — they act directly on the live viewer.
-pub async fn apply(_s: &AppServices, _p: &PendingProposal) -> Option<Result<String, String>> {
-    None
 }
 
 #[cfg(test)]
