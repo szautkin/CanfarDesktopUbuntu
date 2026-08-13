@@ -284,6 +284,7 @@ prend en compte à son prochain démarrage."),
     ("Could not create workflow: {}",               "Impossible de créer le flux de travail : {}"),
     ("Import failed: {}",                           "Échec de l’importation : {}"),
     ("Could not read file: {}",                     "Impossible de lire le fichier : {}"),
+    ("Install failed — see the kernel log",         "Échec de l’installation — voir le journal du noyau"),
     // Settings
     ("Appearance",                                  "Apparence"),
     ("Choose how Verbinal looks",                   "Choisir l’apparence de Verbinal"),

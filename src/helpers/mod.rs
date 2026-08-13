@@ -18,6 +18,7 @@ pub mod cube_slice;
 pub mod cube_wcs;
 pub mod data_train_manager;
 pub mod date_presets;
+pub mod dependency_scanner;
 pub mod discovery_formatting;
 pub mod embedded_probe_scripts;
 pub mod facet_engine;

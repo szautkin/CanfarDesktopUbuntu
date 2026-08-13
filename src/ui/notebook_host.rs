@@ -895,6 +895,10 @@ impl NotebookTabHost {
         filter.set_name(Some(crate::tr_en!("Notebooks")));
         filter.add_pattern("*.ipynb");
         filter.add_pattern("*.py");
+        // Markdown too, as the reference does (`NotebookFileMode.Markdown`).
+        // `load_markdown_as_notebook` has always been able to read one; the
+        // filter simply never offered it, so the file was unselectable.
+        filter.add_pattern("*.md");
 
         let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
@@ -914,12 +918,12 @@ impl NotebookTabHost {
 
     /// Load a notebook from the given path and open it in a new tab.
     ///
-    /// Supports `.ipynb` and `.py` files.
+    /// Supports `.ipynb`, `.py` and `.md` files.
     pub fn load_from_path(self: &Rc<Self>, path: &Path) {
-        let load_result = if path.extension().and_then(|e| e.to_str()) == Some("py") {
-            notebook_parser::load_python_as_notebook(path)
-        } else {
-            notebook_parser::load_notebook(path)
+        let load_result = match path.extension().and_then(|e| e.to_str()) {
+            Some("py") => notebook_parser::load_python_as_notebook(path),
+            Some("md") | Some("markdown") => notebook_parser::load_markdown_as_notebook(path),
+            _ => notebook_parser::load_notebook(path),
         };
 
         let doc = match load_result {
@@ -946,12 +950,104 @@ impl NotebookTabHost {
 
         let page = NotebookPage::load_from_document(
             self.services.clone(),
-            python_path,
-            doc,
+            python_path.clone(),
+            doc.clone(),
             Some(path.to_path_buf()),
         );
 
         self.add_tab(page, &name);
+        self.check_dependencies(&doc, python_path);
+    }
+
+    /// Ask the interpreter which of the notebook's imports are missing, and
+    /// offer to install them — the reference's `CheckDependenciesAsync`.
+    ///
+    /// A notebook that opens and then fails on its first cell with
+    /// `ModuleNotFoundError` is a notebook the app could have warned about
+    /// before the user pressed Run. The scanner half of this shipped long ago
+    /// (`extract_imports`) and nothing ever called it, so the seven strings for
+    /// it have been sitting translated and unused in the catalog.
+    fn check_dependencies(self: &Rc<Self>, doc: &NotebookDocument, python: PathBuf) {
+        use crate::helpers::dependency_scanner as deps;
+
+        let imports = notebook_parser::extract_imports(&doc.cells);
+        if imports.is_empty() {
+            return;
+        }
+
+        let host = self.clone();
+        glib::spawn_future_local(async move {
+            let script = deps::probe_script(&imports);
+            let py = python.clone();
+            let probe = host
+                .services
+                .spawn(async move {
+                    tokio::process::Command::new(&py)
+                        .arg("-c")
+                        .arg(script)
+                        .output()
+                        .await
+                        .ok()
+                })
+                .await;
+            let Some(out) = probe else { return };
+
+            let missing: Vec<String> =
+                deps::missing_from_probe(&String::from_utf8_lossy(&out.stdout))
+                    .iter()
+                    .map(|m| deps::pip_name(m).to_string())
+                    .collect();
+            if missing.is_empty() {
+                return;
+            }
+
+            let listed = missing
+                .iter()
+                .map(|p| format!("  - {p}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let root = host.widget.root().and_downcast::<gtk::Window>();
+            let dialog = adw::MessageDialog::new(
+                root.as_ref(),
+                Some(&crate::i18n::tr_args(
+                    "Nb_MissingPkgTitle",
+                    &[&missing.len().to_string()],
+                )),
+                Some(&crate::i18n::tr_args("Nb_MissingPkgBody", &[&listed])),
+            );
+            dialog.add_response("skip", crate::i18n::tr("Nb_SkipButton"));
+            dialog.add_response("install", crate::i18n::tr("Nb_InstallAllButton"));
+            dialog.set_response_appearance("install", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("install"));
+            dialog.set_close_response("skip");
+            if dialog.choose_future().await != "install" {
+                return;
+            }
+
+            host.toast_overlay
+                .add_toast(adw::Toast::new(&crate::i18n::tr_args(
+                    "Nb_InstallingPkgs",
+                    &[&missing.len().to_string()],
+                )));
+            let args = deps::install_args(&missing);
+            let installed = host
+                .services
+                .spawn(async move {
+                    tokio::process::Command::new(&python)
+                        .args(&args)
+                        .output()
+                        .await
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                })
+                .await;
+
+            host.toast_overlay.add_toast(adw::Toast::new(if installed {
+                crate::i18n::tr("Nb_DepsAllInstalled")
+            } else {
+                crate::tr_en!("Install failed — see the kernel log")
+            }));
+        });
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
