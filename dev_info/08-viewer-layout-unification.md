@@ -91,7 +91,7 @@ _Updated 2026-08-12, after the work._
 | 1 — Extract the scaffold | **Done.** `ui::viewer_shell`; the cube switched in the same commit and looks unchanged. |
 | 2 — The FITS viewer gets a column | **Done.** `DISPLAY` / `VIEW` / `CROSSHAIR` / `COMPARE`; the toolbar keeps Open and the status line. `sync_toolbar_to_tab` renamed. |
 | 3 — Panels become sections | **Done.** Both panels are expanders in the column; one header panel for the viewer, refilled per tab; the expander is the MCP state. |
-| 4 — One tab strip | **Open, deliberately.** The only phase that touches working tab logic rather than layout. |
+| 4 — One tab strip | **Done.** `adw::TabView` + `TabBar` in both. The Notebook's per-tab close button — a closure that walked every page comparing label widgets to find its own — is one `close-page` handler, and the empty state is a stack child rather than a tab that had to be removed. |
 | 5 — One guard for both | **Done.** Both viewers build from the shell, neither keeps a private copy of the helpers, and neither may open a popover from a control with no visible word. |
 
 Found and fixed along the way, outside the plan: **Search here** was reachable only from inside the
@@ -99,8 +99,11 @@ saved-coordinates panel, which is closed by default — an action the reference 
 crosshair menu did not appear to exist. It is in the `CROSSHAIR` section now, running the panel's own
 action rather than a copy of it.
 
-Still worth doing when phase 4 lands: `adw::OverlaySplitView` instead of the plain `Paned`, so the
-column overlays rather than squeezes on a narrow window.
+**All five phases are done**, and so is the `OverlaySplitView` improvement §5 proposed: below 900sp
+the column collapses and floats over the image rather than taking a fixed 280 px from it, with the
+breakpoint owned by the shell (an `adw::BreakpointBin`) rather than by a window the viewer does not
+own. Collapsing hides the column, so a narrow window gives the whole width to the image; both viewers
+carry a toggle — bound to `show-sidebar` in both directions — to bring it back.
 
 ## 7. Plan
 
