@@ -296,11 +296,6 @@ impl FilePanel {
         *self.on_open_file.borrow_mut() = Some(Box::new(cb));
     }
 
-    /// Re-read the current directory from disk and repopulate the list.
-    pub fn refresh(&self) {
-        self.populate();
-    }
-
     // ----------------------------------------------------------------
     // Private helpers
     // ----------------------------------------------------------------

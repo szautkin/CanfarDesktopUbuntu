@@ -922,6 +922,7 @@ pub fn build_main_window(
                 user_menu_btn.set_label("");
                 status_label.set_text("");
                 *cached_user_info.borrow_mut() = None;
+                crate::mcp::view_state::set_auth(false, None);
 
                 // Re-lock the auth-gated landing tiles, then show the home view.
                 welcome.set_authenticated(false);
@@ -1390,6 +1391,12 @@ impl SignedInChrome {
         self.user_menu_btn.set_visible(true);
         self.status_label
             .set_text(&crate::tr_fmt!("Welcome, {}", &display));
+        // The agent's snapshot answers "who is signed in" — and answered "nobody"
+        // for as long as this went unpushed, because `get_app_view` reads the
+        // snapshot and nothing ever wrote to it.
+        // The account name, not the display name: the reference's snapshot field
+        // is `username`, and an agent uses it to build VOSpace paths.
+        crate::mcp::view_state::set_auth(true, user_info.username.clone());
         *self.cached_user_info.borrow_mut() = Some(user_info);
 
         // Unlock the auth-gated landing tiles BEFORE swapping in the dashboard,

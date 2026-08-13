@@ -275,3 +275,40 @@ mod tests {
         assert!(!navigate_to("home").await);
     }
 }
+
+#[cfg(test)]
+mod push_tests {
+    //! A snapshot field nobody writes is a field that answers with its default
+    //! forever. `get_app_view` reported `isAuthenticated: false` and a null sky
+    //! focus for every session the app ever ran, because `set_auth` and
+    //! `set_search_focus` existed and nothing called them — visible only as two
+    //! lines in the build's dead-code warnings.
+
+    /// Every setter on the pull half, and where the UI is expected to push it.
+    const PUSHERS: &[(&str, &str)] = &[
+        ("set_view", "ui/main_window.rs"),
+        ("set_auth", "ui/main_window.rs"),
+        ("set_search_focus", "ui/search_page/mod.rs"),
+        ("set_open_fits", "ui/fits_viewer.rs"),
+    ];
+
+    #[test]
+    fn every_snapshot_field_has_something_writing_it() {
+        let sources = crate::testing::rust_sources();
+        for (setter, expected) in PUSHERS {
+            let callers: Vec<_> = sources
+                .iter()
+                .filter(|(path, text)| {
+                    !path.ends_with("mcp/view_state.rs")
+                        && crate::testing::code(text).contains(&format!("view_state::{setter}("))
+                })
+                .map(|(path, _)| path.display().to_string())
+                .collect();
+            assert!(
+                !callers.is_empty(),
+                "nothing calls view_state::{setter} — the field it feeds answers \
+                 with its default for the life of the process. It belongs in {expected}."
+            );
+        }
+    }
+}

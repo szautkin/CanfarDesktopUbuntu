@@ -1157,6 +1157,19 @@ impl SearchPage {
     /// Prefill the search form with a sky position (e.g. from a FITS crosshair)
     /// and land on the Search Form tab — not a stale results/ADQL tab. The
     /// coordinates are stored as already-resolved so no name resolution runs.
+    /// The sky position the form is focused on — the one place it is written.
+    ///
+    /// Six sites used to assign the two cells directly (crosshair hand-off, form
+    /// reset, state restore, two resolver paths, a resolver failure), and the
+    /// agent's snapshot reported `searchFocusRA`/`Dec` as null through all of
+    /// them, because reporting it was a seventh thing to remember. Now it is the
+    /// same write.
+    fn set_resolved_position(&self, ra: Option<f64>, dec: Option<f64>) {
+        *self.resolved_ra.borrow_mut() = ra;
+        *self.resolved_dec.borrow_mut() = dec;
+        crate::mcp::view_state::set_search_focus(ra, dec);
+    }
+
     pub fn show_search_form(&self, ra: f64, dec: f64) {
         self.notebook.set_current_page(Some(0));
         // Set the text FIRST: this synchronously fires the debounced resolver,
@@ -1171,8 +1184,7 @@ impl SearchPage {
             let mut g = self.resolve_generation.borrow_mut();
             *g = g.wrapping_add(1);
         }
-        *self.resolved_ra.borrow_mut() = Some(ra);
-        *self.resolved_dec.borrow_mut() = Some(dec);
+        self.set_resolved_position(Some(ra), Some(dec));
         self.resolver_status
             .set_text(crate::tr_en!("From FITS crosshair"));
     }
@@ -1399,8 +1411,7 @@ impl SearchPage {
         self.rest_frame_energy.set_text("");
         self.spectral_cutout.set_active(false);
         self.max_records.set_value(10000.0);
-        *self.resolved_ra.borrow_mut() = None;
-        *self.resolved_dec.borrow_mut() = None;
+        self.set_resolved_position(None, None);
         self.clear_resolver_provenance();
         // Additional Constraints are part of the form: leaving the facet
         // selections behind silently applied them to the next search.
@@ -1485,8 +1496,7 @@ impl SearchPage {
             let mut g = self.resolve_generation.borrow_mut();
             *g = g.wrapping_add(1);
         }
-        *self.resolved_ra.borrow_mut() = s.resolved_ra;
-        *self.resolved_dec.borrow_mut() = s.resolved_dec;
+        self.set_resolved_position(s.resolved_ra, s.resolved_dec);
         *self.resolver_service_used.borrow_mut() = s.resolver_service_used.clone();
         *self.resolution_epoch.borrow_mut() = s.resolution_epoch.clone();
         let coord_readout = match (s.resolved_ra, s.resolved_dec) {
@@ -1546,8 +1556,7 @@ impl SearchPage {
                 Ok(r) => {
                     state.resolved_ra = Some(r.ra);
                     state.resolved_dec = Some(r.dec);
-                    *self.resolved_ra.borrow_mut() = Some(r.ra);
-                    *self.resolved_dec.borrow_mut() = Some(r.dec);
+                    self.set_resolved_position(Some(r.ra), Some(r.dec));
                     // Capture resolver provenance into both the persistent page
                     // state and this search's form state (feeds RecentSearch +
                     // the export provenance line).
@@ -2143,8 +2152,7 @@ impl SearchPage {
     fn schedule_target_resolve(self: &Rc<Self>) {
         // A changed target invalidates any previously resolved coordinates and
         // their resolver provenance.
-        *self.resolved_ra.borrow_mut() = None;
-        *self.resolved_dec.borrow_mut() = None;
+        self.set_resolved_position(None, None);
         self.clear_resolver_provenance();
 
         let my_gen = {
@@ -2190,8 +2198,7 @@ impl SearchPage {
 
                 match result {
                     Ok(r) => {
-                        *page.resolved_ra.borrow_mut() = Some(r.ra);
-                        *page.resolved_dec.borrow_mut() = Some(r.dec);
+                        page.set_resolved_position(Some(r.ra), Some(r.dec));
                         page.capture_resolver_provenance(&r, &service);
                         let type_suffix = r
                             .object_type
@@ -2207,8 +2214,7 @@ impl SearchPage {
                         ));
                     }
                     Err(_) => {
-                        *page.resolved_ra.borrow_mut() = None;
-                        *page.resolved_dec.borrow_mut() = None;
+                        page.set_resolved_position(None, None);
                         page.clear_resolver_provenance();
                         page.resolver_status.set_text(crate::tr_en!("Not found"));
                     }

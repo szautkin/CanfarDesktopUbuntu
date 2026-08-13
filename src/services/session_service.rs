@@ -70,21 +70,14 @@ impl SessionService {
             return Ok(None);
         }
         let resp = check_response(resp).await?;
-        // Skaha answers with the bare record here, but has been seen to wrap it
-        // in a single-element array; accept either rather than failing to parse
-        // a session that is plainly there.
         let body = resp
             .text()
             .await
             .map_err(|e| ApiError::Parse(e.to_string()))?;
-        let raw: SkahaSessionResponse = match serde_json::from_str::<SkahaSessionResponse>(&body) {
-            Ok(one) => one,
-            Err(_) => match serde_json::from_str::<Vec<SkahaSessionResponse>>(&body) {
-                Ok(mut many) if !many.is_empty() => many.remove(0),
-                _ => return Ok(None),
-            },
-        };
-        Ok(Some(Session::from(raw)))
+        // Through `parse_session_body`, which is what the tests exercise. The
+        // same either-shape logic was inlined here as well, so the tests were
+        // covering a copy of the code rather than the code.
+        Ok(parse_session_body(&body))
     }
 
     pub async fn get_sessions(&self, token: &str) -> Result<Vec<Session>, ApiError> {

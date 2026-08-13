@@ -35,34 +35,6 @@ fn make_text_panel(content: &str) -> gtk::ScrolledWindow {
     scroll
 }
 
-/// Show a modal dialog with a single read-only text panel.
-pub async fn show_text_dialog(parent: &impl IsA<gtk::Widget>, title: &str, content: &str) {
-    let window = gtk::Window::builder()
-        .title(title)
-        .default_width(600)
-        .default_height(500)
-        .modal(true)
-        .build();
-
-    if let Some(root) = parent.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
-        window.set_transient_for(Some(&root));
-    }
-
-    window.set_child(Some(&make_text_panel(content)));
-
-    let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
-    let sender = Rc::new(RefCell::new(Some(sender)));
-    window.connect_close_request(move |_| {
-        if let Some(s) = sender.borrow_mut().take() {
-            let _ = s.send(());
-        }
-        glib::Propagation::Proceed
-    });
-
-    window.present();
-    let _ = receiver.await;
-}
-
 /// Show a modal dialog with multiple read-only text tabs.
 ///
 /// `tabs` is a slice of `(tab_label, content)` pairs.

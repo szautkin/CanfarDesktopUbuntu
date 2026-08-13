@@ -107,12 +107,6 @@ pub struct NotebookPage {
 impl NotebookPage {
     // ── Constructors ──────────────────────────────────────────────────────────
 
-    /// Create a new, empty notebook page with a single empty code cell.
-    pub fn new(services: Arc<AppServices>, python_path: PathBuf) -> Rc<Self> {
-        let doc = NotebookDocument::create_empty();
-        Self::from_document(services, python_path, doc, None)
-    }
-
     /// Create a notebook page pre-populated from `doc`.
     pub fn load_from_document(
         services: Arc<AppServices>,
