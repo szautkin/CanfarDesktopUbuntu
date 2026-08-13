@@ -1451,17 +1451,18 @@ mod channel_wiring_tests {
         // Inside the stack it is a slice-mode control; outside it, it is the
         // viewer's control.
         //
-        // The needle is assembled at runtime so this guard does not match
-        // ITSELF — it reads the file it lives in, and the first version passed
-        // against a deliberately broken layout by finding its own assertion.
-        let placement = format!("left.append(slice.{}());", "channel_bar");
-        let bar_at = SOURCE.find(&placement).unwrap_or_else(|| {
-            panic!(
-                "the channel scrubber must be placed under the mode stack, or \
+        // Tests stripped: the first version of this guard passed against a
+        // deliberately broken layout by finding its own assertion text.
+        let code = crate::testing::code(SOURCE);
+        let bar_at = code
+            .find("left.append(slice.channel_bar());")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the channel scrubber must be placed under the mode stack, or \
                  it disappears in 3D"
-            )
-        });
-        let stack_at = SOURCE
+                )
+            });
+        let stack_at = code
             .find("stack.add_named(slice.widget()")
             .expect("the slice view is a stack child");
         assert!(

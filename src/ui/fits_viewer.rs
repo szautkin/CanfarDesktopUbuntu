@@ -2275,11 +2275,10 @@ mod control_visibility_tests {
             "&status_label",
             "&shell.sidebar_toggle",
         ];
-        // Assembled at runtime so the scan does not match its OWN mention of
-        // the call — the fourth time that trap has caught a guard in this repo.
-        let needle = format!("toolbar.{}(", "append");
-        for (at, _) in SOURCE.match_indices(&needle) {
-            let rest = &SOURCE[at + needle.len()..];
+        // Tests stripped, so the scan cannot match its own mention of the call.
+        let code = crate::testing::code(SOURCE);
+        for (at, _) in code.match_indices("toolbar.append(") {
+            let rest = &code[at + "toolbar.append(".len()..];
             let arg = rest
                 .split(')')
                 .next()

@@ -2004,11 +2004,11 @@ mod session_tests {
         // the detail page's Sign in would have been a third. A second copy is
         // how one of them ends up forgetting to unlock the landing tiles, or to
         // refresh VOSpace, for one way of signing in but not the others.
-        // Assembled at runtime so this guard does not count ITSELF — the scan
-        // reads the file it lives in, and the first version failed on its own
-        // assertion text.
-        let needle = format!("set_authenticated({})", true);
-        let unlocks = SOURCE.matches(&needle).count();
+        // Tests stripped, so the scan cannot count its own assertion text —
+        // the first version of this guard did exactly that.
+        let unlocks = crate::testing::code(SOURCE)
+            .matches("set_authenticated(true)")
+            .count();
         assert_eq!(
             unlocks, 1,
             "the signed-in sequence exists in {unlocks} places; it belongs in SignedInChrome::apply alone"

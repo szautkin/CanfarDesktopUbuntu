@@ -210,10 +210,9 @@ mod tests {
             );
         }
         // And nobody has gone back.
-        let legacy = format!("gtk::{}::new()", "Notebook");
         for (name, source) in HOSTS {
             assert!(
-                !source.contains(&legacy),
+                !crate::testing::code(source).contains("gtk::Notebook::new()"),
                 "the {name} viewer is back on a Notebook"
             );
         }
@@ -234,11 +233,12 @@ mod tests {
 
     #[test]
     fn neither_viewer_keeps_its_own_copy_of_the_helpers() {
-        // Assembled at runtime so this guard does not match itself.
-        let local = format!("fn {}(text: &str) -> gtk::Label", "section_header");
         for (name, source) in [("cube", CUBE), ("fits", FITS)] {
+            // Tests stripped: this assertion names the very thing it forbids,
+            // and would otherwise find itself. See `crate::testing::code`.
             assert!(
-                !source.contains(&local),
+                !crate::testing::code(source)
+                    .contains("fn section_header(text: &str) -> gtk::Label"),
                 "the {name} viewer has its own section header again; it will drift"
             );
         }

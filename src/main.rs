@@ -5,6 +5,10 @@ mod mcp;
 mod models;
 mod services;
 mod state;
+/// Source-scanning helpers for the layout guards. Test-only: nothing in the
+/// shipped binary reads its own source.
+#[cfg(test)]
+mod testing;
 mod ui;
 
 use gtk4::prelude::*;

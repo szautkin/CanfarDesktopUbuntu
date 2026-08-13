@@ -400,17 +400,11 @@ mod session_type_tests {
         // room. A source scan, because a second copy compiles perfectly and is
         // wrong only later.
         //
-        // The needle is built at runtime so this guard does not match itself.
-        let needle = format!(
-            "{:?},
-",
-            INTERACTIVE_SESSION_TYPES[0]
-        );
+        let needle = format!("{:?},\n", INTERACTIVE_SESSION_TYPES[0]);
         for (name, source) in SESSION_TYPE_READERS {
-            let body = match source.find("#[cfg(test)]") {
-                Some(at) => &source[..at],
-                None => source,
-            };
+            // Tests stripped, so a guard can never be its own evidence — the
+            // trap that has caught five of these. See `crate::testing::code`.
+            let body = crate::testing::code(source);
             for (at, _) in body.match_indices(&needle) {
                 let after = &body[at..(at + 200).min(body.len())];
                 assert!(
