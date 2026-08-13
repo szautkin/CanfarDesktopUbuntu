@@ -265,7 +265,9 @@ impl VoSpaceBrowser {
             let b = browser.clone();
             refresh_btn.connect_clicked(move |_| {
                 let b = b.clone();
-                glib::spawn_future_local(async move { b.refresh().await });
+                // Reload, not refresh: pressing Refresh and being handed the
+                // cached listing is the one answer this button must never give.
+                glib::spawn_future_local(async move { b.reload().await });
             });
         }
         {
@@ -372,6 +374,20 @@ impl VoSpaceBrowser {
     // -----------------------------------------------------------------------
     // Refresh / listing
     // -----------------------------------------------------------------------
+
+    /// Re-read this folder from the service, ignoring anything cached.
+    ///
+    /// What every mutation must call. `refresh` is allowed to answer from a
+    /// 5-minute-fresh cache — right for navigating back into a folder, wrong
+    /// immediately after changing one: the listing it serves is the listing
+    /// from before the change.
+    pub async fn reload(self: &Rc<Self>) {
+        let path = self.current_path.borrow().clone();
+        self.services
+            .cache
+            .forget(&crate::services::cache_service::CacheKey::VoSpaceNodes { path });
+        self.refresh().await;
+    }
 
     pub async fn refresh(self: &Rc<Self>) {
         use crate::services::cache_service::{CacheKey, Freshness};
@@ -963,7 +979,7 @@ impl VoSpaceBrowser {
         match result {
             Ok(()) => {
                 self.show_toast(&crate::tr_fmt!("Deleted {}", name_owned));
-                self.refresh().await;
+                self.reload().await;
             }
             Err(e) => {
                 self.show_toast(&crate::tr_fmt!("Delete failed: {}", e));
@@ -1040,7 +1056,7 @@ impl VoSpaceBrowser {
         match apply {
             Ok(()) => {
                 self.show_toast(&crate::tr_fmt!("Sharing updated for {}", node.name));
-                self.refresh().await;
+                self.reload().await;
             }
             Err(e) => self.show_toast(&crate::tr_fmt!("Share failed: {}", e)),
         }
@@ -1091,7 +1107,7 @@ impl VoSpaceBrowser {
         match result {
             Ok(()) => {
                 self.show_toast(&crate::tr_fmt!("Renamed {} → {}", old_name, new_name));
-                self.refresh().await;
+                self.reload().await;
             }
             Err(e) => {
                 self.show_toast(&crate::tr_fmt!("Rename failed: {}", e));
@@ -1205,7 +1221,7 @@ impl VoSpaceBrowser {
             match result {
                 Ok(()) => {
                     self.show_toast(&crate::tr_fmt!("Created folder '{}'", name_owned));
-                    self.refresh().await;
+                    self.reload().await;
                 }
                 Err(e) => {
                     self.show_toast(&crate::tr_fmt!("Failed to create folder: {}", e));
@@ -1309,7 +1325,7 @@ impl VoSpaceBrowser {
             self.show_toast(&crate::tr_fmt!("Uploaded {} files", total));
         }
 
-        self.refresh().await;
+        self.reload().await;
     }
 
     // -----------------------------------------------------------------------
@@ -1531,4 +1547,77 @@ fn build_context_menu(
 
     row.insert_action_group("row", Some(&ag));
     popover.popup();
+}
+
+#[cfg(test)]
+mod cache_tests {
+    //! Creating a folder reported success and showed a directory the folder was
+    //! not in — because `refresh` may answer from a 5-minute-fresh cache, and
+    //! every mutation called it. Creating the same folder again then failed as
+    //! already existing, which it was.
+
+    const SOURCE: &str = include_str!("vospace_browser.rs");
+
+    /// Every line that follows a "we just changed this folder" toast.
+    fn lines_after_mutation_toasts() -> Vec<(usize, String)> {
+        let code = crate::testing::code(SOURCE);
+        let lines: Vec<&str> = code.lines().collect();
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let is_mutation_toast =
+                line.contains("show_toast") || (i > 0 && lines[i - 1].contains("show_toast"));
+            if !is_mutation_toast {
+                continue;
+            }
+            let window = lines[i..(i + 4).min(lines.len())].join("\n");
+            if [
+                "Created folder",
+                "Deleted",
+                "Renamed",
+                "Sharing updated",
+                "Uploaded",
+            ]
+            .iter()
+            .any(|k| {
+                lines[i.saturating_sub(1)..(i + 2).min(lines.len())]
+                    .join(" ")
+                    .contains(k)
+            }) {
+                out.push((i + 1, window));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_folder_that_was_just_changed_is_re_read_not_recalled() {
+        let sites = lines_after_mutation_toasts();
+        assert!(
+            !sites.is_empty(),
+            "found no mutation sites — scan is broken"
+        );
+        for (line, window) in sites {
+            if window.contains("refresh().await") && !window.contains("reload().await") {
+                panic!(
+                    "vospace_browser.rs:{line}: this follows a change to the folder and \
+                     calls refresh(), which may answer from cache — the user would be \
+                     shown the listing from before their change. Use reload()."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_refresh_button_does_not_answer_from_cache() {
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("refresh_btn.connect_clicked")
+            .expect("the Refresh button is gone");
+        let body = &code[at..(at + 400).min(code.len())];
+        assert!(
+            body.contains("reload().await"),
+            "Refresh hands back the cached listing — the one answer that button \
+             must never give"
+        );
+    }
 }

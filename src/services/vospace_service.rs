@@ -65,6 +65,20 @@ impl BoundedReader {
     }
 }
 
+/// One line per storage mutation: what was asked, where, and what came back.
+///
+/// The reference logs the same (`[Storage] MKDIR(node) PUT {url} -> {status}`),
+/// and the reason is the bug this was added for: the app said "Created folder"
+/// while the folder was invisible, and there was no way to tell from outside
+/// whether the request had been made, where it went, or what the service said.
+/// A toast reports the *app's* belief; this reports the exchange.
+fn log_storage(action: &str, url: &str, outcome: &Result<(), ApiError>) {
+    match outcome {
+        Ok(()) => eprintln!("[storage] {action} {url} -> ok"),
+        Err(e) => eprintln!("[storage] {action} {url} -> FAILED: {e}"),
+    }
+}
+
 /// The `setNode` body that creates a container (folder) at `node_uri`.
 ///
 /// Separate from the request so the thing that was wrong can be tested: the
@@ -129,8 +143,9 @@ impl VoSpaceService {
             .send()
             .await?;
 
-        check_response(resp).await?;
-        Ok(())
+        let outcome = check_response(resp).await.map(|_| ());
+        log_storage("MKDIR", &url, &outcome);
+        outcome
     }
 
     /// Fetch a single node's metadata (type + ACL) so a Share dialog can be
@@ -190,8 +205,9 @@ impl VoSpaceService {
             .body(body)
             .send()
             .await?;
-        check_response(resp).await?;
-        Ok(())
+        let outcome = check_response(resp).await.map(|_| ());
+        log_storage("SETNODE(acl)", &url, &outcome);
+        outcome
     }
 
     /// Delete a node (file or folder) at the given path.
@@ -204,8 +220,9 @@ impl VoSpaceService {
         let url = self.endpoints.vospace_nodes_url(username, path);
         let resp = self.client.delete(&url).bearer_auth(token).send().await?;
 
-        check_response(resp).await?;
-        Ok(())
+        let outcome = check_response(resp).await.map(|_| ());
+        log_storage("DELETE", &url, &outcome);
+        outcome
     }
 
     /// Upload a file to the given path under the user's home.
@@ -226,8 +243,9 @@ impl VoSpaceService {
             .body(data)
             .send()
             .await?;
-        check_response(resp).await?;
-        Ok(())
+        let outcome = check_response(resp).await.map(|_| ());
+        log_storage("PUT", &url, &outcome);
+        outcome
     }
 
     /// Download a file's contents into memory (e.g. to parse a VOSpace-stored
@@ -354,7 +372,9 @@ impl VoSpaceService {
             .body(bytes.to_vec())
             .send()
             .await?;
-        check_response(resp).await?;
+        let outcome = check_response(resp).await.map(|_| ());
+        log_storage("RENAME(copy)", &dst_url, &outcome);
+        outcome?;
 
         // 3. Delete the old path
         self.delete_node(token, username, old_path).await?;

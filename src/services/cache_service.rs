@@ -123,6 +123,16 @@ impl CacheService {
         }
     }
 
+    /// Drop the cached entry for `key`, so the next read goes to the network.
+    ///
+    /// A cache with no way to say "this is now wrong" can only be wrong for a
+    /// while: creating a folder left the 5-minute-fresh listing in place, so the
+    /// browser redisplayed a directory the new folder was not in, and creating
+    /// it again reported that it already existed — which it did.
+    pub fn forget(&self, key: &CacheKey) {
+        let _ = std::fs::remove_file(self.cache_dir.join(key.to_path()));
+    }
+
     /// Human-readable timestamp for a cached entry (e.g. "14:32").
     pub fn cached_time_label(&self, key: &CacheKey) -> Option<String> {
         let entry = self.read::<serde_json::Value>(key)?;
