@@ -23,6 +23,45 @@ static PYTHON_KEYWORDS: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Placeholder text
+// ---------------------------------------------------------------------------
+
+/// Wrap a `TextView` so it shows `hint` while its buffer is empty.
+///
+/// `gtk::Entry` has `placeholder-text`; `TextView` has nothing, which is why a
+/// new notebook opened on two blank boxes that said nothing about what goes in
+/// them or which one was Python. The reference prompts in both cell types, so
+/// both get this — one function, because two hand-rolled placeholders would
+/// drift in padding the moment either cell's margins changed.
+///
+/// The label sits in an overlay and is click-through (`can_target(false)`), so
+/// the first click still lands in the text view underneath it.
+fn with_placeholder(text_view: &gtk::TextView, hint: &'static str) -> gtk::Overlay {
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(text_view));
+
+    let label = gtk::Label::new(Some(crate::tr_en!(hint)));
+    label.add_css_class("dim-label");
+    label.set_can_target(false);
+    label.set_halign(gtk::Align::Start);
+    label.set_valign(gtk::Align::Start);
+    // Match the text view's own insets so the hint sits exactly where the first
+    // character will appear.
+    label.set_margin_start(text_view.left_margin());
+    label.set_margin_top(text_view.top_margin());
+    overlay.add_overlay(&label);
+
+    let buffer = text_view.buffer();
+    let sync = {
+        let label = label.clone();
+        move |buf: &gtk::TextBuffer| label.set_visible(buf.char_count() == 0)
+    };
+    sync(&buffer);
+    buffer.connect_changed(sync);
+    overlay
+}
+
+// ---------------------------------------------------------------------------
 // CodeCellWidget
 // ---------------------------------------------------------------------------
 
@@ -94,7 +133,7 @@ impl CodeCellWidget {
             });
         }
 
-        right.append(&text_view);
+        right.append(&with_placeholder(&text_view, "Type Python code here…"));
 
         // Output area
         let output_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -322,7 +361,10 @@ impl MarkdownCellWidget {
         preview_label.set_margin_bottom(6);
 
         stack.add_named(&preview_label, Some("preview"));
-        stack.add_named(&text_view, Some("edit"));
+        stack.add_named(
+            &with_placeholder(&text_view, "Type markdown here…"),
+            Some("edit"),
+        );
         stack.set_visible_child_name("preview");
 
         widget.append(&stack);
