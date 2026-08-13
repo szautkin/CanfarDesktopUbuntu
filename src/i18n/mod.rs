@@ -970,12 +970,20 @@ fn leak_key(key: &str) -> &'static str {
 pub fn tr_en(english: &'static str) -> &'static str {
     match current_lang() {
         Lang::En => english,
-        Lang::Fr => HAND_EN_TO_FR
-            .get(english)
-            .copied()
-            .or_else(|| EN_TO_FR.get(english).copied())
-            .unwrap_or(english),
+        Lang::Fr => french(english).unwrap_or(english),
     }
+}
+
+/// The French form of `english`, or `None` if neither table has one.
+///
+/// Separate from [`tr_en`] because the lookup and the *fallback* are different
+/// decisions: shipping English when French is missing is right at a call site
+/// and useless in a test, which would pass on the fallback and prove nothing.
+pub fn french(english: &str) -> Option<&'static str> {
+    HAND_EN_TO_FR
+        .get(english)
+        .copied()
+        .or_else(|| EN_TO_FR.get(english).copied())
 }
 
 /// The French form of an English `{}`-placeholder *template*.
@@ -1448,7 +1456,7 @@ mod tests {
                     continue; // a variable: out of scope for a source scan
                 };
                 scanned += 1;
-                if !hand.contains(english.as_str()) && !EN_TO_FR.contains_key(english.as_str()) {
+                if !hand.contains(english.as_str()) && french(&english).is_none() {
                     let line = code[..start].lines().count();
                     missing.push(format!("{}:{line}: {english:.60?}", path.display()));
                 }
@@ -1561,6 +1569,19 @@ mod tests {
             tr("__definitely_missing_key__"),
             "__definitely_missing_key__"
         );
+    }
+
+    #[test]
+    fn a_string_from_each_table_resolves_through_the_same_chain() {
+        // Both sources answer through one lookup: the generated catalog for
+        // what the reference also says, and the hand table for everything
+        // Verbinal added. Asserted without `set_lang`, which is global — a test
+        // that flipped the language would decide what a parallel test sees.
+        assert_eq!(french("Login"), Some("Se connecter")); // catalog
+        assert_eq!(french("Blink"), Some("Clignotement")); // hand-written
+        assert_eq!(french("Error: {}"), Some("Erreur : {}")); // a template
+        assert_eq!(french("3D"), Some("3D")); // same word, stated on purpose
+        assert_eq!(french("__nope__"), None);
     }
 
     #[test]

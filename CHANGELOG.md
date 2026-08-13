@@ -52,11 +52,31 @@ reliability work; 1.3.3 was MCP full-UI coverage. Both are in.
 - Clearing the research archive now removes its notes; export options
   (`includeNotes`, `includeSearchHistory`, `maxRec`) are read by the names the
   schemas advertise rather than silently ignored.
+- **French was only ever the part the reference had.** 621 user-visible strings
+  reached a person without French: 52 literals never wrapped at all (whole
+  screens — the AI-connect wizard, image discovery, the template manager — and
+  fourteen of those already had French sitting unused in the catalog), 81 built
+  with `format!`, which cannot consult a catalog, and 488 that were wrapped,
+  looked up, and missed, because the catalog is generated from the reference's
+  resource files and every screen Verbinal grew past it had no entry. All are
+  translated; `HAND_PAIRS` carries 684 pairs, brands and technical tokens
+  included, mapped to themselves on purpose.
+- Plural forms no longer decide English morphology at the call site — the
+  research export said `quer{y|ies}` through an argument no translation can
+  undo. `tr_plural!` picks between two whole templates, so each language states
+  its own plural.
+- The notebook's cells carry the reference's prompt again; a new notebook opened
+  on two silent boxes that said nothing about which one was Python.
 
 ### Changed
-- Test suite: 841 → **1,139**, including invariant tests that walk the live tool
+- Test suite: 841 → **1,172**, including invariant tests that walk the live tool
   manifest — every advertised argument is read by something, everything settable
-  is readable, and every payload key an applier reads is one a proposer writes.
+  is readable, and every payload key an applier reads is one a proposer writes —
+  and four that walk the source for strings a person reads: nothing reaches a
+  label or a toast without the catalog, every localized string has a French
+  form, every template has a French pair, and every `tr_fmt!` passes one
+  argument per placeholder (which the runtime tolerates on purpose, so nothing
+  else could see a dropped one).
 - CI lints every target (`--all-targets`) and builds the way the README
   documents; README and CONTRIBUTING quote the gate's exact commands.
 

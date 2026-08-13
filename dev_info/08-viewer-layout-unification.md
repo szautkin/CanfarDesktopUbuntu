@@ -107,7 +107,31 @@ had gaps of the same shape:
 | **Local files** | Three affordances against the reference's twelve. A folder of hundreds of frames had to be scrolled, and anything outside home was unreachable. | Filter box, folder chooser, and a row menu with Copy Path / Show in Files. Create, rename and delete are refused on purpose, with a test that says why. |
 
 Checked and found **ahead** of the reference, needing nothing: Storage (rename, share, open-in-notebook
-and save-as beyond the reference's set), Search, Cube.
+and save-as beyond the reference's set), Search, Cube, Research (≈60 affordances against the
+reference's 6), Notebook (split, merge, autosave, recovery, kernel log, interpreter picker — none of
+which the reference has). The Notebook's one genuine gap was the reference's cell prompt: a new
+notebook opened on two silent boxes that said nothing about what went in them or which was Python.
+
+### The same lens, turned on the French app
+
+*A capability is only real if a person can see it* has a sibling: **a translation is only real if the
+call site asks for it.** Applying the audit to the French build found the larger version of the same
+defect — the app advertises French and embeds a 1,271-key catalog, but:
+
+| Found | Scale | Fixed |
+|---|---|---|
+| Literals never wrapped at all — whole screens (the AI-connect wizard, image discovery, the template manager, the proposals dialog) had no `tr_en!` anywhere. Fourteen already had French sitting **unused** in the catalog. | 52 | Wrapped, no exceptions — brands included, since `tr_en!("Verbinal")` costs nothing and an exception list is where the next one hides. |
+| Strings assembled with `format!` and handed to a label or a toast — every search-page error, every workflow failure, the pagination line. A `format!` cannot consult a catalog. | 81 | `tr_fmt!`, plus `tr_plural!` for the three sites that decided English morphology at the call site (`"{} quer{}"` with `"y"`/`"ies"` — an argument no translation can undo). |
+| Wrapped, looked up, and **missed**: the catalog is generated from the reference's RESW files, so it covers the reference's UI and nothing Verbinal grew past it. Wrapping is visible in review; falling back is not. | 488 | Translated, and `HAND_PAIRS` now carries 684 pairs. |
+
+Four guards hold it, each verified by re-introducing the bug it forbids:
+`nothing_the_user_reads_skips_the_catalog` (both shapes a string takes — literal and `format!` —
+because two guards would let a screen fail one and pass the other),
+`every_localized_string_has_a_french_form`, `every_formatted_template_has_a_french_translation`, and
+`every_tr_fmt_call_passes_one_argument_per_placeholder` — which exists because `tr_fmt_apply`
+tolerates an arity mismatch on purpose (a French template's placeholder count can drift, and a panic
+in a toast would be worse than a stray `{}`), so a call site that drops an argument otherwise
+compiles and ships.
 
 Found and fixed along the way, outside the plan: **Search here** was reachable only from inside the
 saved-coordinates panel, which is closed by default — an action the reference offers from its
