@@ -293,10 +293,15 @@ impl VoSpaceBrowser {
         {
             let b = browser.clone();
             copy_path_btn.connect_clicked(move |btn| {
-                let current = b.current_path.borrow().clone();
-                let vos_path = format!("vos://cadc.nrc.ca~arc/{}", current);
-                btn.display().clipboard().set_text(&vos_path);
-                b.show_toast(&crate::tr_fmt!("Copied: {}", vos_path));
+                let b = b.clone();
+                let btn = btn.clone();
+                glib::spawn_future_local(async move {
+                    let current = b.current_path.borrow().clone();
+                    if let Some(vos_path) = b.node_uri(&current).await {
+                        btn.display().clipboard().set_text(&vos_path);
+                        b.show_toast(&crate::tr_fmt!("Copied: {}", vos_path));
+                    }
+                });
             });
         }
 
@@ -884,17 +889,34 @@ impl VoSpaceBrowser {
         }
     }
 
-    fn action_copy_node_path(&self, idx: usize) {
+    fn action_copy_node_path(self: &Rc<Self>, idx: usize) {
         let node = match self.nodes.borrow().get(idx).cloned() {
             Some(n) => n,
             None => return,
         };
-        let vos_path = format!(
-            "vos://cadc.nrc.ca~arc/{}",
-            self.build_remote_path(&node.name)
-        );
-        self.widget.display().clipboard().set_text(&vos_path);
-        self.show_toast(&crate::tr_fmt!("Copied: {}", vos_path));
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let path = this.build_remote_path(&node.name);
+            if let Some(vos_path) = this.node_uri(&path).await {
+                this.widget.display().clipboard().set_text(&vos_path);
+                this.show_toast(&crate::tr_fmt!("Copied: {}", vos_path));
+            }
+        });
+    }
+
+    /// The `vos://` URI for a path in this browser, or `None` when signed out.
+    ///
+    /// Both Copy-path actions used to build one inline, without the
+    /// `home/<username>` root the address actually carries — so what landed on
+    /// the clipboard was a URI `vcp` and `vls` reject. There is one way to name
+    /// a node, and it lives with the endpoints.
+    async fn node_uri(&self, path: &str) -> Option<String> {
+        let username = self.services.get_username().await?;
+        Some(
+            self.services
+                .endpoints
+                .vospace_node_uri(&username, path.trim_matches('/')),
+        )
     }
 
     async fn action_delete(self: &Rc<Self>, idx: usize, parent_widget: &impl IsA<gtk::Widget>) {

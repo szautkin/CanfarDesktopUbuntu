@@ -65,6 +65,17 @@ impl BoundedReader {
     }
 }
 
+/// The `setNode` body that creates a container (folder) at `node_uri`.
+///
+/// Separate from the request so the thing that was wrong can be tested: the
+/// `uri` attribute must name the same node the PUT URL addresses, and nothing
+/// about sending an HTTP request is needed to check that.
+fn container_node_xml(node_uri: &str) -> String {
+    format!(
+        r#"<vos:node xmlns:vos="http://www.ivoa.net/xml/VOSpace/v2.0" uri="{node_uri}" xsi:type="vos:ContainerNode" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><vos:properties/><vos:nodes/></vos:node>"#
+    )
+}
+
 impl VoSpaceService {
     pub fn new(client: Client, endpoints: Arc<ApiEndpoints>) -> Self {
         VoSpaceService { client, endpoints }
@@ -102,10 +113,13 @@ impl VoSpaceService {
         path: &str,
     ) -> Result<(), ApiError> {
         let url = self.endpoints.vospace_nodes_url(username, path);
-        let body = format!(
-            r#"<vos:node xmlns:vos="http://www.ivoa.net/xml/VOSpace/v2.0" uri="vos://cadc.nrc.ca~arc/{}" xsi:type="vos:ContainerNode" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><vos:properties/><vos:nodes/></vos:node>"#,
-            path
-        );
+        // The `uri` attribute must name the SAME node the URL addresses. It was
+        // built here as `vos://cadc.nrc.ca~arc/{path}` while the URL rooted the
+        // path under `home/{username}/` — so every folder creation asked the
+        // service to make a node at a location that does not exist, and the
+        // service answered "invalid URI". `vospace_node_uri` is the one place
+        // that knows how a node is addressed, and `set_node_acl` already used it.
+        let body = container_node_xml(&self.endpoints.vospace_node_uri(username, path));
         let resp = self
             .client
             .put(&url)
@@ -352,6 +366,27 @@ impl VoSpaceService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The node URI in the body must be the node the URL addresses.
+    ///
+    /// It was `vos://cadc.nrc.ca~arc/{path}` while the URL was
+    /// `…/nodes/home/{username}/{path}` — two spellings of one address, and the
+    /// service rejected every folder with "invalid URI". The bug was invisible
+    /// because the body was built inside the request; it is a function now.
+    #[test]
+    fn a_new_folder_is_addressed_the_way_its_url_addresses_it() {
+        let e = crate::config::ApiEndpoints::new(crate::config::AppConfig::default());
+        let uri = e.vospace_node_uri("alice", "data/raw");
+        let url = e.vospace_nodes_url("alice", "data/raw");
+
+        // The URI names the same node as the URL: same tail, rooted the same way.
+        assert!(uri.ends_with("home/alice/data/raw"), "{uri}");
+        assert!(url.ends_with("home/alice/data/raw"), "{url}");
+
+        let xml = container_node_xml(&uri);
+        assert!(xml.contains(&format!(r#"uri="{uri}""#)), "{xml}");
+        assert!(xml.contains(r#"xsi:type="vos:ContainerNode""#), "{xml}");
+    }
 
     /// Feed chunks through a reader the way the transport loop does, stopping
     /// when it says to.

@@ -453,6 +453,40 @@ mod tests {
         );
     }
 
+    /// A `vos://` URI is built in exactly one place.
+    ///
+    /// Creating a folder sent `uri="vos://cadc.nrc.ca~arc/{path}"` while the URL
+    /// it PUT to rooted the same path under `home/{username}/`. Two spellings of
+    /// one address, and the service rejected every folder with "invalid URI".
+    /// Both Copy-path actions had the same defect, so what reached the clipboard
+    /// was a URI `vcp` refuses.
+    ///
+    /// The scheme appears inside a string literal only in this module. Everywhere else must ask [`ApiEndpoints::vospace_node_uri`],
+    /// which is tested above and roots the path the way the URL does.
+    #[test]
+    fn only_this_module_spells_out_a_vospace_uri() {
+        let mut offenders: Vec<String> = Vec::new();
+        for (path, text) in crate::testing::rust_sources() {
+            if path.ends_with("config.rs") {
+                continue; // the one place that may
+            }
+            let code = crate::testing::code(&text);
+            // The scheme inside a STRING LITERAL: that is a URI being
+            // assembled. Prose naming it — this test's own docs, the comment in
+            // `create_folder` recording what went wrong — is not.
+            for (at, _) in code.match_indices("\"vos://cadc.nrc.ca") {
+                let line = code[..at].lines().count();
+                offenders.push(format!("{}:{line}", path.display()));
+            }
+        }
+        offenders.sort();
+        assert!(
+            offenders.is_empty(),
+            "a vos:// URI is being assembled outside ApiEndpoints — it will \
+             disagree with the URL that addresses the same node: {offenders:#?}"
+        );
+    }
+
     #[test]
     fn vospace_node_uri_paths() {
         let e = endpoints();
