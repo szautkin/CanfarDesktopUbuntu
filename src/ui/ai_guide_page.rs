@@ -385,6 +385,13 @@ pub struct AiGuidePage {
     stack: gtk::Stack,
     launchpad_flow: gtk::FlowBox,
     focus_container: gtk::Box,
+    /// Every tool in one list, for the "See everything" view.
+    everything_container: gtk::Box,
+    /// The launchpad's view switch. Only the "everything" half is held: the two
+    /// are one radio group, so its state answers the question the page asks —
+    /// "which view did the user choose?" — and a second field would be a second
+    /// answer.
+    everything_btn: gtk::ToggleButton,
     search_container: gtk::Box,
 
     // ── "My guide tools" group ──
@@ -484,9 +491,33 @@ impl AiGuidePage {
         launchpad_flow.set_max_children_per_line(3);
         launchpad_flow.set_row_spacing(12);
         launchpad_flow.set_column_spacing(12);
-        let launchpad_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // View switch: tiles, or every tool at once. Without it the only way to
+        // read all 137 descriptions was to open each of the seventeen
+        // categories in turn, or to invent a search string that matches
+        // everything — the reference offers it as a plain choice, so we do too.
+        let view_switch = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        view_switch.set_halign(gtk::Align::End);
+        let view_label = gtk::Label::new(Some(crate::tr_en!("View:")));
+        view_label.add_css_class("caption");
+        view_label.add_css_class("dim-label");
+        view_switch.append(&view_label);
+        let modes = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        modes.add_css_class("linked");
+        let tiles_btn = gtk::ToggleButton::with_label(crate::tr_en!("Tiles"));
+        tiles_btn.set_active(true);
+        let everything_btn = gtk::ToggleButton::with_label(crate::tr_en!("See everything"));
+        everything_btn.set_group(Some(&tiles_btn));
+        modes.append(&tiles_btn);
+        modes.append(&everything_btn);
+        view_switch.append(&modes);
+
+        let launchpad_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        launchpad_page.append(&view_switch);
         launchpad_page.append(&launchpad_flow);
         stack.add_named(&launchpad_page, Some("launchpad"));
+
+        let everything_container = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        stack.add_named(&everything_container, Some("everything"));
 
         let focus_container = gtk::Box::new(gtk::Orientation::Vertical, 12);
         stack.add_named(&focus_container, Some("focus"));
@@ -510,6 +541,8 @@ impl AiGuidePage {
             stack,
             launchpad_flow,
             focus_container,
+            everything_container,
+            everything_btn: everything_btn.clone(),
             search_container,
             guides_group,
             guide_rows: RefCell::new(Vec::new()),
@@ -553,6 +586,20 @@ impl AiGuidePage {
             });
         }
 
+        // The view switch: Tiles shows the launchpad, See everything the flat
+        // list. Only the "everything" side needs a handler — leaving Tiles is
+        // what activates it, and the pair is a radio group.
+        {
+            let page = Rc::clone(self);
+            self.everything_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    page.show_everything();
+                } else {
+                    page.show_launchpad();
+                }
+            });
+        }
+
         self.rebuild_guides();
         self.show_launchpad();
     }
@@ -578,6 +625,12 @@ impl AiGuidePage {
 
     /// Rebuild the launchpad tiles from a fresh snapshot and show it.
     fn show_launchpad(self: &Rc<Self>) {
+        // Coming back from a focused category or a cleared search: honour the
+        // view the user chose rather than silently resetting them to Tiles.
+        if self.everything_btn.is_active() {
+            self.show_everything();
+            return;
+        }
         while let Some(child) = self.launchpad_flow.first_child() {
             self.launchpad_flow.remove(&child);
         }
@@ -712,6 +765,38 @@ impl AiGuidePage {
         self.focus_container.append(&group);
 
         self.stack.set_visible_child_name("focus");
+    }
+
+    /// Render every tool in one flat list, alphabetically.
+    ///
+    /// The same row builder the focused and search views use — a second way to
+    /// draw a tool row would be a second place for the override editor to drift.
+    fn show_everything(self: &Rc<Self>) {
+        while let Some(child) = self.everything_container.first_child() {
+            self.everything_container.remove(&child);
+        }
+
+        let snapshot = self.guide.snapshot();
+        let mut all: Vec<&ToolDescriptor> = self
+            .categories
+            .iter()
+            .flat_map(|c| c.tools.iter())
+            .collect();
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let heading = gtk::Label::new(Some(&tool_count_text(all.len())));
+        heading.add_css_class("caption");
+        heading.add_css_class("dim-label");
+        heading.set_xalign(0.0);
+        self.everything_container.append(&heading);
+
+        let group = adw::PreferencesGroup::new();
+        for d in all {
+            group.add(&self.build_tool_row(&snapshot, d));
+        }
+        self.everything_container.append(&group);
+
+        self.stack.set_visible_child_name("everything");
     }
 
     /// Filter every tool by name or effective description; render a flat list plus
@@ -1268,6 +1353,64 @@ async fn show_guide_dialog(
 
     dialog.present();
     rx.await.unwrap_or(false)
+}
+
+#[cfg(test)]
+mod affordance_tests {
+    //! Reading every tool's description had to be possible in one place.
+    //!
+    //! The page groups 137 tools into seventeen categories, which is the right
+    //! default and the wrong only option: to read them all you had to open each
+    //! category in turn, or invent a search string that matches everything. The
+    //! reference offers the choice outright (`Guide_TilesRadio` /
+    //! `Guide_EverythingRadio`), so this checks we do too.
+
+    fn source() -> &'static str {
+        crate::testing::code(include_str!("ai_guide_page.rs"))
+    }
+
+    #[test]
+    fn every_tool_can_be_seen_at_once() {
+        let code = source();
+        assert!(
+            code.contains(r#"crate::tr_en!("See everything")"#),
+            "the launchpad needs a view that shows every tool, not only tiles"
+        );
+        assert!(
+            code.contains("fn show_everything"),
+            "and something that renders it"
+        );
+    }
+
+    #[test]
+    fn every_view_draws_a_tool_the_same_way() {
+        // Focused category, search results and see-everything all render tool
+        // rows. Three builders would be three places for the override editor to
+        // drift; there is one.
+        let code = source();
+        let builders = code.matches("fn build_tool_row").count();
+        assert_eq!(builders, 1, "found {builders} tool-row builders");
+        assert!(
+            code.matches("self.build_tool_row(").count() >= 3,
+            "each view should render rows through the shared builder"
+        );
+    }
+
+    #[test]
+    fn leaving_a_category_keeps_the_chosen_view() {
+        // Back-from-focus and cleared-search both call show_launchpad, so that
+        // is where the choice has to be honoured — resetting a reader to Tiles
+        // because they closed a category is losing their place.
+        let after = source()
+            .split("fn show_launchpad")
+            .nth(1)
+            .expect("the launchpad renderer exists");
+        let body = &after[..after.find("\n    }\n").unwrap_or(after.len())];
+        assert!(
+            body.contains("everything_btn.is_active()"),
+            "returning to the launchpad should honour the chosen view"
+        );
+    }
 }
 
 #[cfg(test)]
