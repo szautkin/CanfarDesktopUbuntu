@@ -372,8 +372,26 @@ impl WorkflowsPage {
         // as "you have published nothing" rather than "not loaded".
         let entries = self.vospace_entries.borrow();
         if !entries.is_empty() {
-            self.list_box
-                .append(&section_header(crate::tr_en!("VOSpace")));
+            // With a refresh button, as the reference has: the shared tier is
+            // loaded once at startup, so a workflow a collaborator published
+            // five minutes ago was invisible until the app was restarted.
+            let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+            refresh.add_css_class("flat");
+            refresh.set_valign(gtk::Align::Center);
+            refresh.set_tooltip_text(Some(crate::tr_en!(
+                "Re-read the shared workflows from VOSpace"
+            )));
+            {
+                let page = Rc::clone(self);
+                refresh.connect_clicked(move |_| {
+                    let page = Rc::clone(&page);
+                    glib::spawn_future_local(async move { page.refresh_vospace().await });
+                });
+            }
+            self.list_box.append(&section_header_with_action(
+                crate::tr_en!("VOSpace"),
+                &refresh,
+            ));
             for entry in entries.iter() {
                 self.list_box.append(&vospace_row(entry));
             }
@@ -410,6 +428,27 @@ impl WorkflowsPage {
     // -----------------------------------------------------------------------
 
     /// Rebuild the right-side pane from `selected_id` + `editing`.
+    /// Save `text` as a new local workflow named `name`, select it, and say so.
+    ///
+    /// Both "Use this workflow" and "Duplicate" end here: the only thing that
+    /// differs between them is the name the copy is given and what the toast
+    /// says afterwards. Two copies of the save-select-toast-reload sequence
+    /// would be two places to forget the reload.
+    fn adopt_copy(self: &Rc<Self>, name: &str, text: &str, done: &str) {
+        match self.store.save_new(name, text) {
+            Ok(new_info) => {
+                *self.selected_id.borrow_mut() = Some(new_info.id.clone());
+                *self.editing.borrow_mut() = false;
+                self.services.toast.toast(done);
+                self.reload_and_render();
+            }
+            Err(e) => self
+                .services
+                .toast
+                .toast(format!("Could not copy the workflow: {}", e)),
+        }
+    }
+
     /// Refresh the VOSpace listing.
     ///
     /// Silent when signed out — the section simply stays hidden, since a shared
@@ -656,6 +695,33 @@ impl WorkflowsPage {
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.set_halign(gtk::Align::Start);
 
+        // "Use this workflow" — the reference's primary, accent action, and the
+        // one a reader looks for. Ours offered only "Duplicate to Local", which
+        // names the MECHANISM: the same click, described as filing rather than
+        // as starting work. Both are here now, as the reference has them, and
+        // they differ exactly as its two do — Use keeps the title, Duplicate
+        // marks the result as a copy.
+        //
+        // Read-only sources only: a local workflow is already yours to work in,
+        // and a second "use" of it would just be a duplicate under another name.
+        if info.source != WorkflowSource::Local {
+            let use_btn = make_icon_button(
+                "document-edit-symbolic",
+                crate::tr_en!("Use this workflow"),
+                crate::tr_en!("Start working from this template — creates your own editable copy"),
+                Some("suggested-action"),
+            );
+            {
+                let page = Rc::clone(self);
+                let title = info.doc.title.clone();
+                let raw = info.raw_text.clone();
+                use_btn.connect_clicked(move |_| {
+                    page.adopt_copy(&title, &raw, crate::tr_en!("Ready to work in your copy"));
+                });
+            }
+            actions.append(&use_btn);
+        }
+
         // Duplicate to Local (always available)
         let dup_btn = make_icon_button(
             "edit-copy-symbolic",
@@ -668,20 +734,11 @@ impl WorkflowsPage {
             let title = info.doc.title.clone();
             let raw = info.raw_text.clone();
             dup_btn.connect_clicked(move |_| {
-                match page.store.save_new(&format!("{} (copy)", title), &raw) {
-                    Ok(new_info) => {
-                        *page.selected_id.borrow_mut() = Some(new_info.id.clone());
-                        *page.editing.borrow_mut() = false;
-                        page.services
-                            .toast
-                            .toast(crate::tr_en!("Duplicated to a local copy"));
-                        page.reload_and_render();
-                    }
-                    Err(e) => page
-                        .services
-                        .toast
-                        .toast(format!("Could not duplicate: {}", e)),
-                }
+                page.adopt_copy(
+                    &format!("{} (copy)", title),
+                    &raw,
+                    crate::tr_en!("Duplicated to a local copy"),
+                );
             });
         }
         actions.append(&dup_btn);
@@ -1152,6 +1209,17 @@ impl WorkflowsPage {
 
 /// Non-selectable bold section header row for the sidebar.
 fn section_header(text: &str) -> gtk::ListBoxRow {
+    build_section_header(text, None)
+}
+
+/// A section header carrying an action button on its trailing edge.
+fn section_header_with_action(text: &str, action: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
+    build_section_header(text, Some(action.as_ref()))
+}
+
+/// The one header row both spellings produce, so a section with an action and
+/// one without cannot drift apart in spacing or weight.
+fn build_section_header(text: &str, action: Option<&gtk::Widget>) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_selectable(false);
     row.set_activatable(false);
@@ -1160,11 +1228,18 @@ fn section_header(text: &str) -> gtk::ListBoxRow {
     label.add_css_class("caption-heading");
     label.add_css_class("dim-label");
     label.set_halign(gtk::Align::Start);
-    label.set_margin_start(12);
-    label.set_margin_end(12);
-    label.set_margin_top(12);
-    label.set_margin_bottom(6);
-    row.set_child(Some(&label));
+    label.set_hexpand(true);
+
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    line.set_margin_start(12);
+    line.set_margin_end(12);
+    line.set_margin_top(12);
+    line.set_margin_bottom(6);
+    line.append(&label);
+    if let Some(action) = action {
+        line.append(action);
+    }
+    row.set_child(Some(&line));
     row
 }
 
@@ -1442,6 +1517,73 @@ fn decide_follow(editing: bool, selected: Option<&str>, changed_id: &str) -> Fol
         Some(id) if id == changed_id => FollowAction::RerenderSelection,
         Some(_) => FollowAction::RebuildListOnly,
         None => FollowAction::SelectAndRender,
+    }
+}
+
+#[cfg(test)]
+mod affordance_tests {
+    //! What the page can do has to be on the page.
+    //!
+    //! The two gaps this checks were both capabilities we HAD: adopting a
+    //! template was offered only as "Duplicate to Local" — the mechanism, not
+    //! the intent — and the shared VOSpace tier was loaded once at startup with
+    //! no way to re-read it, so a workflow a collaborator published five minutes
+    //! ago stayed invisible until the app restarted. The reference shows both as
+    //! buttons (`Wf_UseButton`, `Wf_VosRefreshButton`).
+
+    /// The page's code, with the tests removed — so a guard cannot find its
+    /// own assertion text and pass against the bug it was written for.
+    fn source() -> &'static str {
+        crate::testing::code(include_str!("workflows_page.rs"))
+    }
+
+    #[test]
+    fn a_template_can_be_adopted_by_a_button_that_says_so() {
+        assert!(
+            source().contains(r#"crate::tr_en!("Use this workflow")"#),
+            "the primary action on a template should name the intent, not the \
+             filing operation behind it"
+        );
+    }
+
+    #[test]
+    fn the_shared_tier_can_be_re_read() {
+        // The section that lists VOSpace workflows must build its header with an
+        // action, which is where the refresh lives.
+        // Scoped to the function BODY: the free helper that builds such a header
+        // lives further down the same file, and an unbounded slice would find
+        // the definition and call it a call.
+        let after = source()
+            .split("fn rebuild_lists")
+            .nth(1)
+            .expect("the sidebar is rebuilt here");
+        let rebuild = &after[..after.find("\n    }\n").unwrap_or(after.len())];
+        assert!(
+            rebuild.contains("section_header_with_action("),
+            "the VOSpace section needs its refresh action, or the only way to \
+             see a collaborator's new workflow is to restart"
+        );
+    }
+
+    #[test]
+    fn both_copy_actions_go_through_one_path() {
+        // Use and Duplicate differ only in the name they give the copy and what
+        // they say afterwards. Two copies of save-select-toast-reload would be
+        // two places to forget the reload — so both buttons call adopt_copy and
+        // neither reaches the store itself.
+        let detail = source()
+            .split("// ── Action bar ")
+            .nth(1)
+            .expect("the action bar is built here");
+        let actions = &detail[..detail.find("fn ").unwrap_or(detail.len())];
+        assert!(
+            actions.matches("adopt_copy(").count() >= 2,
+            "both copy buttons should go through adopt_copy"
+        );
+        assert!(
+            !actions.contains("store.save_new("),
+            "a copy button reaches the store directly, bypassing adopt_copy"
+        );
     }
 }
 
