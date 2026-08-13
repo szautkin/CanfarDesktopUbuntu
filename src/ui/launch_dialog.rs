@@ -52,7 +52,7 @@ pub async fn show_launch_dialog(
         Some(&body),
     );
     dialog.set_extra_child(Some(&content));
-    dialog.add_response("close", "Close");
+    dialog.add_response("close", crate::tr_en!("Close"));
     dialog.set_close_response("close");
 
     let (sender, receiver) = tokio::sync::oneshot::channel::<()>();

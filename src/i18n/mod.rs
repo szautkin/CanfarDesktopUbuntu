@@ -634,7 +634,10 @@ mod tests {
 
         // A unicode escape becomes the character, so the pair a contributor
         // writes with a real “ matches the call site that spells it \u{201c}.
-        assert_eq!(decode_rust_string_literal(r"say \u{201c}hi\u{201d}"), "say “hi”");
+        assert_eq!(
+            decode_rust_string_literal(r"say \u{201c}hi\u{201d}"),
+            "say “hi”"
+        );
     }
 
     /// Every source file that can contain a call site: this module is skipped
@@ -736,7 +739,17 @@ mod tests {
         ".body(",
         "Toast::new(",
         ".toast(",
+        // A menu item's label; the action name follows it.
+        ".append(Some(",
     ];
+
+    /// Calls whose *second* argument is the text: the first names an id, and
+    /// only the second is read.
+    ///
+    /// `dialog.add_response("close", "Close")` — different enough in shape that
+    /// the scan above cannot see it, which is exactly how one dialog kept an
+    /// English button while every other dialog in the app localized theirs.
+    const SECOND_ARG_SETTERS: &[&str] = &[".add_response(", ".set_response_label("];
 
     /// Does this string carry words, or is it punctuation and placeholders?
     ///
@@ -831,10 +844,22 @@ mod tests {
         for (path, text) in call_sites() {
             // Test code is not shipped, and a fixture label needs no French.
             let code = crate::testing::code(&text);
-            for setter in TEXT_SETTERS {
+            // `skip` is how many arguments come before the text: none for a
+            // setter, one for `add_response("close", "Close")`.
+            let sinks = TEXT_SETTERS
+                .iter()
+                .map(|s| (*s, 0usize))
+                .chain(SECOND_ARG_SETTERS.iter().map(|s| (*s, 1usize)));
+            for (setter, skip) in sinks {
                 for (start, _) in code.match_indices(setter) {
-                    let after = start + setter.len();
-                    let arg = code[after..].trim_start().trim_start_matches('&');
+                    let mut at = start + setter.len();
+                    for _ in 0..skip {
+                        let Some(comma) = code[at..].find(',') else {
+                            break;
+                        };
+                        at += comma + 1;
+                    }
+                    let arg = code[at..].trim_start().trim_start_matches('&');
                     let at = code.len() - arg.len();
                     if arg.starts_with("crate::tr_en!(") || arg.starts_with("crate::tr_fmt!(") {
                         localized += 1;
