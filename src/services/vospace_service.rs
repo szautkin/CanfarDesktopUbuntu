@@ -225,6 +225,44 @@ impl VoSpaceService {
         outcome
     }
 
+    /// Stream a local file to the given path, reporting progress and stopping
+    /// when `cancel` is tripped.
+    ///
+    /// The whole-file variant below reads the source into memory first, which a
+    /// multi-gigabyte cube cannot afford and which leaves nothing to report
+    /// progress from.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upload_file_streaming(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+        src: &std::path::Path,
+        content_type: &str,
+        progress: Option<crate::services::transfer::ProgressSink>,
+        cancel: &crate::services::transfer::Cancel,
+    ) -> Result<u64, crate::services::transfer::TransferError> {
+        let url = self.endpoints.vospace_files_url(username, path);
+        let outcome = crate::services::transfer::upload_from_file(
+            &url,
+            token,
+            src,
+            content_type,
+            progress,
+            cancel,
+        )
+        .await;
+        log_storage(
+            "PUT(stream)",
+            &url,
+            &outcome
+                .as_ref()
+                .map(|_| ())
+                .map_err(|e| ApiError::Network(e.to_string())),
+        );
+        outcome
+    }
+
     /// Upload a file to the given path under the user's home.
     pub async fn upload_file(
         &self,

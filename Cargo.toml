@@ -14,8 +14,13 @@ categories = ["science", "gui"]
 [dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
 libadwaita = { version = "0.7", features = ["v1_4"] }
-reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "io-std"] }
+# "stream" so an upload can be a streamed body: without it the only way to
+# PUT a file is to hand reqwest a Vec<u8>, i.e. the whole file in memory.
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"], default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "io-std", "fs"] }
+# ReceiverStream: turns the upload reader's channel into the stream reqwest
+# wants. Tokio's own crate, and the only thing used from it.
+tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 hex = "0.4"

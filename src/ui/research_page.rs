@@ -1405,7 +1405,7 @@ impl ResearchPage {
             .services
             .spawn(async move {
                 let token = svc.get_token().await;
-                crate::ui::search_page::stream_download_to_file(
+                crate::services::transfer::download_to_file(
                     &url_clone,
                     token.as_deref(),
                     &dest,

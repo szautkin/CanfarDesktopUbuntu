@@ -32,6 +32,7 @@ pub mod storage_service;
 pub mod tap_service;
 pub mod template_service;
 pub mod token_storage;
+pub mod transfer;
 pub mod vizier_service;
 pub mod vospace_service;
 pub mod workflow_store;

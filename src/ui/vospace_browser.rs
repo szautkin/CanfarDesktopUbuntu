@@ -126,6 +126,12 @@ pub struct VoSpaceBrowser {
     sort_btn_modified: gtk::Button,
     /// Toast overlay injected by the parent window after construction.
     toast_overlay: Rc<RefCell<Option<adw::ToastOverlay>>>,
+    /// The transfer strip: hidden until something is moving.
+    transfer_row: gtk::Box,
+    transfer_label: gtk::Label,
+    transfer_bar: gtk::ProgressBar,
+    /// The token for the transfer in flight, so Cancel has something to trip.
+    transfer_cancel: Rc<RefCell<Option<crate::services::transfer::Cancel>>>,
 }
 
 impl VoSpaceBrowser {
@@ -171,6 +177,34 @@ impl VoSpaceBrowser {
 
         widget.append(&toolbar);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        // ----------------------------------------------------------------
+        // Transfer strip — what is moving, how far it has got, and a way out
+        // ----------------------------------------------------------------
+        let transfer_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        transfer_row.set_margin_start(12);
+        transfer_row.set_margin_end(12);
+        transfer_row.set_margin_top(6);
+        transfer_row.set_margin_bottom(6);
+        transfer_row.set_visible(false);
+
+        let transfer_label = gtk::Label::new(None);
+        transfer_label.add_css_class("caption");
+        transfer_label.set_halign(gtk::Align::Start);
+        transfer_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        transfer_row.append(&transfer_label);
+
+        let transfer_bar = gtk::ProgressBar::new();
+        transfer_bar.set_hexpand(true);
+        transfer_bar.set_valign(gtk::Align::Center);
+        transfer_row.append(&transfer_bar);
+
+        let transfer_cancel_btn = gtk::Button::from_icon_name("process-stop-symbolic");
+        transfer_cancel_btn.add_css_class("flat");
+        transfer_cancel_btn.set_tooltip_text(Some(crate::tr_en!("Cancel the transfer")));
+        transfer_row.append(&transfer_cancel_btn);
+
+        widget.append(&transfer_row);
 
         // ----------------------------------------------------------------
         // Column sort header
@@ -256,11 +290,27 @@ impl VoSpaceBrowser {
             sort_btn_size,
             sort_btn_modified,
             toast_overlay: Rc::new(RefCell::new(None)),
+            transfer_row: transfer_row.clone(),
+            transfer_label: transfer_label.clone(),
+            transfer_bar: transfer_bar.clone(),
+            transfer_cancel: Rc::new(RefCell::new(None)),
         });
 
         // ----------------------------------------------------------------
         // Toolbar signal connections
         // ----------------------------------------------------------------
+        {
+            let b = browser.clone();
+            transfer_cancel_btn.connect_clicked(move |_| {
+                if let Some(c) = b.transfer_cancel.borrow().as_ref() {
+                    c.cancel();
+                }
+                // The strip stays up until the transfer notices and unwinds, so
+                // the user sees that the request landed rather than a control
+                // that vanished with the work still running.
+                b.transfer_label.set_text(crate::tr_en!("Cancelling…"));
+            });
+        }
         {
             let b = browser.clone();
             refresh_btn.connect_clicked(move |_| {
@@ -374,6 +424,43 @@ impl VoSpaceBrowser {
     // -----------------------------------------------------------------------
     // Refresh / listing
     // -----------------------------------------------------------------------
+
+    /// Show the transfer strip for `label` and hand back the token that stops it.
+    ///
+    /// One place decides what a transfer looks like, so an upload and a download
+    /// cannot drift into looking like different features.
+    fn begin_transfer(&self, label: &str) -> crate::services::transfer::Cancel {
+        let cancel = crate::services::transfer::Cancel::new();
+        *self.transfer_cancel.borrow_mut() = Some(cancel.clone());
+        self.transfer_label.set_text(label);
+        self.transfer_bar.set_fraction(0.0);
+        self.transfer_bar.set_text(None);
+        self.transfer_row.set_visible(true);
+        cancel
+    }
+
+    /// Move the bar. `total` is `None` when the server never said how big it is,
+    /// in which case the bar pulses rather than lying about a fraction.
+    fn report_transfer(&self, done: u64, total: Option<u64>) {
+        match total {
+            Some(t) if t > 0 => {
+                self.transfer_bar
+                    .set_fraction((done as f64 / t as f64).min(1.0));
+            }
+            _ => self.transfer_bar.pulse(),
+        }
+        self.transfer_bar.set_show_text(true);
+        self.transfer_bar
+            .set_text(Some(&crate::services::transfer::format_download_amount(
+                done, total,
+            )));
+    }
+
+    fn end_transfer(&self) {
+        *self.transfer_cancel.borrow_mut() = None;
+        self.transfer_row.set_visible(false);
+        self.transfer_bar.set_fraction(0.0);
+    }
 
     /// Re-read this folder from the service, ignoring anything cached.
     ///
@@ -745,25 +832,117 @@ impl VoSpaceBrowser {
 
         let svc = self.services.clone();
         let fname = node.name.clone();
+
+        let cancel = self.begin_transfer(&crate::tr_fmt!("Downloading {}…", fname));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+        {
+            let this = self.clone();
+            glib::spawn_future_local(async move {
+                while let Some((done, total)) = rx.recv().await {
+                    this.report_transfer(done, total);
+                }
+            });
+        }
+
+        let cancel_task = cancel.clone();
+        let toast = self.services.toast.clone();
+        let label = fname.clone();
         let result = self
             .services
             .spawn(async move {
                 let token = svc.get_token().await;
                 let username = svc.get_username().await;
-                match (token, username) {
-                    (Some(tok), Some(user)) => {
-                        svc.vospace
-                            .download_file(&tok, &user, &remote_path, &local_path)
-                            .await
-                    }
-                    _ => Err(crate::services::ApiError::Unauthorized),
-                }
+                let (Some(tok), Some(user)) = (token, username) else {
+                    return Err("not signed in".to_string());
+                };
+                let url = svc.endpoints.vospace_files_url(&user, &remote_path);
+                // The same streaming download every other page uses: bounded
+                // memory, a `.tmp` that is renamed only once complete, and the
+                // partial file removed if it does not.
+                crate::services::transfer::download_with_progress(
+                    &url,
+                    Some(&tok),
+                    &local_path,
+                    &toast,
+                    &label,
+                    Some(tx),
+                    &cancel_task,
+                )
+                .await
             })
             .await;
+        self.end_transfer();
 
         match result {
             Ok(bytes) => self.show_toast(&crate::tr_fmt!("Downloaded {} ({} bytes)", fname, bytes)),
+            Err(e) if cancel.is_cancelled() => {
+                let _ = e;
+                self.show_toast(&crate::tr_fmt!("Download cancelled: {}", fname));
+            }
             Err(e) => self.show_toast(&crate::tr_fmt!("Download failed: {}", e)),
+        }
+    }
+
+    /// Fetch `node` to a temp file so a viewer can open it — streamed, watched
+    /// and cancellable like any other transfer.
+    ///
+    /// The three "open in …" actions each had their own copy of this, and each
+    /// buffered the whole file into memory first. Opening a 3 GB cube from
+    /// VOSpace is the case that most needs a progress bar and a way out, and it
+    /// was the case with neither.
+    async fn fetch_to_temp(self: &Rc<Self>, name: &str) -> Option<std::path::PathBuf> {
+        let remote_path = self.build_remote_path(name);
+        let local_path = std::env::temp_dir().join(name);
+        let local_for_task = local_path.clone();
+        let svc = self.services.clone();
+
+        let cancel = self.begin_transfer(&crate::tr_fmt!("Downloading {}…", name));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+        {
+            let this = self.clone();
+            glib::spawn_future_local(async move {
+                while let Some((done, total)) = rx.recv().await {
+                    this.report_transfer(done, total);
+                }
+            });
+        }
+
+        let cancel_task = cancel.clone();
+        let toast = self.services.toast.clone();
+        let label = name.to_string();
+        let result = self
+            .services
+            .spawn(async move {
+                let token = svc.get_token().await;
+                let username = svc.get_username().await;
+                let (Some(tok), Some(user)) = (token, username) else {
+                    return Err("not signed in".to_string());
+                };
+                let url = svc.endpoints.vospace_files_url(&user, &remote_path);
+                crate::services::transfer::download_with_progress(
+                    &url,
+                    Some(&tok),
+                    &local_for_task,
+                    &toast,
+                    &label,
+                    Some(tx),
+                    &cancel_task,
+                )
+                .await
+            })
+            .await;
+        self.end_transfer();
+
+        match result {
+            Ok(_) => Some(local_path),
+            Err(_) if cancel.is_cancelled() => {
+                self.show_toast(&crate::tr_fmt!("Download cancelled: {}", name));
+                None
+            }
+            Err(e) => {
+                self.show_toast(&crate::tr_fmt!("Download failed: {}", e));
+                None
+            }
         }
     }
 
@@ -774,44 +953,18 @@ impl VoSpaceBrowser {
             _ => return,
         };
 
-        let remote_path = self.build_remote_path(&node.name);
-        let local_path = std::env::temp_dir().join(&node.name);
-        let local_path_clone = local_path.clone();
-        let svc = self.services.clone();
+        let Some(local_path) = self.fetch_to_temp(&node.name).await else {
+            return; // fetch_to_temp has already said why
+        };
 
-        let result = self
-            .services
-            .spawn(async move {
-                let token = svc.get_token().await;
-                let username = svc.get_username().await;
-                match (token, username) {
-                    (Some(tok), Some(user)) => {
-                        svc.vospace
-                            .download_file(&tok, &user, &remote_path, &local_path_clone)
-                            .await
-                    }
-                    _ => Err(crate::services::ApiError::Unauthorized),
-                }
-            })
-            .await;
-
-        match result {
-            Ok(_) => {
-                // Signal the main window to switch to the FITS tab and load the file.
-                // We use a custom GIO action registered by main_window.rs.
-                if let Some(window) = self.widget.root().and_downcast::<adw::ApplicationWindow>() {
-                    if let Some(app) = window.application() {
-                        let path_str = local_path.to_string_lossy().to_string();
-                        let variant = glib::Variant::from(path_str.as_str());
-                        app.activate_action("open-fits-file", Some(&variant));
-                    }
-                }
-                self.show_toast(&crate::tr_fmt!("Opened {} in FITS Viewer", node.name));
-            }
-            Err(e) => {
-                self.show_toast(&crate::tr_fmt!("Failed to open FITS: {}", e));
+        if let Some(window) = self.widget.root().and_downcast::<adw::ApplicationWindow>() {
+            if let Some(app) = window.application() {
+                let path_str = local_path.to_string_lossy().to_string();
+                let variant = glib::Variant::from(path_str.as_str());
+                app.activate_action("open-fits-file", Some(&variant));
             }
         }
+        self.show_toast(&crate::tr_fmt!("Opened {} in FITS Viewer", node.name));
     }
 
     /// Download a FITS cube to a temp location and open it in the Cube Viewer.
@@ -821,42 +974,18 @@ impl VoSpaceBrowser {
             _ => return,
         };
 
-        let remote_path = self.build_remote_path(&node.name);
-        let local_path = std::env::temp_dir().join(&node.name);
-        let local_path_clone = local_path.clone();
-        let svc = self.services.clone();
+        let Some(local_path) = self.fetch_to_temp(&node.name).await else {
+            return; // fetch_to_temp has already said why
+        };
 
-        let result = self
-            .services
-            .spawn(async move {
-                let token = svc.get_token().await;
-                let username = svc.get_username().await;
-                match (token, username) {
-                    (Some(tok), Some(user)) => {
-                        svc.vospace
-                            .download_file(&tok, &user, &remote_path, &local_path_clone)
-                            .await
-                    }
-                    _ => Err(crate::services::ApiError::Unauthorized),
-                }
-            })
-            .await;
-
-        match result {
-            Ok(_) => {
-                if let Some(window) = self.widget.root().and_downcast::<adw::ApplicationWindow>() {
-                    if let Some(app) = window.application() {
-                        let path_str = local_path.to_string_lossy().to_string();
-                        let variant = glib::Variant::from(path_str.as_str());
-                        app.activate_action("open-cube-file", Some(&variant));
-                    }
-                }
-                self.show_toast(&crate::tr_fmt!("Opened {} in Cube Viewer", node.name));
-            }
-            Err(e) => {
-                self.show_toast(&crate::tr_fmt!("Failed to open cube: {}", e));
+        if let Some(window) = self.widget.root().and_downcast::<adw::ApplicationWindow>() {
+            if let Some(app) = window.application() {
+                let path_str = local_path.to_string_lossy().to_string();
+                let variant = glib::Variant::from(path_str.as_str());
+                app.activate_action("open-cube-file", Some(&variant));
             }
         }
+        self.show_toast(&crate::tr_fmt!("Opened {} in Cube Viewer", node.name));
     }
 
     /// Download a notebook file to a temp location and open it in the Notebook tab.
@@ -866,43 +995,18 @@ impl VoSpaceBrowser {
             _ => return,
         };
 
-        let remote_path = self.build_remote_path(&node.name);
-        let local_path = std::env::temp_dir().join(&node.name);
-        let local_path_clone = local_path.clone();
-        let svc = self.services.clone();
+        let Some(local_path) = self.fetch_to_temp(&node.name).await else {
+            return; // fetch_to_temp has already said why
+        };
 
-        let result = self
-            .services
-            .spawn(async move {
-                let token = svc.get_token().await;
-                let username = svc.get_username().await;
-                match (token, username) {
-                    (Some(tok), Some(user)) => {
-                        svc.vospace
-                            .download_file(&tok, &user, &remote_path, &local_path_clone)
-                            .await
-                    }
-                    _ => Err(crate::services::ApiError::Unauthorized),
-                }
-            })
-            .await;
-
-        match result {
-            Ok(_) => {
-                // Signal the main window to switch to the Notebook tab and load the file.
-                if let Some(window) = self.widget.root().and_downcast::<adw::ApplicationWindow>() {
-                    if let Some(app) = window.application() {
-                        let path_str = local_path.to_string_lossy().to_string();
-                        let variant = glib::Variant::from(path_str.as_str());
-                        app.activate_action("open-notebook-file", Some(&variant));
-                    }
-                }
-                self.show_toast(&crate::tr_fmt!("Opened {} in Notebook", node.name));
-            }
-            Err(e) => {
-                self.show_toast(&crate::tr_fmt!("Failed to open notebook: {}", e));
+        if let Some(window) = self.widget.root().and_downcast::<adw::ApplicationWindow>() {
+            if let Some(app) = window.application() {
+                let path_str = local_path.to_string_lossy().to_string();
+                let variant = glib::Variant::from(path_str.as_str());
+                app.activate_action("open-notebook-file", Some(&variant));
             }
         }
+        self.show_toast(&crate::tr_fmt!("Opened {} in Notebook", node.name));
     }
 
     fn action_copy_node_path(self: &Rc<Self>, idx: usize) {
@@ -1294,26 +1398,64 @@ impl VoSpaceBrowser {
             let svc = self.services.clone();
             let fname = filename.clone();
 
+            let cancel = self.begin_transfer(&crate::tr_fmt!("Uploading {}…", fname));
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+            {
+                // Drain progress on the GTK thread while the transfer runs on
+                // tokio; the transfer never touches a widget.
+                let this = self.clone();
+                glib::spawn_future_local(async move {
+                    while let Some((done, total)) = rx.recv().await {
+                        this.report_transfer(done, total);
+                    }
+                });
+            }
+
+            let cancel_task = cancel.clone();
+            let remote_for_cleanup = remote_path.clone();
             let result = self
                 .services
                 .spawn(async move {
-                    let data = std::fs::read(&local_path)
-                        .map_err(|e| crate::services::ApiError::Network(e.to_string()))?;
                     let token = svc.get_token().await;
                     let username = svc.get_username().await;
-                    match (token, username) {
-                        (Some(tok), Some(user)) => {
-                            svc.vospace
-                                .upload_file(&tok, &user, &remote_path, data, &content_type)
-                                .await
-                        }
-                        _ => Err(crate::services::ApiError::Unauthorized),
+                    let (Some(tok), Some(user)) = (token, username) else {
+                        return Err(crate::services::transfer::TransferError::Failed(
+                            "not signed in".into(),
+                        ));
+                    };
+                    let outcome = svc
+                        .vospace
+                        .upload_file_streaming(
+                            &tok,
+                            &user,
+                            &remote_path,
+                            &local_path,
+                            &content_type,
+                            Some(tx),
+                            &cancel_task,
+                        )
+                        .await;
+                    // Graceful cleanup: an interrupted PUT can leave a node of
+                    // the wrong length, and a truncated FITS that looks whole is
+                    // worse than no file — the next reader gets a header
+                    // promising data that is not there.
+                    if outcome.is_err() {
+                        let _ = svc
+                            .vospace
+                            .delete_node(&tok, &user, &remote_for_cleanup)
+                            .await;
                     }
+                    outcome
                 })
                 .await;
+            self.end_transfer();
 
             match result {
-                Ok(()) => self.show_toast(&crate::tr_fmt!("Uploaded {}", fname)),
+                Ok(_) => self.show_toast(&crate::tr_fmt!("Uploaded {}", fname)),
+                Err(crate::services::transfer::TransferError::Cancelled) => {
+                    self.show_toast(&crate::tr_fmt!("Upload cancelled: {}", fname));
+                    break;
+                }
                 Err(e) => {
                     self.show_toast(&crate::tr_fmt!("Upload failed for {}: {}", fname, e));
                     any_error = true;
@@ -1618,6 +1760,62 @@ mod cache_tests {
             body.contains("reload().await"),
             "Refresh hands back the cached listing — the one answer that button \
              must never give"
+        );
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    //! Storage moved files by reading them entirely into memory: `fs::read` up,
+    //! `resp.bytes()` down. A 5 GB cube needed 5 GB of RAM, showed nothing until
+    //! it finished, and could not be stopped. The streaming path with progress,
+    //! `.tmp` staging and cleanup already existed — in the Search page, which
+    //! the one screen whose whole job is moving files did not use.
+
+    const SOURCE: &str = include_str!("vospace_browser.rs");
+
+    #[test]
+    fn no_transfer_reads_the_whole_file_into_memory() {
+        let code = crate::testing::code(SOURCE);
+        for buffered in ["std::fs::read(", "resp.bytes()"] {
+            assert!(
+                !code.contains(buffered),
+                "a transfer is buffering the whole file ({buffered}) — peak memory \
+                 becomes the file's size, and there is nothing to report progress from"
+            );
+        }
+    }
+
+    #[test]
+    fn both_directions_can_be_watched_and_stopped() {
+        let code = crate::testing::code(SOURCE);
+        // Every transfer that raises the strip must lower it: a strip left up
+        // over a finished transfer is a progress bar that never completes and a
+        // Cancel button wired to nothing.
+        let begun = code.matches("self.begin_transfer(").count();
+        let ended = code.matches("self.end_transfer();").count();
+        assert!(begun >= 3, "only {begun} transfers show the strip");
+        assert_eq!(
+            begun, ended,
+            "{begun} transfers begin the strip, {ended} end it"
+        );
+        assert!(
+            code.contains("transfer_cancel_btn.connect_clicked"),
+            "the strip has no Cancel"
+        );
+    }
+
+    #[test]
+    fn a_failed_upload_does_not_leave_a_truncated_file_behind() {
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("upload_file_streaming")
+            .expect("the streaming upload is gone");
+        let after = &code[at..(at + 1200).min(code.len())];
+        assert!(
+            after.contains("delete_node"),
+            "an interrupted PUT can leave a node of the wrong length; a truncated \
+             FITS that looks whole is worse than no file"
         );
     }
 }

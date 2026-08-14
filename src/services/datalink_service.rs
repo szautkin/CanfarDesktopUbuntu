@@ -96,7 +96,7 @@ impl DataLinkService {
     /// The one place this service buffers a whole body, and deliberately: a
     /// preview is a few hundred kilobytes and its bytes go straight into a
     /// texture. Science files are STREAMED to disk by
-    /// [`stream_download_to_file`](crate::ui::search_page::stream_download_to_file)
+    /// [`stream_download_to_file`](crate::services::transfer::download_to_file)
     /// — a sibling of this function that buffered them into a `Vec<u8>` was
     /// deleted unused, which is the only reason it never met a multi-gigabyte
     /// cube.

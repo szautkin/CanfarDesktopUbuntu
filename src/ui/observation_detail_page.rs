@@ -917,7 +917,7 @@ async fn download_artifact(
                     Some(t) if t > 0 => bar.set_fraction((done as f64 / t as f64).min(1.0)),
                     _ => bar.pulse(),
                 }
-                bar.set_text(Some(&crate::ui::search_page::format_download_amount(
+                bar.set_text(Some(&crate::services::transfer::format_download_amount(
                     done, total,
                 )));
             }
@@ -932,13 +932,15 @@ async fn download_artifact(
     let dl_result = services
         .spawn(async move {
             let token = svc.get_token().await;
-            crate::ui::search_page::stream_download_with_progress(
+            crate::services::transfer::download_with_progress(
                 &url2,
                 token.as_deref(),
                 &dest,
                 &toast_handle,
                 &progress_label,
                 Some(tx),
+                // No cancel affordance on this page yet; the Storage browser has one.
+                &crate::services::transfer::Cancel::never(),
             )
             .await
         })

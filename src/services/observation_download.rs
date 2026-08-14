@@ -120,7 +120,7 @@ pub async fn download_observation(
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let dest = dir.join(&filename);
 
-    let file_size = crate::ui::search_page::stream_download_to_file(
+    let file_size = crate::services::transfer::download_to_file(
         &url,
         token.as_deref(),
         &dest,
