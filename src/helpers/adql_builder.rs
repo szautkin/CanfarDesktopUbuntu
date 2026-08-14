@@ -83,6 +83,30 @@ fn num(v: f64) -> String {
     rounded.to_string()
 }
 
+/// Today, as an ADQL timestamp literal body (`2026-08-14T12:00:00`).
+///
+/// Seconds precision: `dataRelease` is a release DATE, and a query that changes
+/// its text every millisecond is one nobody can compare against the last run.
+fn now_iso_seconds() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
+/// The same number, always written as a DOUBLE (`58000` → `58000.0`).
+///
+/// `INTERVAL` bounds must be doubles: CADC answers
+///   400 — Interval bounds must be double, found: LongValue,LongValue
+/// for a whole-numbered MJD, so every search carrying an observation-date range
+/// failed. Rust's `Display` drops the fraction for an integral f64 and the
+/// service reads what is left as an integer.
+fn dbl(v: f64) -> String {
+    let s = num(v);
+    if s.contains(['.', 'e', 'E', 'N', 'i']) {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
 /// Build an ADQL query from the search form state.
 pub fn build(state: &SearchFormState) -> String {
     let mut clauses = vec![QUALITY_FILTER.to_string()];
@@ -124,7 +148,18 @@ fn add_observation_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
     }
 
     if state.public_only {
-        clauses.push("Plane.dataRelease <= GETDATE()".to_string());
+        // A literal, computed here. `GETDATE()` is T-SQL and CADC answers
+        //   400 — Function [GETDATE] is not found in TapSchema
+        // so "Public data only" failed the whole search, in this app and in the
+        // reference it was ported from.
+        //
+        // The replacement is a date, not another function call. CADC declares
+        // ADQL 2.0 with the twelve standard geometry features and NO UDFs, and
+        // ADQL 2.0 has no current-time function: `NOW()` happens to work because
+        // the backend is PostgreSQL, and `CURRENT_TIMESTAMP` — which is SQL —
+        // does not, because the parser reads it as a column name. A client-side
+        // literal is the portable form and is what the standard leaves us.
+        clauses.push(format!("Plane.dataRelease <= '{}'", now_iso_seconds()));
     }
 }
 
@@ -293,8 +328,8 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
         Some(start) => {
             clauses.push(format!(
                 "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                num(datetime_to_mjd(start)),
-                num(datetime_to_mjd(now))
+                dbl(datetime_to_mjd(start)),
+                dbl(datetime_to_mjd(now))
             ));
         }
         None => {
@@ -340,8 +375,8 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
                     (Some(lo), Some(hi)) => {
                         clauses.push(format!(
                             "INTERSECTS( INTERVAL({}, {}), Plane.time_bounds_samples ) = 1",
-                            num(lo),
-                            num(hi)
+                            dbl(lo),
+                            dbl(hi)
                         ));
                     }
                     (Some(lo), None) => {
@@ -381,13 +416,87 @@ fn add_temporal_clauses(state: &SearchFormState, clauses: &mut Vec<String>) {
     }
 }
 
+/// How a date is written for the column being constrained.
+///
+/// `Plane.time_bounds_*` hold MJD numbers; `Plane.dataRelease` is a TIMESTAMP,
+/// and comparing it to a number is not a mismatch the service forgives:
+///   500 — operator does not exist: timestamp without time zone <= integer
+/// Both went through one MJD-only path, so every Data Release constraint failed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DateForm {
+    /// A bare MJD number.
+    Mjd,
+    /// An ISO-8601 literal in quotes — ADQL 2.0 has no date function to call,
+    /// so a client computes the value and writes it out.
+    Timestamp,
+}
+
+/// One date, rendered for its column.
+fn date_literal(value: &str, form: DateForm) -> Option<String> {
+    match form {
+        DateForm::Mjd => date_to_mjd_flexible(value).map(num),
+        DateForm::Timestamp => {
+            let (start, _) = expand_single_date(value.trim());
+            let day = if start.is_empty() {
+                value.trim()
+            } else {
+                &start
+            };
+            (!day.is_empty()).then(|| format!("'{}T00:00:00.000'", escape_sql(day)))
+        }
+    }
+}
+
 /// Apply a parsed date range to the query (port of `ADQLBuilder.AddDateRangeClause`).
 ///
-/// With `column = Some(col)` the bounds compare directly against `col` (MJD);
-/// with `column = None` they map onto `Plane.time_bounds_*` / an
+/// With `column = Some(col)` the bounds compare directly against `col`; with
+/// `column = None` they map onto `Plane.time_bounds_*` / an
 /// `INTERSECTS(INTERVAL(...))` overlap. Values are parsed leniently (a bare year
 /// or year-month expands to its start/end date).
 fn add_date_range_clause(range: &ParsedRange, clauses: &mut Vec<String>, column: Option<&str>) {
+    // The only timestamp column the form constrains; everything else is MJD.
+    let form = match column {
+        Some("Plane.dataRelease") => DateForm::Timestamp,
+        _ => DateForm::Mjd,
+    };
+    if form == DateForm::Timestamp {
+        let col = column.unwrap_or("Plane.dataRelease");
+        let op = match range.op {
+            RangeOp::GreaterThan => ">",
+            RangeOp::GreaterThanOrEqual => ">=",
+            RangeOp::LessThan => "<",
+            RangeOp::LessThanOrEqual => "<=",
+            RangeOp::Equals | RangeOp::Between => "",
+        };
+        match range.op {
+            RangeOp::Between => {
+                if let (Some(lo), Some(hi)) = (
+                    date_literal(&range.value1, form),
+                    range.value2.as_deref().and_then(|v| date_literal(v, form)),
+                ) {
+                    clauses.push(format!("{col} >= {lo} AND {col} <= {hi}"));
+                }
+            }
+            RangeOp::Equals => {
+                // A bare year/month means the whole window it names, as it does
+                // for every other date field.
+                let (start, end) = expand_single_date(range.value1.trim());
+                if !start.is_empty() && !end.is_empty() {
+                    clauses.push(format!(
+                        "{col} >= '{}T00:00:00.000' AND {col} <= '{}T23:59:59.999'",
+                        escape_sql(&start),
+                        escape_sql(&end)
+                    ));
+                }
+            }
+            _ => {
+                if let Some(v) = date_literal(&range.value1, form) {
+                    clauses.push(format!("{col} {op} {v}"));
+                }
+            }
+        }
+        return;
+    }
     match range.op {
         RangeOp::Between => {
             if let (Some(lo), Some(hi)) = (
@@ -448,8 +557,8 @@ fn push_interval(clauses: &mut Vec<String>, column: Option<&str>, lo: f64, hi: f
         Some(col) => clauses.push(format!("{} >= {} AND {} <= {}", col, num(lo), col, num(hi))),
         None => clauses.push(format!(
             "INTERSECTS( INTERVAL( {}, {} ), Plane.time_bounds_samples ) = 1",
-            num(lo),
-            num(hi)
+            dbl(lo),
+            dbl(hi)
         )),
     }
 }
@@ -1067,7 +1176,16 @@ mod tests {
         let mut state = SearchFormState::new();
         state.public_only = true;
         let adql = build(&state);
-        assert!(adql.contains("dataRelease <= GETDATE()"));
+        // A literal, not a function: CADC declares ADQL 2.0 with no UDFs, and
+        // ADQL 2.0 has no current-time function to call.
+        assert!(
+            adql.contains("Plane.dataRelease <= '"),
+            "public-only must compare against a timestamp literal: {adql}"
+        );
+        assert!(
+            !adql.contains("GETDATE"),
+            "GETDATE is T-SQL; CADC 400s on it"
+        );
     }
 
     #[test]
@@ -1833,5 +1951,168 @@ mod tests {
             ident,
         );
         assert_eq!(c[0], "X = 42");
+    }
+}
+
+#[cfg(test)]
+mod ivoa_conformance {
+    //! What we emit must be ADQL 2.0, and must be what CADC declares it accepts.
+    //!
+    //! Its `/capabilities` advertise ADQL 2.0 with exactly twelve geometry
+    //! features — POINT, CIRCLE, BOX, POLYGON, REGION, CONTAINS, INTERSECTS,
+    //! AREA, CENTROID, COORDSYS, COORD1, COORD2 — and **no** user-defined
+    //! functions. Three things we emitted were outside that, each failing a whole
+    //! search, and each verified against the live service:
+    //!
+    //! * `GETDATE()` → 400, "Function [GETDATE] is not found in TapSchema".
+    //!   T-SQL, inherited from the reference. `CURRENT_TIMESTAMP` fails too — the
+    //!   parser reads it as a column name — so a client-side literal it is.
+    //! * `Plane.dataRelease <= 61265` → 500, "operator does not exist: timestamp
+    //!   without time zone <= integer". That column is a TIMESTAMP; only
+    //!   `time_bounds_*` are MJD.
+    //! * `INTERVAL( 58000, 59000 )` → 400, "Interval bounds must be double".
+    //!   Rust's Display drops the fraction on an integral f64 and the service
+    //!   reads what is left as an integer.
+    use super::*;
+    use crate::models::search_result::SearchFormState;
+
+    /// Every function name ADQL 2.0 defines that this builder may call, plus the
+    /// SQL constructs that are not function calls at all.
+    const ALLOWED: &[&str] = &[
+        "POINT",
+        "CIRCLE",
+        "BOX",
+        "POLYGON",
+        "REGION",
+        "CONTAINS",
+        "INTERSECTS",
+        "AREA",
+        "CENTROID",
+        "COORDSYS",
+        "COORD1",
+        "COORD2",
+        "INTERVAL",
+        "TOP",
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "AND",
+        "OR",
+        "NOT",
+        "AS",
+        "JOIN",
+        "ON",
+        "IS",
+        "NULL",
+        "LIKE",
+        "IN",
+        "BETWEEN",
+    ];
+
+    fn every_call_in(adql: &str) -> Vec<String> {
+        // A bare word immediately followed by `(` is a function call.
+        let bytes = adql.as_bytes();
+        let mut out = Vec::new();
+        let mut word = String::new();
+        for (i, c) in adql.char_indices() {
+            if c.is_alphanumeric() || c == '_' {
+                word.push(c);
+                continue;
+            }
+            if c == '(' && !word.is_empty() {
+                out.push(word.to_uppercase());
+            }
+            let _ = (i, bytes);
+            word.clear();
+        }
+        out
+    }
+
+    fn a_form_using_everything() -> SearchFormState {
+        let mut s = SearchFormState {
+            target: "M51".into(),
+            resolved_ra: Some(202.4696),
+            resolved_dec: Some(47.1952),
+            search_radius: 0.1,
+            public_only: true,
+            data_release: "2020..2024".into(),
+            obs_date_raw: "2019-01-01..2021-01-01".into(),
+            ..Default::default()
+        };
+        s.collection = "CFHT".into();
+        s
+    }
+
+    #[test]
+    fn the_query_calls_only_functions_the_service_declares() {
+        let adql = build(&a_form_using_everything());
+        for call in every_call_in(&adql) {
+            assert!(
+                ALLOWED.contains(&call.as_str()),
+                "`{call}(` is not an ADQL 2.0 function CADC declares — it will 400: {adql}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_search_can_smuggle_in_the_t_sql_that_broke_public_only() {
+        let adql = build(&a_form_using_everything());
+        for tsql in ["GETDATE", "CURRENT_TIMESTAMP", "CURRENT_DATE", "NOW("] {
+            assert!(!adql.to_uppercase().contains(tsql), "{tsql} in: {adql}");
+        }
+    }
+
+    #[test]
+    fn interval_bounds_are_written_as_doubles() {
+        let mut s = SearchFormState {
+            obs_date_raw: "2019-01-01..2021-01-01".into(),
+            ..Default::default()
+        };
+        s.collection = String::new();
+        let adql = build(&s);
+        let at = adql
+            .find("INTERVAL(")
+            .expect("a date range emits an INTERVAL");
+        let bounds = &adql[at..adql[at..].find(')').unwrap() + at];
+        for bound in bounds
+            .trim_start_matches("INTERVAL(")
+            .split(',')
+            .map(str::trim)
+        {
+            assert!(
+                bound.contains('.'),
+                "`{bound}` is an integer literal; CADC answers \
+                 \"Interval bounds must be double\": {adql}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_timestamp_column_is_compared_against_a_timestamp() {
+        let s = SearchFormState {
+            data_release: "2020..2024".into(),
+            ..Default::default()
+        };
+        let adql = build(&s);
+        let where_part = &adql[adql.find("WHERE").expect("a WHERE clause")..];
+        let line = where_part
+            .lines()
+            .find(|l| l.contains("dataRelease"))
+            .unwrap_or_default();
+        assert!(
+            line.contains('\''),
+            "dataRelease is a TIMESTAMP; comparing it to a number is a 500: {line}"
+        );
+    }
+
+    #[test]
+    fn a_bare_year_still_means_the_whole_year() {
+        let s = SearchFormState {
+            data_release: "2020".into(),
+            ..Default::default()
+        };
+        let adql = build(&s);
+        assert!(adql.contains("2020-01-01"), "{adql}");
+        assert!(adql.contains("2020-12-31"), "{adql}");
     }
 }
