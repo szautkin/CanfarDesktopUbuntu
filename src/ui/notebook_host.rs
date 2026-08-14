@@ -49,6 +49,12 @@ pub struct NotebookTabHost {
     services: Arc<AppServices>,
     /// Stack that switches between the empty-state and the tab notebook.
     content_stack: gtk::Stack,
+    /// The empty-state page, so its recents can be rebuilt each time it is shown.
+    empty_page: RefCell<Option<gtk::Box>>,
+    /// Paths behind the recents rows, rewritten on every rebuild.
+    recent_paths: RefCell<Vec<String>>,
+    /// Whether the recents row handler is already connected.
+    recent_handler_connected: std::cell::Cell<bool>,
     /// Status dot for kernel (coloured circle).
     kernel_dot: gtk::Label,
     /// Python path label in toolbar.
@@ -350,6 +356,9 @@ impl NotebookTabHost {
             python_path: Rc::new(RefCell::new(python_path)),
             services,
             content_stack,
+            empty_page: RefCell::new(None),
+            recent_paths: RefCell::new(Vec::new()),
+            recent_handler_connected: std::cell::Cell::new(false),
             kernel_dot,
             python_label,
             toast_overlay,
@@ -555,6 +564,7 @@ impl NotebookTabHost {
         }
 
         // Populate recent notebooks in empty state
+        *host.empty_page.borrow_mut() = Some(empty_page.clone());
         host.populate_recent_list(&empty_page);
 
         host
@@ -1068,8 +1078,15 @@ impl NotebookTabHost {
         // Build tab header: label + close button
         let tab_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let tab_label = gtk::Label::new(Some(title));
-        tab_label.set_max_width_chars(20);
-        tab_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        // An ellipsizing label's MINIMUM width is the ellipsis itself, so under
+        // any pressure — several tabs, a narrow window — every tab collapsed to
+        // a bare "…" and no notebook could be told from another. `width_chars`
+        // is the floor that stops it; `max_width_chars` still caps a long name.
+        tab_label.set_width_chars(12);
+        tab_label.set_max_width_chars(24);
+        tab_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        // The whole name, for when the middle is elided.
+        tab_label.set_tooltip_text(Some(title));
 
         let close_btn = gtk::Button::from_icon_name("window-close-symbolic");
         close_btn.add_css_class("flat");
@@ -1141,10 +1158,14 @@ impl NotebookTabHost {
         if let Some(idx) = pages.iter().position(|p| Rc::ptr_eq(p, page)) {
             if let Some(label) = labels.get(idx) {
                 let base = page.title();
+                // The dot is the reference's unsaved marker and reads at a
+                // glance; a trailing "*" beside an elided name did not.
                 if page.is_modified() {
-                    label.set_text(&format!("{base} *"));
+                    label.set_text(&format!("● {base}"));
+                    label.set_tooltip_text(Some(&crate::tr_fmt!("{} — unsaved changes", base)));
                 } else {
                     label.set_text(&base);
+                    label.set_tooltip_text(Some(&base));
                 }
             }
         }
@@ -1194,7 +1215,7 @@ impl NotebookTabHost {
     }
 
     /// Remove a page's tab + tracking entries, and delete its autosave checkpoint.
-    fn remove_page_for(&self, page: &Rc<NotebookPage>) {
+    fn remove_page_for(self: &Rc<Self>, page: &Rc<NotebookPage>) {
         let idx = self.pages.borrow().iter().position(|p| Rc::ptr_eq(p, page));
         let Some(idx) = idx else { return };
         if (idx as u32) < self.tab_view.n_pages() {
@@ -1209,6 +1230,14 @@ impl NotebookTabHost {
             crate::helpers::notebook_autosave::delete_autosave(&path);
         }
         if self.pages.borrow().is_empty() {
+            // Rebuild the recents on the way in. They were filled once, at
+            // construction, so a notebook opened or saved during the session
+            // never appeared — and on a first run the list was empty and stayed
+            // empty until the app was restarted.
+            let empty = self.empty_page.borrow().clone();
+            if let Some(page) = empty {
+                self.populate_recent_list(&page);
+            }
             self.content_stack.set_visible_child_name("empty");
         }
     }
@@ -1285,13 +1314,15 @@ impl NotebookTabHost {
     }
 
     /// Save the currently-active notebook.
-    fn save_current(&self) {
+    ///
+    /// A notebook that has never been saved has nowhere to save TO, so Save
+    /// opens the file chooser. It used to post a toast telling the user to go
+    /// and find the Save As button instead — a Save button that does not save,
+    /// and the reason saving here read as not working.
+    fn save_current(self: &Rc<Self>) {
         if let Some(page) = self.current_page() {
             if page.file_path.borrow().is_none() {
-                // No path set — show toast and do nothing; user should use Save As
-                self.toast_overlay.add_toast(adw::Toast::new(crate::tr_en!(
-                    "Use Save As to choose a file path"
-                )));
+                self.trigger_save_as();
                 return;
             }
             if let Err(e) = page.save() {
@@ -1310,8 +1341,17 @@ impl NotebookTabHost {
                         crate::helpers::notebook_autosave::delete_autosave(path);
                     }
                 }
+                // Named, not just "Saved": the first save of a notebook goes
+                // wherever the chooser was pointing, and the confirmation is
+                // where a user learns which file that was.
+                let name = page
+                    .file_path
+                    .borrow()
+                    .as_ref()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| page.title());
                 self.toast_overlay
-                    .add_toast(adw::Toast::new(crate::tr_en!("Saved")));
+                    .add_toast(adw::Toast::new(&crate::tr_fmt!("Saved {}", name)));
             }
         }
     }
@@ -1341,7 +1381,7 @@ impl NotebookTabHost {
     }
 
     /// Trigger "Save" for the currently-active notebook.
-    pub fn trigger_save(&self) {
+    pub fn trigger_save(self: &Rc<Self>) {
         self.save_current();
     }
 
@@ -1448,9 +1488,6 @@ impl NotebookTabHost {
     /// Populate the recent-notebooks list inside the empty state widget.
     fn populate_recent_list(self: &Rc<Self>, empty_page: &gtk::Box) {
         let recent = self.store.load();
-        if recent.is_empty() {
-            return;
-        }
 
         // Scan empty_page's children to find the ListBox appended by
         // `build_empty_state`.
@@ -1468,6 +1505,14 @@ impl NotebookTabHost {
             Some(lb) => lb,
             None => return,
         };
+
+        // Rebuilt, not appended to: this runs every time the empty state is
+        // shown, and appending would stack a second copy of every row.
+        while let Some(row) = list_box.first_child() {
+            list_box.remove(&row);
+        }
+        list_box.set_visible(!recent.is_empty());
+        *self.recent_paths.borrow_mut() = recent.iter().map(|e| e.path.clone()).collect();
 
         for entry in &recent {
             let row = gtk::ListBoxRow::new();
@@ -1489,15 +1534,20 @@ impl NotebookTabHost {
             list_box.append(&row);
         }
 
-        // Connect row activation to open the notebook via the unified load_from_path
-        let store_entries: Vec<String> = recent.iter().map(|e| e.path.clone()).collect();
-        let h = self.clone();
-        list_box.connect_row_activated(move |_, row| {
-            let idx = row.index() as usize;
-            if let Some(path_str) = store_entries.get(idx) {
-                h.load_from_path(&PathBuf::from(path_str));
-            }
-        });
+        // Connected once. The handler reads `recent_paths`, which this function
+        // rewrites on every rebuild — capturing the list here instead would open
+        // whatever was recent the first time the empty state was ever shown.
+        if !self.recent_handler_connected.get() {
+            self.recent_handler_connected.set(true);
+            let h = self.clone();
+            list_box.connect_row_activated(move |_, row| {
+                let idx = row.index() as usize;
+                let path = h.recent_paths.borrow().get(idx).cloned();
+                if let Some(path_str) = path {
+                    h.load_from_path(&PathBuf::from(path_str));
+                }
+            });
+        }
     }
 
     // ── Notebook settings ──────────────────────────────────────────────────────
@@ -2011,4 +2061,79 @@ fn build_empty_state() -> gtk::Box {
     page.append(&list_box);
 
     page
+}
+
+#[cfg(test)]
+mod empty_state_tests {
+    //! The recents list was filled once, at construction. A notebook opened or
+    //! saved during the session never appeared in it, and on a first run the
+    //! section stayed empty until the app was restarted — so "Recent Notebooks"
+    //! sat above nothing, looking broken, which it was.
+
+    const SOURCE: &str = include_str!("notebook_host.rs");
+
+    #[test]
+    fn the_recents_are_rebuilt_whenever_the_empty_state_is_shown() {
+        let code = crate::testing::code(SOURCE);
+        // Every RUNTIME switch back to the empty state — `self.content_stack…`.
+        // The constructor's own call is not one: it runs before the host exists,
+        // and populates the list immediately afterwards.
+        let mut checked = 0;
+        for (at, _) in code.match_indices("self.content_stack.set_visible_child_name(\"empty\")") {
+            checked += 1;
+            let before = &code[at.saturating_sub(500)..at];
+            assert!(
+                before.contains("populate_recent_list"),
+                "the empty state is shown without rebuilding its recents, so it \
+                 shows whatever was recent when the app started"
+            );
+        }
+        assert!(
+            checked > 0,
+            "nothing returns to the empty state — scan is broken"
+        );
+    }
+
+    #[test]
+    fn rebuilding_replaces_the_rows_rather_than_appending_to_them() {
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("fn populate_recent_list")
+            .expect("populate_recent_list is gone");
+        let body = &code[at..(at + 2000).min(code.len())];
+        assert!(
+            body.contains("list_box.remove("),
+            "a rebuild that only appends stacks a second copy of every row each \
+             time the empty state is shown"
+        );
+    }
+
+    #[test]
+    fn a_tab_label_cannot_collapse_to_an_ellipsis() {
+        // An ellipsizing label's MINIMUM width is the ellipsis, so with several
+        // tabs open every one of them rendered as a bare "…".
+        let code = crate::testing::code(SOURCE);
+        let at = code.find("let tab_label =").expect("the tab label is gone");
+        let body = &code[at..(at + 700).min(code.len())];
+        assert!(
+            body.contains("set_width_chars("),
+            "the tab label has no width floor; it will collapse to \"…\""
+        );
+    }
+
+    #[test]
+    fn save_on_a_new_notebook_opens_the_chooser() {
+        // Save used to post a toast telling the user to go and find Save As.
+        let code = crate::testing::code(SOURCE);
+        let at = code.find("fn save_current").expect("save_current is gone");
+        let body = &code[at..(at + 900).min(code.len())];
+        assert!(
+            body.contains("trigger_save_as()"),
+            "Save on a never-saved notebook must open Save As, not refuse"
+        );
+        assert!(
+            !body.contains("Use Save As to choose a file path\"\n"),
+            "the scolding toast is back"
+        );
+    }
 }

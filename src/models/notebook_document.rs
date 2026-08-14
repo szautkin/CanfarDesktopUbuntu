@@ -66,9 +66,13 @@ impl NotebookDocument {
 /// Top-level notebook metadata block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotebookMetadata {
-    #[serde(default)]
+    // Omitted when unset, never written as `null`: the nbformat schema types
+    // these as objects, so `"kernelspec": null` fails validation — and Jupyter
+    // reads a notebook with no kernelspec as "pick a kernel", which is the
+    // honest state, while a null is a malformed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernelspec: Option<KernelSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language_info: Option<LanguageInfo>,
     /// Any additional metadata fields the notebook may carry.
     #[serde(flatten)]
@@ -80,7 +84,8 @@ pub struct NotebookMetadata {
 pub struct KernelSpec {
     pub name: String,
     pub display_name: String,
-    #[serde(default)]
+    // Absent, not null: the schema types it as a string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }
 
@@ -88,7 +93,7 @@ pub struct KernelSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LanguageInfo {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -99,10 +104,17 @@ pub struct LanguageInfo {
 // ---------------------------------------------------------------------------
 
 /// A single notebook cell.  `cell_type` is `"code"`, `"markdown"`, or `"raw"`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct NotebookCell {
     pub cell_type: String,
     pub source: CellSource,
+    // `outputs` and `execution_count` belong to a CODE cell. The nbformat 4.5
+    // schema declares `additionalProperties: false` on markdown and raw cells,
+    // so writing them there produces a file `nbformat.validate` rejects — and
+    // ours wrote `"outputs": [], "execution_count": null` on every markdown
+    // cell. `is_not_code` reads the sibling field, which is why these are
+    // serialized through a custom path rather than a `skip_serializing_if`
+    // that cannot see it.
     #[serde(default)]
     pub outputs: Vec<CellOutput>,
     #[serde(default)]
@@ -112,6 +124,41 @@ pub struct NotebookCell {
     pub id: Option<String>,
     #[serde(default)]
     pub metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Serialize for NotebookCell {
+    /// Write the cell the way nbformat 4.5 defines it.
+    ///
+    /// A code cell carries `outputs` and `execution_count` — both REQUIRED,
+    /// even when empty or null. A markdown or raw cell carries neither, and the
+    /// schema says `additionalProperties: false`, so writing them there is a
+    /// file `nbformat.validate` rejects and other tools may refuse. Ours wrote
+    /// `"outputs": [], "execution_count": null` on every markdown cell.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let is_code = self.cell_type == "code";
+        let mut len = 3; // cell_type, source, metadata
+        if self.id.is_some() {
+            len += 1;
+        }
+        if is_code {
+            len += 2;
+        }
+
+        let mut map = serializer.serialize_map(Some(len))?;
+        map.serialize_entry("cell_type", &self.cell_type)?;
+        if let Some(id) = &self.id {
+            map.serialize_entry("id", id)?;
+        }
+        map.serialize_entry("metadata", &self.metadata)?;
+        map.serialize_entry("source", &self.source)?;
+        if is_code {
+            map.serialize_entry("execution_count", &self.execution_count)?;
+            map.serialize_entry("outputs", &self.outputs)?;
+        }
+        map.end()
+    }
 }
 
 // ---------------------------------------------------------------------------

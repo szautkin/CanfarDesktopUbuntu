@@ -266,6 +266,27 @@ pub fn load_notebook(path: &Path) -> Result<NotebookDocument, String> {
 ///
 /// The JSON is indented with a single space to match Jupyter's own output.
 pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> {
+    // Stamp the kernel this app actually runs, unless the notebook already
+    // names one. A notebook with no kernelspec opens in Jupyter as "select a
+    // kernel" — true, but every notebook we write is a Python 3 notebook, and
+    // saying so is the difference between a file that runs and a file that asks.
+    let mut doc = doc.clone();
+    if doc.metadata.kernelspec.is_none() {
+        doc.metadata.kernelspec = Some(crate::models::notebook_document::KernelSpec {
+            name: "python3".to_string(),
+            display_name: "Python 3".to_string(),
+            language: Some("python".to_string()),
+        });
+    }
+    if doc.metadata.language_info.is_none() {
+        doc.metadata.language_info = Some(crate::models::notebook_document::LanguageInfo {
+            name: "python".to_string(),
+            version: None,
+            extra: Default::default(),
+        });
+    }
+    let doc = &doc;
+
     // Ensure the parent directory exists.
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -699,5 +720,128 @@ mod tests {
         let back = load_notebook(&path).expect("load");
         assert_eq!(back.cells[0].outputs.len(), 1);
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod nbformat_conformance {
+    //! What we write has to be a notebook Jupyter will open.
+    //!
+    //! Three things it was not, all invisible from inside the app because our
+    //! own reader is forgiving of them:
+    //!
+    //! * `"kernelspec": null` / `"language_info": null` — the schema types both
+    //!   as objects, so a validator rejects the file and Jupyter has no kernel
+    //!   to offer.
+    //! * `"outputs": []` and `"execution_count": null` on every MARKDOWN cell —
+    //!   the 4.5 schema sets `additionalProperties: false` on markdown and raw
+    //!   cells, so those two keys make the file invalid.
+    //! * No kernelspec at all, so a notebook this app wrote opened elsewhere as
+    //!   "select a kernel" when every one of them is Python 3.
+    use super::*;
+    use crate::models::notebook_document::{CellSource, NotebookCell, NotebookDocument};
+    use serde_json::Value;
+
+    fn write_and_read(doc: &NotebookDocument) -> Value {
+        let path = std::env::temp_dir().join(format!(
+            "verbinal_nbfmt_{}.ipynb",
+            NotebookDocument::generate_cell_id()
+        ));
+        save_notebook(doc, &path).expect("save");
+        let text = std::fs::read_to_string(&path).expect("read back");
+        let _ = std::fs::remove_file(&path);
+        serde_json::from_str(&text).expect("what we wrote is JSON")
+    }
+
+    fn markdown(text: &str) -> NotebookCell {
+        NotebookCell {
+            cell_type: "markdown".to_string(),
+            source: CellSource::Single(text.to_string()),
+            outputs: Vec::new(),
+            execution_count: None,
+            id: Some(NotebookDocument::generate_cell_id()),
+            metadata: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn a_markdown_cell_carries_no_code_cell_keys() {
+        let mut doc = NotebookDocument::create_empty();
+        doc.cells.push(markdown("# Title"));
+        let json = write_and_read(&doc);
+        let cell = &json["cells"][1];
+        let keys: Vec<&str> = cell
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+        for forbidden in ["outputs", "execution_count"] {
+            assert!(
+                !keys.contains(&forbidden),
+                "a markdown cell carries `{forbidden}`, which the 4.5 schema forbids: {keys:?}"
+            );
+        }
+        for required in ["cell_type", "metadata", "source"] {
+            assert!(keys.contains(&required), "{required} missing: {keys:?}");
+        }
+    }
+
+    #[test]
+    fn a_code_cell_keeps_the_keys_the_schema_requires() {
+        // Both are REQUIRED for a code cell, and `execution_count` is null until
+        // it runs — the one null in the format that is correct.
+        let doc = NotebookDocument::create_empty();
+        let json = write_and_read(&doc);
+        let cell = &json["cells"][0];
+        assert!(cell.get("outputs").is_some_and(|v| v.is_array()));
+        assert!(cell.get("execution_count").is_some(), "must be present");
+        assert!(cell["execution_count"].is_null(), "null until it has run");
+        assert!(cell.get("id").is_some(), "4.5 requires a cell id");
+    }
+
+    #[test]
+    fn the_metadata_names_the_kernel_and_holds_no_nulls() {
+        let doc = NotebookDocument::create_empty();
+        let json = write_and_read(&doc);
+        let md = &json["metadata"];
+        assert_eq!(md["kernelspec"]["name"], "python3", "{md}");
+        assert_eq!(md["language_info"]["name"], "python", "{md}");
+        // A null where the schema wants an object or a string is what made the
+        // file invalid in the first place.
+        fn nulls(v: &Value, path: String, out: &mut Vec<String>) {
+            match v {
+                Value::Null => out.push(path),
+                Value::Object(m) => {
+                    for (k, v) in m {
+                        nulls(v, format!("{path}.{k}"), out);
+                    }
+                }
+                Value::Array(a) => {
+                    for (i, v) in a.iter().enumerate() {
+                        nulls(v, format!("{path}[{i}]"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        nulls(md, "metadata".into(), &mut found);
+        assert!(found.is_empty(), "nulls in metadata: {found:?}");
+    }
+
+    #[test]
+    fn a_notebook_this_app_wrote_is_one_it_can_read_back() {
+        let mut doc = NotebookDocument::create_empty();
+        doc.cells.push(markdown("## Notes"));
+        doc.cells[0].source = CellSource::Single("print(1)".into());
+        let json = write_and_read(&doc);
+        let reread: NotebookDocument =
+            serde_json::from_value(json).expect("our own reader accepts our own file");
+        assert_eq!(reread.cells.len(), 2);
+        assert_eq!(reread.cells[0].source.joined(), "print(1)");
+        assert_eq!(reread.cells[1].cell_type, "markdown");
+        assert_eq!(reread.nbformat, 4);
+        assert_eq!(reread.nbformat_minor, 5);
     }
 }
