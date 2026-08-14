@@ -18,6 +18,9 @@ Thumbs.db
 # Claude Code
 .claude/
 
+# Agent smoke-test scratch (an MCP save_notebook landed one of these here)
+/verbinal-smoke-*/
+
 # Packaging
 *.deb
 *.rpm
