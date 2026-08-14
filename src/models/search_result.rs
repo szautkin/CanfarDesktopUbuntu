@@ -1296,3 +1296,87 @@ mod tests {
         assert_eq!(dl.other_files().len(), 1);
     }
 }
+
+#[cfg(test)]
+mod real_tap_response {
+    //! The pipeline, end to end, against a response CADC actually sent.
+    //!
+    //! Every synthetic CSV in these tests writes headers the way a person would
+    //! (`RA (J2000.0)`). TAP does not: an `AS "RA (J2000.0)"` alias comes back
+    //! CSV-quoted around a value that already contains quotes —
+    //! `"""RA (J2000.0)"""` — so the header the app parses is `"RA (J2000.0)"`,
+    //! quotes and all. A column whose key or lookup disagreed by those two
+    //! characters would render blank in every row, which is what a "corrupted"
+    //! table looks like.
+    use super::*;
+
+    const SAMPLE: &str = include_str!("../../tests/fixtures/tap_caom2_sample.csv");
+
+    #[test]
+    fn every_column_the_service_sent_resolves_to_its_own_value() {
+        let results = parse_csv(SAMPLE);
+        let columns = build_columns_from_headers(&results.columns);
+        assert_eq!(columns.len(), 41, "the reference SELECT has 41 columns");
+        assert!(!results.rows.is_empty(), "the fixture has data rows");
+
+        // Position of each column in the raw CSV, so we can check the value the
+        // app looks up is the value in that column — not merely non-empty.
+        let row = &results.rows[0];
+        let raw_first_row: Vec<&str> = SAMPLE.lines().nth(1).unwrap().split(',').collect();
+        let mut unresolved = Vec::new();
+        for (i, col) in columns.iter().enumerate() {
+            match row.values.get(&col.header) {
+                // Only compare where the naive split is trustworthy (no quoted
+                // commas before it); the point is that the lookup HITS.
+                Some(v) => {
+                    if i < raw_first_row.len() && !raw_first_row[i].starts_with('"') {
+                        assert_eq!(v, raw_first_row[i], "column {} is off by one", col.key);
+                    }
+                }
+                None => unresolved.push(col.key.clone()),
+            }
+        }
+        assert!(
+            unresolved.is_empty(),
+            "columns whose header does not resolve to a value — they render blank \
+             in every row: {unresolved:?}"
+        );
+    }
+
+    #[test]
+    fn the_aliased_columns_keep_their_human_labels() {
+        let results = parse_csv(SAMPLE);
+        let columns = build_columns_from_headers(&results.columns);
+        let labels: Vec<&str> = columns.iter().map(|c| c.display_name.as_str()).collect();
+        // The quotes TAP wraps an alias in must not reach the column header.
+        for label in &labels {
+            assert!(!label.contains('"'), "a column is labelled {label:?}");
+        }
+        assert!(labels.contains(&"RA (J2000.0)"), "{labels:?}");
+        assert!(labels.contains(&"Target Name"), "{labels:?}");
+    }
+
+    #[test]
+    fn a_formatted_column_is_recognised_through_the_services_quoting() {
+        // `format_for_key` dispatches on the cleaned key. If TAP's extra quotes
+        // survived cleaning, RA/Dec would render as raw degrees and dates as
+        // bare MJD numbers.
+        let results = parse_csv(SAMPLE);
+        let columns = build_columns_from_headers(&results.columns);
+        let by_key = |k: &str| columns.iter().find(|c| c.key == k).cloned();
+        assert!(
+            matches!(
+                by_key("ra(j20000)").map(|c| c.format),
+                Some(ColumnFormat::Degrees5)
+            ),
+            "RA is not recognised as a coordinate column"
+        );
+        assert!(
+            matches!(
+                by_key("startdate").map(|c| c.format),
+                Some(ColumnFormat::MjdToDate)
+            ),
+            "Start Date is not recognised as a date column"
+        );
+    }
+}

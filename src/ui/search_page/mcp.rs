@@ -199,7 +199,7 @@ impl SearchPage {
             "run_search" => {
                 self.guard_not_searching()?;
                 self.execute_search().await;
-                Ok(self.run_result())
+                self.run_result_or_error()
             }
             "set_adql_query" => {
                 let adql = crate::mcp::tools::str_arg(args, "adql");
@@ -222,7 +222,7 @@ impl SearchPage {
                         .to_string());
                 }
                 self.execute_raw_adql().await;
-                Ok(self.run_result())
+                self.run_result_or_error()
             }
 
             // ── Results table ───────────────────────────────────────────────
@@ -431,6 +431,19 @@ impl SearchPage {
 
     /// `{ran, adql, totalRows, status}` — the shared tail of `run_search` and
     /// `execute_adql_query`, so both report a run the same way.
+    /// What a search tool returns.
+    ///
+    /// `Err` when the search failed, carrying the service's own words. It used
+    /// to return `Ok` with `"status": "Search failed"` — a tool reporting
+    /// success for a failure, with the reason readable only on screen, so an
+    /// agent could see that something went wrong and never what.
+    fn run_result_or_error(&self) -> Result<Value, String> {
+        if let Some(why) = self.last_search_error.borrow().clone() {
+            return Err(why);
+        }
+        Ok(self.run_result())
+    }
+
     fn run_result(&self) -> Value {
         json!({
             "ran": true,

@@ -173,10 +173,14 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         desc(
             "save_notebook",
-            "Save a notebook. With no path it saves to the current file (fails for an unsaved \
-             notebook — pass a full .ipynb path to save-as).",
+            "Save a notebook to the LOCAL filesystem. With no path it saves to the current file \
+             (fails for an unsaved notebook — pass a full local .ipynb path to save-as). This \
+             never writes to VOSpace/ARC: to put a notebook there, save it locally first and then \
+             upload it with upload_vospace_file.",
             json!({"type":"object","properties":{
-                "path":{"type":"string","description":"Optional full .ipynb path to save-as"},
+                "path":{"type":"string","description":"Optional absolute LOCAL .ipynb path to \
+                     save-as. Not a VOSpace path — a `vos:` or `arc:` path is refused rather than \
+                     written to a local directory of the same name."},
                 "notebook":sel
             },"required":[],"additionalProperties":false}),
             VerbClass::Write,

@@ -404,8 +404,15 @@ impl ToolRouter for McpToolRouter {
                         if !p.destructive && auto_apply_on {
                             // Atomically claim before applying so the applier runs at most
                             // once (a concurrent UI Apply on the same id can't double-run it).
-                            if self.proposals.claim(&p.id).is_some() {
-                                match super::apply_any(&self.services, p).await {
+                            //
+                            // Apply the CLAIMED copy, not `p`. `stamp_source` above wrote
+                            // the origin into the store; `p` is the value the tool
+                            // returned before that, with `origin: None`. The applier asks
+                            // exactly that field to decide whether an agent made this —
+                            // so every artefact an agent created was recorded as the
+                            // user's, and none of them ever showed the agent badge.
+                            if let Some(claimed) = self.proposals.claim(&p.id) {
+                                match super::apply_any(&self.services, &claimed).await {
                                     Ok(msg) => {
                                         self.proposals.settle(
                                             &p.id,
@@ -498,6 +505,36 @@ impl ToolRouter for McpToolRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An agent's write is recorded as an agent's.
+    ///
+    /// The router stamps the origin into the STORE and then applied the value
+    /// the tool had returned a moment earlier, whose `origin` is still `None`.
+    /// `AgentAttribution::for_applied_proposal` asks exactly that field, so
+    /// every artefact an agent created — saved queries, workflows, bookmarks,
+    /// notes — was attributed to the user and none of them showed the badge.
+    #[test]
+    fn the_applier_sees_the_origin_the_router_stamped() {
+        let store = InMemoryProposalStore::new();
+        let p = store.enqueue("save_query", "Save M51", false, serde_json::json!({}));
+        assert!(p.origin.is_none(), "fresh proposals carry no origin");
+
+        store.stamp_source(&p.id, "save_query", Some("Claude Desktop".into()));
+
+        // What the applier is handed must be the stamped copy.
+        let claimed = store.claim(&p.id).expect("claimable");
+        assert_eq!(claimed.origin.as_deref(), Some("Claude Desktop"));
+        assert!(
+            crate::helpers::agent_attribution::AgentAttribution::for_applied_proposal(&claimed)
+                .is_some(),
+            "a claimed agent proposal must earn a badge"
+        );
+
+        // And the pre-stamp value would not have earned one — which is the bug.
+        assert!(
+            crate::helpers::agent_attribution::AgentAttribution::for_applied_proposal(&p).is_none()
+        );
+    }
 
     /// The cap is a cap on what the queue HOLDS.
     ///

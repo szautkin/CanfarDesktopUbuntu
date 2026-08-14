@@ -794,6 +794,14 @@ impl NotebookTabHost {
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty());
+                if let Some(p) = path {
+                    // A caller working in VOSpace naturally reaches for the path
+                    // it has been using. This tool writes to the local disk, so
+                    // that path would be created as a LOCAL directory tree and
+                    // the save would report success while VOSpace stayed empty —
+                    // which is exactly what happened.
+                    crate::helpers::local_path::reject_remote(p)?;
+                }
                 match path {
                     Some(p) => page.save_as(PathBuf::from(p)),
                     None => page.save(),
@@ -809,6 +817,9 @@ impl NotebookTabHost {
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "path is required".to_string())?;
+                // Same trap in the other direction: a VOSpace path here would
+                // "open" nothing and report a tab that is not the file asked for.
+                crate::helpers::local_path::reject_remote(path)?;
                 self.load_from_path(&PathBuf::from(path));
                 let page = self
                     .current_page()

@@ -388,6 +388,9 @@ pub struct SearchPage {
     results_count_label: gtk::Label,
     /// Wrapped, dismissible explanation of the last failed query.
     error_banner: adw::Banner,
+    /// Why the last search failed, in the service's own words — so a tool can
+    /// report it instead of a caller reading "Search failed" and guessing.
+    last_search_error: RefCell<Option<String>>,
     page_label: gtk::Label,
     /// "Apply filters to ADQL" button — shown only while client-side column
     /// filters are active (ref `ApplyFiltersBtn` / `UpdateApplyFiltersButton`).
@@ -902,6 +905,7 @@ impl SearchPage {
             header_panel,
             results_count_label,
             error_banner,
+            last_search_error: RefCell::new(None),
             page_label,
             apply_filters_btn,
             recent_list,
@@ -1629,6 +1633,7 @@ impl SearchPage {
 
         match result {
             Ok(results) => {
+                *self.last_search_error.borrow_mut() = None;
                 let count = results.total_rows();
                 self.results_count_label.set_text(&crate::tr_plural!(
                     count,
@@ -1667,6 +1672,10 @@ impl SearchPage {
                 self.status_label.set_text(crate::tr_en!("Search failed"));
                 self.error_banner.set_title(&e.to_string());
                 self.error_banner.set_revealed(true);
+                // The banner is for the person at the screen. An agent driving
+                // the same search got `{"ran": true, "status": "Search failed"}`
+                // and no way to learn WHY — it had to guess, and guessed wrong.
+                *self.last_search_error.borrow_mut() = Some(e.to_string());
             }
         }
     }
