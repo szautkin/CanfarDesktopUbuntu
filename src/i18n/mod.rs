@@ -291,6 +291,7 @@ prend en compte à son prochain démarrage."),
     ("Upload cancelled: {}",                        "Téléversement annulé : {}"),
     ("Download cancelled: {}",                      "Téléchargement annulé : {}"),
     ("{} — unsaved changes",                        "{} — modifications non enregistrées"),
+    ("All files",                                   "Tous les fichiers"),
     ("Install failed — see the kernel log",         "Échec de l’installation — voir le journal du noyau"),
     // Settings
     ("Appearance",                                  "Apparence"),

@@ -265,6 +265,24 @@ pub fn load_notebook(path: &Path) -> Result<NotebookDocument, String> {
 /// `.tmp` file then rename).
 ///
 /// The JSON is indented with a single space to match Jupyter's own output.
+/// `path` with an `.ipynb` extension, unless it already carries one.
+///
+/// A file chooser returns exactly what was typed. A notebook saved as
+/// `analysis` is still a notebook, but nothing else will treat it as one: our
+/// own Open dialog filters for `*.ipynb`, and so does Jupyter's.
+pub fn with_ipynb_extension(path: std::path::PathBuf) -> std::path::PathBuf {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("ipynb") => path,
+        // A dotted name that is not an extension ("run.v2") keeps its dot and
+        // gains the real one, as every editor does.
+        _ => {
+            let mut s = path.into_os_string();
+            s.push(".ipynb");
+            std::path::PathBuf::from(s)
+        }
+    }
+}
+
 pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> {
     // Stamp the kernel this app actually runs, unless the notebook already
     // names one. A notebook with no kernelspec opens in Jupyter as "select a
@@ -843,5 +861,42 @@ mod nbformat_conformance {
         assert_eq!(reread.cells[1].cell_type, "markdown");
         assert_eq!(reread.nbformat, 4);
         assert_eq!(reread.nbformat_minor, 5);
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::with_ipynb_extension;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_name_without_an_extension_gains_one() {
+        // A chooser returns exactly what was typed. "analysis" is a notebook
+        // nothing will offer to open — not our Open dialog, not Jupyter's.
+        assert_eq!(
+            with_ipynb_extension(PathBuf::from("/tmp/analysis")),
+            PathBuf::from("/tmp/analysis.ipynb")
+        );
+    }
+
+    #[test]
+    fn a_name_that_already_has_one_is_left_alone() {
+        assert_eq!(
+            with_ipynb_extension(PathBuf::from("/tmp/analysis.ipynb")),
+            PathBuf::from("/tmp/analysis.ipynb")
+        );
+        // Case is the file system's business, not ours to rewrite.
+        assert_eq!(
+            with_ipynb_extension(PathBuf::from("/tmp/A.IPYNB")),
+            PathBuf::from("/tmp/A.IPYNB")
+        );
+    }
+
+    #[test]
+    fn a_dotted_name_keeps_its_dot_and_gains_the_real_extension() {
+        assert_eq!(
+            with_ipynb_extension(PathBuf::from("/tmp/run.v2")),
+            PathBuf::from("/tmp/run.v2.ipynb")
+        );
     }
 }

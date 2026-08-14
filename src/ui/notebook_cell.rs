@@ -293,7 +293,11 @@ impl CodeCellWidget {
         } else {
             self.widget.remove_css_class("notebook-cell-active");
         }
-        self.text_view.set_cursor_visible(active);
+        // The caret is NOT set from here. GTK already draws it only in the
+        // view that has focus, so gating it on "is this the active cell" was a
+        // second opinion about the same thing — and when the two disagreed the
+        // focused cell had no caret at all: you clicked into a cell, saw
+        // nothing, and only typing made it appear.
     }
 
     /// Expose the run button so [`NotebookPage`] can connect a callback.
@@ -793,4 +797,27 @@ fn escape_pango(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod caret_tests {
+    //! Clicking into a cell showed no caret; it appeared only once you typed.
+    //!
+    //! `set_active` drove `set_cursor_visible(active)`, so the caret depended on
+    //! an INDEX the page maintained rather than on where the keyboard actually
+    //! was. GTK already draws a caret only in the focused view, so the extra
+    //! gate could only ever disagree — and when it did, the cell you had just
+    //! clicked into looked dead.
+
+    const SOURCE: &str = include_str!("notebook_cell.rs");
+
+    #[test]
+    fn nothing_hides_the_caret_of_a_focused_cell() {
+        let code = crate::testing::code(SOURCE);
+        assert!(
+            !code.contains("set_cursor_visible("),
+            "the caret is being toggled by hand again; GTK ties it to focus, and \
+             a second opinion about that leaves a clicked-in cell with no cursor"
+        );
+    }
 }

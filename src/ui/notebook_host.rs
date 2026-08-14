@@ -762,8 +762,28 @@ impl NotebookTabHost {
                 if idx >= page.cell_count() {
                     return Err(format!("cell index {idx} out of range"));
                 }
-                page.run_cell(idx);
-                Ok(self.state_of(&page))
+                // Awaited, and the OUTPUTS come back with it. Fire-and-forget
+                // returned a snapshot taken before the cell had run: a caller
+                // could not tell whether its code had worked, raised, or even
+                // started, and had to guess when to poll get_cell_output. A
+                // raise is a normal result and rides in `outputs` with
+                // `isError`; a kernel that could not run it at all is an error.
+                let kernel_ok = page.run_cell_async(idx).await;
+                let mut state = self.state_of(&page);
+                let outputs = cell_outputs_json(&page, idx);
+                state["ranCell"] = json!(idx);
+                state["kernelOk"] = json!(kernel_ok);
+                state["isError"] = json!(outputs
+                    .iter()
+                    .any(|o| o.get("isError").and_then(|v| v.as_bool()).unwrap_or(false)));
+                state["outputs"] = json!(outputs);
+                if !kernel_ok {
+                    return Err(format!(
+                        "the kernel could not run cell {idx}: {}",
+                        page.current_kernel_status_label()
+                    ));
+                }
+                Ok(state)
             }
 
             // Op names are the MCP tool names verbatim (see `mcp::tools::notebook`),
@@ -771,7 +791,20 @@ impl NotebookTabHost {
             "run_all_cells" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 page.run_all();
-                Ok(self.state_of(&page))
+                let mut state = self.state_of(&page);
+                // Which cells raised, so a caller does not have to walk every
+                // cell asking. `run_all` is still fire-and-forget — it drives
+                // the same per-cell awaitable and stops at the first kernel
+                // failure — so this reports what has landed so far.
+                let failed: Vec<usize> = (0..page.cell_count())
+                    .filter(|i| {
+                        cell_outputs_json(&page, *i)
+                            .iter()
+                            .any(|o| o.get("isError").and_then(|v| v.as_bool()).unwrap_or(false))
+                    })
+                    .collect();
+                state["cellsWithErrors"] = json!(failed);
+                Ok(state)
             }
 
             "clear_cell_outputs" => {
@@ -923,6 +956,15 @@ impl NotebookTabHost {
 
         let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
+
+        // A second choice that hides nothing. A filtered chooser with no way to
+        // widen it makes a file that exists look like a file that does not —
+        // which is exactly what happened to notebooks saved without their
+        // extension, and there was no way to reach them from here.
+        let all = gtk::FileFilter::new();
+        all.set_name(Some(crate::tr_en!("All files")));
+        all.add_pattern("*");
+        filters.append(&all);
 
         let dialog = gtk::FileDialog::builder()
             .title(crate::tr_en!("Open Notebook"))
@@ -1408,18 +1450,45 @@ impl NotebookTabHost {
         let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
 
+        // Suggest the notebook's own name, with the extension. Without this the
+        // chooser opened on an empty field, whatever was typed was saved
+        // verbatim, and a notebook saved as "analysis" then did not appear in
+        // the Open dialog at all — its filter lists notebooks, and a file with
+        // no extension is not one.
+        let suggested = {
+            let base = page.title();
+            let base = base.trim_end_matches(".ipynb");
+            format!("{base}.ipynb")
+        };
         let dialog = gtk::FileDialog::builder()
             .title(crate::tr_en!("Save Notebook As"))
             .modal(true)
+            .initial_name(&suggested)
             .filters(&filters)
             .build();
 
         if let Ok(file) = dialog.save_future(root.as_ref()).await {
             if let Some(path) = file.path() {
-                match page.save_as(path) {
+                // Belt and braces: a chooser lets a name through unchanged, so
+                // a typed "analysis" becomes "analysis.ipynb" here rather than a
+                // file no notebook tool will offer to open.
+                let path = crate::helpers::notebook_parser::with_ipynb_extension(path);
+                match page.save_as(path.clone()) {
                     Ok(()) => {
+                        // The tab still said "Untitled" after a Save As: the
+                        // MCP handler refreshed the title and this one did not,
+                        // so the same action told the truth to an agent and not
+                        // to the person who performed it.
+                        self.refresh_tab_title(&page);
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| page.title());
+                        // Now that it has a path, it is a notebook worth
+                        // offering next time the empty state is shown.
+                        let _ = self.store.add(&path.display().to_string(), &name);
                         self.toast_overlay
-                            .add_toast(adw::Toast::new(crate::tr_en!("Saved")));
+                            .add_toast(adw::Toast::new(&crate::tr_fmt!("Saved {}", name)));
                     }
                     Err(e) => {
                         self.toast_overlay
@@ -1932,6 +2001,19 @@ const TEXT_CAP: usize = 10_000;
 
 /// Serialise a single code-cell output into the transport JSON shape (binary
 /// image data is flagged via `has_image`, never inlined here).
+/// One cell's outputs, as `get_cell_output` reports them.
+///
+/// Shared so `run_cell` answers in exactly the shape a caller would get by
+/// polling afterwards — two renderings of the same thing would eventually
+/// disagree about what an error looks like.
+fn cell_outputs_json(page: &Rc<NotebookPage>, index: usize) -> Vec<serde_json::Value> {
+    page.snapshot_document()
+        .cells
+        .get(index)
+        .map(|c| c.outputs.iter().map(cell_output_json).collect())
+        .unwrap_or_default()
+}
+
 fn cell_output_json(out: &CellOutput) -> serde_json::Value {
     use serde_json::json;
     match out {
@@ -2119,6 +2201,45 @@ mod empty_state_tests {
             body.contains("set_width_chars("),
             "the tab label has no width floor; it will collapse to \"…\""
         );
+    }
+
+    #[test]
+    fn save_as_renames_the_tab_and_remembers_the_file() {
+        // The tab still read "Untitled" after a Save As: the MCP handler
+        // refreshed the title and the UI path did not, so the same action told
+        // an agent the truth and the person who performed it a lie.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("fn trigger_save_as_widget")
+            .expect("save-as is gone");
+        let body = &code[at..(at + 2600).min(code.len())];
+        assert!(
+            body.contains("refresh_tab_title"),
+            "Save As leaves the tab showing the old name"
+        );
+        assert!(
+            body.contains("self.store.add("),
+            "a notebook that has just been given a path is not offered in recents"
+        );
+        assert!(
+            body.contains("with_ipynb_extension"),
+            "a typed name without an extension is saved as-is, and then the Open \
+             dialog will not show it"
+        );
+        assert!(
+            body.contains("initial_name"),
+            "the chooser opens with an empty name"
+        );
+    }
+
+    #[test]
+    fn the_open_dialog_can_show_everything() {
+        // A filtered chooser with no way to widen it makes a file that exists
+        // look like a file that does not.
+        let code = crate::testing::code(SOURCE);
+        let at = code.find("fn open_file_dialog").expect("open is gone");
+        let body = &code[at..(at + 1400).min(code.len())];
+        assert!(body.contains("All files"), "no unfiltered choice in Open");
     }
 
     #[test]

@@ -246,7 +246,10 @@ impl NotebookPage {
     /// [`run_all`](Self::run_all) can stop early. Mirrors the reference
     /// `RunSelectedCellAsync`, including the soft, non-fatal execution-timeout
     /// warning (the kernel is never hard-killed on timeout).
-    async fn run_cell_async(self: &Rc<Self>, index: usize) -> bool {
+    /// Run one cell and wait for it. `false` when the kernel itself failed
+    /// (as opposed to the code raising, which is a normal result carried in the
+    /// cell's outputs).
+    pub(crate) async fn run_cell_async(self: &Rc<Self>, index: usize) -> bool {
         let doc_len = self.document.borrow().cells.len();
         if index >= doc_len {
             return true;
