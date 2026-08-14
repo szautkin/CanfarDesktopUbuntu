@@ -2,10 +2,56 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
-## [1.3.3] - 2026-08-12
+## [1.3.3] - 2026-08-14
 
 Parity with the CanfarDesktop 1.3.2 + 1.3.3 (Windows) generation. 1.3.2 was
 reliability work; 1.3.3 was MCP full-UI coverage. Both are in.
+
+### Fixed after the parity sweep
+
+Using the app — and driving it with an AI agent — turned up defects the tests
+could not see. Each was confirmed against the live service or by reading what
+the app actually wrote, not by reasoning about it.
+
+- **The search form could build ADQL the archive refuses.** `GETDATE()` is
+  T-SQL and CADC answers *"Function [GETDATE] is not found in TapSchema"*, so
+  **Public data only** had never worked — in this app or in the Windows one it
+  was ported from. Two more of the same kind: `Plane.dataRelease` is a
+  TIMESTAMP and was compared against an MJD number (a 500), and `INTERVAL`
+  bounds must be doubles, so any observation-date range 400'd. CADC declares
+  ADQL 2.0 with twelve geometry functions and no UDFs; a guard now rejects any
+  call outside that set, which is what would have caught `GETDATE` on day one.
+- **A folder you created was invisible.** The listing cache had no way to say
+  "this is now wrong", so after a create the browser redisplayed the listing
+  from before it — and creating the folder again failed as already existing,
+  which it was. Delete, rename, share and upload had it too, and Refresh could
+  hand back a cached listing. Separately, the node URI in the create request
+  omitted the `home/<user>` root the URL carries, which the service rightly
+  refused as invalid.
+- **Transfers ran blind.** Storage held whole files in memory — a 5 GB cube
+  needed 5 GB of RAM, showed nothing until it finished, and could not be
+  stopped. Uploads and downloads now stream with a progress strip and a cancel
+  button, a download lands in `.tmp` and is renamed only when complete, and a
+  failed upload deletes what it left rather than leaving a truncated FITS that
+  looks whole.
+- **An agent's work was recorded as yours.** The router stamped the
+  originating client into the proposal store and then applied a copy taken
+  before the stamp, so nothing an agent created ever earned its badge.
+- **`run_search` reported success on failure**, hiding the service's
+  explanation in an on-screen banner; `run_cell` returned before the cell had
+  run. Both now answer with what happened, errors included.
+- **Notebooks were not quite notebooks.** Every markdown cell carried
+  `outputs` and `execution_count`, and `kernelspec`/`language_info` were
+  written as `null` — all three make a file the nbformat schema rejects. Saved
+  notebooks now declare the Python 3 kernel they ran under. Save As left the
+  tab reading "Untitled" and saved whatever name was typed, so a notebook
+  saved as `analysis` had no extension and the Open dialog would not show it.
+  Clicking into a cell left no caret until you typed.
+- **89 dead-code warnings were suppressed**, and reading them found five real
+  defects: the app view snapshot never reported who was signed in, the
+  proposal budget's tests covered a copy of the code the router did not run,
+  and two reference features had shipped with their halves never called.
+  The shipping build now lints with `dead_code` on.
 
 ### Added
 - **Full MCP tool parity** — the surface now advertises the reference's **137
@@ -69,7 +115,7 @@ reliability work; 1.3.3 was MCP full-UI coverage. Both are in.
   on two silent boxes that said nothing about which one was Python.
 
 ### Changed
-- Test suite: 841 → **1,172**, including invariant tests that walk the live tool
+- Test suite: 841 → **1,212**, including invariant tests that walk the live tool
   manifest — every advertised argument is read by something, everything settable
   is readable, and every payload key an applier reads is one a proposer writes —
   and four that walk the source for strings a person reads: nothing reaches a
