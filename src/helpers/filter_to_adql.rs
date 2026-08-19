@@ -82,15 +82,32 @@ fn comparison(adql_col: &str, symbol: &str, value: &str) -> String {
     }
 }
 
-/// Build a single WHERE clause for one column and one *parsed* filter.
+/// Build a WHERE fragment for one column and one *parsed* filter.
 ///
-/// This has to share `FilterExpr` with the grid rather than re-read the text.
+/// This has to share [`FilterExpr`] with the grid rather than re-read the text.
 /// It used to take the raw string and turn anything non-numeric into
 /// `LIKE '%…%'`, so once the grid learned `!raw`, "Apply filters to ADQL" would
 /// have queried for rows *containing* `!raw` — the exact opposite of the rows
-/// on screen, with no error to notice.
+/// on screen, with no error to notice. The same goes for every boolean the
+/// grid now accepts.
 fn build_clause(adql_col: &str, expr: &FilterExpr) -> String {
-    let body = match &expr.op {
+    match expr {
+        FilterExpr::Condition(op) => condition_clause(adql_col, op),
+        FilterExpr::Not(inner) => format!("NOT ({})", build_clause(adql_col, inner)),
+        FilterExpr::All(branches) => join(adql_col, branches, " AND "),
+        FilterExpr::Any(branches) => join(adql_col, branches, " OR "),
+    }
+}
+
+/// Parenthesised so precedence survives the trip into SQL — `a OR b` nested
+/// inside an AND has to keep its own brackets.
+fn join(adql_col: &str, branches: &[FilterExpr], separator: &str) -> String {
+    let parts: Vec<String> = branches.iter().map(|b| build_clause(adql_col, b)).collect();
+    format!("({})", parts.join(separator))
+}
+
+fn condition_clause(adql_col: &str, op: &FilterOp) -> String {
+    match op {
         FilterOp::Range { low, high } => {
             format!("{adql_col} BETWEEN {} AND {}", operand(low), operand(high))
         }
@@ -105,11 +122,6 @@ fn build_clause(adql_col: &str, expr: &FilterExpr) -> String {
             Ok(num) if num.is_finite() => format!("{adql_col} = {num}"),
             _ => format!("lower({adql_col}) LIKE {}", like_pattern(v)),
         },
-    };
-    if expr.negated {
-        format!("NOT ({body})")
-    } else {
-        body
     }
 }
 
@@ -214,6 +226,39 @@ mod tests {
             where_for("callev", "!>=2"),
             "NOT (Plane.calibrationLevel >= 2)"
         );
+    }
+
+    #[test]
+    fn booleans_survive_the_trip_into_sql() {
+        assert_eq!(
+            where_for("collection", "!tess & !apass"),
+            "(NOT (lower(Observation.collection) LIKE '%tess%') \
+             AND NOT (lower(Observation.collection) LIKE '%apass%'))"
+        );
+        assert_eq!(
+            where_for("collection", "hst | cfht"),
+            "(lower(Observation.collection) LIKE '%hst%' \
+             OR lower(Observation.collection) LIKE '%cfht%')"
+        );
+        assert_eq!(
+            where_for("callev", ">=2 & <=4"),
+            "(Plane.calibrationLevel >= 2 AND Plane.calibrationLevel <= 4)"
+        );
+    }
+
+    #[test]
+    fn precedence_survives_as_brackets() {
+        // `a | b & c` is `a OR (b AND c)`. Emitting it flat would hand the
+        // service a different query from the one the grid answered.
+        let flat = where_for("collection", "hst | cfht & raw");
+        assert_eq!(
+            flat,
+            "(lower(Observation.collection) LIKE '%hst%' \
+             OR (lower(Observation.collection) LIKE '%cfht%' \
+             AND lower(Observation.collection) LIKE '%raw%'))"
+        );
+        // And the parenthesised form is a genuinely different query.
+        assert_ne!(where_for("collection", "(hst | cfht) & raw"), flat);
     }
 
     #[test]

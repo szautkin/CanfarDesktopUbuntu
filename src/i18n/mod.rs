@@ -442,6 +442,51 @@ prend en compte à son prochain démarrage."),
     ("Apply filters and re-render",                 "Appliquer les filtres et réafficher"),
     ("Apply filters to ADQL",                       "Appliquer les filtres à l’ADQL"),
     ("Clear filters",                               "Effacer les filtres"),
+    ("Filter syntax",                               "Syntaxe des filtres"),
+    ("How to write a column filter",                 "Comment écrire un filtre de colonne"),
+    // The filter grammar. Operator symbols stay verbatim — they are what you
+    // type, not words — and so do the example expressions in `FILTER_SYNTAX`.
+    (
+        "Number: 10, >=10, or 10..20 for a range.",
+        "Nombre : 10, >=10, ou 10..20 pour un intervalle.",
+    ),
+    (
+        "Text: matches anywhere in the cell; =text matches all of it.",
+        "Texte : correspond n’importe où dans la cellule ; =texte correspond à la cellule entière.",
+    ),
+    (
+        "Combine with ! (not), & (and), | (or) and parentheses.",
+        "Combinez avec ! (non), & (et), | (ou) et des parenthèses.",
+    ),
+    (
+        "Filters on different columns must all hold. Filtering narrows the rows \
+         already fetched; use \u{201c}Apply filters to ADQL\u{201d} to push them into the query.",
+        "Les filtres de colonnes différentes doivent tous être satisfaits. Le filtrage \
+         restreint les lignes déjà récupérées ; utilisez \u{201c}Appliquer les filtres à \
+         l\u{2019}ADQL\u{201d} pour les intégrer à la requête.",
+    ),
+    ("contains, ignoring case",                      "contient, sans tenir compte de la casse"),
+    ("matches the whole cell",                       "correspond à la cellule entière"),
+    (
+        "compare — as numbers where both sides are numbers",
+        "comparaison — numérique lorsque les deux côtés sont des nombres",
+    ),
+    ("compare, the other way",                       "comparaison, dans l’autre sens"),
+    ("a range, both ends included",                  "un intervalle, bornes incluses"),
+    ("NOT — excludes what follows",                  "NON — exclut ce qui suit"),
+    (
+        "AND — both must hold (also `&&`, `AND`)",
+        "ET — les deux doivent être satisfaits (aussi `&&`, `AND`)",
+    ),
+    (
+        "OR — either may hold (also `||`, `OR`)",
+        "OU — l’un ou l’autre suffit (aussi `||`, `OR`)",
+    ),
+    (
+        "parentheses group; NOT binds tightest, then AND, then OR",
+        "les parenthèses regroupent ; NON est prioritaire, puis ET, puis OU",
+    ),
+    ("quotes make it literal text",                  "les guillemets rendent le texte littéral"),
     (
         "Remove every column filter and the sort, showing all rows again",
         "Supprimer tous les filtres de colonne et le tri, afin d’afficher à nouveau toutes les lignes",

@@ -87,6 +87,21 @@ const RESULT_COLUMN_GAP: i32 = 4;
 /// table ran three cells past its own headings.
 pub(crate) const ACTION_COLUMN_WIDTH: i32 = 38;
 
+/// A cached filter-and-sort result — the POSITIONS of the surviving rows, in
+/// display order — tagged with the fingerprint of the inputs that produced it.
+///
+/// Positions, not rows: matching 10,000 rows takes ~2 ms and cloning the
+/// survivors 15–45 ms, and the page on screen needs a hundred of them at most.
+type ProcessedRows = (u64, Rc<Vec<usize>>);
+
+/// How long to wait after the last keystroke before re-filtering.
+///
+/// Long enough that typing a word does the work once rather than once per
+/// letter; short enough that a pause reads as "it is thinking", not "it is
+/// stuck". CADC's own form uses 500 ms for its validator; the grid filter is
+/// cheaper, so this sits below that.
+const FILTER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// Pin `widget` to exactly `width`, whatever it contains.
 ///
 /// `set_size_request` alone sets a MINIMUM, and inside a horizontally-scrolling
@@ -334,6 +349,68 @@ fn should_record_recent(count: usize) -> bool {
 /// it, "Found 10000 observations" reads as the size of the result set when it is
 /// really the size of the limit — and the difference decides whether the next
 /// step is to narrow the query or to accept it.
+/// A "?" beside the filter controls, opening the filter syntax as a table.
+///
+/// Built from [`crate::helpers::result_filter::FILTER_SYNTAX`], which sits next
+/// to the parser — so an operator cannot be added to the grammar and left out
+/// of the help.
+fn filter_help_button() -> gtk::MenuButton {
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(crate::ui::space::ROW as u32);
+    grid.set_column_spacing(crate::ui::space::CONTROL as u32 * 2);
+    crate::ui::space::inset(&grid, crate::ui::space::CARD);
+
+    let title = gtk::Label::new(Some(crate::tr_en!("Filter syntax")));
+    title.add_css_class("heading");
+    title.set_halign(gtk::Align::Start);
+    grid.attach(&title, 0, 0, 2, 1);
+
+    for (at, (syntax, meaning)) in crate::helpers::result_filter::FILTER_SYNTAX
+        .iter()
+        .enumerate()
+    {
+        let example = gtk::Label::new(Some(syntax));
+        example.add_css_class("monospace");
+        example.set_halign(gtk::Align::Start);
+        example.set_selectable(true);
+        let explanation = gtk::Label::new(Some(crate::tr_en!(meaning)));
+        explanation.add_css_class("dim-label");
+        explanation.set_halign(gtk::Align::Start);
+        explanation.set_wrap(true);
+        explanation.set_max_width_chars(46);
+        grid.attach(&example, 0, at as i32 + 1, 1, 1);
+        grid.attach(&explanation, 1, at as i32 + 1, 1, 1);
+    }
+
+    let footer = gtk::Label::new(Some(crate::tr_en!(
+        "Filters on different columns must all hold. Filtering narrows the rows \
+         already fetched; use \u{201c}Apply filters to ADQL\u{201d} to push them into the query."
+    )));
+    footer.add_css_class("caption");
+    footer.add_css_class("dim-label");
+    footer.set_halign(gtk::Align::Start);
+    footer.set_wrap(true);
+    footer.set_max_width_chars(56);
+    footer.set_margin_top(crate::ui::space::ROW);
+    grid.attach(
+        &footer,
+        0,
+        crate::helpers::result_filter::FILTER_SYNTAX.len() as i32 + 1,
+        2,
+        1,
+    );
+
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&grid));
+
+    let button = gtk::MenuButton::new();
+    button.set_icon_name("help-about-symbolic");
+    button.add_css_class("flat");
+    button.set_tooltip_text(Some(crate::tr_en!("How to write a column filter")));
+    button.set_popover(Some(&popover));
+    button
+}
+
 fn search_status(count: usize, max_records: u32) -> String {
     if count >= max_records as usize {
         crate::tr_fmt!(
@@ -484,6 +561,20 @@ pub struct SearchPage {
     resolver_service_used: Rc<RefCell<Option<String>>>,
     resolution_epoch: Rc<RefCell<Option<String>>>,
     results_store: Rc<RefCell<Option<SearchResults>>>,
+    /// Filtered-and-sorted rows, cached against the inputs that produce them
+    /// (ref `SearchViewModel._filteredRowsCache`).
+    ///
+    /// Keyed by a fingerprint of those inputs rather than invalidated by hand.
+    /// Filtering 10,000 rows means cloning 10,000 41-entry maps, and it ran
+    /// twice per render — once for the page and once for `total_pages` — on
+    /// every debounced keystroke. Hashing a handful of short strings to decide
+    /// whether to skip that is free by comparison, and a cache that cannot go
+    /// stale is one fewer thing to remember at each of the sites that change a
+    /// filter.
+    processed_cache: Rc<RefCell<Option<ProcessedRows>>>,
+    /// Bumped whenever `results_store` is replaced, so the fingerprint changes
+    /// even if the filters and sort do not.
+    results_version: Rc<RefCell<u64>>,
     current_page: Rc<RefCell<usize>>,
     page_size: Rc<RefCell<usize>>,
     sort_column: Rc<RefCell<Option<String>>>,
@@ -734,6 +825,13 @@ impl SearchPage {
         )));
         clear_filters_btn.set_visible(false);
         results_toolbar.append(&clear_filters_btn);
+
+        // What the filter boxes accept, on screen rather than behind a hover.
+        // The syntax was documented only in each box's tooltip — a narrow entry
+        // that is rebuilt as you type, so the tooltip rarely survives long
+        // enough to appear. Someone typing `&` had nothing to tell them whether
+        // it worked.
+        results_toolbar.append(&filter_help_button());
 
         let rows_label = gtk::Label::new(Some(crate::tr_en!("Rows/page:")));
         rows_label.add_css_class("caption");
@@ -997,6 +1095,8 @@ impl SearchPage {
             resolver_service_used: Rc::new(RefCell::new(None)),
             resolution_epoch: Rc::new(RefCell::new(None)),
             results_store: Rc::new(RefCell::new(None)),
+            processed_cache: Rc::new(RefCell::new(None)),
+            results_version: Rc::new(RefCell::new(0)),
             current_page: Rc::new(RefCell::new(0)),
             page_size: Rc::new(RefCell::new(DEFAULT_PAGE_SIZE)),
             sort_column: Rc::new(RefCell::new(None)),
@@ -1752,6 +1852,7 @@ impl SearchPage {
                 // assigns `Results` (`ExecuteAdqlAsync` → `ResetFiltersAndSort`);
                 // we ported the method and dropped the call.
                 *self.results_store.borrow_mut() = Some(results);
+                *self.results_version.borrow_mut() += 1;
                 self.reset_filters_and_sort();
                 self.render_results_page();
 
@@ -1781,98 +1882,139 @@ impl SearchPage {
         )
     }
 
-    fn get_processed_rows(&self) -> Vec<SearchResultRow> {
-        let store = self.results_store.borrow();
-        let Some(results) = &*store else {
-            return Vec::new();
-        };
+    /// Everything the processed rows depend on, hashed. Cheap next to the work
+    /// it guards, and — unlike an explicit `invalidate()` — impossible to
+    /// forget at a call site that changes a filter.
+    fn processed_fingerprint(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
-        // Apply column filters
-        let filters = self.column_filters.borrow();
-        let mut rows = crate::helpers::result_filter::filter_rows(&results.rows, &filters);
+        let mut hasher = DefaultHasher::new();
+        self.results_version.borrow().hash(&mut hasher);
+        let mut filters: Vec<(&String, &String)> = Vec::new();
+        let borrowed = self.column_filters.borrow();
+        filters.extend(borrowed.iter());
+        filters.sort_unstable();
+        filters.hash(&mut hasher);
+        self.sort_column.borrow().hash(&mut hasher);
+        self.sort_ascending.borrow().hash(&mut hasher);
+        hasher.finish()
+    }
 
-        // Apply sort
-        if let Some(ref col) = *self.sort_column.borrow() {
-            let asc = *self.sort_ascending.borrow();
-            crate::helpers::result_filter::sort_rows(&mut rows, col, asc);
+    /// The surviving rows' positions, filtered and sorted, from cache when the
+    /// inputs have not moved.
+    fn processed_indices(&self) -> Rc<Vec<usize>> {
+        let fingerprint = self.processed_fingerprint();
+        if let Some((cached, indices)) = self.processed_cache.borrow().as_ref() {
+            if *cached == fingerprint {
+                return Rc::clone(indices);
+            }
         }
 
-        rows
+        let indices = {
+            let store = self.results_store.borrow();
+            match &*store {
+                None => Vec::new(),
+                Some(results) => {
+                    let filters = self.column_filters.borrow();
+                    let mut indices =
+                        crate::helpers::result_filter::matching_indices(&results.rows, &filters);
+                    if let Some(ref col) = *self.sort_column.borrow() {
+                        let asc = *self.sort_ascending.borrow();
+                        crate::helpers::result_filter::sort_indices(
+                            &results.rows,
+                            &mut indices,
+                            col,
+                            asc,
+                        );
+                    }
+                    indices
+                }
+            }
+        };
+
+        let indices = Rc::new(indices);
+        *self.processed_cache.borrow_mut() = Some((fingerprint, Rc::clone(&indices)));
+        indices
+    }
+
+    /// A slice of the processed rows, materialised. `take` of 0 means all of
+    /// them.
+    ///
+    /// The only place rows are cloned. The grid asks for one page; the exporter
+    /// and the agent snapshot ask for the lot, and both are one-off actions
+    /// rather than something that happens between keystrokes.
+    fn processed_slice(&self, skip: usize, take: usize) -> Vec<SearchResultRow> {
+        let indices = self.processed_indices();
+        let store = self.results_store.borrow();
+        let Some(results) = store.as_ref() else {
+            return Vec::new();
+        };
+        let wanted = indices.iter().skip(skip);
+        let wanted: Box<dyn Iterator<Item = &usize>> = if take == 0 {
+            Box::new(wanted)
+        } else {
+            Box::new(wanted.take(take))
+        };
+        wanted
+            .filter_map(|&i| results.rows.get(i).cloned())
+            .collect()
+    }
+
+    /// Every processed row, materialised — for export and the agent snapshot.
+    fn get_processed_rows(&self) -> Vec<SearchResultRow> {
+        self.processed_slice(0, 0)
     }
 
     fn total_pages(&self) -> usize {
-        let rows = self.get_processed_rows();
         let ps = *self.page_size.borrow();
         if ps == 0 {
             return 0;
         }
-        rows.len().div_ceil(ps)
+        self.processed_indices().len().div_ceil(ps)
     }
 
-    fn render_results_page(self: &Rc<Self>) {
-        // Keep the "Apply filters to ADQL" button in sync with filter state.
-        self.update_filter_buttons();
+    /// Every column this result set has, in order.
+    fn all_columns(&self) -> Vec<crate::models::search_result::ResultColumnInfo> {
+        let store = self.results_store.borrow();
+        match &*store {
+            Some(r) => build_columns_from_headers(&r.columns),
+            None => default_columns(),
+        }
+    }
 
-        // Clear. The filter-entry lookup goes with the widgets it points at —
-        // focusing a destroyed entry after a rebuild would do nothing visible
-        // and silently swallow the user's next keystroke.
+    /// The columns currently on show, in order.
+    fn visible_columns(&self) -> Vec<crate::models::search_result::ResultColumnInfo> {
+        self.all_columns()
+            .into_iter()
+            .filter(|c| self.is_col_visible(c))
+            .collect()
+    }
+
+    /// Rebuild everything: the heading strip AND the rows beneath it.
+    ///
+    /// Only for changes that alter the heading strip — a new result set, a new
+    /// sort, a column shown or hidden. A change of filter text goes through
+    /// [`Self::render_rows`], because rebuilding the header destroys the entry
+    /// being typed in.
+    fn render_results_page(self: &Rc<Self>) {
+        self.render_header();
+        self.render_rows();
+    }
+
+    /// Rebuild the heading strip: sort buttons, unit menus, filter entries.
+    fn render_header(self: &Rc<Self>) {
+        // The filter-entry lookup goes with the widgets it points at — focusing
+        // a destroyed entry would do nothing visible and silently swallow the
+        // user's next keystroke.
         self.filter_entries.borrow_mut().clear();
         while let Some(child) = self.header_panel.first_child() {
             self.header_panel.remove(&child);
         }
-        while let Some(child) = self.results_panel.first_child() {
-            self.results_panel.remove(&child);
-        }
 
-        let processed = self.get_processed_rows();
-        let ps = *self.page_size.borrow();
-        let page = *self.current_page.borrow();
-        let total = processed.len();
-        let start = page * ps;
-        let end = (start + ps).min(total);
-        let total_pages = if ps > 0 { total.div_ceil(ps) } else { 0 };
-
-        // Update status
-        let store = self.results_store.borrow();
-        let raw_total = store.as_ref().map(|r| r.total_rows()).unwrap_or(0);
-        drop(store);
-
-        if total < raw_total {
-            self.page_label.set_text(&crate::tr_fmt!(
-                "Page {} of {} ({}-{} of {}, filtered from {})",
-                page + 1,
-                total_pages.max(1),
-                if total > 0 { start + 1 } else { 0 },
-                end,
-                total,
-                raw_total
-            ));
-        } else {
-            self.page_label.set_text(&crate::tr_fmt!(
-                "Page {} of {} ({}-{} of {})",
-                page + 1,
-                total_pages.max(1),
-                if total > 0 { start + 1 } else { 0 },
-                end,
-                total
-            ));
-        }
-
-        let columns = {
-            let store = self.results_store.borrow();
-            match &*store {
-                Some(r) => build_columns_from_headers(&r.columns),
-                None => default_columns(),
-            }
-        };
-        let vis_columns: Vec<_> = columns
-            .iter()
-            .filter(|c| self.is_col_visible(c))
-            .cloned()
-            .collect();
+        let vis_columns = self.visible_columns();
         let sort_col = self.sort_column.borrow().clone();
         let sort_asc = *self.sort_ascending.borrow();
-
         // Header row with clickable sort + filter entries
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         for col in vis_columns.iter() {
@@ -1940,7 +2082,7 @@ impl SearchPage {
             // CADC's own wording for its own syntax, picked by column type. A
             // filter box that accepts `>=10`, `10..20` and `!` and says nothing
             // is a feature nobody finds.
-            filter_entry.set_tooltip_text(Some(crate::helpers::result_filter::filter_tooltip(
+            filter_entry.set_tooltip_text(Some(&crate::helpers::result_filter::filter_tooltip(
                 crate::models::search_result::column_is_numeric(&col.key),
             )));
             // One character of natural width: the cell's own pin decides how
@@ -1954,7 +2096,6 @@ impl SearchPage {
             }
             let filters_rc = self.column_filters.clone();
             let key2 = col.key.clone();
-            let key3 = col.key.clone();
             let page_rc = Rc::clone(self);
             filter_entry.connect_changed(move |entry| {
                 let text = entry.text().to_string();
@@ -1971,7 +2112,7 @@ impl SearchPage {
                 // cell's "narrow to this value" always did; typing the same
                 // filter only revealed the Apply button, so the identical
                 // constraint behaved two different ways.
-                page_rc.schedule_filter_render(&key3);
+                page_rc.schedule_filter_render();
             });
             self.filter_entries
                 .borrow_mut()
@@ -2008,9 +2149,60 @@ impl SearchPage {
         self.header_panel.append(&header_row);
         self.header_panel
             .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    }
 
-        // Data rows
-        for row in processed.iter().skip(start).take(ps) {
+    /// Redraw the rows and the status line, leaving the heading strip alone.
+    fn render_rows(self: &Rc<Self>) {
+        // Keep the filter buttons in sync with filter state.
+        self.update_filter_buttons();
+
+        while let Some(child) = self.results_panel.first_child() {
+            self.results_panel.remove(&child);
+        }
+
+        let columns = self.all_columns();
+        let vis_columns: Vec<_> = columns
+            .iter()
+            .filter(|c| self.is_col_visible(c))
+            .cloned()
+            .collect();
+        let ps = *self.page_size.borrow();
+        let page = *self.current_page.borrow();
+        let total = self.processed_indices().len();
+        let start = page * ps;
+        let end = (start + ps).min(total);
+        let total_pages = if ps > 0 { total.div_ceil(ps) } else { 0 };
+
+        // Update status
+        let store = self.results_store.borrow();
+        let raw_total = store.as_ref().map(|r| r.total_rows()).unwrap_or(0);
+        drop(store);
+
+        if total < raw_total {
+            self.page_label.set_text(&crate::tr_fmt!(
+                "Page {} of {} ({}-{} of {}, filtered from {})",
+                page + 1,
+                total_pages.max(1),
+                if total > 0 { start + 1 } else { 0 },
+                end,
+                total,
+                raw_total
+            ));
+        } else {
+            self.page_label.set_text(&crate::tr_fmt!(
+                "Page {} of {} ({}-{} of {})",
+                page + 1,
+                total_pages.max(1),
+                if total > 0 { start + 1 } else { 0 },
+                end,
+                total
+            ));
+        }
+
+        // Data rows. Only this page is materialised — the other 9,900 rows of a
+        // maxed-out result set are never cloned.
+        let page_rows = self.processed_slice(start, ps);
+        for row in page_rows.iter() {
             let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row_box.set_margin_top(1);
             row_box.set_margin_bottom(1);
@@ -2288,15 +2480,22 @@ impl SearchPage {
     /// set (up to 10,000 rows) and then rebuilds a page of widgets, which is
     /// visible jank on every keystroke at the larger page sizes. The generation
     /// token means a burst of typing produces one render, not one per character.
-    fn schedule_filter_render(self: &Rc<Self>, column_key: &str) {
+    /// Redraw the rows once the user has stopped typing.
+    ///
+    /// Only the ROWS. This used to call `render_results_page`, which rebuilds
+    /// the heading strip too — destroying the very entry being typed in, so it
+    /// then had to grab focus back and restore the caret on its replacement.
+    /// Every keystroke tore down and rebuilt 41 header cells plus a page of
+    /// rows, and the entry losing focus mid-word is what made typing feel like
+    /// wading. The heading strip does not depend on filter text, so it stays.
+    fn schedule_filter_render(self: &Rc<Self>) {
         let my_gen = {
             let mut g = self.filter_generation.borrow_mut();
             *g = g.wrapping_add(1);
             *g
         };
         let page = Rc::clone(self);
-        let column_key = column_key.to_string();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+        glib::timeout_add_local_once(FILTER_DEBOUNCE, move || {
             // Superseded by a newer keystroke while this was pending.
             if *page.filter_generation.borrow() != my_gen {
                 return;
@@ -2304,15 +2503,7 @@ impl SearchPage {
             // Back to the first page: the row that was at page 3 of the old
             // result set is meaningless once the set has changed under it.
             *page.current_page.borrow_mut() = 0;
-            page.render_results_page();
-
-            // The render rebuilt the header, destroying the entry being typed
-            // in. Put the caret back at the end of its replacement, or the user
-            // types one character and the next goes nowhere.
-            if let Some(entry) = page.filter_entries.borrow().get(&column_key) {
-                entry.grab_focus();
-                entry.set_position(-1);
-            }
+            page.render_rows();
         });
     }
 
@@ -4944,6 +5135,60 @@ mod filter_lifecycle_tests {
                  update_filter_buttons is meant to be the only one that changes it"
             );
         }
+    }
+
+    #[test]
+    fn typing_a_filter_does_not_rebuild_the_heading_strip() {
+        // It used to. Every debounced keystroke tore down 41 header cells and
+        // built them again — destroying the entry being typed in, which then
+        // had to have focus and caret restored on its replacement. That is what
+        // made typing feel slow, and it also meant a tooltip could never stay
+        // up long enough to be read.
+        let code = crate::testing::code(SOURCE);
+        let body = body_of(code, "fn schedule_filter_render");
+        assert!(
+            body.contains("page.render_rows()"),
+            "the filter debounce no longer redraws the rows"
+        );
+        assert!(
+            !body.contains("render_results_page"),
+            "typing a filter rebuilds the header again"
+        );
+        assert!(
+            !body.contains("grab_focus"),
+            "focus is being restored, which means the entry is still being destroyed"
+        );
+    }
+
+    #[test]
+    fn only_the_row_render_is_on_the_filter_path() {
+        // `render_rows` must not touch `header_panel`, or the split is a split
+        // in name only.
+        let code = crate::testing::code(SOURCE);
+        let body = body_of(code, "fn render_rows");
+        assert!(
+            !body.contains("header_panel"),
+            "render_rows still writes to the heading strip"
+        );
+        assert!(body.contains("results_panel"));
+    }
+
+    #[test]
+    fn the_filter_syntax_is_documented_where_it_can_be_seen() {
+        // A tooltip on a narrow entry is not documentation: it needs a steady
+        // hover on a box that is rebuilt as you type. The help sits in the
+        // toolbar beside the filter buttons, always visible.
+        let code = crate::testing::code(SOURCE);
+        assert!(
+            code.contains("results_toolbar.append(&filter_help_button())"),
+            "the filter help is not in the results toolbar"
+        );
+        let body = body_of(code, "fn filter_help_button");
+        assert!(
+            body.contains("result_filter::FILTER_SYNTAX"),
+            "the help lists operators of its own instead of the parser's, so \
+             the two can disagree"
+        );
     }
 
     #[test]
