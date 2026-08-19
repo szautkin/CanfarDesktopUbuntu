@@ -228,6 +228,20 @@ impl SessionService {
         }
     }
 
+    /// Everything a failed job can still tell you: its logs and its events,
+    /// assembled and trimmed for a failure record.
+    ///
+    /// One method rather than two calls at each site, because there are two
+    /// sites — the image-discovery coordinator and the Batch Jobs poller — and
+    /// both must ask the same question in the same way, while the job still
+    /// exists to answer it. Best effort throughout: a diagnosis missing half
+    /// its evidence beats no diagnosis.
+    pub async fn get_diagnostics(&self, token: &str, session_id: &str) -> String {
+        let logs = self.get_logs(token, session_id).await.unwrap_or_default();
+        let events = self.get_events(token, session_id).await.unwrap_or_default();
+        crate::helpers::job_diagnostics::evidence(&logs, &events)
+    }
+
     pub async fn get_logs(&self, token: &str, session_id: &str) -> Result<String, String> {
         let url = self.endpoints.session_logs_url(session_id);
         let resp = self

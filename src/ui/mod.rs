@@ -15,6 +15,7 @@ pub mod cube_volume_gl;
 pub mod dashboard;
 pub mod datalink_file_dialog;
 pub mod delete_dialog;
+pub mod failure_detail;
 pub mod file_panel;
 pub mod fits_canvas;
 pub mod fits_coords_panel;

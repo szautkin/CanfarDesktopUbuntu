@@ -10,6 +10,7 @@ pub mod health_tracker;
 pub mod image_discovery_coordinator;
 pub mod image_discovery_settings_service;
 pub mod image_service;
+pub mod job_history_store;
 pub mod kernel_service;
 pub mod legal_service;
 pub mod manifest_store;

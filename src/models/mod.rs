@@ -6,6 +6,7 @@ pub mod container_image;
 pub mod fits_image;
 pub mod image_discovery_settings;
 pub mod image_manifest;
+pub mod job_record;
 pub mod notebook_document;
 pub mod notebook_settings;
 pub mod observation_note;

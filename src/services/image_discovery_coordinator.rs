@@ -19,10 +19,13 @@
 //! headless round-trip itself needs a live Skaha and is exercised in the app.
 
 use crate::helpers::embedded_probe_scripts::{inspector_script, probe_script};
+use crate::helpers::job_diagnostics::{tail, MAX_REASON_CHARS};
 use crate::helpers::manifest_parser::parse_manifest;
 use crate::models::image_manifest::{DiscoveryOutcome, ImageManifest};
+use crate::models::job_record::{JobOrigin, JobOutcome, JobRecord};
 use crate::models::SessionLaunchParams;
 use crate::services::image_discovery_settings_service::ImageDiscoverySettingsService;
+use crate::services::job_history_store::JobHistoryStore;
 use crate::services::manifest_store::JsonManifestStore;
 use crate::state::AppServices;
 use std::collections::HashSet;
@@ -55,6 +58,11 @@ enum ProbeStrategy {
 /// of the same id. Clone-free; share via `Arc`.
 pub struct ImageDiscoveryCoordinator {
     store: Arc<JsonManifestStore>,
+    /// Where finished probe jobs are remembered. The coordinator deletes its
+    /// own jobs the moment they finish, so without this a failed inspection
+    /// leaves nothing behind: no job, no logs, no events, and a cache entry
+    /// that gets overwritten by the next attempt on the same image.
+    history: Arc<JobHistoryStore>,
     settings: Mutex<ImageDiscoverySettingsService>,
     /// Image ids with a probe currently in flight (coalescing gate).
     in_flight: Mutex<HashSet<String>>,
@@ -70,9 +78,10 @@ impl ImageDiscoveryCoordinator {
     /// Create a coordinator over `store`, with a freshly-loaded settings service
     /// and the default Skaha timing schedule (3s/7s/15s race backoffs, 3s poll
     /// interval, 200 poll cap ≈ 10 min).
-    pub fn new(store: Arc<JsonManifestStore>) -> Self {
+    pub fn new(store: Arc<JsonManifestStore>, history: Arc<JobHistoryStore>) -> Self {
         ImageDiscoveryCoordinator {
             store,
+            history,
             settings: Mutex::new(ImageDiscoverySettingsService::new()),
             in_flight: Mutex::new(HashSet::new()),
             race_backoffs: vec![
@@ -233,24 +242,27 @@ impl ImageDiscoveryCoordinator {
         let job_id = match self.launch_with_retry(services, &token, &params).await {
             Ok(id) => id,
             Err(msg) => {
-                return self.fail(
-                    image_id,
-                    category::JOB_SUBMIT_FAILED,
-                    &format!("Probe submit failed: {msg}"),
-                    None,
-                );
+                let reason = format!("Probe submit failed: {msg}");
+                self.remember(image_id, &params, "", JobOutcome::Failed, &reason);
+                return self.fail(image_id, category::JOB_SUBMIT_FAILED, &reason, None);
             }
         };
 
         // (5) Poll until terminal, tolerating the informer-cache visibility race.
         if let Err(msg) = self.poll_until_terminal(services, &token, &job_id).await {
+            // Read the job's own account of itself BEFORE deleting it. This used
+            // to report "job ended in failed state: Failed" and then destroy the
+            // only copy of the logs and events that said why — leaving a status
+            // word where a reason should be.
+            let diagnosis = self.diagnose(services, &token, &job_id, &msg).await;
             self.best_effort_delete(services, &token, &job_id).await;
             let category = if msg.contains("timed out") {
                 category::JOB_TIMED_OUT
             } else {
                 category::UNKNOWN
             };
-            return self.fail(image_id, category, &msg, Some(job_id));
+            self.remember(image_id, &params, &job_id, JobOutcome::Failed, &diagnosis);
+            return self.fail(image_id, category, &diagnosis, Some(job_id));
         }
 
         // (6) Recover the manifest JSON from the job's stdout logs.
@@ -262,11 +274,23 @@ impl ImageDiscoveryCoordinator {
         let json = match extract_manifest_json(&logs) {
             Some(j) => j,
             None => {
+                // The logs are in hand and are the only evidence of what went
+                // wrong; reporting their absence of JSON while discarding their
+                // contents told the user nothing they could act on.
+                let reason = self
+                    .diagnose(
+                        services,
+                        &token,
+                        &job_id,
+                        "Manifest fetch failed: job produced no manifest JSON in its logs.",
+                    )
+                    .await;
                 self.best_effort_delete(services, &token, &job_id).await;
+                self.remember(image_id, &params, &job_id, JobOutcome::Failed, &reason);
                 return self.fail(
                     image_id,
                     category::MANIFEST_FETCH_FAILED,
-                    "Manifest fetch failed: job produced no manifest JSON in its logs",
+                    &reason,
                     Some(job_id),
                 );
             }
@@ -275,11 +299,13 @@ impl ImageDiscoveryCoordinator {
         let manifest = match parse_manifest(&json) {
             Ok(m) => m,
             Err(e) => {
+                let reason = format!("Manifest parse failed: {e}");
                 self.best_effort_delete(services, &token, &job_id).await;
+                self.remember(image_id, &params, &job_id, JobOutcome::Failed, &reason);
                 return self.fail(
                     image_id,
                     category::MANIFEST_PARSE_FAILED,
-                    &format!("Manifest parse failed: {e}"),
+                    &reason,
                     Some(job_id),
                 );
             }
@@ -289,18 +315,20 @@ impl ImageDiscoveryCoordinator {
         // + a probeNotes reason). Refuse to cache it — surface the reason instead.
         if is_stub_manifest(&manifest, probe_notes_of(&json).as_deref()) {
             self.best_effort_delete(services, &token, &job_id).await;
-            let reason =
-                probe_notes_of(&json).unwrap_or_else(|| "no software detected".to_string());
+            let notes = probe_notes_of(&json).unwrap_or_else(|| "no software detected".to_string());
+            let reason = format!("Manifest fetch failed: probe wrote a stub manifest — {notes}");
+            self.remember(image_id, &params, &job_id, JobOutcome::Failed, &reason);
             return self.fail(
                 image_id,
                 category::MANIFEST_FETCH_FAILED,
-                &format!("Manifest fetch failed: probe wrote a stub manifest — {reason}"),
+                &reason,
                 Some(job_id),
             );
         }
 
         // (7) Success — best-effort reap the job, then cache and return.
         self.best_effort_delete(services, &token, &job_id).await;
+        self.remember(image_id, &params, &job_id, JobOutcome::Succeeded, "");
         let now = chrono::Utc::now().to_rfc3339();
         self.store.set_manifest(image_id, manifest.clone(), now);
         DiscoveryOutcome::Manifest(manifest)
@@ -407,6 +435,61 @@ impl ImageDiscoveryCoordinator {
             }
         }
         Err("Probe timed out".to_string())
+    }
+
+    /// A failed job's own account of itself: our diagnosis, then its evidence.
+    ///
+    /// Must be called BEFORE the job is deleted — afterwards Skaha has neither
+    /// its logs nor its events.
+    async fn diagnose(
+        &self,
+        services: &AppServices,
+        token: &str,
+        job_id: &str,
+        summary: &str,
+    ) -> String {
+        format!(
+            "{summary}\n\n{}",
+            services.sessions.get_diagnostics(token, job_id).await
+        )
+    }
+
+    /// Remember a finished probe job, so it outlives the deletion on the very
+    /// next line.
+    fn remember(
+        &self,
+        image_id: &str,
+        params: &SessionLaunchParams,
+        job_id: &str,
+        outcome: JobOutcome,
+        reason: &str,
+    ) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let record = JobRecord {
+            // A submit that never got an id still deserves a row; key it by the
+            // name we asked for, which is unique per attempt.
+            id: if job_id.is_empty() {
+                params.name.clone()
+            } else {
+                job_id.to_string()
+            },
+            name: params.name.clone(),
+            image: params.image.clone(),
+            origin: JobOrigin::ImageProbe,
+            outcome,
+            status: match outcome {
+                JobOutcome::Succeeded => "Succeeded".to_string(),
+                JobOutcome::Failed => "Failed".to_string(),
+            },
+            started_at: now.clone(),
+            finished_at: now,
+            failure_reason: match outcome {
+                JobOutcome::Failed => Some(tail(reason, MAX_REASON_CHARS)),
+                JobOutcome::Succeeded => None,
+            },
+            target_image: Some(image_id.to_string()),
+        };
+        let _ = self.history.record(record);
     }
 
     /// Delete a finished probe job — best effort, never surfaces an error.
@@ -866,7 +949,7 @@ mod tests {
             N.fetch_add(1, Ordering::Relaxed)
         ));
         let store = Arc::new(JsonManifestStore::with_dir(dir.clone()));
-        let coord = ImageDiscoveryCoordinator::new(Arc::clone(&store));
+        let coord = ImageDiscoveryCoordinator::new(Arc::clone(&store), history_in(&dir));
 
         assert!(coord.cached_success("img:1").is_none());
         store.set_manifest(
@@ -891,12 +974,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A job history pointed at a scratch directory, never the user's own.
+    fn history_in(dir: &std::path::Path) -> Arc<JobHistoryStore> {
+        Arc::new(JobHistoryStore::with_dir(dir.to_path_buf()))
+    }
+
     #[test]
     fn in_flight_guard_coalesces_then_releases() {
-        let store = Arc::new(JsonManifestStore::with_dir(
-            std::env::temp_dir().join("verbinal_coord_inflight_test"),
-        ));
-        let coord = ImageDiscoveryCoordinator::new(store);
+        let dir = std::env::temp_dir().join("verbinal_coord_inflight_test");
+        let store = Arc::new(JsonManifestStore::with_dir(dir.clone()));
+        let coord = ImageDiscoveryCoordinator::new(store, history_in(&dir));
         let g1 = coord.claim_in_flight("img:1");
         assert!(g1.is_some(), "first claim succeeds");
         assert!(
@@ -908,5 +995,94 @@ mod tests {
         drop(g1);
         // Slot released → reclaimable.
         assert!(coord.claim_in_flight("img:1").is_some());
+    }
+}
+
+#[cfg(test)]
+mod failure_reporting_guards {
+    //! Source guards for the two rules the failure path has to keep.
+    //!
+    //! Neither can be tested by running the coordinator: both concern a live
+    //! Skaha job, and the round trip needs a real service. What CAN be checked
+    //! is the shape of the code, and the shape is where both bugs lived.
+
+    const SOURCE: &str = include_str!("image_discovery_coordinator.rs");
+
+    /// The body of `run_discovery`, which is where every failure path lives.
+    ///
+    /// Scanned from the raw source rather than through `testing::code`: that
+    /// helper cuts at the first `#[cfg(test)]`, and this file has one on a real
+    /// item — the `store()` accessor — a hundred lines above `run_discovery`.
+    /// The slice below ends at the function's own closing brace, well before
+    /// any test module, so a guard still cannot find itself.
+    fn run_discovery(code: &str) -> &str {
+        let at = code
+            .find("async fn run_discovery")
+            .expect("run_discovery is gone");
+        let end = code[at..]
+            .find("\n    }\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        &code[at..end]
+    }
+
+    #[test]
+    fn a_jobs_reason_is_read_before_the_job_is_deleted() {
+        // The coordinator deletes its own probe jobs, and Skaha takes the logs
+        // and events with them. Reporting "job ended in failed state: Failed"
+        // and THEN deleting the only record of why is how an inspection failure
+        // became unexplainable.
+        let body = run_discovery(SOURCE);
+        let diagnose = body
+            .find("self.diagnose(")
+            .expect("a failed job is no longer diagnosed");
+        let delete = body[diagnose..]
+            .find("best_effort_delete")
+            .map(|e| diagnose + e)
+            .expect("the diagnosed job is never deleted, so it leaks");
+        assert!(
+            diagnose < delete,
+            "the job is deleted before its logs are read"
+        );
+    }
+
+    #[test]
+    fn every_outcome_that_reached_skaha_is_remembered() {
+        // A failure the history does not record is a failure nobody can look up
+        // once the cache entry is overwritten by the next attempt on the same
+        // image. Counted rather than merely present: it is the path that gets
+        // ADDED without a `remember` that loses the evidence.
+        //
+        // Only the paths after the launch parameters exist. The two before
+        // them — not signed in, no inspector image resolved — are refusals to
+        // start, not jobs, and the image row already shows them.
+        let body = run_discovery(SOURCE);
+        let at = body
+            .find("let params = SessionLaunchParams")
+            .expect("the launch parameters are gone");
+        let attempted = &body[at..];
+
+        let outcomes = attempted.matches("return self.fail(").count();
+        let remembered = attempted.matches("self.remember(").count();
+        assert!(
+            outcomes >= 5,
+            "only {outcomes} failure paths — did they move?"
+        );
+        assert_eq!(
+            remembered,
+            outcomes + 1,
+            "{outcomes} failure paths and {remembered} history writes — every \
+             failure after launch needs one, plus one for the success at the end"
+        );
+    }
+
+    #[test]
+    fn the_evidence_is_bounded() {
+        // A probe that printed a megabyte of progress bars must not write a
+        // megabyte into the history file.
+        assert!(
+            SOURCE.contains("MAX_REASON_CHARS"),
+            "the failure reason is stored untrimmed"
+        );
     }
 }

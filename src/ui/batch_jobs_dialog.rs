@@ -4,10 +4,12 @@
 //! row exposes Events, Logs, and Delete actions.
 
 use crate::helpers::batch_jobs_helper::{self, BatchJobState};
+use crate::models::job_record::JobRecord;
 use crate::models::session::Session;
 use crate::state::AppServices;
 use crate::ui::delete_dialog::show_delete_dialog;
 use crate::ui::session_events_dialog::show_events_dialog;
+use crate::ui::space;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -47,6 +49,15 @@ pub async fn show_batch_jobs_dialog(
         let tab = build_state_tab(&window, services.clone(), &sessions, *state);
         notebook.append_page(&tab, Some(&gtk::Label::new(Some(state.label()))));
     }
+
+    // History last: what the four live tabs cannot show, because CANFAR has
+    // reaped the jobs and the image-discovery coordinator deletes its own the
+    // moment they finish.
+    let history_tab = build_history_tab(services.clone());
+    notebook.append_page(
+        &history_tab,
+        Some(&gtk::Label::new(Some(crate::tr_en!("History")))),
+    );
 
     let initial_idx = states.iter().position(|s| *s == initial_state).unwrap_or(0);
     notebook.set_current_page(Some(initial_idx as u32));
@@ -105,6 +116,130 @@ fn build_state_tab(
 
     scroll.set_child(Some(&list_box));
     scroll
+}
+
+/// The persistent history: the last finished jobs, with the reason each failure
+/// failed, kept after the job itself is gone.
+fn build_history_tab(services: Arc<AppServices>) -> gtk::ScrolledWindow {
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_vexpand(true);
+    scroll.set_hexpand(true);
+
+    let column = gtk::Box::new(gtk::Orientation::Vertical, space::ROW);
+    space::inset(&column, space::CARD);
+
+    let records = services.job_history.load();
+
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, space::CONTROL);
+    let caption = gtk::Label::new(Some(&crate::tr_plural!(
+        records.len(),
+        "{} finished job, kept after CANFAR reaped it",
+        "{} finished jobs, kept after CANFAR reaped them"
+    )));
+    caption.add_css_class("caption");
+    caption.add_css_class("dim-label");
+    caption.set_halign(gtk::Align::Start);
+    caption.set_hexpand(true);
+    header.append(&caption);
+
+    let list_box = gtk::ListBox::new();
+
+    let clear_btn = gtk::Button::with_label(crate::tr_en!("Clear history"));
+    clear_btn.add_css_class("flat");
+    clear_btn.set_tooltip_text(Some(crate::tr_en!(
+        "Forget every recorded job, including the reasons they failed"
+    )));
+    clear_btn.set_sensitive(!records.is_empty());
+    {
+        let services = services.clone();
+        let list_box = list_box.clone();
+        let caption = caption.clone();
+        clear_btn.connect_clicked(move |btn| {
+            if services.job_history.clear().is_err() {
+                services
+                    .toast
+                    .toast(crate::tr_en!("Could not clear the job history"));
+                return;
+            }
+            while let Some(child) = list_box.first_child() {
+                list_box.remove(&child);
+            }
+            list_box.append(&empty_history_row());
+            caption.set_text(&crate::tr_plural!(
+                0,
+                "{} finished job, kept after CANFAR reaped it",
+                "{} finished jobs, kept after CANFAR reaped them"
+            ));
+            btn.set_sensitive(false);
+        });
+    }
+    header.append(&clear_btn);
+    column.append(&header);
+    list_box.set_selection_mode(gtk::SelectionMode::None);
+    list_box.add_css_class("boxed-list");
+
+    if records.is_empty() {
+        list_box.append(&empty_history_row());
+    } else {
+        for record in &records {
+            list_box.append(&build_history_row(record));
+        }
+    }
+    column.append(&list_box);
+
+    scroll.set_child(Some(&column));
+    scroll
+}
+
+/// The placeholder shown when nothing has been recorded — on first open, and
+/// again after the history is cleared.
+fn empty_history_row() -> gtk::ListBoxRow {
+    let empty = gtk::Label::new(Some(crate::tr_en!(
+        "No finished jobs recorded yet. Jobs appear here once they succeed \
+         or fail, along with the logs and events explaining why."
+    )));
+    empty.add_css_class("dim-label");
+    empty.set_wrap(true);
+    empty.set_max_width_chars(60);
+    empty.set_margin_top(24);
+    empty.set_margin_bottom(24);
+    let row = gtk::ListBoxRow::new();
+    row.set_child(Some(&empty));
+    row
+}
+
+/// One remembered job. Failures expand to their reason; successes have none to
+/// show, so they stay a single line.
+fn build_history_row(record: &JobRecord) -> gtk::Widget {
+    let title = format!("{}  ·  {}", record.name, record.outcome.label());
+    let dot: gtk::Widget = outcome_dot(record).upcast();
+    crate::ui::failure_detail::reason_row(
+        &title,
+        &history_subtitle(record),
+        record.failure_reason.as_deref().unwrap_or(""),
+        Some(&dot),
+    )
+}
+
+/// What kind of job it was, and when it finished.
+fn history_subtitle(record: &JobRecord) -> String {
+    let when = crate::helpers::discovery_formatting::time_ago(
+        &record.finished_at,
+        &chrono::Utc::now().to_rfc3339(),
+    );
+    format!(
+        "{}  ·  {}  ·  {when}",
+        record.summary(),
+        parse_image_label(&record.image)
+    )
+}
+
+fn outcome_dot(record: &JobRecord) -> gtk::Label {
+    let dot = gtk::Label::new(Some("\u{25cf}"));
+    dot.add_css_class(record.outcome.css_class());
+    dot.set_valign(gtk::Align::Center);
+    dot.set_tooltip_text(Some(&record.status));
+    dot
 }
 
 fn build_job_row(

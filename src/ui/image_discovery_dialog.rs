@@ -676,20 +676,43 @@ fn manifest_detail_rows(m: &ImageManifest) -> Vec<adw::ActionRow> {
     rows
 }
 
-/// Failure detail rows: the category-labelled message, and the probe job id when
-/// one is available (so the user can pull logs by hand).
-fn failure_detail_rows(outcome: &LastOutcome) -> Vec<adw::ActionRow> {
-    let mut rows = Vec::new();
+/// Failure detail rows: the diagnosis, expandable to the job's own logs and
+/// events, plus the probe job id.
+///
+/// The message used to go straight into a subtitle. It now carries the tail of
+/// the job's output — which is the point, and which an unbounded subtitle would
+/// render as a wall of text pushing the rest of the pane off screen. Same
+/// treatment as the Batch Jobs history, from the same helper.
+fn failure_detail_rows(outcome: &LastOutcome) -> Vec<gtk::Widget> {
+    let mut rows: Vec<gtk::Widget> = Vec::new();
     if let crate::models::image_manifest::DiscoveryOutcome::Failure {
         category,
         message,
         job_id,
     } = &outcome.outcome
     {
-        rows.push(info_row(category_label(category), message));
+        rows.push(crate::ui::failure_detail::reason_row(
+            category_label(category),
+            "",
+            message,
+            None,
+        ));
         if let Some(job) = job_id {
             if !job.is_empty() {
-                rows.push(info_row("Probe job", job));
+                // The job itself is already deleted — the coordinator reaps its
+                // own probes — so say where the record actually lives rather
+                // than implying `skaha logs` will work.
+                rows.push(
+                    info_row(
+                        crate::tr_en!("Probe job"),
+                        &crate::tr_fmt!(
+                            "{} — deleted after the probe finished; the full \
+                             output is kept under Batch Jobs → History",
+                            job
+                        ),
+                    )
+                    .upcast(),
+                );
             }
         }
     }

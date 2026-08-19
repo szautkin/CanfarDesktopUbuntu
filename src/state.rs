@@ -36,6 +36,8 @@ pub struct AppServices {
     pub mcp_clients: Arc<crate::mcp::client_approval::McpClientApprovalStore>,
     /// Per-image container-manifest discovery cache (shared with the coordinator).
     pub image_manifests: Arc<crate::services::manifest_store::JsonManifestStore>,
+    /// The last finished batch jobs, kept after CANFAR has reaped them.
+    pub job_history: Arc<crate::services::job_history_store::JobHistoryStore>,
     /// Container-image probe orchestrator (schedules Skaha probe jobs).
     pub image_discovery:
         Arc<crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator>,
@@ -71,6 +73,7 @@ impl AppServices {
         let client = Client::new();
         let (toast, toast_rx) = ToastNotifier::new();
         let image_manifests = Arc::new(crate::services::manifest_store::JsonManifestStore::new());
+        let job_history = Arc::new(crate::services::job_history_store::JobHistoryStore::new());
 
         let services = Arc::new(AppServices {
             auth: AuthService::new(client.clone(), endpoints.clone()),
@@ -98,9 +101,11 @@ impl AppServices {
             mcp_host: Arc::new(crate::mcp::host::McpHost::new()),
             mcp_clients: Arc::new(crate::mcp::client_approval::McpClientApprovalStore::load()),
             image_manifests: Arc::clone(&image_manifests),
+            job_history: Arc::clone(&job_history),
             image_discovery: Arc::new(
                 crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator::new(
                     image_manifests,
+                    job_history,
                 ),
             ),
             mcp_auto_apply: Arc::new(std::sync::atomic::AtomicBool::new(

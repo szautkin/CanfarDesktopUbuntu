@@ -4,6 +4,7 @@
 //! count tile fires the `on_state_click` callback with the selected state.
 
 use crate::helpers::batch_jobs_helper::{self, BatchJobCounts, BatchJobState};
+use crate::models::job_record::{JobOrigin, JobOutcome, JobRecord};
 use crate::models::session::Session;
 use crate::state::AppServices;
 use gtk4::glib;
@@ -27,12 +28,20 @@ enum JobTransition {
     Failed,
 }
 
-/// A single detected job transition, carrying just what a notification needs.
+/// A single detected job transition, carrying what a notification needs and
+/// what the history needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct JobTransitionEvent {
     id: String,
     name: String,
+    /// Shortened for the notification body.
     image: String,
+    /// The full reference, for the record — a history row that says "terminal"
+    /// cannot tell you which registry or tag it came from.
+    full_image: String,
+    /// Skaha's own status word, kept verbatim.
+    status: String,
+    started_at: String,
     kind: JobTransition,
 }
 
@@ -210,6 +219,11 @@ impl BatchJobsView {
                 *self.sessions.borrow_mut() = sessions;
                 self.update_counts(counts);
                 self.fire_notifications(&events);
+                // Before CANFAR reaps them. A job that has finished is on
+                // borrowed time in the listing, and its logs and events go with
+                // it — so the moment we notice it ended is the only moment we
+                // can still find out why.
+                self.remember(&events).await;
             }
             Err(_) => {
                 // Silently keep previous counts on failure
@@ -222,6 +236,55 @@ impl BatchJobsView {
         self.running_label.set_text(&counts.running.to_string());
         self.completed_label.set_text(&counts.completed.to_string());
         self.failed_label.set_text(&counts.failed.to_string());
+    }
+
+    /// Write finished jobs into the persistent history, fetching the reason for
+    /// any that failed.
+    ///
+    /// The reason has to be fetched HERE. Skaha reaps finished headless jobs,
+    /// and once a job is gone so are its logs and its events — the Batch Jobs
+    /// dialog would offer a Logs button that returned nothing.
+    async fn remember(&self, events: &[JobTransitionEvent]) {
+        for ev in events {
+            let outcome = match ev.kind {
+                JobTransition::Completed => JobOutcome::Succeeded,
+                JobTransition::Failed => JobOutcome::Failed,
+            };
+
+            let failure_reason = match ev.kind {
+                JobTransition::Completed => None,
+                JobTransition::Failed => Some(self.failure_reason(&ev.id).await),
+            };
+
+            let record = JobRecord {
+                id: ev.id.clone(),
+                name: ev.name.clone(),
+                image: ev.full_image.clone(),
+                origin: JobOrigin::User,
+                outcome,
+                status: ev.status.clone(),
+                started_at: ev.started_at.clone(),
+                finished_at: chrono::Utc::now().to_rfc3339(),
+                failure_reason,
+                target_image: None,
+            };
+            let _ = self.services.job_history.record(record);
+        }
+    }
+
+    /// Why a job failed, in its own words — fetched now, while the job still
+    /// exists to be asked.
+    async fn failure_reason(&self, job_id: &str) -> String {
+        let svc = self.services.clone();
+        let id = job_id.to_string();
+        self.services
+            .spawn(async move {
+                match svc.get_token().await {
+                    Some(t) => svc.sessions.get_diagnostics(&t, &id).await,
+                    None => String::new(),
+                }
+            })
+            .await
     }
 
     /// Route detected transitions to desktop notifications via the shared
@@ -288,6 +351,9 @@ fn detect_transitions(
             id: job.id.clone(),
             name: job.name.clone(),
             image: short_image(&job.image),
+            full_image: job.image.clone(),
+            status: job.status.clone(),
+            started_at: job.start_time.clone(),
             kind,
         });
     }
@@ -333,6 +399,20 @@ fn make_stat_tile(state: BatchJobState) -> (gtk::Button, gtk::Label) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_transition_carries_what_a_history_record_needs() {
+        // The record needs the full image reference and Skaha's own status
+        // word; the notification only ever needed a short name, and building
+        // the record from that would lose the registry and the tag.
+        let old: HashMap<String, String> = [("j1".to_string(), "Running".to_string())].into();
+        let jobs = vec![job("j1", "Failed")];
+        let events = detect_transitions(&old, &jobs);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].full_image, "images.canfar.net/skaha/base:1.0");
+        assert_eq!(events[0].status, "Failed");
+        assert_eq!(events[0].image, "base:1.0", "the short form is still there");
+    }
 
     fn job(id: &str, status: &str) -> Session {
         Session {

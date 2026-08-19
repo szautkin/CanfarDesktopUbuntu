@@ -442,6 +442,47 @@ prend en compte à son prochain démarrage."),
     ("Apply filters and re-render",                 "Appliquer les filtres et réafficher"),
     ("Apply filters to ADQL",                       "Appliquer les filtres à l’ADQL"),
     ("Clear filters",                               "Effacer les filtres"),
+    // Batch job history.
+    ("Succeeded",                                   "Réussi"),
+    ("Batch job",                                   "Tâche par lots"),
+    ("Image inspection",                            "Inspection d’image"),
+    ("History",                                     "Historique"),
+    ("Clear history",                               "Effacer l’historique"),
+    ("Probe job",                                   "Tâche de sondage"),
+    (
+        "{} — deleted after the probe finished; the full \
+         output is kept under Batch Jobs → History",
+        "{} — supprimée à la fin du sondage ; la sortie complète est conservée \
+         sous Tâches par lots → Historique",
+    ),
+    (
+        "Forget every recorded job, including the reasons they failed",
+        "Oublier toutes les tâches enregistrées, y compris les raisons de leur échec",
+    ),
+    (
+        "Could not clear the job history",
+        "Impossible d’effacer l’historique des tâches",
+    ),
+    (
+        "{} finished job, kept after CANFAR reaped it",
+        "{} tâche terminée, conservée après sa suppression par CANFAR",
+    ),
+    (
+        "{} finished jobs, kept after CANFAR reaped them",
+        "{} tâches terminées, conservées après leur suppression par CANFAR",
+    ),
+    (
+        "No finished jobs recorded yet. Jobs appear here once they succeed \
+         or fail, along with the logs and events explaining why.",
+        "Aucune tâche terminée enregistrée pour l’instant. Les tâches apparaissent ici \
+         une fois réussies ou échouées, avec les journaux et les événements qui \
+         expliquent pourquoi.",
+    ),
+    (
+        "The job produced no logs or events.",
+        "La tâche n’a produit ni journaux ni événements.",
+    ),
+    ("{} — {}",                                     "{} — {}"),
     ("Filter syntax",                               "Syntaxe des filtres"),
     ("How to write a column filter",                 "Comment écrire un filtre de colonne"),
     // The filter grammar. Operator symbols stay verbatim — they are what you
