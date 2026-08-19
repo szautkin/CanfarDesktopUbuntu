@@ -4,8 +4,9 @@ use crate::helpers::data_train_manager::DataTrainManager;
 use crate::helpers::range_parser;
 use crate::helpers::unit_converter;
 use crate::models::search_result::{
-    build_columns_from_headers, column_width, default_columns, format_cell, format_cell_with_unit,
-    RecentSearch, ResolverResult, SavedQuery, SearchFormState, SearchResultRow, SearchResults,
+    build_columns_from_headers, column_width_for, default_columns, format_cell,
+    format_cell_with_unit, RecentSearch, ResolverResult, SavedQuery, SearchFormState,
+    SearchResultRow, SearchResults,
 };
 
 use crate::helpers::filter_to_adql;
@@ -1824,7 +1825,7 @@ impl SearchPage {
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         for col in vis_columns.iter() {
             let col_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
-            pin_width(&col_box, column_width(&col.key));
+            pin_width(&col_box, column_width_for(&col.key, &col.display_name));
             col_box.set_margin_end(RESULT_COLUMN_GAP);
 
             // Clickable header label for sorting
@@ -1838,10 +1839,12 @@ impl SearchPage {
                 ""
             };
             let header_btn = gtk::Button::new();
-            header_btn.set_child(Some(&cell_label(&format!(
-                "{}{}",
-                col.display_name, sort_indicator
-            ))));
+            let header_label = cell_label(&format!("{}{}", col.display_name, sort_indicator));
+            // Fill the button, which fills the pinned cell. Without this the
+            // button gives the label its NATURAL width — which `cell_label`
+            // clamps to one character — and every heading renders as "…".
+            header_label.set_hexpand(true);
+            header_btn.set_child(Some(&header_label));
             header_btn.add_css_class("flat");
             header_btn.add_css_class("caption");
             header_btn.set_halign(gtk::Align::Fill);
@@ -1974,11 +1977,12 @@ impl SearchPage {
                 if is_narrowable(&col.key) && !raw.is_empty() {
                     let inner = cell_label(&formatted);
                     inner.add_css_class("caption");
+                    inner.set_hexpand(true);
 
                     let cell_btn = gtk::Button::new();
                     cell_btn.set_child(Some(&inner));
                     cell_btn.add_css_class("flat");
-                    pin_width(&cell_btn, column_width(&col.key));
+                    pin_width(&cell_btn, column_width_for(&col.key, &col.display_name));
                     cell_btn.set_margin_end(RESULT_COLUMN_GAP);
                     cell_btn.set_tooltip_text(Some(&crate::tr_fmt!("Narrow to: {}", raw)));
 
@@ -1997,7 +2001,7 @@ impl SearchPage {
                 } else {
                     let label = cell_label(&formatted);
                     label.add_css_class("caption");
-                    pin_width(&label, column_width(&col.key));
+                    pin_width(&label, column_width_for(&col.key, &col.display_name));
                     label.set_margin_end(RESULT_COLUMN_GAP);
                     label.set_selectable(true);
                     // The value in full, since the cell elides to its column.
@@ -4445,7 +4449,7 @@ mod results_layout_tests {
             let end = code[i..].find('\n').map_or(code.len(), |n| i + n);
             let line = &code[i..end];
             assert!(
-                line.contains("column_width("),
+                line.contains("column_width"),
                 "header cell sized by literal: {line}"
             );
         }
