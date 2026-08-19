@@ -47,11 +47,8 @@ pub fn show_connect_wizard(parent: &impl IsA<gtk::Widget>, services: Arc<AppServ
     toolbar_view.add_top_bar(&header);
 
     // ── Body: a step heading plus the stack of panels. ──────────────────────
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    body.set_margin_start(18);
-    body.set_margin_end(18);
-    body.set_margin_top(12);
-    body.set_margin_bottom(6);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, crate::ui::space::CARD);
+    crate::ui::space::edge_all(&body);
 
     let header_label = gtk::Label::new(None);
     header_label.set_xalign(0.0);
@@ -159,10 +156,7 @@ picks this up the next time it launches."
         cmd_label.set_wrap(true);
         cmd_label.set_selectable(true);
         cmd_label.add_css_class("monospace");
-        cmd_label.set_margin_start(8);
-        cmd_label.set_margin_end(8);
-        cmd_label.set_margin_top(8);
-        cmd_label.set_margin_bottom(8);
+        crate::ui::space::inset(&cmd_label, crate::ui::space::CONTROL);
         let frame = gtk::Frame::new(None);
         frame.set_child(Some(&cmd_label));
         b.append(&frame);
@@ -214,8 +208,7 @@ picks this up the next time it launches."
     // ── Footer: Back / Next ─────────────────────────────────────────────────
     // Pinned at the bottom of the body (below the vexpanding step stack) so the
     // proceed button is always visible even on short / HiDPI-scaled displays.
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    footer.set_margin_top(6);
+    let footer = crate::ui::space::action_row(crate::ui::space::CONTROL);
     let back_btn = gtk::Button::with_label(crate::tr_en!("Back"));
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -224,9 +217,10 @@ picks this up the next time it launches."
     footer.append(&back_btn);
     footer.append(&spacer);
     footer.append(&next_btn);
-    body.append(&footer);
 
     toolbar_view.set_content(Some(&body));
+    // A bottom bar, so the window keeps it on screen whatever the body does.
+    toolbar_view.add_bottom_bar(&footer);
     window.set_content(Some(&toolbar_view));
 
     // ── Navigation state + step renderer ────────────────────────────────────

@@ -44,6 +44,7 @@ pub mod session_icon;
 pub mod session_list;
 pub mod settings_page;
 pub mod share_dialog;
+pub mod space;
 pub mod storage_quota;
 pub mod template_manager;
 pub mod text_viewer_dialog;

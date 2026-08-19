@@ -116,6 +116,10 @@ impl LaunchFormView {
         let type_row = adw::ActionRow::builder()
             .title(crate::tr_en!("Session Type"))
             .build();
+        // One width for every value in this group. Content-sized dropdowns have
+        // their right edges aligned and their left edges anywhere, which reads
+        // as ragged even though each row is individually correct.
+        type_combo.set_size_request(crate::ui::space::FIELD, -1);
         type_row.add_suffix(&type_combo);
         form_group.add(&type_row);
 
@@ -125,6 +129,7 @@ impl LaunchFormView {
         let registry_row = adw::ActionRow::builder()
             .title(crate::tr_en!("Image Registry"))
             .build();
+        registry_combo.set_size_request(crate::ui::space::FIELD, -1);
         registry_row.add_suffix(&registry_combo);
         form_group.add(&registry_row);
 
@@ -134,6 +139,7 @@ impl LaunchFormView {
         let project_row = adw::ActionRow::builder()
             .title(crate::tr_en!("Project"))
             .build();
+        project_combo.set_size_request(crate::ui::space::FIELD, -1);
         project_row.add_suffix(&project_combo);
         form_group.add(&project_row);
 
@@ -149,6 +155,7 @@ impl LaunchFormView {
         find_images_btn.add_css_class("flat");
         find_images_btn.set_valign(gtk::Align::Center);
         image_row.add_suffix(&find_images_btn);
+        image_combo.set_size_request(crate::ui::space::FIELD, -1);
         image_row.add_suffix(&image_combo);
         form_group.add(&image_row);
 
