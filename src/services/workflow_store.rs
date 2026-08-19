@@ -140,7 +140,9 @@ impl WorkflowStore {
                 raw_text: text,
             });
         }
-        list.sort_by(|a, b| a.doc.title.to_lowercase().cmp(&b.doc.title.to_lowercase()));
+        // `sort_by_cached_key`, not `sort_by_key`: the key is an allocated
+        // String, and `sort_by_key` would rebuild it on every comparison.
+        list.sort_by_cached_key(|w| w.doc.title.to_lowercase());
         list
     }
 

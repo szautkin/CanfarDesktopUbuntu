@@ -355,8 +355,10 @@ impl FilePanel {
         }
 
         // Sort alphabetically, case-insensitive
-        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        // Cached keys: a folder can hold thousands of entries, and the
+        // lowercased name is an allocation each time it is asked for.
+        dirs.sort_by_cached_key(|e| e.name.to_lowercase());
+        files.sort_by_cached_key(|e| e.name.to_lowercase());
 
         let all_entries: Vec<DirEntry> = dirs.into_iter().chain(files).collect();
 
