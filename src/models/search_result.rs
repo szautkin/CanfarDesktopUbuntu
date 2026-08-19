@@ -1380,6 +1380,40 @@ mod real_tap_response {
     }
 
     #[test]
+    fn every_column_declared_numeric_exists_and_holds_numbers() {
+        // `NUMERIC_KEYS` picks which of CADC's two filter tooltips a column
+        // gets. A key that matches no column is dead weight nobody would
+        // notice; a key on a text column tells the reader `>=10` works where it
+        // does not. Both are checked against a response the service sent.
+        let results = parse_csv(SAMPLE);
+        let columns = build_columns_from_headers(&results.columns);
+        let keys: Vec<&str> = columns.iter().map(|c| c.key.as_str()).collect();
+
+        let unknown: Vec<&&str> = NUMERIC_KEYS.iter().filter(|k| !keys.contains(k)).collect();
+        assert!(
+            unknown.is_empty(),
+            "declared numeric but not a column in the reference SELECT: {unknown:?}"
+        );
+
+        for col in &columns {
+            if !column_is_numeric(&col.key) {
+                continue;
+            }
+            for row in &results.rows {
+                let raw = row.get(&col.header);
+                if raw.trim().is_empty() {
+                    continue;
+                }
+                assert!(
+                    raw.trim().parse::<f64>().is_ok(),
+                    "{} is declared numeric but the service sent {raw:?}",
+                    col.key
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_aliased_columns_keep_their_human_labels() {
         let results = parse_csv(SAMPLE);
         let columns = build_columns_from_headers(&results.columns);
