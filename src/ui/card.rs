@@ -104,7 +104,58 @@ mod tests {
         ("recent_launches", include_str!("recent_launches.rs")),
         ("template_manager", include_str!("template_manager.rs")),
         ("canfar_images", include_str!("canfar_images.rs")),
+        // The eighth, and the one this list originally missed — so it kept a
+        // hand-rolled header with no margins while the guard reported the
+        // Portal consistent. A list of files to check is only as good as the
+        // list.
+        ("launch_form", include_str!("launch_form.rs")),
     ];
+
+    /// Every component the Portal grid holds. Checked against the source so a
+    /// ninth card cannot be added without joining the list above.
+    #[test]
+    fn the_list_holds_every_component_the_portal_shows() {
+        let dashboard = crate::testing::code(include_str!("dashboard.rs"));
+        for (name, _) in PORTAL_CARDS {
+            let ty: String = name
+                .split('_')
+                .map(|w| {
+                    let mut c = w.chars();
+                    c.next()
+                        .map(|f| f.to_uppercase().to_string() + c.as_str())
+                        .unwrap_or_default()
+                })
+                .collect();
+            // `session_list` builds `SessionListView`, `canfar_images` builds
+            // `CanfarImagesView`, and so on.
+            assert!(
+                dashboard.contains(&ty) || dashboard.contains(name),
+                "{name} is guarded but the Portal does not show it"
+            );
+        }
+        // And nothing the Portal shows is missing from the list.
+        for ty in [
+            "SessionListView",
+            "StorageQuotaView",
+            "LaunchFormView",
+            "BatchJobsView",
+            "RecentLaunchesView",
+            "PlatformLoadView",
+            "TemplateManager",
+            "CanfarImagesView",
+        ] {
+            assert!(
+                dashboard.contains(ty),
+                "{ty} is in the guard's expectations but not in the Portal"
+            );
+        }
+        assert_eq!(
+            PORTAL_CARDS.len(),
+            8,
+            "the Portal shows eight components; the guard checks {}",
+            PORTAL_CARDS.len()
+        );
+    }
 
     #[test]
     fn no_portal_component_builds_its_own_card() {

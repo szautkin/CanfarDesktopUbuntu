@@ -62,29 +62,18 @@ pub struct LaunchFormView {
 
 impl LaunchFormView {
     pub fn new(services: Arc<AppServices>, active_sessions: Rc<RefCell<Vec<Session>>>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        container.add_css_class("card");
-        container.set_margin_start(12);
-        container.set_margin_end(12);
-        container.set_margin_top(12);
-        container.set_margin_bottom(12);
+        // The eighth Portal card, and the one that hand-rolled its own header
+        // with no margins at all — which is why "Launch Session" sat flush
+        // against the frame while the other seven titles were inset.
+        let card = crate::ui::card::Card::new(crate::tr_en!("Launch Session"));
+        let container = card.widget.clone();
         // Hug natural content height instead of stretching to fill the grid
         // row (which can be taller due to a sibling column), which was
         // opening a dead gap between the last form group and the bottom
         // Launch button row.
         container.set_valign(gtk::Align::Start);
         container.set_vexpand(false);
-
-        // Header
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-
-        let title = gtk::Label::new(Some(crate::tr_en!("Launch Session")));
-        title.add_css_class("title-4");
-        title.set_halign(gtk::Align::Start);
-        title.set_hexpand(true);
-        header.append(&title);
-
-        container.append(&header);
+        card.content.set_vexpand(false);
 
         // Tabs: Standard / Advanced
         let notebook = gtk::Notebook::new();
@@ -93,8 +82,6 @@ impl LaunchFormView {
 
         // === Standard Tab ===
         let standard_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        standard_box.set_margin_start(12);
-        standard_box.set_margin_end(12);
         standard_box.set_margin_top(12);
         standard_box.set_margin_bottom(12);
         standard_box.set_valign(gtk::Align::Start);
@@ -119,7 +106,14 @@ impl LaunchFormView {
         // One width for every value in this group. Content-sized dropdowns have
         // their right edges aligned and their left edges anywhere, which reads
         // as ragged even though each row is individually correct.
+        //
+        // hexpand(false) matters as much as the width: a size_request is only a
+        // MINIMUM, and the row's suffix box hands a greedy child every spare
+        // pixel — so the four grew to roughly twice this and pushed "Container
+        // Image" onto two lines.
         type_combo.set_size_request(crate::ui::space::FIELD, -1);
+        type_combo.set_hexpand(false);
+        type_combo.set_halign(gtk::Align::End);
         type_row.add_suffix(&type_combo);
         form_group.add(&type_row);
 
@@ -130,6 +124,8 @@ impl LaunchFormView {
             .title(crate::tr_en!("Image Registry"))
             .build();
         registry_combo.set_size_request(crate::ui::space::FIELD, -1);
+        registry_combo.set_hexpand(false);
+        registry_combo.set_halign(gtk::Align::End);
         registry_row.add_suffix(&registry_combo);
         form_group.add(&registry_row);
 
@@ -140,6 +136,8 @@ impl LaunchFormView {
             .title(crate::tr_en!("Project"))
             .build();
         project_combo.set_size_request(crate::ui::space::FIELD, -1);
+        project_combo.set_hexpand(false);
+        project_combo.set_halign(gtk::Align::End);
         project_row.add_suffix(&project_combo);
         form_group.add(&project_row);
 
@@ -156,6 +154,8 @@ impl LaunchFormView {
         find_images_btn.set_valign(gtk::Align::Center);
         image_row.add_suffix(&find_images_btn);
         image_combo.set_size_request(crate::ui::space::FIELD, -1);
+        image_combo.set_hexpand(false);
+        image_combo.set_halign(gtk::Align::End);
         image_row.add_suffix(&image_combo);
         form_group.add(&image_row);
 
@@ -201,8 +201,6 @@ impl LaunchFormView {
 
         // === Advanced Tab ===
         let advanced_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        advanced_box.set_margin_start(12);
-        advanced_box.set_margin_end(12);
         advanced_box.set_margin_top(12);
         advanced_box.set_margin_bottom(12);
         advanced_box.set_valign(gtk::Align::Start);
@@ -274,8 +272,6 @@ impl LaunchFormView {
 
         // === Headless (batch job) Tab ===
         let headless_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        headless_box.set_margin_start(12);
-        headless_box.set_margin_end(12);
         headless_box.set_margin_top(12);
         headless_box.set_margin_bottom(12);
         headless_box.set_valign(gtk::Align::Start);
@@ -360,7 +356,7 @@ impl LaunchFormView {
             Some(&gtk::Label::new(Some(crate::tr_en!("Headless")))),
         );
 
-        container.append(&notebook);
+        card.content.append(&notebook);
 
         // Status + Launch button
         let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -381,7 +377,7 @@ impl LaunchFormView {
         launch_btn.add_css_class("suggested-action");
         bottom.append(&launch_btn);
 
-        container.append(&bottom);
+        card.content.append(&bottom);
 
         // Toggle resource selector visibility
         {

@@ -64,6 +64,9 @@ fn main() {
         );
     }
 
+    // An ActionRow's wrap behaviour is NOT measurable this way: an unrealised
+    // row reports the same height at every width, so the numbers looked like
+    // evidence and were not. Removed rather than left to be believed.
     for width in [95, 140] {
         let start = measure(gtk4::Align::Start, width);
         let fill = measure(gtk4::Align::Fill, width);
