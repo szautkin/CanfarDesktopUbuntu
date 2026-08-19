@@ -4,9 +4,8 @@ use crate::helpers::data_train_manager::DataTrainManager;
 use crate::helpers::range_parser;
 use crate::helpers::unit_converter;
 use crate::models::search_result::{
-    build_columns_from_headers, column_width_for, default_columns, format_cell,
-    format_cell_with_unit, RecentSearch, ResolverResult, SavedQuery, SearchFormState,
-    SearchResultRow, SearchResults,
+    build_columns_from_headers, column_width, default_columns, format_cell, format_cell_with_unit,
+    RecentSearch, ResolverResult, SavedQuery, SearchFormState, SearchResultRow, SearchResults,
 };
 
 use crate::helpers::filter_to_adql;
@@ -106,6 +105,25 @@ pub(crate) fn pin_width(widget: &impl IsA<gtk::Widget>, width: i32) {
     w.set_halign(gtk::Align::Fill);
 }
 
+/// A column wide enough for BOTH its values and its own heading.
+///
+/// The per-key widths were chosen for the data; several headings are wider than
+/// the values they name, so the heading elided to "…" and the table stopped
+/// saying what its columns were.
+///
+/// The heading is MEASURED, not estimated. A characters-times-seven guess put
+/// "Target Name" three pixels short — capitals and spaces are wider than the
+/// average — and a heading that elides by three pixels looks exactly like one
+/// that elides by fifty. GTK is initialised by the time any of this runs, so
+/// asking Pango is both available and exact.
+pub(crate) fn column_width_for(key: &str, display_name: &str) -> i32 {
+    // The button's own padding, plus room for the sort indicator.
+    const CHROME: i32 = 34;
+    let probe = gtk::Label::new(Some(display_name));
+    let (_, heading, _, _) = probe.measure(gtk::Orientation::Horizontal, -1);
+    column_width(key).max(heading + CHROME)
+}
+
 /// A label that fills its cell and ellipsizes rather than widening it.
 pub(crate) fn cell_label(text: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
@@ -113,7 +131,14 @@ pub(crate) fn cell_label(text: &str) -> gtk::Label {
     // The natural width a label asks for is its whole text; capped here so the
     // column's width is the only thing that decides the cell's.
     label.set_max_width_chars(1);
-    label.set_halign(gtk::Align::Start);
+    // Fill, not Start. Inside a `Button` the CHILD's halign decides whether it
+    // fills the button's content area; with `Start` the button hands it only its
+    // natural width — which the clamp above just reduced to one character, so
+    // every heading and every narrowable cell rendered as "…" however wide its
+    // column was. `hexpand` does not help: that distributes spare space in a box
+    // layout, it does not override a child's alignment inside a bin.
+    label.set_halign(gtk::Align::Fill);
+    // Filled, but the text still starts at the left of that fill.
     label.set_xalign(0.0);
     label
 }
@@ -4417,6 +4442,31 @@ mod numeric_range_tests {
 mod results_layout_tests {
 
     const SOURCE: &str = include_str!("mod.rs");
+
+    #[test]
+    fn a_cell_label_fills_its_parent_rather_than_sitting_at_its_start() {
+        // Inside a `Button` the CHILD's halign decides whether it fills the
+        // content area. With `Start` the button hands the label its natural
+        // width — which the cell clamp reduces to one character — so every
+        // heading rendered as "…" whatever its column's width. Measured with
+        // `cargo run --example layout_probe`: 15px at a 95px column and 15px at
+        // a 140px column with Start; 75px and 120px with Fill.
+        //
+        // The measurement itself cannot live here: GTK initialises on the main
+        // thread and libtest runs each test in a spawned one.
+        let code = crate::testing::code(SOURCE);
+        let at = code.find("fn cell_label").expect("cell_label is gone");
+        let body = &code[at..(at + 1600).min(code.len())];
+        assert!(
+            body.contains("set_halign(gtk::Align::Fill)"),
+            "a cell label that does not fill its parent renders as an ellipsis \
+             inside a button, however wide the column is"
+        );
+        assert!(
+            body.contains("set_xalign(0.0)"),
+            "filled, but the text should still start at the left"
+        );
+    }
 
     #[test]
     fn every_cell_is_pinned_rather_than_merely_floored() {

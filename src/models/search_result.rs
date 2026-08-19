@@ -384,23 +384,6 @@ static DEFAULT_VISIBLE: &[&str] = &[
 /// The header strip and the data rows live in separate scroll areas kept in step
 /// by a shared adjustment, so BOTH sides must size a column through this
 /// function or the labels drift off the values they name.
-/// A column wide enough for BOTH its values and its own heading.
-///
-/// The per-key widths below were chosen for the data. Several headings are
-/// longer than the values they name — "Dec. (J2000.0)" needs about 120px over a
-/// 95px column — so the heading elided to "…" and the table stopped saying what
-/// its columns were. An estimate rather than a measurement: GTK can measure a
-/// label, but only once it is realised, and the width is needed while building.
-///
-/// Superseded by `ColumnView`, which measures its own headers (see
-/// `dev_info/10-results-table-columnview.md`).
-pub fn column_width_for(key: &str, display_name: &str) -> i32 {
-    // ~7px per character at the caption size, plus the sort indicator and the
-    // button's own padding.
-    let heading = display_name.chars().count() as i32 * 7 + 26;
-    column_width(key).max(heading)
-}
-
 pub fn column_width(key: &str) -> i32 {
     match key {
         "collection" | "proposalid" | "obsid" => 100,
