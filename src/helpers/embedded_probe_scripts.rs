@@ -66,6 +66,53 @@ mod tests {
         assert!(inspector_script().contains("TARGET_IMAGE"));
     }
 
+    /// Every path that publishes a manifest must also print it.
+    ///
+    /// This port recovers the manifest from the job's STDOUT — the module doc
+    /// on `ImageDiscoveryCoordinator` says so — and then deletes the job. Both
+    /// scripts were writing to `$OUT` and echoing only `ok: $OUT`, so every
+    /// inspection reported "job produced no manifest JSON in its logs", and
+    /// every `probeNotes` explanation of WHY a probe gave up was written to a
+    /// file inside a container nobody would ever open.
+    #[test]
+    fn every_published_manifest_also_reaches_stdout() {
+        for (name, script) in [
+            ("probe.sh", probe_script()),
+            ("inspector.sh", inspector_script()),
+        ] {
+            let published = script.matches(r#"mv "$TMP" "$OUT""#).count();
+            let printed = script.matches(r#"cat "$OUT""#).count();
+            assert!(published > 0, "{name} no longer publishes a manifest");
+            assert_eq!(
+                printed, published,
+                "{name} publishes {published} manifests but prints {printed}; \
+                 the ones it does not print are invisible to the app"
+            );
+        }
+    }
+
+    /// Status chatter belongs on stderr, so stdout is the manifest and nothing
+    /// else. `extract_manifest_json` tolerates noise, but a reader of the logs
+    /// should not have to.
+    #[test]
+    fn status_lines_go_to_stderr() {
+        for (name, script) in [
+            ("probe.sh", probe_script()),
+            ("inspector.sh", inspector_script()),
+        ] {
+            for line in script.lines() {
+                let line = line.trim();
+                // Only bare echoes. A line redirecting into a staging file
+                // (`echo "$sh" >> "$STAGE/shells.txt"`) is data collection, not
+                // chatter, and its `>` says so.
+                if !line.starts_with("echo \"") || line.contains('>') {
+                    continue;
+                }
+                panic!("{name} writes a status line to stdout: {line}");
+            }
+        }
+    }
+
     #[test]
     fn sha256_hex_matches_known_vector() {
         assert_eq!(

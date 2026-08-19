@@ -166,6 +166,10 @@ if ! command -v python3 >/dev/null 2>&1; then
 {"schemaVersion":3,"imageID":"$IMAGE_ID","contentHash":"$CONTENT_HASH","capturedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","osFamily":"unknown","osVersion":"unknown","osRelease":"unknown","kernel":"unknown","dpkgPackages":[],"rpmPackages":[],"apkPackages":[],"pythonPackages":[],"rPackages":[],"condaEnvs":[],"capabilities":[],"pythonVersion":"unknown","shells":[],"probeNotes":"python3 not found in image"}
 MINIMAL
     mv "$TMP" "$OUT"
+    # On stdout too: the app reads the manifest from the job's logs, so a
+    # `probeNotes` explanation written only to a file is an explanation nobody
+    # ever sees.
+    cat "$OUT"
     exit 0
 fi
 
@@ -301,6 +305,13 @@ if notes is not None:
 print(json.dumps(manifest, separators=(",", ":")))
 PYEOF
 
-# Atomic publish
+# Atomic publish, then emit the manifest on STDOUT.
+#
+# The file is for anything running inside the container. The STDOUT copy is
+# what the app actually reads: this Linux port recovers the manifest from the
+# job's logs rather than round-tripping it through VOSpace, so a manifest that
+# only ever lands in a file inside a container the app then deletes is a
+# manifest nobody sees. Status goes to stderr so stdout stays parseable.
 mv "$TMP" "$OUT"
-echo "ok: $OUT"
+echo "ok: $OUT" >&2
+cat "$OUT"

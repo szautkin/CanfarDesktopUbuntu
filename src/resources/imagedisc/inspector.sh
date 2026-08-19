@@ -35,6 +35,10 @@ write_minimal() {
 {"schemaVersion":3,"imageID":"$TARGET_IMAGE","contentHash":"sha256:syft","capturedAt":"$now","osFamily":"unknown","osVersion":"unknown","osRelease":"unknown","kernel":"unknown","dpkgPackages":[],"rpmPackages":[],"apkPackages":[],"pythonPackages":[],"rPackages":[],"condaEnvs":[],"capabilities":[],"pythonVersion":"unknown","shells":[],"probeNotes":"$reason"}
 MINIMAL
     mv "$TMP" "$OUT"
+    # On stdout too, or the reason this probe gave up never leaves the
+    # container: the app reads the manifest from the job logs, and every
+    # `probeNotes` explanation was being written to a file and thrown away.
+    cat "$OUT"
 }
 
 # ---- Install syft (binary, ~80MB) into ~/.local/bin if missing.
@@ -52,13 +56,13 @@ if [ -z "$SYFT" ]; then
 fi
 if [ ! -x "$SYFT" ]; then
     write_minimal "syft installation failed; inspector image lacks curl/wget or has no network egress"
-    echo "syft missing; minimal manifest written"
+    echo "syft missing; minimal manifest written" >&2
     exit 0
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
     write_minimal "python3 not found in inspector image; cannot transform syft output"
-    echo "python3 missing; minimal manifest written"
+    echo "python3 missing; minimal manifest written" >&2
     exit 0
 fi
 
@@ -261,7 +265,7 @@ if [ "$syft_rc" -ne 0 ]; then
     # Truncate stderr to ~400 chars so the manifest stays small.
     snippet="$(head -c 400 "$SYFT_ERR" | tr '\n' ' ' | tr -d '\r')"
     write_minimal "syft failed (rc=$syft_rc): $snippet"
-    echo "syft failed (rc=$syft_rc); minimal manifest written"
+    echo "syft failed (rc=$syft_rc); minimal manifest written" >&2
     exit 0
 fi
 
@@ -272,9 +276,17 @@ python3 "$TRANSFORMER" < "$SYFT_OUT" > "$TMP" 2>>"$SYFT_ERR" || py_rc=$?
 if [ "$py_rc" -ne 0 ] || [ ! -s "$TMP" ]; then
     snippet="$(head -c 400 "$SYFT_ERR" | tr '\n' ' ' | tr -d '\r')"
     write_minimal "transformer failed (rc=$py_rc): $snippet"
-    echo "transformer failed (rc=$py_rc); minimal manifest written"
+    echo "transformer failed (rc=$py_rc); minimal manifest written" >&2
     exit 0
 fi
 
+# Atomic publish, then emit the manifest on STDOUT.
+#
+# The file is for anything running inside the container. The STDOUT copy is
+# what the app actually reads: this Linux port recovers the manifest from the
+# job's logs rather than round-tripping it through VOSpace, so a manifest that
+# only ever lands in a file inside a container the app then deletes is a
+# manifest nobody sees. Status goes to stderr so stdout stays parseable.
 mv "$TMP" "$OUT"
-echo "ok: $OUT"
+echo "ok: $OUT" >&2
+cat "$OUT"

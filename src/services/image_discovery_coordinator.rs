@@ -999,6 +999,67 @@ mod tests {
 }
 
 #[cfg(test)]
+mod real_probe_output {
+    //! The recovery path, end to end, against output the probe script actually
+    //! produced.
+    //!
+    //! `tests/fixtures/probe_job_logs.txt` is a real run of
+    //! `src/resources/imagedisc/probe.sh` — its status line on stderr, its
+    //! manifest on stdout, interleaved as the job's logs deliver them — with
+    //! the package lists trimmed and the paths made generic.
+    //!
+    //! Every synthetic test in this file feeds `extract_manifest_json` a string
+    //! someone wrote by hand, which is how the scripts could publish their
+    //! manifest to a FILE and echo only `ok: $OUT` while the suite stayed
+    //! green. Nothing here could see that stdout carried no JSON, because
+    //! nothing here had ever seen the real stdout.
+
+    use super::*;
+
+    const LOGS: &str = include_str!("../../tests/fixtures/probe_job_logs.txt");
+
+    #[test]
+    fn a_real_probe_run_yields_a_manifest() {
+        let json = extract_manifest_json(LOGS).expect(
+            "no manifest JSON in the job logs — the probe is writing it \
+             somewhere the app cannot read",
+        );
+        let manifest = parse_manifest(&json).expect("the manifest did not parse");
+        assert_eq!(manifest.image_id, "images.canfar.net/skaha/astroml:1.0");
+        assert_eq!(manifest.os_family.as_deref(), Some("ubuntu"));
+        assert!(
+            !manifest.dpkg.is_empty(),
+            "no dpkg packages survived parsing"
+        );
+        assert!(manifest.has_python(), "python went missing");
+    }
+
+    #[test]
+    fn a_real_probe_run_is_not_mistaken_for_a_stub() {
+        // A stub is what a FAILED probe writes. Reading a good manifest as one
+        // would turn every successful inspection into a reported failure.
+        let json = extract_manifest_json(LOGS).expect("manifest");
+        let manifest = parse_manifest(&json).expect("parsed");
+        assert!(!is_stub_manifest(
+            &manifest,
+            probe_notes_of(&json).as_deref()
+        ));
+    }
+
+    #[test]
+    fn the_status_line_does_not_confuse_the_extractor() {
+        // The probe prints a path on stderr and JSON on stdout, and the job's
+        // logs interleave them. The extractor has to pick the object out.
+        assert!(
+            LOGS.contains("ok: /arc/home"),
+            "the fixture lost its status line"
+        );
+        let json = extract_manifest_json(LOGS).expect("manifest");
+        assert!(json.starts_with('{') && json.ends_with('}'), "{json:.60}");
+    }
+}
+
+#[cfg(test)]
 mod failure_reporting_guards {
     //! Source guards for the two rules the failure path has to keep.
     //!
