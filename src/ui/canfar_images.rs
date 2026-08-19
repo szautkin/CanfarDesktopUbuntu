@@ -66,56 +66,30 @@ pub struct CanfarImagesView {
 
 impl CanfarImagesView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        container.add_css_class("card");
-        container.set_margin_start(12);
-        container.set_margin_end(12);
-        container.set_margin_top(12);
-        container.set_margin_bottom(12);
+        let card = crate::ui::card::Card::new(crate::tr_en!("CANFAR Images"));
+        let container = card.widget.clone();
+        let header = card.header.clone();
 
-        // ── Header: title · (count) · Find-by-package · spinner · refresh ──
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        header.set_margin_start(12);
-        header.set_margin_end(12);
-        header.set_margin_top(12);
-
-        let title = gtk::Label::new(Some(crate::tr_en!("CANFAR Images")));
-        title.add_css_class("title-4");
-        title.set_halign(gtk::Align::Start);
-        header.append(&title);
-
+        // The count sits with the title rather than after the spacer, so the
+        // heading reads "CANFAR Images (42)" as one thing.
         let count_badge = gtk::Label::new(None);
         count_badge.add_css_class("dim-label");
         count_badge.add_css_class("caption");
-        header.append(&count_badge);
-
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        spacer.set_hexpand(true);
-        header.append(&spacer);
+        header.insert_child_after(&count_badge, header.first_child().as_ref());
 
         let find_btn = gtk::Button::with_label(crate::tr_en!("Find images by package…"));
         find_btn.add_css_class("flat");
         find_btn.set_valign(gtk::Align::Center);
         header.append(&find_btn);
 
-        let spinner = gtk::Spinner::new();
-        spinner.set_visible(false);
-        header.append(&spinner);
-
-        let refresh_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
-        refresh_btn.set_tooltip_text(Some(crate::tr_en!("Refresh")));
-        refresh_btn.set_valign(gtk::Align::Center);
-        header.append(&refresh_btn);
-
-        container.append(&header);
+        let spinner = card.spinner.clone();
+        let refresh_btn = card.with_refresh();
 
         // ── Per-type filter bar (linked toggle buttons) ──
         let filter_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         filter_bar.add_css_class("linked");
-        filter_bar.set_margin_start(12);
-        filter_bar.set_margin_end(12);
         filter_bar.set_halign(gtk::Align::Start);
-        container.append(&filter_bar);
+        card.content.append(&filter_bar);
 
         // ── Discovered X of Y subtitle + row list, grouped with a tight 6px
         // gap so the caption reads as directly describing the list below it
@@ -126,8 +100,6 @@ impl CanfarImagesView {
         let subtitle = gtk::Label::new(None);
         subtitle.add_css_class("dim-label");
         subtitle.set_halign(gtk::Align::Start);
-        subtitle.set_margin_start(12);
-        subtitle.set_margin_end(12);
         list_section.append(&subtitle);
 
         // ── Scrollable row list ──
@@ -141,12 +113,10 @@ impl CanfarImagesView {
         let list_box = gtk::ListBox::new();
         list_box.add_css_class("boxed-list");
         list_box.set_selection_mode(gtk::SelectionMode::None);
-        list_box.set_margin_start(12);
-        list_box.set_margin_end(12);
         list_box.set_margin_bottom(12);
         scrolled.set_child(Some(&list_box));
         list_section.append(&scrolled);
-        container.append(&list_section);
+        card.content.append(&list_section);
 
         let view = Rc::new(CanfarImagesView {
             container,

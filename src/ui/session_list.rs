@@ -1,7 +1,6 @@
 use crate::models::session::INTERACTIVE_SESSION_TYPES;
 use crate::models::Session;
 use crate::state::AppServices;
-use crate::ui::card_header::card_header;
 use crate::ui::session_card::{ActionCallback, SessionAction, SessionCard};
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -62,15 +61,12 @@ pub struct SessionListView {
 
 impl SessionListView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        container.add_css_class("card");
-        container.set_margin_start(12);
-        container.set_margin_end(12);
-        container.set_margin_top(12);
-        container.set_margin_bottom(12);
+        let card = crate::ui::card::Card::new(crate::tr_en!("Active Sessions"));
+        let container = card.widget.clone();
         container.set_vexpand(true);
-
-        let (header, loading_spinner, refresh_btn) = card_header(crate::tr_en!("Active Sessions"));
+        let header = card.header.clone();
+        let loading_spinner = card.spinner.clone();
+        let refresh_btn = card.with_refresh();
 
         let countdown_label = gtk::Label::new(None);
         countdown_label.add_css_class("dim-label");
@@ -90,14 +86,12 @@ impl SessionListView {
         filter_dropdown.set_valign(gtk::Align::Center);
         header.insert_child_after(&filter_dropdown, Some(&count_label));
 
-        container.append(&header);
-
         let empty_label = gtk::Label::new(Some(crate::tr_en!("No active sessions")));
         empty_label.add_css_class("dim-label");
         empty_label.set_margin_top(32);
         empty_label.set_margin_bottom(32);
         empty_label.set_visible(false);
-        container.append(&empty_label);
+        card.content.append(&empty_label);
 
         let scrolled = gtk::ScrolledWindow::new();
         scrolled.set_hscrollbar_policy(gtk::PolicyType::Automatic);
@@ -107,11 +101,9 @@ impl SessionListView {
         scrolled.set_propagate_natural_height(true);
 
         let cards_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        cards_box.set_margin_start(12);
-        cards_box.set_margin_end(12);
         cards_box.set_margin_bottom(12);
         scrolled.set_child(Some(&cards_box));
-        container.append(&scrolled);
+        card.content.append(&scrolled);
 
         let on_action: ActionCallback = Rc::new(RefCell::new(Box::new(|_| {})));
 

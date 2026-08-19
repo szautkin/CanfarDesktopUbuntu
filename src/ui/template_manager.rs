@@ -19,33 +19,12 @@ pub struct TemplateManager {
 
 impl TemplateManager {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        widget.add_css_class("card");
-        widget.set_margin_start(12);
-        widget.set_margin_end(12);
-        widget.set_margin_top(12);
-        widget.set_margin_bottom(12);
-
-        let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header_box.set_margin_start(12);
-        header_box.set_margin_end(12);
-        header_box.set_margin_top(12);
-
-        let title = gtk::Label::new(Some(crate::tr_en!("Session Templates")));
-        title.add_css_class("title-4");
-        title.set_hexpand(true);
-        title.set_halign(gtk::Align::Start);
-        header_box.append(&title);
-
-        widget.append(&header_box);
+        let card = crate::ui::card::Card::new(crate::tr_en!("Session Templates"));
+        let widget = card.widget.clone();
 
         let list_box = gtk::ListBox::new();
         list_box.set_selection_mode(gtk::SelectionMode::None);
         list_box.add_css_class("boxed-list");
-        list_box.set_margin_start(12);
-        list_box.set_margin_end(12);
-        list_box.set_margin_top(12);
-        list_box.set_margin_bottom(12);
 
         list_box.set_placeholder(Some(
             &gtk::Label::builder()
@@ -60,7 +39,7 @@ impl TemplateManager {
                 .build(),
         ));
 
-        widget.append(&list_box);
+        card.content.append(&list_box);
 
         let manager = Rc::new(TemplateManager {
             widget,

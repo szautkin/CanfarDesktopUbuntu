@@ -21,36 +21,13 @@ pub struct RecentLaunchesView {
 
 impl RecentLaunchesView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        container.add_css_class("card");
-        container.set_margin_start(12);
-        container.set_margin_end(12);
-        container.set_margin_top(12);
-        container.set_margin_bottom(12);
+        let card = crate::ui::card::Card::new(crate::tr_en!("Recent Launches"));
+        let container = card.widget.clone();
+        let clear_btn = card.with_action("edit-clear-all-symbolic", crate::tr_en!("Clear history"));
 
-        // Header
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        header.set_margin_start(12);
-        header.set_margin_end(12);
-        header.set_margin_top(12);
-
-        let title = gtk::Label::new(Some(crate::tr_en!("Recent Launches")));
-        title.add_css_class("title-4");
-        title.set_halign(gtk::Align::Start);
-        title.set_hexpand(true);
-        header.append(&title);
-
-        let clear_btn = gtk::Button::from_icon_name("edit-clear-all-symbolic");
-        clear_btn.set_tooltip_text(Some(crate::tr_en!("Clear history")));
-        header.append(&clear_btn);
-        container.append(&header);
-
-        // Filter
         let filter_entry = gtk::SearchEntry::new();
         filter_entry.set_placeholder_text(Some(crate::tr_en!("Filter...")));
-        filter_entry.set_margin_start(12);
-        filter_entry.set_margin_end(12);
-        container.append(&filter_entry);
+        card.content.append(&filter_entry);
 
         // List
         let scrolled = gtk::ScrolledWindow::new();
@@ -62,11 +39,9 @@ impl RecentLaunchesView {
         let list_box = gtk::ListBox::new();
         list_box.add_css_class("boxed-list");
         list_box.set_selection_mode(gtk::SelectionMode::None);
-        list_box.set_margin_start(12);
-        list_box.set_margin_end(12);
         list_box.set_margin_bottom(12);
         scrolled.set_child(Some(&list_box));
-        container.append(&scrolled);
+        card.content.append(&scrolled);
 
         let view = Rc::new(RecentLaunchesView {
             container,

@@ -5,7 +5,7 @@ pub mod ai_guide_page;
 pub mod batch_jobs_dialog;
 pub mod batch_jobs_view;
 pub mod canfar_images;
-pub mod card_header;
+pub mod card;
 pub mod coord_chip;
 pub mod cube_export;
 pub mod cube_slice_view;

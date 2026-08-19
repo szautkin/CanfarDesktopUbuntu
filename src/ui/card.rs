@@ -1,0 +1,134 @@
+//! The card every Portal component sits in.
+//!
+//! Seven widgets each built this by hand: a vertical box, the `card` style, four
+//! margin calls, then a heading row with its own four. Five used
+//! `card_header`, two wrote their own — so two titles were a different size
+//! from the other five, and a heading sat at a different distance from its
+//! frame depending on which file you were in.
+//!
+//! One type owns the frame, the heading and where content goes. A component
+//! says what it is and appends its content; it does not decide what a card
+//! looks like, because then there are seven answers to that.
+
+use crate::ui::space;
+use gtk4::prelude::*;
+use gtk4::{self as gtk};
+
+/// A titled card: frame, heading row, and a content area to fill.
+pub struct Card {
+    /// The whole card — put this in the layout.
+    pub widget: gtk::Box,
+    /// Append content here. Already inset from the frame.
+    pub content: gtk::Box,
+    /// Shown while the card is loading. Hidden until asked for.
+    pub spinner: gtk::Spinner,
+    /// The heading row, for a card that needs its own action beside the title.
+    pub header: gtk::Box,
+}
+
+impl Card {
+    /// A card titled `title`, with a spinner beside the heading.
+    pub fn new(title: &str) -> Self {
+        let widget = gtk::Box::new(gtk::Orientation::Vertical, space::CARD);
+        widget.add_css_class("card");
+        space::edge_all(&widget);
+
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, space::ROW);
+        header.set_margin_start(space::CARD);
+        header.set_margin_end(space::CARD);
+        header.set_margin_top(space::CARD);
+
+        let label = gtk::Label::new(Some(title));
+        label.add_css_class("title-4");
+        label.set_halign(gtk::Align::Start);
+        label.set_hexpand(true);
+        header.append(&label);
+
+        let spinner = gtk::Spinner::new();
+        spinner.set_visible(false);
+        header.append(&spinner);
+
+        widget.append(&header);
+
+        // Content is inset on the sides and the bottom; the heading above
+        // already provides the top gap.
+        let content = gtk::Box::new(gtk::Orientation::Vertical, space::CARD);
+        content.set_margin_start(space::CARD);
+        content.set_margin_end(space::CARD);
+        content.set_margin_bottom(space::CARD);
+        content.set_vexpand(true);
+        widget.append(&content);
+
+        Card {
+            widget,
+            content,
+            spinner,
+            header,
+        }
+    }
+
+    /// Add a refresh button to the heading and hand it back.
+    ///
+    /// Not every card can be refreshed, so it is asked for rather than always
+    /// present — a button that does nothing is worse than no button.
+    pub fn with_refresh(&self) -> gtk::Button {
+        let btn = gtk::Button::from_icon_name("view-refresh-symbolic");
+        btn.add_css_class("flat");
+        btn.set_valign(gtk::Align::Center);
+        btn.set_tooltip_text(Some(crate::tr_en!("Refresh")));
+        self.header.append(&btn);
+        btn
+    }
+
+    /// Add an action button to the heading, left of any refresh.
+    pub fn with_action(&self, icon: &str, tooltip: &str) -> gtk::Button {
+        let btn = gtk::Button::from_icon_name(icon);
+        btn.add_css_class("flat");
+        btn.set_valign(gtk::Align::Center);
+        btn.set_tooltip_text(Some(tooltip));
+        self.header.append(&btn);
+        btn
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Every Portal component must get its card from here, or the Portal is
+    //! seven components that each look slightly different.
+
+    const PORTAL_CARDS: &[(&str, &str)] = &[
+        ("session_list", include_str!("session_list.rs")),
+        ("storage_quota", include_str!("storage_quota.rs")),
+        ("batch_jobs_view", include_str!("batch_jobs_view.rs")),
+        ("platform_load", include_str!("platform_load.rs")),
+        ("recent_launches", include_str!("recent_launches.rs")),
+        ("template_manager", include_str!("template_manager.rs")),
+        ("canfar_images", include_str!("canfar_images.rs")),
+    ];
+
+    #[test]
+    fn no_portal_component_builds_its_own_card() {
+        for (name, source) in PORTAL_CARDS {
+            let code = crate::testing::code(source);
+            assert!(
+                !code.contains(r#"add_css_class("card")"#),
+                "{name} styles its own card; the frame, the heading size and the \
+                 inset are then its own opinion. Use ui::card::Card."
+            );
+        }
+    }
+
+    #[test]
+    fn a_portal_component_does_not_set_its_own_edges() {
+        // The four-margin block is where the raggedness came from: a component
+        // that insets itself is a component that can inset itself differently.
+        for (name, source) in PORTAL_CARDS {
+            let code = crate::testing::code(source);
+            let hand_written = code.matches("set_margin_start(12)").count();
+            assert_eq!(
+                hand_written, 0,
+                "{name} still writes its own card inset {hand_written} time(s)"
+            );
+        }
+    }
+}

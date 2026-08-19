@@ -1,6 +1,5 @@
 use crate::models::SkahaStatsResponse;
 use crate::state::AppServices;
-use crate::ui::card_header::card_header;
 use crate::ui::metric_bar::MetricBar;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -21,30 +20,21 @@ pub struct PlatformLoadView {
 
 impl PlatformLoadView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        container.add_css_class("card");
-        container.set_margin_start(12);
-        container.set_margin_end(12);
-        container.set_margin_top(12);
-        container.set_margin_bottom(12);
-
-        let (header, loading_spinner, refresh_btn) = card_header("Platform Load");
-        container.append(&header);
+        let card = crate::ui::card::Card::new("Platform Load");
+        let container = card.widget.clone();
+        let loading_spinner = card.spinner.clone();
+        let refresh_btn = card.with_refresh();
 
         let status_label = gtk::Label::new(None);
         status_label.set_halign(gtk::Align::Start);
         status_label.add_css_class("dim-label");
         status_label.add_css_class("caption");
-        status_label.set_margin_start(12);
-        status_label.set_margin_end(12);
         status_label.set_visible(false);
-        container.append(&status_label);
+        card.content.append(&status_label);
 
         let content_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        content_box.set_margin_start(12);
-        content_box.set_margin_end(12);
         content_box.set_margin_bottom(12);
-        container.append(&content_box);
+        card.content.append(&content_box);
 
         let view = Rc::new(PlatformLoadView {
             container,

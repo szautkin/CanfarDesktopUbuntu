@@ -6,7 +6,6 @@
 use crate::helpers::batch_jobs_helper::{self, BatchJobCounts, BatchJobState};
 use crate::models::session::Session;
 use crate::state::AppServices;
-use crate::ui::card_header::card_header;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -54,14 +53,11 @@ pub struct BatchJobsView {
 
 impl BatchJobsView {
     pub fn new(services: Arc<AppServices>) -> Rc<Self> {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        container.add_css_class("card");
-        container.set_margin_start(12);
-        container.set_margin_end(12);
-        container.set_margin_top(12);
-        container.set_margin_bottom(12);
-
-        let (header, spinner, refresh_btn) = card_header("Batch Jobs");
+        let card = crate::ui::card::Card::new("Batch Jobs");
+        let container = card.widget.clone();
+        let header = card.header.clone();
+        let spinner = card.spinner.clone();
+        let refresh_btn = card.with_refresh();
 
         // Small countdown hint inserted right after the title, before the
         // spinner/refresh button (mirrors SessionListView's countdown label).
@@ -72,15 +68,11 @@ impl BatchJobsView {
             header.insert_child_after(&countdown_label, Some(&first));
         }
 
-        container.append(&header);
-
         let grid = gtk::Grid::new();
         grid.set_row_spacing(6);
         grid.set_column_spacing(6);
         grid.set_row_homogeneous(true);
         grid.set_column_homogeneous(true);
-        grid.set_margin_start(12);
-        grid.set_margin_end(12);
         grid.set_margin_bottom(12);
 
         // Name and colour both come from the state itself. Spelling the four
@@ -96,7 +88,7 @@ impl BatchJobsView {
         grid.attach(&completed_btn, 0, 1, 1, 1);
         grid.attach(&failed_btn, 1, 1, 1, 1);
 
-        container.append(&grid);
+        card.content.append(&grid);
 
         let view = Rc::new(BatchJobsView {
             container,
