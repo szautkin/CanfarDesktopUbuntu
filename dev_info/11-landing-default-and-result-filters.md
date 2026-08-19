@@ -4,6 +4,12 @@ _Planned 2026-08-19 · researched against the CADC Advanced Search page and both
 _Section 3 revised after reading the CADC sources directly — the first draft was wrong about
 operators, see "Correction" below._
 
+**Status:** 1, 2 and 3 are implemented (`475c671`, `fd52bdb`). 4 is not started.
+
+One consequence of 2 worth noting, which fell out rather than being designed: *Apply filters to
+ADQL* followed by a re-run used to filter twice — once in the query, then again client-side by the
+same boxes. Clearing on the new result set fixes that too.
+
 ## 1. Home should be the default screen
 
 **Today:** signing in calls `navigate_to_dashboard`, which navigates to the Portal. So the tiles
