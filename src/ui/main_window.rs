@@ -373,19 +373,41 @@ pub fn build_main_window(
     breakpoint.add_setter(&split_view, "collapsed", Some(&true.to_value()));
     window.add_breakpoint(breakpoint);
 
-    // Sidebar row activation drives the content ViewStack.
-    {
+    // ── One way to change page ───────────────────────────────────────────
+    //
+    // Switching the ViewStack's child is one of THREE things a navigation has
+    // to do, and it was the only one most call sites did. The other two decide
+    // whether the new page is actually seen:
+    //
+    //  * a contextual page (an observation detail) pushed onto the
+    //    NavigationView sits on top, so the child changes underneath it and
+    //    nothing appears to happen;
+    //  * below the 720sp breakpoint the split view is collapsed and the content
+    //    pane is off screen until asked for — so on a narrow window the tile
+    //    you clicked left you looking at the sidebar.
+    //
+    // The sidebar rows did all three. The launchpad tiles, the keyboard
+    // shortcuts, the agent's navigate action and the "open in FITS/Cube viewer"
+    // handlers did the first only, which is why the tiles looked dead.
+    let navigate: Rc<dyn Fn(&str)> = {
         let view_stack = view_stack.clone();
         let split_view = split_view.clone();
         let content_nav = content_nav.clone();
         let content_root_page = content_root_page.clone();
+        Rc::new(move |key: &str| {
+            content_nav.pop_to_page(&content_root_page);
+            view_stack.set_visible_child_name(key);
+            split_view.set_show_content(true);
+        })
+    };
+
+    // Sidebar row activation drives the content ViewStack.
+    {
+        let navigate = navigate.clone();
         let nav_keys = nav_keys.clone();
         sidebar_list.connect_row_activated(move |_, row| {
             if let Some(key) = nav_keys.get(row.index() as usize) {
-                // Leave any pushed contextual page (observation detail) first.
-                content_nav.pop_to_page(&content_root_page);
-                view_stack.set_visible_child_name(key);
-                split_view.set_show_content(true);
+                navigate(key);
             }
         });
     }
@@ -509,7 +531,7 @@ pub fn build_main_window(
     // The landing page keeps its auth-gated tiles (Portal, Storage) locked while
     // signed out; `welcome` is retained so login/logout can toggle that lock.
     let welcome = Rc::new(build_welcome_page(
-        &view_stack,
+        &navigate,
         &window,
         &services,
         &login_btn,
@@ -522,10 +544,10 @@ pub fn build_main_window(
 
     // "Search Here" from the FITS crosshair → Search form, prefilled.
     {
-        let view_stack = view_stack.clone();
+        let navigate = navigate.clone();
         let search_page = search_page.clone();
         fits_viewer.set_on_search_here(move |ra, dec| {
-            view_stack.set_visible_child_name("search");
+            navigate("search");
             search_page.show_search_form(ra, dec);
         });
     }
@@ -550,8 +572,8 @@ pub fn build_main_window(
     // Workflows module (research protocols)
     let workflows_page = WorkflowsPage::new(services.clone());
     {
+        let navigate = navigate.clone();
         // View: deep-links from a workflow step navigate the ViewStack.
-        let view_stack = view_stack.clone();
         workflows_page.set_on_navigate(move |view_key| {
             let target = match view_key {
                 "search" => "search",
@@ -565,7 +587,7 @@ pub fn build_main_window(
                 // Any unknown key: no-op (matches Windows tolerance).
                 _ => return,
             };
-            view_stack.set_visible_child_name(target);
+            navigate(target);
         });
     }
 
@@ -687,15 +709,15 @@ pub fn build_main_window(
 
     // Open FITS file action — triggered by VOSpace browser "Open in FITS Viewer"
     {
+        let navigate = navigate.clone();
         let fits_viewer = fits_viewer.clone();
-        let view_stack = view_stack.clone();
         let open_fits_action =
             gtk::gio::SimpleAction::new("open-fits-file", Some(glib::VariantTy::STRING));
         open_fits_action.connect_activate(move |_, param| {
             if let Some(path_str) = param.and_then(|v| v.str()) {
                 let path = std::path::PathBuf::from(path_str);
                 fits_viewer.load_from_path(&path);
-                view_stack.set_visible_child_name("fits");
+                navigate("fits");
             }
         });
         app.add_action(&open_fits_action);
@@ -703,14 +725,14 @@ pub fn build_main_window(
 
     // Open cube file action — triggered by VOSpace browser "Open in Cube Viewer"
     {
+        let navigate = navigate.clone();
         let cube_host = cube_host.clone();
-        let view_stack = view_stack.clone();
         let open_cube_action =
             gtk::gio::SimpleAction::new("open-cube-file", Some(glib::VariantTy::STRING));
         open_cube_action.connect_activate(move |_, param| {
             if let Some(path_str) = param.and_then(|v| v.str()) {
                 let path = std::path::PathBuf::from(path_str);
-                view_stack.set_visible_child_name("cube");
+                navigate("cube");
                 cube_host.open_path(&path);
             }
         });
@@ -755,7 +777,7 @@ pub fn build_main_window(
             tokio::sync::mpsc::unbounded_channel::<crate::mcp::view_state::ViewAction>();
         crate::mcp::view_state::install_action_sender(vs_tx);
         {
-            let view_stack = view_stack.clone();
+            let navigate = navigate.clone();
             let app = app.clone();
             let search_page = search_page.clone();
             glib::spawn_future_local(async move {
@@ -770,7 +792,7 @@ pub fn build_main_window(
                                     true
                                 }
                                 Some(t) => {
-                                    view_stack.set_visible_child_name(t);
+                                    navigate(t);
                                     true
                                 }
                                 None => false,
@@ -785,7 +807,7 @@ pub fn build_main_window(
                             let _ = reply.send(true);
                         }
                         ViewAction::SetSearchFocus { ra, dec, reply } => {
-                            view_stack.set_visible_child_name("search");
+                            navigate("search");
                             search_page.show_search_form(ra, dec);
                             let _ = reply.send(true);
                         }
@@ -828,14 +850,14 @@ pub fn build_main_window(
 
     // Open notebook file action — triggered by VOSpace browser "Open in Notebook"
     {
+        let navigate = navigate.clone();
         let notebook_host = notebook_host.clone();
-        let view_stack = view_stack.clone();
         let open_notebook_action =
             gtk::gio::SimpleAction::new("open-notebook-file", Some(glib::VariantTy::STRING));
         open_notebook_action.connect_activate(move |_, param| {
             if let Some(path_str) = param.and_then(|v| v.str()) {
                 notebook_host.load_from_path(&std::path::PathBuf::from(path_str));
-                view_stack.set_visible_child_name("notebook");
+                navigate("notebook");
             }
         });
         app.add_action(&open_notebook_action);
@@ -844,11 +866,11 @@ pub fn build_main_window(
     // navigate-research action — invoked from toast action buttons,
     // Ctrl+Shift+R, or the view switcher. Also refreshes the list.
     {
-        let view_stack = view_stack.clone();
+        let navigate = navigate.clone();
         let research_page = research_page.clone();
         let nav_action = gtk::gio::SimpleAction::new("navigate-research", None);
         nav_action.connect_activate(move |_, _| {
-            view_stack.set_visible_child_name("research");
+            navigate("research");
             research_page.reload();
         });
         app.add_action(&nav_action);
@@ -857,27 +879,27 @@ pub fn build_main_window(
 
     // navigate-search action — used by Research empty-state CTA
     {
-        let view_stack = view_stack.clone();
+        let navigate = navigate.clone();
         let nav_action = gtk::gio::SimpleAction::new("navigate-search", None);
         nav_action.connect_activate(move |_, _| {
-            view_stack.set_visible_child_name("search");
+            navigate("search");
         });
         app.add_action(&nav_action);
     }
 
     // File panel — open-file callback
     {
+        let navigate = navigate.clone();
         let fits_viewer = fits_viewer.clone();
-        let view_stack = view_stack.clone();
         let notebook_host = notebook_host.clone();
         file_panel.set_on_open_file(move |path, file_type| match file_type {
             FileType::Fits => {
                 fits_viewer.load_from_path(&path);
-                view_stack.set_visible_child_name("fits");
+                navigate("fits");
             }
             FileType::Notebook => {
                 notebook_host.load_from_path(&path);
-                view_stack.set_visible_child_name("notebook");
+                navigate("notebook");
             }
             FileType::Other => {}
         });
@@ -893,11 +915,11 @@ pub fn build_main_window(
 
     // Logout action
     {
+        let navigate = navigate.clone();
         let services = services.clone();
         let login_btn = login_btn.clone();
         let user_menu_btn = user_menu_btn.clone();
         let status_label = status_label.clone();
-        let view_stack = view_stack.clone();
         let dashboard = dashboard.clone();
         let cached_user_info = cached_user_info.clone();
         let welcome = welcome.clone();
@@ -908,7 +930,7 @@ pub fn build_main_window(
             let login_btn = login_btn.clone();
             let user_menu_btn = user_menu_btn.clone();
             let status_label = status_label.clone();
-            let view_stack = view_stack.clone();
+            let navigate = navigate.clone();
             let dashboard = dashboard.clone();
             let cached_user_info = cached_user_info.clone();
             let welcome = welcome.clone();
@@ -926,7 +948,7 @@ pub fn build_main_window(
 
                 // Re-lock the auth-gated landing tiles, then show the home view.
                 welcome.set_authenticated(false);
-                view_stack.set_visible_child_name("home");
+                navigate("home");
                 *dashboard.borrow_mut() = None;
 
                 services
@@ -940,6 +962,7 @@ pub fn build_main_window(
     // Everything the shell changes on sign-in, shared by every path that can
     // start a session.
     let signed_in = SignedInChrome {
+        navigate: navigate.clone(),
         login_btn: login_btn.clone(),
         user_menu_btn: user_menu_btn.clone(),
         status_label: status_label.clone(),
@@ -1165,6 +1188,7 @@ pub fn build_main_window(
     // Keyboard shortcuts
     setup_keyboard_shortcuts(
         &window,
+        &navigate,
         &view_stack,
         &file_panel,
         &files_btn,
@@ -1181,6 +1205,7 @@ pub fn build_main_window(
 
 fn setup_keyboard_shortcuts(
     window: &adw::ApplicationWindow,
+    navigate: &Rc<dyn Fn(&str)>,
     view_stack: &adw::ViewStack,
     file_panel: &Rc<FilePanel>,
     files_btn: &gtk::ToggleButton,
@@ -1189,6 +1214,7 @@ fn setup_keyboard_shortcuts(
 ) {
     let controller = gtk::EventControllerKey::new();
     let vs = view_stack.clone();
+    let navigate = Rc::clone(navigate);
     let fp = Rc::clone(file_panel);
     let fb = files_btn.clone();
     let nh = notebook_host.clone();
@@ -1215,27 +1241,27 @@ fn setup_keyboard_shortcuts(
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_1 => {
-                    vs.set_visible_child_name("home");
+                    navigate("home");
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_2 => {
-                    vs.set_visible_child_name("storage");
+                    navigate("storage");
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_3 => {
-                    vs.set_visible_child_name("fits");
+                    navigate("fits");
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_4 => {
-                    vs.set_visible_child_name("search");
+                    navigate("search");
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_5 => {
-                    vs.set_visible_child_name("research");
+                    navigate("research");
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_6 => {
-                    vs.set_visible_child_name("notebook");
+                    navigate("notebook");
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk4::gdk::Key::_7 => {
@@ -1377,6 +1403,7 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
 /// chance to forget one line.
 #[derive(Clone)]
 struct SignedInChrome {
+    navigate: Rc<dyn Fn(&str)>,
     login_btn: gtk::Button,
     user_menu_btn: gtk::MenuButton,
     status_label: gtk::Label,
@@ -1407,7 +1434,7 @@ impl SignedInChrome {
         // Unlock the auth-gated landing tiles BEFORE swapping in the dashboard,
         // or the tiles render locked behind a view the user can already use.
         self.welcome.set_authenticated(true);
-        navigate_to_dashboard(&self.view_stack, services, &self.dashboard).await;
+        navigate_to_dashboard(&self.navigate, &self.view_stack, services, &self.dashboard).await;
         self.vospace.refresh().await;
 
         services
@@ -1421,6 +1448,7 @@ impl SignedInChrome {
 // ---------------------------------------------------------------------------
 
 async fn navigate_to_dashboard(
+    navigate: &Rc<dyn Fn(&str)>,
     view_stack: &adw::ViewStack,
     services: &Arc<AppServices>,
     dashboard: &Rc<RefCell<Option<DashboardView>>>,
@@ -1437,7 +1465,7 @@ async fn navigate_to_dashboard(
         crate::tr_en!("Dashboard"),
         "view-grid-symbolic",
     );
-    view_stack.set_visible_child_name("home");
+    navigate("home");
 
     view.load_data().await;
     *dashboard.borrow_mut() = Some(view);
@@ -1658,7 +1686,7 @@ fn read_show_ai_guide_tile() -> bool {
 }
 
 fn build_welcome_page(
-    view_stack: &adw::ViewStack,
+    navigate: &Rc<dyn Fn(&str)>,
     window: &adw::ApplicationWindow,
     services: &Arc<AppServices>,
     login_btn: &gtk::Button,
@@ -1819,7 +1847,7 @@ fn build_welcome_page(
 
     let mut lockers: Vec<Rc<dyn Fn(bool)>> = Vec::new();
     for spec in specs.iter() {
-        let (widget, locker) = make_tile(spec, view_stack, window, services, login_btn);
+        let (widget, locker) = make_tile(spec, navigate, window, services, login_btn);
         if let Some(locker) = locker {
             lockers.push(locker);
         }
@@ -1853,7 +1881,7 @@ type BuiltTile = (gtk::Widget, Option<Rc<dyn Fn(bool)>>);
 /// Build one landing tile.
 fn make_tile(
     spec: &TileSpec,
-    view_stack: &adw::ViewStack,
+    navigate: &Rc<dyn Fn(&str)>,
     window: &adw::ApplicationWindow,
     services: &Arc<AppServices>,
     login_btn: &gtk::Button,
@@ -1908,9 +1936,9 @@ fn make_tile(
             page,
             requires_auth: false,
         } => {
-            let vs = view_stack.clone();
+            let navigate = navigate.clone();
             btn.connect_clicked(move |_| {
-                vs.set_visible_child_name(page);
+                navigate(page);
             });
             (btn.upcast(), None)
         }
@@ -1939,13 +1967,13 @@ fn make_tile(
             {
                 let locked = locked.clone();
                 let login_btn = login_btn.clone();
-                let vs = view_stack.clone();
+                let navigate = navigate.clone();
                 btn.connect_clicked(move |_| {
                     if locked.get() {
                         // Signed out: open login; the login flow then continues.
                         login_btn.emit_clicked();
                     } else {
-                        vs.set_visible_child_name(page);
+                        navigate(page);
                     }
                 });
             }
@@ -2049,6 +2077,65 @@ mod session_tests {
         assert!(
             handler.contains("page.reload()"),
             "the sign-in handler does not reload the observation afterwards"
+        );
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    //! Clicking a launchpad tile did nothing you could see.
+    //!
+    //! Changing the ViewStack's visible child is one of three things a
+    //! navigation has to do. The other two decide whether the page is on
+    //! screen at all: a contextual page pushed onto the NavigationView covers
+    //! it, and below the 720sp breakpoint the split view is collapsed with the
+    //! content pane off screen until asked for. The sidebar rows did all
+    //! three; twenty other call sites — the tiles, Ctrl+1..6, the agent's
+    //! navigate action, "open in FITS/Cube viewer" — did the first only.
+
+    const SOURCE: &str = include_str!("main_window.rs");
+
+    #[test]
+    fn only_the_navigator_switches_the_view_stack() {
+        let code = crate::testing::code(SOURCE);
+        let sites: Vec<usize> = code
+            .match_indices("set_visible_child_name(")
+            .map(|(at, _)| code[..at].lines().count() + 1)
+            .collect();
+        assert_eq!(
+            sites.len(),
+            1,
+            "navigation is being done directly at {sites:?}. A page switched \
+             this way can be hidden behind a pushed page, or off screen on a \
+             collapsed layout — which is what made the launchpad tiles look \
+             dead. Call `navigate(key)`."
+        );
+    }
+
+    #[test]
+    fn the_navigator_does_all_three_things() {
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("let navigate: Rc<dyn Fn(&str)>")
+            .expect("the shared navigator is gone");
+        let body = &code[at..(at + 600).min(code.len())];
+        for step in [
+            "pop_to_page",            // leave a pushed contextual page
+            "set_visible_child_name", // switch the stack
+            "set_show_content(true)", // reveal it when collapsed
+        ] {
+            assert!(body.contains(step), "the navigator no longer does {step}");
+        }
+    }
+
+    #[test]
+    fn the_tiles_navigate_the_same_way_the_sidebar_does() {
+        let code = crate::testing::code(SOURCE);
+        let at = code.find("fn make_tile").expect("make_tile is gone");
+        let body = &code[at..(at + 3000).min(code.len())];
+        assert!(
+            body.contains("navigate(page)"),
+            "a tile is switching pages by hand again"
         );
     }
 }
