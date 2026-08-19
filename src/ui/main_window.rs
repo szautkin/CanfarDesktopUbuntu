@@ -289,6 +289,7 @@ pub fn build_main_window(
 
     let nav_items: Vec<(&str, &str, &str)> = vec![
         ("home", crate::tr_en!("Home"), "go-home-symbolic"),
+        ("portal", crate::tr_en!("Portal"), "view-grid-symbolic"),
         (
             "storage",
             crate::tr_en!("Storage"),
@@ -537,7 +538,27 @@ pub fn build_main_window(
         &login_btn,
         read_show_ai_guide_tile(),
     ));
-    let dashboard_placeholder = welcome.root.clone();
+    let landing_root = welcome.root.clone();
+    // The Portal's page, empty until the dashboard is built. Its own child, not
+    // a second use of "home": the reference keeps LandingContainer and
+    // PortalContainer apart (and the macOS app has `.landing` and `.portal` as
+    // separate modes) because they are two destinations. Ours registered the
+    // landing tiles as "home" and then REPLACED that child with the dashboard on
+    // sign-in, so Home showed the Portal and the tiles were gone for the rest of
+    // the session.
+    let portal_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    {
+        // Until sign-in the Portal has nothing to show; say so rather than
+        // presenting a blank page.
+        let empty = adw::StatusPage::new();
+        empty.set_icon_name(Some("view-grid-symbolic"));
+        empty.set_title(crate::tr_en!("Portal"));
+        empty.set_description(Some(crate::tr_en!(
+            "Sign in to see your sessions and platform load"
+        )));
+        empty.set_vexpand(true);
+        portal_page.append(&empty);
+    }
 
     // Search module (real implementation)
     let search_page = SearchPage::new(services.clone(), window.clone());
@@ -583,7 +604,8 @@ pub fn build_main_window(
                 "fitsViewer" => "fits",
                 "workflows" => "workflows",
                 "aiGuide" => "aiguide",
-                "portal" | "landing" => "home",
+                "landing" => "home",
+                "portal" => "portal",
                 // Any unknown key: no-op (matches Windows tolerance).
                 _ => return,
             };
@@ -592,10 +614,16 @@ pub fn build_main_window(
     }
 
     view_stack.add_titled_with_icon(
-        &dashboard_placeholder,
+        &landing_root,
         Some("home"),
         crate::tr_en!("Home"),
         "go-home-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &portal_page,
+        Some("portal"),
+        crate::tr_en!("Portal"),
+        "view-grid-symbolic",
     );
     view_stack.add_titled_with_icon(
         vospace_browser.widget(),
@@ -963,10 +991,10 @@ pub fn build_main_window(
     // start a session.
     let signed_in = SignedInChrome {
         navigate: navigate.clone(),
+        portal_page: portal_page.clone(),
         login_btn: login_btn.clone(),
         user_menu_btn: user_menu_btn.clone(),
         status_label: status_label.clone(),
-        view_stack: view_stack.clone(),
         dashboard: dashboard.clone(),
         cached_user_info: cached_user_info.clone(),
         vospace: vospace_browser.clone(),
@@ -1404,10 +1432,10 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
 #[derive(Clone)]
 struct SignedInChrome {
     navigate: Rc<dyn Fn(&str)>,
+    portal_page: gtk::Box,
     login_btn: gtk::Button,
     user_menu_btn: gtk::MenuButton,
     status_label: gtk::Label,
-    view_stack: adw::ViewStack,
     dashboard: Rc<RefCell<Option<DashboardView>>>,
     cached_user_info: Rc<RefCell<Option<UserInfo>>>,
     vospace: Rc<VoSpaceBrowser>,
@@ -1434,7 +1462,7 @@ impl SignedInChrome {
         // Unlock the auth-gated landing tiles BEFORE swapping in the dashboard,
         // or the tiles render locked behind a view the user can already use.
         self.welcome.set_authenticated(true);
-        navigate_to_dashboard(&self.navigate, &self.view_stack, services, &self.dashboard).await;
+        navigate_to_dashboard(&self.navigate, &self.portal_page, services, &self.dashboard).await;
         self.vospace.refresh().await;
 
         services
@@ -1449,23 +1477,23 @@ impl SignedInChrome {
 
 async fn navigate_to_dashboard(
     navigate: &Rc<dyn Fn(&str)>,
-    view_stack: &adw::ViewStack,
+    portal_page: &gtk::Box,
     services: &Arc<AppServices>,
     dashboard: &Rc<RefCell<Option<DashboardView>>>,
 ) {
-    // Remove placeholder and replace with real dashboard
-    if let Some(placeholder) = view_stack.child_by_name("home") {
-        view_stack.remove(&placeholder);
+    // Fill the Portal's own page. This used to REMOVE the "home" child — the
+    // landing tiles — and register the dashboard under that name, so Home showed
+    // the Portal and the launchpad was gone for the rest of the session. The
+    // reference keeps LandingContainer and PortalContainer apart, and the macOS
+    // app has `.landing` and `.portal` as separate modes, for the same reason:
+    // they are two destinations.
+    while let Some(child) = portal_page.first_child() {
+        portal_page.remove(&child);
     }
-
     let view = DashboardView::new(services.clone());
-    view_stack.add_titled_with_icon(
-        view.widget(),
-        Some("home"),
-        crate::tr_en!("Dashboard"),
-        "view-grid-symbolic",
-    );
-    navigate("home");
+    view.widget().set_vexpand(true);
+    portal_page.append(view.widget());
+    navigate("portal");
 
     view.load_data().await;
     *dashboard.borrow_mut() = Some(view);
@@ -1744,7 +1772,7 @@ fn build_welcome_page(
             title: crate::tr_en!("Portal"),
             desc: crate::tr_en!("Manage sessions & data"),
             action: TileAction::Navigate {
-                page: "home",
+                page: "portal",
                 requires_auth: true,
             },
         },
@@ -2126,6 +2154,49 @@ mod navigation_tests {
         ] {
             assert!(body.contains(step), "the navigator no longer does {step}");
         }
+    }
+
+    #[test]
+    fn home_keeps_its_tiles_and_the_portal_is_its_own_page() {
+        // Home showed the Portal because signing in REMOVED the "home" child —
+        // the landing tiles — and registered the dashboard under that name. Both
+        // reference apps keep them apart: the Windows one has LandingContainer
+        // and PortalContainer, the macOS one has `.landing` and `.portal` as
+        // separate AppModes.
+        let code = crate::testing::code(SOURCE);
+        assert!(
+            !code.contains(r#"view_stack.child_by_name("home")"#),
+            "something is reaching for the home page by name again; the last \
+             thing to do that removed the landing tiles"
+        );
+        assert!(
+            code.contains(r#"Some("portal")"#),
+            "the Portal has no page of its own"
+        );
+        let at = code
+            .find("async fn navigate_to_dashboard")
+            .expect("navigate_to_dashboard is gone");
+        let body = &code[at..(at + 1400).min(code.len())];
+        assert!(
+            body.contains("portal_page"),
+            "the dashboard has left its page"
+        );
+        // The shape of the bug, not the word: registering the dashboard as the
+        // "home" child. Prose about it — the comment recording what went wrong —
+        // is not the bug.
+        assert!(
+            !body.contains(r#"Some("home")"#),
+            "the dashboard is being installed over the landing page again"
+        );
+    }
+
+    #[test]
+    fn landing_and_portal_are_different_destinations() {
+        // The MCP/deep-link vocabulary is the reference's: `landing` and
+        // `portal` are different keys, and used to both resolve to "home".
+        let code = crate::testing::code(SOURCE);
+        assert!(code.contains(r#""landing" => "home""#), "landing key lost");
+        assert!(code.contains(r#""portal" => "portal""#), "portal key lost");
     }
 
     #[test]
