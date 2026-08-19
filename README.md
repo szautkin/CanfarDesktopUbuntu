@@ -93,6 +93,7 @@ cargo test
 # `--all-targets` includes the tests. `dead_code` is NOT suppressed: an unused
 # function is usually a feature that was written and never wired up, which is
 # how several shipped defects here stayed invisible.
+rustup update stable   # CI runs the latest stable; an older local clippy sees fewer lints
 cargo clippy --all-targets -- -D warnings
 
 # Format check

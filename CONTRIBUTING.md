@@ -17,7 +17,8 @@ for contributing to the project.
    ```bash
    cargo build
    cargo test
-   cargo clippy --all-targets -- -D warnings
+   rustup update stable   # CI runs the latest stable; an older local clippy sees fewer lints
+cargo clippy --all-targets -- -D warnings
    ```
 
 ## Code Style
