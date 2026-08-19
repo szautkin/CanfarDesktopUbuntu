@@ -80,6 +80,43 @@ pub(crate) const MAX_RECORDS_RANGE: (f64, f64) = (1.0, 30_000.0);
 /// right the error compounds across 41 columns.
 const RESULT_COLUMN_GAP: i32 = 4;
 
+/// Width of each trailing action cell (preview / save / details).
+///
+/// They had no header at all: the rows appended three buttons after the loop
+/// over visible columns, and the header row ended with the columns. So the
+/// table ran three cells past its own headings.
+pub(crate) const ACTION_COLUMN_WIDTH: i32 = 38;
+
+/// Pin `widget` to exactly `width`, whatever it contains.
+///
+/// `set_size_request` alone sets a MINIMUM, and inside a horizontally-scrolling
+/// viewport nothing is under pressure to shrink — so every cell took its
+/// NATURAL width instead. A header cell holds a filter `Entry` (naturally ~10
+/// characters wide) and a data cell holds a label (naturally its text), so the
+/// two sides disagreed column by column and the error compounded left to right.
+///
+/// Clamping the natural size to nothing leaves the minimum as the only thing
+/// deciding the width, so both sides land on the same number by construction
+/// rather than by both remembering to ask the same function.
+pub(crate) fn pin_width(widget: &impl IsA<gtk::Widget>, width: i32) {
+    let w = widget.as_ref();
+    w.set_size_request(width, -1);
+    w.set_hexpand(false);
+    w.set_halign(gtk::Align::Fill);
+}
+
+/// A label that fills its cell and ellipsizes rather than widening it.
+pub(crate) fn cell_label(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // The natural width a label asks for is its whole text; capped here so the
+    // column's width is the only thing that decides the cell's.
+    label.set_max_width_chars(1);
+    label.set_halign(gtk::Align::Start);
+    label.set_xalign(0.0);
+    label
+}
+
 // A negative gap would overlap the next column. The per-column widths carry
 // their own floor, tested where they live.
 const _: () = assert!(RESULT_COLUMN_GAP >= 0);
@@ -1787,7 +1824,7 @@ impl SearchPage {
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         for col in vis_columns.iter() {
             let col_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
-            col_box.set_size_request(column_width(&col.key), -1);
+            pin_width(&col_box, column_width(&col.key));
             col_box.set_margin_end(RESULT_COLUMN_GAP);
 
             // Clickable header label for sorting
@@ -1800,11 +1837,17 @@ impl SearchPage {
             } else {
                 ""
             };
-            let header_btn =
-                gtk::Button::with_label(&format!("{}{}", col.display_name, sort_indicator));
+            let header_btn = gtk::Button::new();
+            header_btn.set_child(Some(&cell_label(&format!(
+                "{}{}",
+                col.display_name, sort_indicator
+            ))));
             header_btn.add_css_class("flat");
             header_btn.add_css_class("caption");
-            header_btn.set_halign(gtk::Align::Start);
+            header_btn.set_halign(gtk::Align::Fill);
+            header_btn.set_hexpand(false);
+            // The full heading, since a narrow column elides it.
+            header_btn.set_tooltip_text(Some(&col.display_name));
 
             let page_rc = Rc::clone(self);
             let key = col.key.clone();
@@ -1839,7 +1882,11 @@ impl SearchPage {
             // Per-column filter entry — restore existing filter text
             let filter_entry = gtk::Entry::new();
             filter_entry.set_placeholder_text(Some(crate::tr_en!("Filter...")));
-            filter_entry.set_width_chars(10);
+            // One character of natural width: the cell's own pin decides how
+            // wide it ends up, so a filter box in a 60px column no longer
+            // stretches that column to 110px while the values below stay at 60.
+            filter_entry.set_width_chars(1);
+            filter_entry.set_max_width_chars(1);
             filter_entry.add_css_class("caption");
             if let Some(existing) = self.column_filters.borrow().get(&col.key) {
                 filter_entry.set_text(existing);
@@ -1874,6 +1921,31 @@ impl SearchPage {
 
             header_row.append(&col_box);
         }
+
+        // The three action cells every row carries. Without these the table ran
+        // three buttons past its own headings, and nothing said what they do
+        // until you hovered one.
+        for (label, tip) in [
+            (
+                crate::tr_en!("View"),
+                crate::tr_en!("Preview this observation"),
+            ),
+            (
+                crate::tr_en!("Save"),
+                crate::tr_en!("Save to Research (downloads preview + FITS file)"),
+            ),
+            (crate::tr_en!("More"), crate::tr_en!("View details")),
+        ] {
+            let head = cell_label(label);
+            head.add_css_class("caption");
+            head.add_css_class("dim-label");
+            head.set_halign(gtk::Align::Center);
+            head.set_xalign(0.5);
+            head.set_tooltip_text(Some(tip));
+            pin_width(&head, ACTION_COLUMN_WIDTH);
+            head.set_margin_end(RESULT_COLUMN_GAP);
+            header_row.append(&head);
+        }
         self.header_panel.append(&header_row);
         self.header_panel
             .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -1900,16 +1972,13 @@ impl SearchPage {
                 // sets a client-side column filter and re-renders (ref
                 // `NarrowableKeys` / `IsNarrowable`).
                 if is_narrowable(&col.key) && !raw.is_empty() {
-                    let inner = gtk::Label::new(Some(&formatted));
+                    let inner = cell_label(&formatted);
                     inner.add_css_class("caption");
-                    inner.set_halign(gtk::Align::Start);
-                    inner.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
                     let cell_btn = gtk::Button::new();
                     cell_btn.set_child(Some(&inner));
                     cell_btn.add_css_class("flat");
-                    cell_btn.set_size_request(column_width(&col.key), -1);
-                    cell_btn.set_halign(gtk::Align::Start);
+                    pin_width(&cell_btn, column_width(&col.key));
                     cell_btn.set_margin_end(RESULT_COLUMN_GAP);
                     cell_btn.set_tooltip_text(Some(&crate::tr_fmt!("Narrow to: {}", raw)));
 
@@ -1926,13 +1995,15 @@ impl SearchPage {
                     });
                     row_box.append(&cell_btn);
                 } else {
-                    let label = gtk::Label::new(Some(&formatted));
+                    let label = cell_label(&formatted);
                     label.add_css_class("caption");
-                    label.set_size_request(column_width(&col.key), -1);
-                    label.set_halign(gtk::Align::Start);
-                    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    pin_width(&label, column_width(&col.key));
                     label.set_margin_end(RESULT_COLUMN_GAP);
                     label.set_selectable(true);
+                    // The value in full, since the cell elides to its column.
+                    if !formatted.is_empty() {
+                        label.set_tooltip_text(Some(&formatted));
+                    }
                     row_box.append(&label);
                 }
             }
@@ -1940,8 +2011,20 @@ impl SearchPage {
             // "Save to Research" button at the end of the row — routes
             // through the same flow as the detail dialog button.
             let publisher_id = row.get("publisherID").to_string();
-            if !publisher_id.is_empty() {
-                row_box.append(&preview_button(&self.services, &publisher_id));
+            if publisher_id.is_empty() {
+                // Same shape as every other row: three empty cells, so a row
+                // with nothing to act on still lines up under the headings.
+                for _ in 0..3 {
+                    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    pin_width(&spacer, ACTION_COLUMN_WIDTH);
+                    spacer.set_margin_end(RESULT_COLUMN_GAP);
+                    row_box.append(&spacer);
+                }
+            } else {
+                let preview = preview_button(&self.services, &publisher_id);
+                pin_width(&preview, ACTION_COLUMN_WIDTH);
+                preview.set_margin_end(RESULT_COLUMN_GAP);
+                row_box.append(&preview);
 
                 let save_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
                 save_btn.add_css_class("flat");
@@ -1949,6 +2032,8 @@ impl SearchPage {
                     "Save to Research (downloads preview + FITS file)"
                 )));
                 save_btn.set_valign(gtk::Align::Center);
+                pin_width(&save_btn, ACTION_COLUMN_WIDTH);
+                save_btn.set_margin_end(RESULT_COLUMN_GAP);
                 let services = self.services.clone();
                 let pub_id = publisher_id.clone();
                 let raw = row.clone();
@@ -1971,6 +2056,8 @@ impl SearchPage {
                     "View the full CAOM2 observation metadata"
                 )));
                 details_btn.set_valign(gtk::Align::Center);
+                pin_width(&details_btn, ACTION_COLUMN_WIDTH);
+                details_btn.set_margin_end(RESULT_COLUMN_GAP);
                 let pub_id_detail = publisher_id.clone();
                 details_btn.connect_clicked(move |btn| {
                     if let Some(root) = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
@@ -4325,50 +4412,93 @@ mod numeric_range_tests {
 #[cfg(test)]
 mod results_layout_tests {
 
+    const SOURCE: &str = include_str!("mod.rs");
+
     #[test]
-    fn the_header_and_the_rows_size_their_columns_identically() {
-        // They live in SEPARATE scroll areas — the header pinned above, the rows
-        // scrolling under it — kept in step only by a shared horizontal
-        // adjustment. If the two sides sized columns differently the labels
-        // would sit visibly off the values they name, and further right the
-        // error would compound across 41 columns. Now that width varies BY
-        // COLUMN, both sides must not merely use one constant but ask the same
-        // function about the same key.
-        //
-        // A source scan, because the widths are set on GTK widgets this test
-        // cannot build.
-        let source = include_str!("mod.rs");
-        let width_uses = source
-            .matches("set_size_request(column_width(&col.key), -1)")
-            .count();
-        let gap_uses = source.matches("set_margin_end(RESULT_COLUMN_GAP)").count();
+    fn every_cell_is_pinned_rather_than_merely_floored() {
+        // The bug this replaces: both sides DID ask `column_width` for the same
+        // number, and the table still drifted, because `set_size_request` sets a
+        // MINIMUM. Inside a horizontally-scrolling viewport nothing is under
+        // pressure to shrink, so each cell took its NATURAL width — and a header
+        // cell (holding a filter Entry) is naturally far wider than a data cell
+        // (holding a label). The old guard asserted both sides asked the same
+        // question. It passed while the columns visibly drifted, because it
+        // checked the width REQUESTED, not the width used.
+        let code = crate::testing::code(SOURCE);
 
-        // One header cell, plus the two row-cell forms (narrowable button and
-        // plain label).
-        assert!(
-            width_uses >= 3,
-            "expected the header and both row-cell forms to size by column key, found {width_uses}"
-        );
-        assert!(
-            gap_uses >= 3,
-            "expected the header and both row-cell forms to use the shared gap, found {gap_uses}"
-        );
-
-        // And each of the three grid widgets sizes that way — scoped to those
-        // three, since a fixed 80px on an unrelated combo elsewhere on the page
-        // is not drift. A whole-file scan for "80" said otherwise, which is how
-        // a guard earns a reputation for crying wolf.
-        for widget in ["col_box", "cell_btn", "label"] {
-            let prefix = format!("{widget}.set_size_request(");
-            for (i, _) in source.match_indices(&prefix) {
-                let line_end = source[i..].find('\n').map_or(source.len(), |n| i + n);
-                let call = &source[i..line_end];
-                assert!(
-                    call.contains("column_width("),
-                    "a grid cell sizes itself with a literal, which will drift from the header's: {call}"
-                );
-            }
+        for widget in ["col_box", "cell_btn", "label", "head", "spacer", "preview"] {
+            let bare = format!("{widget}.set_size_request(");
+            assert!(
+                !code.contains(&bare),
+                "`{bare}` sets a minimum and lets the natural width decide the rest \
+                 — the header and the rows will drift apart again. Use pin_width()."
+            );
         }
+
+        let pins = code.matches("pin_width(").count();
+        assert!(
+            pins >= 8,
+            "only {pins} pinned cells: the header cell, its label-bearing button, \
+             both row-cell forms and the action cells all need pinning"
+        );
+        for (i, _) in code.match_indices("pin_width(&col_box") {
+            let end = code[i..].find('\n').map_or(code.len(), |n| i + n);
+            let line = &code[i..end];
+            assert!(
+                line.contains("column_width("),
+                "header cell sized by literal: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clamped_cell_still_says_what_it_holds() {
+        // Pinning means eliding, and an elided value nobody can read is worse
+        // than a wide column. Every clamped cell carries its full text.
+        let code = crate::testing::code(SOURCE);
+        let at = code.find("fn cell_label").expect("cell_label is gone");
+        let body = &code[at..(at + 700).min(code.len())];
+        assert!(body.contains("EllipsizeMode::End"), "cells no longer elide");
+        assert!(
+            body.contains("set_max_width_chars(1)"),
+            "the natural width is unclamped again, which is the whole defect"
+        );
+        assert!(
+            code.contains("label.set_tooltip_text(Some(&formatted))"),
+            "an elided value has no way to be read in full"
+        );
+    }
+
+    #[test]
+    fn the_actions_have_headings_and_every_row_has_them() {
+        // Rows appended three buttons after the loop over visible columns while
+        // the header row stopped with the columns, so the table ran three cells
+        // past its own headings. Rows without a publisher id appended nothing,
+        // so they were a different shape from their neighbours.
+        let code = crate::testing::code(SOURCE);
+        assert!(
+            code.contains("ACTION_COLUMN_WIDTH"),
+            "the action cells have no width of their own"
+        );
+        assert!(
+            code.contains("pin_width(&head, ACTION_COLUMN_WIDTH)"),
+            "the action headings are not pinned like the rest"
+        );
+        assert!(
+            code.contains("pin_width(&spacer, ACTION_COLUMN_WIDTH)"),
+            "a row with nothing to act on ends early and stops lining up"
+        );
+    }
+
+    #[test]
+    fn one_gap_between_columns_everywhere() {
+        let code = crate::testing::code(SOURCE);
+        let gaps = code.matches("set_margin_end(RESULT_COLUMN_GAP)").count();
+        assert!(
+            gaps >= 7,
+            "only {gaps} cells use the shared column gap; a hand-written gap on \
+             one side moves that column relative to the other"
+        );
     }
 }
 
