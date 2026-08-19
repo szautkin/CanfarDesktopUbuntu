@@ -990,7 +990,6 @@ pub fn build_main_window(
     // Everything the shell changes on sign-in, shared by every path that can
     // start a session.
     let signed_in = SignedInChrome {
-        navigate: navigate.clone(),
         portal_page: portal_page.clone(),
         login_btn: login_btn.clone(),
         user_menu_btn: user_menu_btn.clone(),
@@ -1431,7 +1430,6 @@ fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
 /// chance to forget one line.
 #[derive(Clone)]
 struct SignedInChrome {
-    navigate: Rc<dyn Fn(&str)>,
     portal_page: gtk::Box,
     login_btn: gtk::Button,
     user_menu_btn: gtk::MenuButton,
@@ -1462,7 +1460,7 @@ impl SignedInChrome {
         // Unlock the auth-gated landing tiles BEFORE swapping in the dashboard,
         // or the tiles render locked behind a view the user can already use.
         self.welcome.set_authenticated(true);
-        navigate_to_dashboard(&self.navigate, &self.portal_page, services, &self.dashboard).await;
+        build_dashboard(&self.portal_page, services, &self.dashboard).await;
         self.vospace.refresh().await;
 
         services
@@ -1475,25 +1473,32 @@ impl SignedInChrome {
 // Navigation
 // ---------------------------------------------------------------------------
 
-async fn navigate_to_dashboard(
-    navigate: &Rc<dyn Fn(&str)>,
+/// Build the Portal and load its data, WITHOUT navigating to it.
+///
+/// Two things this deliberately does not do, each having been a bug:
+///
+/// It does not REMOVE the "home" child — the landing tiles — and register the
+/// dashboard under that name. That made Home show the Portal and lost the
+/// launchpad for the rest of the session. The reference keeps LandingContainer
+/// and PortalContainer apart, and the macOS app has `.landing` and `.portal` as
+/// separate modes, for the same reason: they are two destinations.
+///
+/// And it does not navigate. Signing in readies the Portal; it does not choose
+/// the Portal for you. `ApplyMode(AppMode.Landing)` is reached from exactly one
+/// place in the reference — `GoHome()` — and login is not it, so after start-up
+/// and sign-in the user is looking at the tiles, which is where the reference
+/// leaves them.
+async fn build_dashboard(
     portal_page: &gtk::Box,
     services: &Arc<AppServices>,
     dashboard: &Rc<RefCell<Option<DashboardView>>>,
 ) {
-    // Fill the Portal's own page. This used to REMOVE the "home" child — the
-    // landing tiles — and register the dashboard under that name, so Home showed
-    // the Portal and the launchpad was gone for the rest of the session. The
-    // reference keeps LandingContainer and PortalContainer apart, and the macOS
-    // app has `.landing` and `.portal` as separate modes, for the same reason:
-    // they are two destinations.
     while let Some(child) = portal_page.first_child() {
         portal_page.remove(&child);
     }
     let view = DashboardView::new(services.clone());
     view.widget().set_vexpand(true);
     portal_page.append(view.widget());
-    navigate("portal");
 
     view.load_data().await;
     *dashboard.borrow_mut() = Some(view);
@@ -2174,8 +2179,8 @@ mod navigation_tests {
             "the Portal has no page of its own"
         );
         let at = code
-            .find("async fn navigate_to_dashboard")
-            .expect("navigate_to_dashboard is gone");
+            .find("async fn build_dashboard")
+            .expect("build_dashboard is gone");
         let body = &code[at..(at + 1400).min(code.len())];
         assert!(
             body.contains("portal_page"),
@@ -2187,6 +2192,34 @@ mod navigation_tests {
         assert!(
             !body.contains(r#"Some("home")"#),
             "the dashboard is being installed over the landing page again"
+        );
+    }
+
+    #[test]
+    fn signing_in_does_not_change_the_visible_page() {
+        // Signing in READIES the Portal; it does not choose it. The reference
+        // reaches `ApplyMode(AppMode.Landing)` from `GoHome()` alone, and login
+        // is not it — so after sign-in the user is still looking at whatever
+        // they were, which after start-up is the landing tiles.
+        //
+        // Asserted against the call, not the word, so the comment above
+        // `build_dashboard` explaining this cannot satisfy the guard.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("async fn apply(&self, user_info: UserInfo")
+            .expect("SignedInChrome::apply is gone");
+        let end = code[at..]
+            .find("\n    }\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        let body = &code[at..end];
+        assert!(
+            body.contains("build_dashboard"),
+            "signing in no longer builds the Portal, so its first visit is empty"
+        );
+        assert!(
+            !body.contains("navigate("),
+            "signing in navigates again — it should ready the Portal, not open it"
         );
     }
 

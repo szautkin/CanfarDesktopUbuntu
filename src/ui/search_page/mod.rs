@@ -458,6 +458,10 @@ pub struct SearchPage {
     /// "Apply filters to ADQL" button — shown only while client-side column
     /// filters are active (ref `ApplyFiltersBtn` / `UpdateApplyFiltersButton`).
     apply_filters_btn: gtk::Button,
+    /// "Clear filters" — shown on the same condition as `apply_filters_btn`.
+    /// CADC's own form carries a Reset beside its Search for the same reason
+    /// (ref `.reset-query-form`).
+    clear_filters_btn: gtk::Button,
     // --- Sidebar ---
     recent_list: gtk::ListBox,
     saved_list: gtk::ListBox,
@@ -722,6 +726,15 @@ impl SearchPage {
         apply_filters_btn.set_visible(false);
         results_toolbar.append(&apply_filters_btn);
 
+        // "Clear filters" — same visibility condition, opposite action.
+        let clear_filters_btn = gtk::Button::with_label(crate::tr_en!("Clear filters"));
+        clear_filters_btn.add_css_class("flat");
+        clear_filters_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Remove every column filter and the sort, showing all rows again"
+        )));
+        clear_filters_btn.set_visible(false);
+        results_toolbar.append(&clear_filters_btn);
+
         let rows_label = gtk::Label::new(Some(crate::tr_en!("Rows/page:")));
         rows_label.add_css_class("caption");
         results_toolbar.append(&rows_label);
@@ -971,6 +984,7 @@ impl SearchPage {
             last_search_error: RefCell::new(None),
             page_label,
             apply_filters_btn,
+            clear_filters_btn,
             recent_list,
             saved_list,
             save_name_entry,
@@ -1117,6 +1131,13 @@ impl SearchPage {
         let p = page.clone();
         page.apply_filters_btn
             .connect_clicked(move |_| p.apply_filters_to_adql());
+
+        // Clear every column filter and the sort.
+        let p = page.clone();
+        page.clear_filters_btn.connect_clicked(move |_| {
+            p.reset_filters_and_sort();
+            p.render_results_page();
+        });
 
         // Live, debounced target resolution: a changed target name (or a changed
         // resolver service) invalidates any resolved coords and schedules a fresh
@@ -1724,8 +1745,14 @@ impl SearchPage {
                     self.refresh_recent();
                 }
 
+                // A new result set starts unfiltered and unsorted. Filters typed
+                // against the previous query describe rows that no longer exist,
+                // and silently narrowing the new results by them is how a search
+                // "returns nothing". The reference clears on the same line it
+                // assigns `Results` (`ExecuteAdqlAsync` → `ResetFiltersAndSort`);
+                // we ported the method and dropped the call.
                 *self.results_store.borrow_mut() = Some(results);
-                *self.current_page.borrow_mut() = 0;
+                self.reset_filters_and_sort();
                 self.render_results_page();
 
                 // Switch to Results tab
@@ -1784,7 +1811,7 @@ impl SearchPage {
 
     fn render_results_page(self: &Rc<Self>) {
         // Keep the "Apply filters to ADQL" button in sync with filter state.
-        self.update_apply_filters_button();
+        self.update_filter_buttons();
 
         // Clear. The filter-entry lookup goes with the widgets it points at —
         // focusing a destroyed entry after a rebuild would do nothing visible
@@ -1910,6 +1937,12 @@ impl SearchPage {
             // Per-column filter entry — restore existing filter text
             let filter_entry = gtk::Entry::new();
             filter_entry.set_placeholder_text(Some(crate::tr_en!("Filter...")));
+            // CADC's own wording for its own syntax, picked by column type. A
+            // filter box that accepts `>=10`, `10..20` and `!` and says nothing
+            // is a feature nobody finds.
+            filter_entry.set_tooltip_text(Some(crate::helpers::result_filter::filter_tooltip(
+                crate::models::search_result::column_is_numeric(&col.key),
+            )));
             // One character of natural width: the cell's own pin decides how
             // wide it ends up, so a filter box in a 60px column no longer
             // stretches that column to 110px while the values below stay at 60.
@@ -1922,20 +1955,18 @@ impl SearchPage {
             let filters_rc = self.column_filters.clone();
             let key2 = col.key.clone();
             let key3 = col.key.clone();
-            let apply_btn = self.apply_filters_btn.clone();
             let page_rc = Rc::clone(self);
             filter_entry.connect_changed(move |entry| {
                 let text = entry.text().to_string();
-                let active = {
+                {
                     let mut f = filters_rc.borrow_mut();
                     if text.is_empty() {
                         f.remove(&key2);
                     } else {
                         f.insert(key2.clone(), text);
                     }
-                    !f.is_empty()
-                };
-                apply_btn.set_visible(active);
+                }
+                page_rc.update_filter_buttons();
                 // Re-render, so typing a filter narrows the TABLE. Clicking a
                 // cell's "narrow to this value" always did; typing the same
                 // filter only revealed the Apply button, so the identical
@@ -2012,13 +2043,11 @@ impl SearchPage {
                     cell_btn.set_tooltip_text(Some(&crate::tr_fmt!("Narrow to: {}", raw)));
 
                     let filters_rc = self.column_filters.clone();
-                    let apply_btn = self.apply_filters_btn.clone();
                     let page_rc = Rc::clone(self);
                     let ckey = col.key.clone();
                     let cval = raw.to_string();
                     cell_btn.connect_clicked(move |_| {
                         filters_rc.borrow_mut().insert(ckey.clone(), cval.clone());
-                        apply_btn.set_visible(true);
                         *page_rc.current_page.borrow_mut() = 0;
                         page_rc.render_results_page();
                     });
@@ -2147,10 +2176,23 @@ impl SearchPage {
         }
     }
 
-    /// Show the "Apply filters to ADQL" button only while filters are active.
-    fn update_apply_filters_button(&self) {
+    /// Show the filter buttons only while filters are active. The ONE place
+    /// their visibility is decided — it used to be set from three sites, and
+    /// adding a second button to each of them is how the two drift apart.
+    fn update_filter_buttons(&self) {
         let active = !self.column_filters.borrow().is_empty();
         self.apply_filters_btn.set_visible(active);
+        self.clear_filters_btn.set_visible(active);
+    }
+
+    /// Drop every column filter and the sort, and re-render (ref
+    /// `SearchViewModel.ResetFiltersAndSort`). Shared by the Clear button, the
+    /// MCP `clearAll` command, and every new result set.
+    fn reset_filters_and_sort(&self) {
+        self.column_filters.borrow_mut().clear();
+        *self.sort_column.borrow_mut() = None;
+        *self.sort_ascending.borrow_mut() = true;
+        *self.current_page.borrow_mut() = 0;
     }
 
     /// Append the active client-side column filters to the current ADQL as a
@@ -4825,5 +4867,96 @@ mod export_tests {
         r.rows[0].values.remove("B");
         let csv = delimited_export(&r, ",");
         assert_eq!(csv.lines().nth(1).unwrap(), "1,");
+    }
+}
+
+#[cfg(test)]
+mod filter_lifecycle_tests {
+    const SOURCE: &str = include_str!("mod.rs");
+
+    /// The body of a named function, up to the first line that closes it at
+    /// four-space indentation.
+    fn body_of<'a>(code: &'a str, signature: &str) -> &'a str {
+        let at = code
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is gone"));
+        let end = code[at..]
+            .find("\n    }\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        &code[at..end]
+    }
+
+    #[test]
+    fn a_new_result_set_starts_unfiltered() {
+        // Filters typed against the previous query describe rows that no longer
+        // exist. Leaving them in place silently narrows the new results, and
+        // the search "returns nothing" for no visible reason. The reference
+        // clears on the line after it assigns `Results`
+        // (`ExecuteAdqlAsync` → `ResetFiltersAndSort`); we ported the method
+        // and dropped the call.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("*self.results_store.borrow_mut() = Some(results);")
+            .expect("the results assignment is gone");
+        let after = &code[at..(at + 400).min(code.len())];
+        assert!(
+            after.contains("self.reset_filters_and_sort()"),
+            "a new result set is being shown through the previous query's filters"
+        );
+    }
+
+    #[test]
+    fn resetting_clears_the_sort_as_well_as_the_filters() {
+        let code = &crate::testing::code(SOURCE);
+        let body = body_of(code, "fn reset_filters_and_sort");
+        for field in [
+            "self.column_filters",
+            "self.sort_column",
+            "self.sort_ascending",
+            "self.current_page",
+        ] {
+            assert!(
+                body.contains(field),
+                "reset_filters_and_sort leaves {field} alone"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_filter_buttons_appear_and_disappear_together() {
+        // Their visibility used to be set from three separate sites. Adding a
+        // second button to each of them is exactly how one ends up shown while
+        // the other is not, so there is one place that decides and nowhere else
+        // may touch either button's visibility.
+        let code = &crate::testing::code(SOURCE);
+        let body = body_of(code, "fn update_filter_buttons");
+        assert!(body.contains("self.apply_filters_btn.set_visible"));
+        assert!(body.contains("self.clear_filters_btn.set_visible"));
+
+        for button in ["apply_filters_btn", "clear_filters_btn"] {
+            let sites = code.matches(&format!("{button}.set_visible")).count();
+            // Two: the initial `set_visible(false)` at construction, and the
+            // one inside `update_filter_buttons`.
+            assert_eq!(
+                sites, 2,
+                "{button}.set_visible is called from {sites} places; \
+                 update_filter_buttons is meant to be the only one that changes it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clear_button_is_wired_to_the_reset() {
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("page.clear_filters_btn.connect_clicked")
+            .expect("the Clear filters button does nothing");
+        let handler = &code[at..(at + 300).min(code.len())];
+        assert!(handler.contains("reset_filters_and_sort"));
+        assert!(
+            handler.contains("render_results_page"),
+            "the filters are cleared but the table is not redrawn"
+        );
     }
 }

@@ -10,6 +10,7 @@
 //! real CAOM2 ADQL columns (including the few computed columns that use ADQL
 //! functions such as `COORD1(CENTROID(...))`).
 
+use crate::helpers::result_filter::{FilterExpr, FilterOp};
 use crate::models::search_result::clean_key;
 use std::collections::HashMap;
 
@@ -44,24 +45,72 @@ fn column_to_adql(cleaned_key: &str) -> Option<&'static str> {
     })
 }
 
-/// Build a single WHERE clause for one column/value pair. Numeric values become
-/// an exact `= N` match; everything else a case-insensitive `LIKE '%...%'`.
-fn build_clause(adql_col: &str, value: &str) -> String {
-    if let Ok(num) = value.parse::<f64>() {
-        if num.is_finite() {
-            // `{}` yields the shortest round-tripping decimal (no scientific
-            // notation for normal ranges) — good enough for a filter predicate.
-            return format!("{} = {}", adql_col, num);
-        }
-    }
-    // Case-insensitive substring match. Escape the LIKE metacharacters and the
-    // single quote (SQL string literal) exactly as the reference converter does.
+/// An ADQL string literal: single quotes doubled, lower-cased for the
+/// case-insensitive comparisons.
+fn literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''").to_lowercase())
+}
+
+/// A LIKE pattern: the metacharacters escaped as well, exactly as the reference
+/// converter does.
+fn like_pattern(value: &str) -> String {
     let escaped = value
         .replace('\'', "''")
         .replace('%', "\\%")
         .replace('_', "\\_")
         .to_lowercase();
-    format!("lower({}) LIKE '%{}%'", adql_col, escaped)
+    format!("'%{}%'", escaped)
+}
+
+/// Render one operand as a numeric literal if it is one, otherwise as a string
+/// literal. `{}` yields the shortest round-tripping decimal (no scientific
+/// notation for normal ranges) — good enough for a filter predicate.
+fn operand(value: &str) -> String {
+    match value.parse::<f64>() {
+        Ok(num) if num.is_finite() => format!("{num}"),
+        _ => literal(value),
+    }
+}
+
+/// One side of a comparison, matched to how the operand renders: a numeric
+/// operand compares against the column, a string operand against `lower(col)`
+/// so the comparison is case-insensitive like the grid's.
+fn comparison(adql_col: &str, symbol: &str, value: &str) -> String {
+    match value.parse::<f64>() {
+        Ok(num) if num.is_finite() => format!("{adql_col} {symbol} {num}"),
+        _ => format!("lower({adql_col}) {symbol} {}", literal(value)),
+    }
+}
+
+/// Build a single WHERE clause for one column and one *parsed* filter.
+///
+/// This has to share `FilterExpr` with the grid rather than re-read the text.
+/// It used to take the raw string and turn anything non-numeric into
+/// `LIKE '%…%'`, so once the grid learned `!raw`, "Apply filters to ADQL" would
+/// have queried for rows *containing* `!raw` — the exact opposite of the rows
+/// on screen, with no error to notice.
+fn build_clause(adql_col: &str, expr: &FilterExpr) -> String {
+    let body = match &expr.op {
+        FilterOp::Range { low, high } => {
+            format!("{adql_col} BETWEEN {} AND {}", operand(low), operand(high))
+        }
+        FilterOp::Gt(v) => comparison(adql_col, ">", v),
+        FilterOp::Ge(v) => comparison(adql_col, ">=", v),
+        FilterOp::Lt(v) => comparison(adql_col, "<", v),
+        FilterOp::Le(v) => comparison(adql_col, "<=", v),
+        FilterOp::Exact(v) => comparison(adql_col, "=", v),
+        FilterOp::Contains(v) => match v.parse::<f64>() {
+            // A bare number stays an exact match, as the reference converter
+            // has always done — `2` in the Cal. Lev. box means level 2.
+            Ok(num) if num.is_finite() => format!("{adql_col} = {num}"),
+            _ => format!("lower({adql_col}) LIKE {}", like_pattern(v)),
+        },
+    };
+    if expr.negated {
+        format!("NOT ({body})")
+    } else {
+        body
+    }
 }
 
 /// Convert the active client-side column filters into an ADQL `WHERE` body
@@ -100,7 +149,12 @@ pub fn filters_to_where(filters: &HashMap<String, String>, columns: &[String]) -
         if !present.is_empty() && !present.contains(&cleaned) {
             continue;
         }
-        clauses.push(build_clause(adql_col, text));
+        // A filter that constrains nothing on the grid must constrain nothing
+        // here either — a half-typed `>` should not become a clause.
+        let Some(expr) = FilterExpr::parse(text) else {
+            continue;
+        };
+        clauses.push(build_clause(adql_col, &expr));
     }
 
     clauses.join("\nAND ")
@@ -128,6 +182,65 @@ mod tests {
         assert_eq!(
             filters_to_where(&f, &[]),
             "lower(Observation.collection) LIKE '%cfht%'"
+        );
+    }
+
+    /// One filter, one column, rendered.
+    fn where_for(key: &str, text: &str) -> String {
+        filters_to_where(&map(&[(key, text)]), &[])
+    }
+
+    #[test]
+    fn the_grammar_the_grid_speaks_is_the_grammar_the_query_speaks() {
+        // The whole point of sharing `FilterExpr`: every operator the results
+        // table honours has to survive "Apply filters to ADQL". Before this,
+        // `!raw` became LIKE '%!raw%' — rows CONTAINING it, the exact opposite
+        // of the rows on screen, with nothing to warn you.
+        assert_eq!(where_for("callev", ">=2"), "Plane.calibrationLevel >= 2");
+        assert_eq!(where_for("callev", "<2"), "Plane.calibrationLevel < 2");
+        assert_eq!(
+            where_for("inttime", "10..20"),
+            "Plane.time_exposure BETWEEN 10 AND 20"
+        );
+        assert_eq!(
+            where_for("collection", "=CFHT"),
+            "lower(Observation.collection) = 'cfht'"
+        );
+        assert_eq!(
+            where_for("collection", "!CFHT"),
+            "NOT (lower(Observation.collection) LIKE '%cfht%')"
+        );
+        assert_eq!(
+            where_for("callev", "!>=2"),
+            "NOT (Plane.calibrationLevel >= 2)"
+        );
+    }
+
+    #[test]
+    fn a_text_comparison_is_case_insensitive_on_both_sides() {
+        // The grid upper-cases both operands; `lower(col) > 'm'` is the same
+        // question asked in SQL. Comparing a raw column against a lower-cased
+        // literal would silently disagree with the table.
+        assert_eq!(
+            where_for("targetname", ">m"),
+            "lower(Observation.target_name) > 'm'"
+        );
+    }
+
+    #[test]
+    fn a_half_typed_filter_produces_no_clause() {
+        // It narrows nothing on the grid, so it must narrow nothing in the
+        // query — not `LIKE '%>%'`.
+        assert_eq!(where_for("callev", ">"), "");
+        assert_eq!(where_for("inttime", "10.."), "");
+        assert_eq!(where_for("collection", "!"), "");
+    }
+
+    #[test]
+    fn a_quote_in_a_filter_cannot_break_out_of_the_literal() {
+        assert_eq!(
+            where_for("collection", "=O'Brien"),
+            "lower(Observation.collection) = 'o''brien'"
         );
     }
 

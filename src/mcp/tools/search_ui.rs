@@ -236,7 +236,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "type": "object",
                 "properties": {
                     "clearFilters": {"type": "boolean", "description": "Drop all per-column filters first."},
-                    "setFilters": {"type": "object", "description": "Column key → filter text. An empty string clears that column's filter.", "additionalProperties": {"type": "string"}},
+                    "setFilters": {"type": "object", "description": "Column key → filter text, in CADC Advanced Search syntax: bare text is a case-insensitive substring; '=v' is an exact match; '>v' '>=v' '<v' '<=v' compare (numerically when both sides are numbers, otherwise as case-insensitive text); 'a..b' is an inclusive range; and a leading '!' negates any of these. Columns combine with AND. A numeric filter drops rows whose cell is empty. An empty string clears that column's filter.", "additionalProperties": {"type": "string"}},
                     "sortColumn": {"type": "string", "description": "Column key to sort by."},
                     "sortAscending": {"type": "boolean", "description": "Sort direction (default true). Only meaningful with sortColumn."},
                     "showColumns": {"type": "array", "items": {"type": "string"}, "description": "Column keys to reveal."},

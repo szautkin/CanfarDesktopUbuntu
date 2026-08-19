@@ -398,6 +398,42 @@ pub fn column_width(key: &str) -> i32 {
     }
 }
 
+/// Cleaned keys whose TAP values are numeric.
+///
+/// Filters compare against the RAW cell, not the formatted one, so this follows
+/// the CAOM2 column type rather than how the column is displayed: `startdate`
+/// reads as a date but arrives as an MJD, and `datarelease` reads as a date and
+/// arrives as an ISO timestamp string.
+///
+/// It decides which of CADC's two filter tooltips a column gets, and nothing
+/// else — the filter parser itself switches on whether the values in front of
+/// it parse as numbers, so a wrong entry here misleads the reader without
+/// changing a single row.
+static NUMERIC_KEYS: &[&str] = &[
+    "sequencenumber",
+    "ra(j20000)",
+    "dec(j20000)",
+    "startdate",
+    "enddate",
+    "inttime",
+    "callev",
+    "minwavelength",
+    "maxwavelength",
+    "fieldofview",
+    "pixelscale",
+    "resolvingpower",
+    "spatialresolution",
+    "bandpasswidth",
+    "energysamplesize",
+    "restframeenergy",
+    "timespan",
+];
+
+/// Whether a results column holds numbers.
+pub fn column_is_numeric(key: &str) -> bool {
+    NUMERIC_KEYS.contains(&key)
+}
+
 /// Format dispatch by cleaned key, matching Windows CellFormatter.
 fn format_for_key(key: &str) -> ColumnFormat {
     match key {

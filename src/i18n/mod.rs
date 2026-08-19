@@ -441,6 +441,21 @@ prend en compte à son prochain démarrage."),
     ("Export results as TSV file",                  "Exporter les résultats au format TSV"),
     ("Apply filters and re-render",                 "Appliquer les filtres et réafficher"),
     ("Apply filters to ADQL",                       "Appliquer les filtres à l’ADQL"),
+    ("Clear filters",                               "Effacer les filtres"),
+    (
+        "Remove every column filter and the sort, showing all rows again",
+        "Supprimer tous les filtres de colonne et le tri, afin d’afficher à nouveau toutes les lignes",
+    ),
+    // CADC's own two filter-syntax hints, translated but keeping the operator
+    // symbols verbatim — they are what you type, not words.
+    (
+        "Number: 10 or >=10 or 10..20 for a range , ! to negate",
+        "Nombre : 10 ou >=10 ou 10..20 pour un intervalle , ! pour exclure",
+    ),
+    (
+        "String: Substring match , ! to negate matches",
+        "Texte : correspondance partielle , ! pour exclure",
+    ),
     ("Append the active column filters as an ADQL WHERE clause",
      "Ajouter les filtres de colonne actifs sous forme de clause WHERE ADQL"),
     ("Rows/page:",                                  "Lignes/page :"),
