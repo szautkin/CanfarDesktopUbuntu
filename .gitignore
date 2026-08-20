@@ -26,3 +26,7 @@ Thumbs.db
 *.rpm
 *.AppImage
 *.snap
+
+# Local working notes (retrospectives, scratch analysis) — the committed plans
+# live in dev_info/ itself.
+/dev_info/local/
