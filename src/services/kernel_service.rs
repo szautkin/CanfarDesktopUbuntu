@@ -516,6 +516,117 @@ impl Drop for LocalKernelService {
 
 #[cfg(test)]
 mod tests {
+
+    /// The harness must decide how to run a cell by ASKING, not by catching.
+    ///
+    /// It used to `compile(code, "<cell>", "eval")` and fall back to exec
+    /// inside `except SyntaxError`. The real error then raised *inside* that
+    /// except block, so Python chained it and every traceback for a cell
+    /// beginning with `import` or an assignment was headed by a phantom
+    /// "SyntaxError: invalid syntax" — users chasing a syntax error that was
+    /// not there. It also meant only a single bare expression ever displayed a
+    /// value, so `x = f()` then `x` showed nothing.
+    #[test]
+    fn the_harness_does_not_guess_the_compile_mode_by_catching_syntax_errors() {
+        let harness = crate::testing::without_line_comments(KERNEL_HARNESS, "#");
+        assert!(
+            harness.contains("ast.parse(code"),
+            "the harness no longer asks ast how to run the cell"
+        );
+        assert!(
+            !harness.contains(r#"compile(code, "<cell>", "eval")"#),
+            "eval-first is back, and with it a phantom SyntaxError on every \
+             traceback"
+        );
+        assert!(
+            !harness.contains("except SyntaxError:"),
+            "a real syntax error must reach the user as itself, not as a \
+             fallback path"
+        );
+    }
+
+    /// Run the harness for real and read what it emits.
+    ///
+    ///     cargo test --quiet harness_reports -- --ignored --nocapture
+    ///
+    /// Ignored because it shells out to python3. The guard above catches the
+    /// shape; this catches the behaviour, and it is what proved the fix:
+    /// against the old harness both error cases leaked
+    /// "SyntaxError: invalid syntax" and the multi-line cell displayed nothing.
+    #[test]
+    #[ignore = "spawns python3"]
+    fn harness_reports_the_real_error_and_the_last_expression() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Command, Stdio};
+
+        const BOUNDARY: &str = "\u{4}__CANFAR_EXEC_BOUNDARY__\u{4}";
+        let dir = std::env::temp_dir().join("verbinal_harness_probe");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let script = dir.join("kernel_harness.py");
+        std::fs::write(&script, KERNEL_HARNESS).expect("write harness");
+
+        let mut child = Command::new("python3")
+            .arg(&script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("python3 is needed for the kernel; install it to run this");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+        let mut run = |code: &str| -> Vec<serde_json::Value> {
+            let req = serde_json::json!({"type":"execute","code":code,"exec_count":1});
+            writeln!(stdin, "{req}").expect("write");
+            stdin.flush().expect("flush");
+            let mut out = Vec::new();
+            loop {
+                let mut line = String::new();
+                if stdout.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line.trim_end_matches('\n') == BOUNDARY {
+                    break;
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    out.push(v);
+                }
+            }
+            out
+        };
+
+        let leaks_syntax_error = |outputs: &[serde_json::Value]| {
+            outputs.iter().any(|o| {
+                o["output_type"] == "error"
+                    && o["traceback"].as_array().is_some_and(|t| {
+                        t.iter()
+                            .any(|l| l.as_str().is_some_and(|s| s.contains("SyntaxError")))
+                    })
+            })
+        };
+
+        // An error after an import reports itself, with no phantom above it.
+        let outputs = run("import os\n1/0");
+        assert!(outputs.iter().any(|o| o["ename"] == "ZeroDivisionError"));
+        assert!(
+            !leaks_syntax_error(&outputs),
+            "a phantom SyntaxError is back on the traceback: {outputs:?}"
+        );
+
+        // A multi-line cell shows its last expression — this never worked.
+        let outputs = run("x = 6*7\nx");
+        assert!(
+            outputs.iter().any(|o| o["data"]["text/plain"] == "42"),
+            "the last expression of a multi-line cell shows nothing: {outputs:?}"
+        );
+
+        // A real syntax error is still reported as one.
+        let outputs = run("def f(:\n    pass");
+        assert!(outputs.iter().any(|o| o["ename"] == "SyntaxError"));
+
+        let _ = writeln!(stdin, "{{\"type\":\"quit\"}}");
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     /// Verify that the embedded harness constant is non-empty and contains

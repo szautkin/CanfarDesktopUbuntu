@@ -21,6 +21,7 @@ Output line shapes:
 
 from __future__ import annotations
 
+import ast
 import base64
 import io
 import json
@@ -219,14 +220,28 @@ def _execute_cell(code: str, exec_count: int) -> None:
     exc_info = None
 
     try:
-        # 3a. Try eval mode first (returns a value for the last expression).
-        try:
-            code_obj = compile(code, "<cell>", "eval")
-            result_value = eval(code_obj, _NS)  # noqa: S307
-        except SyntaxError:
-            # 3b. Fall back to exec mode.
-            code_obj = compile(code, "<cell>", "exec")
-            exec(code_obj, _NS)  # noqa: S102
+        # 3. Run the cell, and show the value of its last line when that line is
+        #    an expression — the notebook behaviour.
+        #
+        #    This used to `compile(code, "<cell>", "eval")` and fall back to
+        #    exec inside `except SyntaxError`. Two things were wrong with that.
+        #    The real error then raised INSIDE the except block, so Python
+        #    chained it and every traceback for a cell starting with `import`
+        #    or an assignment was headed by a phantom
+        #    "SyntaxError: invalid syntax" that had nothing to do with the
+        #    problem. And it only ever displayed a value for a cell that was a
+        #    single bare expression, so `x = f()` then `x` showed nothing.
+        #
+        #    Asking `ast` instead of catching an exception fixes both.
+        tree = ast.parse(code, "<cell>", "exec")
+        last = tree.body[-1] if tree.body else None
+        if isinstance(last, ast.Expr):
+            head = ast.Module(body=tree.body[:-1], type_ignores=[])
+            exec(compile(head, "<cell>", "exec"), _NS)  # noqa: S102
+            tail = ast.Expression(last.value)
+            result_value = eval(compile(tail, "<cell>", "eval"), _NS)  # noqa: S307
+        else:
+            exec(compile(tree, "<cell>", "exec"), _NS)  # noqa: S102
     except KeyboardInterrupt:
         exc_info = sys.exc_info()
     except Exception:  # noqa: BLE001

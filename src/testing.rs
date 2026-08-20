@@ -72,8 +72,18 @@ pub fn code(source: &str) -> &str {
 /// Line comments only — a `/* */` spanning lines would need a parser, and no
 /// guard has needed one.
 pub fn without_comments(code: &str) -> String {
+    without_line_comments(code, "//")
+}
+
+/// The same, for a language whose line comments start with `prefix`.
+///
+/// The Python kernel harness is scanned by guards too, and `//` is not its
+/// comment marker — so a guard reading it through [`without_comments`] found
+/// the very explanation it was meant to look past. Same trap, different
+/// language.
+pub fn without_line_comments(code: &str, prefix: &str) -> String {
     code.lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
+        .filter(|line| !line.trim_start().starts_with(prefix))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -98,6 +108,16 @@ mod tests {
         let code = super::without_comments(file);
         assert!(!code.contains("of_state("));
         assert!(code.contains("keep(x)"));
+    }
+
+    #[test]
+    fn a_python_comment_is_stripped_when_asked_for() {
+        // The kernel harness is Python; `//` is not its comment marker, so a
+        // guard reading it through the Rust helper found its own explanation.
+        let harness = "# used to compile(code, \"eval\")\nast.parse(code)";
+        let code = super::without_line_comments(harness, "#");
+        assert!(!code.contains("compile("));
+        assert!(code.contains("ast.parse"));
     }
 
     #[test]

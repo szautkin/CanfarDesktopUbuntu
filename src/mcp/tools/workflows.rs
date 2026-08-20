@@ -488,10 +488,16 @@ pub async fn apply(
             WorkflowStore::new()
                 .set_step_done(&id, step, done)
                 .map(|info| {
+                    // "step 2 of 6 (index 1)": the API is 0-based and the
+                    // prose was 1-based, so calling with `step: 0` answered
+                    // "step 1" and left the caller unsure which convention had
+                    // won. Naming both settles it.
                     format!(
-                        "Marked workflow {} step {} {} ({} / {} steps done)",
+                        "Marked workflow {} step {} of {} (index {}) {} ({} / {} steps done)",
                         id,
                         step + 1,
+                        info.doc.steps.len(),
+                        step,
                         if done { "done" } else { "not done" },
                         info.doc.done_count(),
                         info.doc.steps.len()
