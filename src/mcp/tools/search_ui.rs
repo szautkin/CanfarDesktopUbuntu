@@ -192,8 +192,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         write_tool(
             "set_adql_query",
-            "Put ADQL into the editor and switch to the ADQL tab WITHOUT running it — use when the \
-             user should review a query first. Call execute_adql_query to run it.",
+            &format!(
+                "Put ADQL into the editor and switch to the ADQL tab WITHOUT running it — use \
+                 when the user should review a query first. Call execute_adql_query to run it.{}",
+                crate::helpers::adql_builder::DIALECT_NOTE
+            ),
             json!({
                 "type": "object",
                 "properties": {"adql": {"type": "string", "description": "The ADQL query text."}},
@@ -203,8 +206,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         write_tool(
             "execute_adql_query",
-            "Run ADQL directly, bypassing the form. Pass `adql` to stage and run in one step, or \
-             omit it to run whatever is already in the editor. Lands on the Results tab.",
+            &format!(
+                "Run ADQL directly, bypassing the form. Pass `adql` to stage and run in one \
+                 step, or omit it to run whatever is already in the editor. Lands on the \
+                 Results tab.{}",
+                crate::helpers::adql_builder::DIALECT_NOTE
+            ),
             json!({
                 "type": "object",
                 "properties": {"adql": {"type": "string", "description": "ADQL to stage and run. Omit to run the editor's current contents."}},

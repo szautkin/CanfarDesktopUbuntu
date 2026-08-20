@@ -4,6 +4,28 @@ use crate::helpers::sexagesimal;
 use crate::helpers::unit_converter;
 use crate::models::search_result::SearchFormState;
 
+/// What an agent has to know to write ADQL this service will accept.
+///
+/// Appended to the description of every tool that takes an `adql` argument.
+/// "The ADQL query text." was the whole of it before, which leaves an agent to
+/// guess the dialect from the name — and the guesses are SQL habits the service
+/// rejects outright.
+///
+/// Every claim below was checked against the live service
+/// (`ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus/sync`), not inferred from the
+/// builder: `LIMIT 1` returns "invalid ADQL keyword: LIMIT", `ILIKE` and a bare
+/// `INTERSECTS(...)` are both syntax errors, and the `= 1` form returns rows.
+/// `generated_adql_obeys_the_documented_dialect` keeps this honest as the
+/// builder changes.
+pub const DIALECT_NOTE: &str = "\n\nDialect: CADC TAP (argus), ADQL 2.0 — no UDFs. \
+     Tables are caom2.Observation and caom2.Plane, joined on Plane.obsID = Observation.obsID. \
+     Row cap is `SELECT TOP n` — LIMIT is rejected. \
+     Case-insensitive text is `lower(col) LIKE lower('%x%')` — ILIKE is rejected. \
+     Geometry and time predicates return a value, so they must be compared: \
+     `INTERSECTS(CIRCLE('ICRS', ra, dec, radius_deg), Plane.position_bounds) = 1` and \
+     `INTERSECTS(INTERVAL(mjd1, mjd2), Plane.time_bounds_samples) = 1` (times are MJD). \
+     A bare INTERSECTS(...) without `= 1` is a syntax error.";
+
 // Exact 41-column SELECT matching the Windows implementation
 const SELECT_COLUMNS: &str = r#"
     Observation.observationID,
@@ -2041,6 +2063,82 @@ mod ivoa_conformance {
         };
         s.collection = "CFHT".into();
         s
+    }
+
+    /// The builder's own output obeys every rule [`DIALECT_NOTE`] states.
+    ///
+    /// The note is what agents are told; this is what the app does. They were
+    /// written from the same facts and nothing but this test keeps them
+    /// together — a builder switched to `LIMIT` would leave the note lying to
+    /// every agent that reads it.
+    ///
+    /// The rules themselves were checked against the live service, not assumed:
+    /// `LIMIT` comes back "invalid ADQL keyword", `ILIKE` and a bare
+    /// `INTERSECTS(...)` are syntax errors, and the `= 1` form returns rows.
+    #[test]
+    fn generated_adql_obeys_the_documented_dialect() {
+        let adql = build(&a_form_using_everything());
+        let upper = adql.to_uppercase();
+
+        assert!(upper.contains("SELECT TOP "), "no row cap: {adql}");
+        assert!(
+            !upper.contains(" LIMIT "),
+            "LIMIT is rejected by CADC: {adql}"
+        );
+        assert!(
+            !upper.contains("ILIKE"),
+            "ILIKE is rejected by CADC: {adql}"
+        );
+        assert!(adql.contains("caom2.Observation"), "{adql}");
+        assert!(adql.contains("caom2.Plane"), "{adql}");
+
+        // Every geometry/time predicate is COMPARED. A bare INTERSECTS(...) is
+        // a syntax error, and it is the easy mistake to make.
+        for (at, _) in adql.match_indices("INTERSECTS(") {
+            let open = at + "INTERSECTS".len();
+            let mut depth = 0usize;
+            let mut end = None;
+            for (i, c) in adql[open..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(open + i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let end = end.unwrap_or_else(|| panic!("unbalanced INTERSECTS in {adql}"));
+            let rest = adql[end..].trim_start();
+            assert!(
+                rest.starts_with("= 1"),
+                "INTERSECTS(...) is not compared to 1 — CADC rejects it: {}",
+                &adql[at..end.min(adql.len())]
+            );
+        }
+    }
+
+    /// The note says the things this test checks, in the words it checks them
+    /// in. Without this the two could drift into agreeing about nothing.
+    #[test]
+    fn the_dialect_note_states_the_rules_that_are_enforced() {
+        for rule in [
+            "SELECT TOP n",
+            "LIMIT is rejected",
+            "ILIKE is rejected",
+            "caom2.Observation",
+            "caom2.Plane",
+            "= 1",
+            "MJD",
+        ] {
+            assert!(
+                DIALECT_NOTE.contains(rule),
+                "the note never mentions {rule:?}, but the builder is held to it"
+            );
+        }
     }
 
     #[test]

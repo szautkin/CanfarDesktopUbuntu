@@ -41,10 +41,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
             name: "save_query".to_string(),
-            description:
+            description: format!(
                 "Propose saving a named ADQL query to the user's saved queries (overwrites \
-                an existing query with the same name). Queues for the user to apply."
-                    .to_string(),
+                 an existing query with the same name). Queues for the user to apply.{}",
+                crate::helpers::adql_builder::DIALECT_NOTE
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
