@@ -109,7 +109,21 @@ pub fn show_image_discovery_dialog(
     chips_box.set_row_spacing(4);
     chips_box.set_column_spacing(4);
     chips_box.set_max_children_per_line(20);
-    left.append(&chips_box);
+    chips_box.set_valign(gtk::Align::Start);
+
+    // Two rows of chips, then it scrolls.
+    //
+    // Unbounded, the FlowBox grew downward as filters were added and drew over
+    // the facet list beneath it — the pane is a plain Box, so nothing stopped
+    // it. A max height turns "more filters than fit" into a scroll instead of
+    // an overlap, and `propagate_natural_height` keeps the strip at its natural
+    // size until then, so one chip does not reserve room for two.
+    let chips_scroll = gtk::ScrolledWindow::new();
+    chips_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    chips_scroll.set_propagate_natural_height(true);
+    chips_scroll.set_max_content_height(CHIP_ROWS_BEFORE_SCROLL * CHIP_ROW_HEIGHT);
+    chips_scroll.set_child(Some(&chips_box));
+    left.append(&chips_scroll);
 
     let facet_scroll = gtk::ScrolledWindow::new();
     facet_scroll.set_vexpand(true);
@@ -159,6 +173,7 @@ pub fn show_image_discovery_dialog(
         rebuild_pending: Cell::new(false),
         facet_container,
         chips_box,
+        chips_scroll,
         img_container,
         subtitle,
     });
@@ -234,6 +249,10 @@ struct DiscoveryUi {
 
     facet_container: gtk::Box,
     chips_box: gtk::FlowBox,
+    /// The scroller around `chips_box`. Held rather than reached for through
+    /// `parent()`: a `ScrolledWindow` wraps its child in a `Viewport`, so
+    /// walking up two levels works only as long as that stays true.
+    chips_scroll: gtk::ScrolledWindow,
     img_container: gtk::Box,
     subtitle: gtk::Label,
 }
@@ -287,7 +306,18 @@ impl DiscoveryUi {
             header.set_margin_top(6);
             self.facet_container.append(&header);
 
-            for value in visible {
+            // Only the most-used values, plus anything already ticked.
+            //
+            // A real CANFAR catalogue facets to ~4,650 distinct values —
+            // 2,488 dpkg names alone — and this built a CheckButton for every
+            // one, then tore them all down and built them again on the next
+            // keystroke. The facet computation itself takes under 4ms; the
+            // widgets were the cost. Nobody scrolls 2,488 checkboxes either, so
+            // capping is the better interface as well as the faster one: the
+            // Filter packages box above is how you reach the rest.
+            let (shown, hidden) = cap_values(&visible, &self.query.borrow(), &facet.category);
+
+            for value in shown {
                 let check = gtk::CheckButton::new();
                 check.set_child(Some(&facet_label(&format!(
                     "{}  ·  {}",
@@ -307,6 +337,17 @@ impl DiscoveryUi {
                     ui.schedule_rebuild();
                 });
                 self.facet_container.append(&check);
+            }
+
+            if hidden > 0 {
+                let more = dim_label(&crate::tr_plural!(
+                    hidden,
+                    "+{} more — type above to narrow",
+                    "+{} more — type above to narrow"
+                ));
+                more.set_halign(gtk::Align::Start);
+                more.add_css_class("caption");
+                self.facet_container.append(&more);
             }
         }
 
@@ -385,7 +426,9 @@ impl DiscoveryUi {
             self.chips_box.append(&btn);
         }
 
-        self.chips_box
+        // Hide the strip, not just its contents: an empty FlowBox inside a
+        // visible ScrolledWindow still reserves height.
+        self.chips_scroll
             .set_visible(self.chips_box.first_child().is_some());
     }
 
@@ -508,9 +551,20 @@ impl DiscoveryUi {
             Some(o) if o.is_success() => {
                 if let Some(m) = o.manifest() {
                     row.set_enable_expansion(true);
-                    for detail_row in manifest_detail_rows(m) {
-                        row.add_row(&detail_row);
-                    }
+                    // Built when the row is opened, not before. Every rebuild
+                    // was constructing the full package breakdown for every
+                    // discovered image — a dozen rows each, none of them
+                    // visible — and throwing it away on the next keystroke.
+                    let manifest = m.clone();
+                    let built = std::cell::Cell::new(false);
+                    row.connect_expanded_notify(move |row| {
+                        if !row.is_expanded() || built.replace(true) {
+                            return;
+                        }
+                        for detail_row in manifest_detail_rows(&manifest) {
+                            row.add_row(&detail_row);
+                        }
+                    });
                 }
             }
             Some(o) => {
@@ -776,6 +830,53 @@ fn clear_box(container: &gtk::Box) {
     }
 }
 
+/// How many rows of active-filter chips are shown before the strip scrolls.
+///
+/// Two, so a second filter does not immediately hide the first. A const
+/// assertion, since one row that scrolls is worse than no bound at all.
+const CHIP_ROWS_BEFORE_SCROLL: i32 = 2;
+const _: () = assert!(CHIP_ROWS_BEFORE_SCROLL >= 2);
+
+/// The height one row of chips occupies, including the row spacing.
+const CHIP_ROW_HEIGHT: i32 = 40;
+
+/// How many values one facet category renders.
+///
+/// A real catalogue produces thousands per package category. Rendering them all
+/// cost more than everything else in the dialog put together, and no one was
+/// ever going to scroll them.
+const MAX_FACET_VALUES: usize = 25;
+
+/// The values to render for one category, and how many were left out.
+///
+/// Ticked values always survive the cap — a filter you cannot see is a filter
+/// you cannot remove. The rest are the highest-count ones, since those are the
+/// ones that narrow a search usefully, and they are returned in the
+/// alphabetical order the pane has always shown so the list stays scannable.
+fn cap_values<'a>(
+    values: &[&'a facet_engine::FacetValue],
+    query: &PackageQuery,
+    category: &str,
+) -> (Vec<&'a facet_engine::FacetValue>, usize) {
+    if values.len() <= MAX_FACET_VALUES {
+        return (values.to_vec(), 0);
+    }
+
+    let mut ranked: Vec<&facet_engine::FacetValue> = values.to_vec();
+    ranked.sort_by(|a, b| {
+        let a_selected = is_selected(query, category, &a.value);
+        let b_selected = is_selected(query, category, &b.value);
+        b_selected
+            .cmp(&a_selected)
+            .then_with(|| b.count.cmp(&a.count))
+            .then_with(|| a.value.cmp(&b.value))
+    });
+    let hidden = ranked.len() - MAX_FACET_VALUES;
+    ranked.truncate(MAX_FACET_VALUES);
+    ranked.sort_by(|a, b| a.value.cmp(&b.value));
+    (ranked, hidden)
+}
+
 /// How wide a facet label may get before it truncates.
 ///
 /// The pane is 380px; this keeps the longest values — "22.04.5 LTS (Jammy
@@ -815,7 +916,117 @@ fn dim_label(text: &str) -> gtk::Label {
 
 #[cfg(test)]
 mod pane_layout_tests {
+    use super::*;
+
     const SOURCE: &str = include_str!("image_discovery_dialog.rs");
+
+    fn value(v: &str, count: usize) -> facet_engine::FacetValue {
+        facet_engine::FacetValue {
+            value: v.to_string(),
+            count,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn a_short_category_is_shown_whole() {
+        let values: Vec<facet_engine::FacetValue> =
+            (0..5).map(|i| value(&format!("v{i}"), i)).collect();
+        let refs: Vec<&facet_engine::FacetValue> = values.iter().collect();
+        let (shown, hidden) = cap_values(&refs, &PackageQuery::default(), "OS family");
+        assert_eq!(shown.len(), 5);
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn a_huge_category_is_capped_and_says_how_many_it_left_out() {
+        // A real CANFAR catalogue facets dpkg to 2,488 distinct names. Building
+        // a checkbox for each, on every keystroke, was the whole of the
+        // dialog's slowness — the facet computation behind it takes under 4ms.
+        let values: Vec<facet_engine::FacetValue> =
+            (0..2488).map(|i| value(&format!("lib{i:04}"), i)).collect();
+        let refs: Vec<&facet_engine::FacetValue> = values.iter().collect();
+        let (shown, hidden) = cap_values(&refs, &PackageQuery::default(), "System (apt / dpkg)");
+        assert_eq!(shown.len(), MAX_FACET_VALUES);
+        assert_eq!(hidden, 2488 - MAX_FACET_VALUES);
+    }
+
+    #[test]
+    fn the_values_kept_are_the_ones_that_narrow_a_search() {
+        // Highest count first: a package one image has filters nothing useful,
+        // and with a cap the choice of WHICH to drop is the whole design.
+        let values: Vec<facet_engine::FacetValue> =
+            (0..100).map(|i| value(&format!("lib{i:03}"), i)).collect();
+        let refs: Vec<&facet_engine::FacetValue> = values.iter().collect();
+        let (shown, _) = cap_values(&refs, &PackageQuery::default(), "System (apt / dpkg)");
+        assert!(
+            shown.iter().all(|v| v.count >= 100 - MAX_FACET_VALUES),
+            "a low-count value displaced a high-count one"
+        );
+        // Displayed alphabetically, whatever order they were picked in.
+        let names: Vec<&String> = shown.iter().map(|v| &v.value).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "the list is no longer scannable");
+    }
+
+    #[test]
+    fn a_ticked_value_survives_the_cap() {
+        // A filter you cannot see is a filter you cannot remove — and the
+        // lowest-count value is exactly the one a user is most likely to have
+        // ticked, since it is the one that narrowed hardest.
+        let values: Vec<facet_engine::FacetValue> =
+            (0..500).map(|i| value(&format!("lib{i:03}"), i)).collect();
+        let refs: Vec<&facet_engine::FacetValue> = values.iter().collect();
+        let query = PackageQuery {
+            packages: vec!["lib000".to_string()],
+            ..Default::default()
+        };
+        let (shown, _) = cap_values(&refs, &query, "System (apt / dpkg)");
+        assert!(
+            shown.iter().any(|v| v.value == "lib000"),
+            "the only ticked value — and the rarest — was dropped"
+        );
+    }
+
+    #[test]
+    fn the_active_filter_strip_scrolls_instead_of_growing_over_the_facets() {
+        // The FlowBox is in a plain Box, so nothing stopped it growing downward
+        // and drawing over the facet list as filters were added.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        assert!(
+            code.contains("chips_scroll.set_max_content_height"),
+            "the chip strip has no height bound again"
+        );
+        assert!(
+            code.contains("chips_scroll.set_propagate_natural_height(true)"),
+            "one chip now reserves room for two"
+        );
+        // Held, not reached for: a ScrolledWindow wraps its child in a
+        // Viewport, so walking up from the FlowBox is a guess about GTK's
+        // internals that silently stops working if they change.
+        assert!(
+            !code.contains("chips_box.parent()"),
+            "the chip strip is being found by walking the widget tree again"
+        );
+    }
+
+    #[test]
+    fn a_rows_package_breakdown_is_built_only_when_it_is_opened() {
+        // Every rebuild was constructing the full breakdown for every
+        // discovered image — around a dozen rows each, none of them visible.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        let built = code
+            .find("manifest_detail_rows(&manifest)")
+            .expect("the package breakdown is gone");
+        let lazily = code
+            .find("connect_expanded_notify")
+            .expect("the breakdown is built eagerly again");
+        assert!(
+            lazily < built,
+            "the breakdown is constructed before anything asks to see it"
+        );
+    }
 
     #[test]
     fn a_pane_may_not_be_squeezed_below_its_own_minimum() {

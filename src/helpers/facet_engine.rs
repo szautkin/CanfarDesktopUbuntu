@@ -266,6 +266,76 @@ fn opt_eq(actual: &Option<String>, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// What one facet rebuild costs — the work every keystroke and every
+    /// checkbox toggle in the find-by-package modal triggers.
+    ///
+    ///     cargo test --release facet_cost -- --ignored --nocapture
+    ///
+    /// Ignored because it measures rather than asserts: the number moves with
+    /// the machine, and a threshold picked here would fail on someone else's.
+    #[test]
+    #[ignore = "measurement, not an assertion"]
+    fn facet_cost_on_a_real_catalogue() {
+        // 47 discovered images of ~320 packages each — the numbers the modal
+        // reported against a live CANFAR account.
+        let tmp = TempStore::new();
+        let store = tmp.store();
+        for i in 0..47 {
+            let mut m = manifest(
+                &format!("images.canfar.net/proj{}/img:{i}", i % 7),
+                if i % 2 == 0 { "ubuntu" } else { "centos" },
+                if i % 3 == 0 { "22.04" } else { "20.04" },
+                &[],
+            );
+            m.dpkg = (0..250).map(|p| format!("libthing{p}")).collect();
+            m.python = (0..70).map(|p| format!("pypkg{p}")).collect();
+            store.set_manifest(&m.image_id.clone(), m, "2026-08-20T00:00:00Z".into());
+        }
+
+        for (name, query) in [
+            ("no filters", PackageQuery::default()),
+            (
+                "one os family",
+                PackageQuery {
+                    os_family: Some("ubuntu".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "a package",
+                PackageQuery {
+                    packages: vec!["libthing7".into()],
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let started = std::time::Instant::now();
+            let facets = facets_for_query(&store, &query);
+            // What the pane RENDERS is capped per category by the dialog; the
+            // engine still reports the full universe, which is what makes the
+            // cap necessary.
+            const RENDER_CAP: usize = 25;
+            let values: usize = facets.iter().map(|f| f.values.len()).sum();
+            let rendered: usize = facets.iter().map(|f| f.values.len().min(RENDER_CAP)).sum();
+            println!(
+                "{name:>14} -> {} categories, {values} values in {:?} \
+                 ({rendered} checkbox widgets after the cap)",
+                facets.len(),
+                started.elapsed()
+            );
+        }
+
+        // And the part every rebuild pays before faceting even starts.
+        let started = std::time::Instant::now();
+        let manifests = discovered_manifests(&store);
+        println!(
+            "{:>14} -> {} manifests in {:?}",
+            "loading them",
+            manifests.len(),
+            started.elapsed()
+        );
+    }
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
