@@ -3,7 +3,7 @@
 //! Batch jobs are CANFAR headless sessions grouped by status. Clicking any
 //! count tile fires the `on_state_click` callback with the selected state.
 
-use crate::helpers::batch_jobs_helper::{self, BatchJobCounts, BatchJobState};
+use crate::helpers::batch_jobs_helper::{self, BatchJobCounts, BatchJobState, JobEntry};
 use crate::models::job_record::{JobOrigin, JobOutcome, JobRecord};
 use crate::models::session::Session;
 use crate::state::AppServices;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-type OnStateClickCb = Rc<RefCell<Option<Box<dyn Fn(BatchJobState, Vec<Session>)>>>>;
+type OnStateClickCb = Rc<RefCell<Option<Box<dyn Fn(BatchJobState, Vec<JobEntry>)>>>>;
 
 /// Auto-poll interval for the batch/headless job list (matches the Windows
 /// reference `BatchJobsControl.PollSeconds`).
@@ -53,7 +53,9 @@ pub struct BatchJobsView {
     failed_label: gtk::Label,
     countdown_label: gtk::Label,
     services: Arc<AppServices>,
-    sessions: Rc<RefCell<Vec<Session>>>,
+    /// Live jobs plus the finished ones we remember — what the tiles count and
+    /// what the dialog lists.
+    entries: Rc<RefCell<Vec<JobEntry>>>,
     /// Previous status keyed by job id, used to diff transitions between polls.
     prev_states: Rc<RefCell<HashMap<String, String>>>,
     on_state_click: OnStateClickCb,
@@ -107,7 +109,7 @@ impl BatchJobsView {
             failed_label,
             countdown_label,
             services,
-            sessions: Rc::new(RefCell::new(Vec::new())),
+            entries: Rc::new(RefCell::new(Vec::new())),
             prev_states: Rc::new(RefCell::new(HashMap::new())),
             on_state_click: Rc::new(RefCell::new(None)),
             spinner,
@@ -123,7 +125,7 @@ impl BatchJobsView {
         for (btn, state) in states {
             let v = view.clone();
             btn.connect_clicked(move |_| {
-                let jobs = batch_jobs_helper::filter_by_state(&v.sessions.borrow(), state);
+                let jobs = batch_jobs_helper::of_state(&v.entries.borrow(), state);
                 if let Some(cb) = v.on_state_click.borrow().as_ref() {
                     cb(state, jobs);
                 }
@@ -169,7 +171,7 @@ impl BatchJobsView {
         &self.container
     }
 
-    pub fn set_on_state_click(&self, cb: impl Fn(BatchJobState, Vec<Session>) + 'static) {
+    pub fn set_on_state_click(&self, cb: impl Fn(BatchJobState, Vec<JobEntry>) + 'static) {
         *self.on_state_click.borrow_mut() = Some(Box::new(cb));
     }
 
@@ -201,8 +203,6 @@ impl BatchJobsView {
 
         match result {
             Ok(sessions) => {
-                let counts = batch_jobs_helper::group_by_state(&sessions);
-
                 // Diff transitions against the previous poll (headless jobs only)
                 // and record the new state map for the next comparison.
                 let jobs: Vec<Session> = sessions
@@ -216,14 +216,26 @@ impl BatchJobsView {
                     .map(|s| (s.id.clone(), s.status.clone()))
                     .collect();
 
-                *self.sessions.borrow_mut() = sessions;
-                self.update_counts(counts);
                 self.fire_notifications(&events);
                 // Before CANFAR reaps them. A job that has finished is on
                 // borrowed time in the listing, and its logs and events go with
                 // it — so the moment we notice it ended is the only moment we
-                // can still find out why.
+                // can still find out why. Recorded BEFORE the counts are taken,
+                // so a job that just finished is counted this poll rather than
+                // the next.
                 self.remember(&events).await;
+
+                // Live jobs and remembered ones together. Counting only the
+                // listing left Completed and Failed reading zero permanently:
+                // CANFAR reaps finished headless jobs, and the image-discovery
+                // coordinator deletes its own probes within seconds.
+                let entries = batch_jobs_helper::merge(
+                    &sessions,
+                    &self.services.job_history.load(),
+                    &chrono::Utc::now().to_rfc3339(),
+                );
+                self.update_counts(batch_jobs_helper::count_by_state(&entries));
+                *self.entries.borrow_mut() = entries;
             }
             Err(_) => {
                 // Silently keep previous counts on failure

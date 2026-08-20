@@ -3,7 +3,7 @@
 //! Presented as a tabbed window (Pending/Running/Completed/Failed). Each job
 //! row exposes Events, Logs, and Delete actions.
 
-use crate::helpers::batch_jobs_helper::{self, BatchJobState};
+use crate::helpers::batch_jobs_helper::{self, BatchJobState, JobEntry};
 use crate::models::job_record::JobRecord;
 use crate::models::session::Session;
 use crate::state::AppServices;
@@ -22,7 +22,7 @@ use std::sync::Arc;
 pub async fn show_batch_jobs_dialog(
     parent: &impl IsA<gtk::Widget>,
     services: Arc<AppServices>,
-    sessions: Vec<Session>,
+    entries: Vec<JobEntry>,
     initial_state: BatchJobState,
 ) {
     let window = gtk::Window::builder()
@@ -46,7 +46,7 @@ pub async fn show_batch_jobs_dialog(
     ];
 
     for state in &states {
-        let tab = build_state_tab(&window, services.clone(), &sessions, *state);
+        let tab = build_state_tab(&window, services.clone(), &entries, *state);
         notebook.append_page(&tab, Some(&gtk::Label::new(Some(state.label()))));
     }
 
@@ -80,7 +80,7 @@ pub async fn show_batch_jobs_dialog(
 fn build_state_tab(
     window: &gtk::Window,
     services: Arc<AppServices>,
-    all_sessions: &[Session],
+    all_entries: &[JobEntry],
     state: BatchJobState,
 ) -> gtk::ScrolledWindow {
     let scroll = gtk::ScrolledWindow::new();
@@ -95,7 +95,7 @@ fn build_state_tab(
     list_box.set_margin_top(12);
     list_box.set_margin_bottom(12);
 
-    let filtered = batch_jobs_helper::filter_by_state(all_sessions, state);
+    let filtered = batch_jobs_helper::of_state(all_entries, state);
 
     if filtered.is_empty() {
         let empty = gtk::Label::new(Some(&crate::tr_fmt!(
@@ -242,7 +242,20 @@ fn outcome_dot(record: &JobRecord) -> gtk::Label {
     dot
 }
 
-fn build_job_row(
+/// One job row, live or remembered.
+///
+/// A remembered job has no Events, Logs or Delete: Skaha no longer has it, and
+/// a button that fetches nothing is worse than no button. What it has instead
+/// is the reason it failed, captured while the job still existed — which is the
+/// thing those buttons were for.
+fn build_job_row(window: &gtk::Window, services: Arc<AppServices>, entry: JobEntry) -> gtk::Widget {
+    match entry {
+        JobEntry::Live(job) => build_live_job_row(window, services, job).upcast(),
+        JobEntry::Remembered(record) => build_history_row(&record),
+    }
+}
+
+fn build_live_job_row(
     window: &gtk::Window,
     services: Arc<AppServices>,
     job: Session,
