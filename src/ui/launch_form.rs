@@ -60,6 +60,21 @@ pub struct LaunchFormView {
     headless_launch_btn: gtk::Button,
 }
 
+/// The session type to switch to in order to reach `image` in the Standard
+/// tab, or `None` when the form offers none of the image's types.
+///
+/// Skaha advertises types the Standard tab does not launch — `headless` most
+/// of all — so an image can be in the catalogue and still be unreachable
+/// there. That is the case `select_image_by_id` hands to the Advanced tab,
+/// and it is the only part of the decision that does not need a live GTK
+/// dropdown, so it lives out here where it can be tested.
+fn reachable_type(image: &ParsedImage) -> Option<&String> {
+    image
+        .types
+        .iter()
+        .find(|t| INTERACTIVE_SESSION_TYPES.contains(&t.as_str()))
+}
+
 impl LaunchFormView {
     pub fn new(services: Arc<AppServices>, active_sessions: Rc<RefCell<Vec<Session>>>) -> Rc<Self> {
         // The eighth Portal card, and the one that hand-rolled its own header
@@ -734,17 +749,7 @@ impl LaunchFormView {
 
     fn update_images(&self) {
         let session_type = self.selected_type();
-        let registry = self.selected_registry();
-        let images = self.images.borrow();
-
-        let project = self.combo_selected_string(&self.project_combo);
-
-        let filtered = ImageParser::images_for_type_registry_and_project(
-            &images,
-            &session_type,
-            &registry,
-            &project,
-        );
+        let filtered = self.visible_images();
 
         let model = gtk::StringList::new(&[]);
         for img in &filtered {
@@ -774,19 +779,8 @@ impl LaunchFormView {
     }
 
     fn get_selected_image_id(&self) -> Option<String> {
-        let images = self.images.borrow();
-        let session_type = self.selected_type();
-        let registry = self.selected_registry();
-        let project = self.combo_selected_string(&self.project_combo);
-
-        let filtered = ImageParser::images_for_type_registry_and_project(
-            &images,
-            &session_type,
-            &registry,
-            &project,
-        );
         let idx = self.image_combo.selected() as usize;
-        filtered.get(idx).map(|img| img.id.clone())
+        self.visible_images().get(idx).map(|img| img.id.clone())
     }
 
     /// The Advanced tab's session type, decoded from the list the dropdown was
@@ -836,6 +830,95 @@ impl LaunchFormView {
     /// The picked id is a fully-qualified URI (e.g. `images.canfar.net/…:tag`),
     /// so it is placed into the Advanced tab's custom image entry (which the
     /// launch path reads) and the Advanced tab is brought to the front.
+    /// Select `image_id` in the Standard tab, or fall back to the Advanced
+    /// tab's custom-image field when it is not a launchable catalogue image.
+    ///
+    /// Port of `SessionLaunchViewModel.SelectImageById`, including that
+    /// fallback: an image the discovery cache knows about is not necessarily
+    /// one Skaha will offer for a session type, and dropping the request on the
+    /// floor is how "Use this image" came to do nothing at all.
+    ///
+    /// Returns whether it landed in the catalogue.
+    pub fn select_image_by_id(&self, image_id: &str) -> bool {
+        let image_id = image_id.trim();
+        if image_id.is_empty() {
+            return false;
+        }
+
+        // The combos filter the image list, so they have to be moved to where
+        // the image actually is before it can be selected — setting the
+        // dropdown index alone would pick whatever happened to sit there.
+        let target = self
+            .images
+            .borrow()
+            .iter()
+            .find(|img| img.id == image_id)
+            .cloned();
+
+        if let Some(target) = target {
+            let placed = self.point_combos_at(&target);
+            if placed {
+                self.update_images();
+                if let Some(index) = self.visible_images().iter().position(|i| i.id == image_id) {
+                    self.image_combo.set_selected(index as u32);
+                    // Standard tab is page 0.
+                    self.notebook.set_current_page(Some(0));
+                    self.status_label
+                        .set_text(&crate::tr_fmt!("Selected image: {}", image_id));
+                    return true;
+                }
+            }
+        }
+
+        // Not a launchable catalogue image — a private one only discovery knows
+        // about, say. The Advanced tab takes a full URI, which is exactly what
+        // we have.
+        self.apply_picked_image(image_id);
+        false
+    }
+
+    /// Move the type, registry and project combos to where `target` lives.
+    /// False when any of them has no entry for it.
+    fn point_combos_at(&self, target: &ParsedImage) -> bool {
+        let Some(session_type) = reachable_type(target) else {
+            return false;
+        };
+        let Some(type_index) = self.combo_index(&self.type_combo, session_type) else {
+            return false;
+        };
+        self.type_combo.set_selected(type_index);
+
+        if let Some(index) = self.combo_index(&self.registry_combo, &target.registry) {
+            self.registry_combo.set_selected(index);
+        }
+        // Selecting a type repopulates the project list, so the project has to
+        // be chosen after it.
+        self.update_projects();
+        if let Some(index) = self.combo_index(&self.project_combo, &target.project) {
+            self.project_combo.set_selected(index);
+        }
+        true
+    }
+
+    /// The position of `value` in a dropdown's string model.
+    fn combo_index(&self, combo: &gtk::DropDown, value: &str) -> Option<u32> {
+        let model = combo.model()?.downcast::<gtk::StringList>().ok()?;
+        (0..model.n_items()).find(|i| model.string(*i).map(|s| s == value).unwrap_or(false))
+    }
+
+    /// The images the Standard tab's dropdown currently lists, in its order.
+    ///
+    /// The filter is spelled out in three places — `update_images`,
+    /// `get_selected_image_id` and here — so it lives here and they call it.
+    fn visible_images(&self) -> Vec<ParsedImage> {
+        ImageParser::images_for_type_registry_and_project(
+            &self.images.borrow(),
+            &self.selected_type(),
+            &self.selected_registry(),
+            &self.combo_selected_string(&self.project_combo),
+        )
+    }
+
     fn apply_picked_image(&self, id: &str) {
         *self.picked_image.borrow_mut() = Some(id.to_string());
         self.custom_image_entry.set_text(id);
@@ -1255,5 +1338,103 @@ impl LaunchFormView {
 
     pub fn widget(&self) -> &gtk::Box {
         &self.container
+    }
+}
+
+#[cfg(test)]
+mod use_this_image_tests {
+    use super::*;
+
+    const SOURCE: &str = include_str!("launch_form.rs");
+
+    fn image(id: &str, types: &[&str]) -> ParsedImage {
+        ParsedImage {
+            id: id.to_string(),
+            registry: "images.canfar.net".into(),
+            project: "skaha".into(),
+            name: "astroml".into(),
+            version: "1.0".into(),
+            types: types.iter().map(|t| t.to_string()).collect(),
+            display_name: "astroml:1.0".into(),
+        }
+    }
+
+    #[test]
+    fn an_image_the_standard_tab_launches_is_reachable_there() {
+        let img = image("images.canfar.net/skaha/astroml:1.0", &["notebook"]);
+        assert_eq!(reachable_type(&img).map(String::as_str), Some("notebook"));
+    }
+
+    #[test]
+    fn a_headless_only_image_is_not_reachable_in_the_standard_tab() {
+        // Skaha advertises types the Standard tab does not launch. Selecting
+        // the dropdown index for one anyway would land on whatever image
+        // happened to sit at that position — a different image entirely,
+        // silently.
+        let img = image("images.canfar.net/skaha/probe:1.0", &["headless"]);
+        assert_eq!(reachable_type(&img), None);
+    }
+
+    #[test]
+    fn an_image_with_no_types_at_all_is_not_reachable() {
+        // Discovery knows about images Skaha never listed a type for.
+        assert_eq!(reachable_type(&image("private/thing:1", &[])), None);
+    }
+
+    #[test]
+    fn the_first_launchable_type_wins() {
+        let img = image("x:1", &["headless", "notebook", "carta"]);
+        assert_eq!(reachable_type(&img).map(String::as_str), Some("notebook"));
+    }
+
+    #[test]
+    fn an_unreachable_image_falls_back_rather_than_being_dropped() {
+        // The reference does this too: an image the catalogue cannot offer for
+        // a session type goes to the custom-image field, because the user asked
+        // for it and "nothing happened" is the worst possible answer.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("pub fn select_image_by_id")
+            .expect("select_image_by_id is gone");
+        let end = code[at..]
+            .find("\n    }\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        assert!(
+            code[at..end].contains("self.apply_picked_image(image_id)"),
+            "an image the Standard tab cannot show is dropped on the floor"
+        );
+    }
+
+    #[test]
+    fn the_list_shown_and_the_list_launched_are_the_same_list() {
+        // `update_images` fills the dropdown and `get_selected_image_id` reads
+        // it back; each used to spell out the type/registry/project filter for
+        // itself, and selecting by id needed it a third time. Two copies of a
+        // filter is two chances for the row you picked and the row that
+        // launches to disagree — silently, since both produce a valid image.
+        //
+        // (The projects scan is deliberately not included: it filters over
+        // CANDIDATE projects rather than the selected one, which is a different
+        // question.)
+        let code = crate::testing::code(SOURCE);
+        for caller in ["fn update_images", "fn get_selected_image_id"] {
+            let at = code
+                .find(caller)
+                .unwrap_or_else(|| panic!("{caller} is gone"));
+            let end = code[at..]
+                .find("\n    }\n")
+                .map(|e| at + e)
+                .unwrap_or(code.len());
+            let body = &code[at..end];
+            assert!(
+                body.contains("self.visible_images()"),
+                "{caller} decides for itself which images are showing"
+            );
+            assert!(
+                !body.contains("images_for_type_registry_and_project("),
+                "{caller} still has its own copy of the filter"
+            );
+        }
     }
 }

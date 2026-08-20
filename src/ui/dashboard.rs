@@ -419,17 +419,29 @@ impl DashboardView {
             });
         }
 
-        // Canfar Images — "Use this image" fires the use-launch-image app action
-        // with the picked image id (mirrors DashboardPage.OnUseImageRequested,
-        // which selects the image in the launch form).
+        // Canfar Images — "Use this image" selects it in the launch form
+        // (mirrors DashboardPage.OnUseImageRequested → SelectImageById).
+        //
+        // Straight to the form, which this same dashboard owns and shows two
+        // cards away. It used to activate a `use-launch-image` app action that
+        // NOBODY REGISTERED, so both buttons that reach here — the one on each
+        // image row, and the one in the find-by-package dialog when that dialog
+        // is opened from this card — did nothing whatsoever. GIO logs an
+        // unregistered activation and carries on, so there was not even an
+        // error to notice.
         {
-            let canfar_images = self.canfar_images.clone();
+            let launch_form = self.launch_form.clone();
+            let services = self.services.clone();
             self.canfar_images.set_on_use_image(move |image_id| {
-                if let Some(win) = canfar_images.widget().root().and_downcast::<gtk::Window>() {
-                    if let Some(app) = win.application() {
-                        let variant = glib::Variant::from(image_id.as_str());
-                        app.activate_action("use-launch-image", Some(&variant));
-                    }
+                if !launch_form.select_image_by_id(&image_id) {
+                    // It went to the Advanced tab's custom-image field instead.
+                    // Say so: the Standard tab is where the eye goes, and a
+                    // selection that landed elsewhere looks like nothing
+                    // happened.
+                    services.toast.toast(crate::tr_fmt!(
+                        "{} is not offered for a session type — put it in the Advanced tab",
+                        image_id
+                    ));
                 }
             });
         }
@@ -462,4 +474,32 @@ fn update_session_limits(
     let reached = count >= MAX_SESSIONS;
     launch_form.set_session_limit_reached(reached);
     recent_launches.set_session_limit_reached(reached);
+}
+
+#[cfg(test)]
+mod use_image_tests {
+    const SOURCE: &str = include_str!("dashboard.rs");
+
+    #[test]
+    fn use_this_image_reaches_the_launch_form() {
+        // It used to activate a `use-launch-image` app action that nobody
+        // registered, so every button routing here — the one on each image row,
+        // and the one in the find-by-package dialog when that dialog is opened
+        // from this card — did nothing at all. The dashboard owns the launch
+        // form two cards away; there was never a reason to go out through GIO
+        // and back.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("set_on_use_image")
+            .expect("nothing handles Use this image");
+        let handler = &code[at..(at + 900).min(code.len())];
+        assert!(
+            handler.contains("select_image_by_id"),
+            "Use this image no longer selects anything in the launch form"
+        );
+        assert!(
+            !handler.contains("activate_action"),
+            "the request is going back out through an app action"
+        );
+    }
 }

@@ -450,6 +450,10 @@ prend en compte à son prochain démarrage."),
     ("Clear history",                               "Effacer l’historique"),
     ("Probe job",                                   "Tâche de sondage"),
     ("inspected {}",                                "inspectée {}"),
+    (
+        "{} is not offered for a session type — put it in the Advanced tab",
+        "{} n’est proposée pour aucun type de session — placée dans l’onglet Avancé",
+    ),
     // Background sync of published image manifests.
     (
         "Catching up on {} image manifest from CANFAR…",

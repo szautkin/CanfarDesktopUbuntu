@@ -2263,6 +2263,44 @@ mod navigation_tests {
     }
 
     #[test]
+    fn every_action_the_app_activates_is_registered_somewhere() {
+        // GIO logs an unregistered activation to stderr and carries on, so a
+        // button wired to an action nobody added simply does nothing — no
+        // error, no crash, no clue. "Use this image" shipped that way: it
+        // activated `use-launch-image`, which was never registered, so both
+        // buttons that reached it did nothing at all.
+        let mut activated: Vec<String> = Vec::new();
+        let mut registered: Vec<String> = Vec::new();
+
+        for (_, text) in crate::testing::rust_sources() {
+            let code = crate::testing::code(&text);
+            for (at, _) in code.match_indices("activate_action(\"") {
+                let rest = &code[at + "activate_action(\"".len()..];
+                if let Some(end) = rest.find('"') {
+                    activated.push(rest[..end].to_string());
+                }
+            }
+            for (at, _) in code.match_indices("SimpleAction::new(\"") {
+                let rest = &code[at + "SimpleAction::new(\"".len()..];
+                if let Some(end) = rest.find('"') {
+                    registered.push(rest[..end].to_string());
+                }
+            }
+        }
+
+        assert!(!activated.is_empty(), "the scan found no actions at all");
+        let missing: Vec<&String> = activated
+            .iter()
+            .filter(|name| !registered.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "activated but never registered, so the controls wired to them do \
+             nothing: {missing:?}"
+        );
+    }
+
+    #[test]
     fn signing_in_does_not_change_the_visible_page() {
         // Signing in READIES the Portal; it does not choose it. The reference
         // reaches `ApplyMode(AppMode.Landing)` from `GoHome()` alone, and login
