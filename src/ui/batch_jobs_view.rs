@@ -433,11 +433,7 @@ mod tests {
             .expect("the tiles no longer open the dialog");
         // Code only: the comment above the handler explains the bug by naming
         // it, and prose about a defect is not the defect.
-        let handler: String = code[at..(at + 700).min(code.len())]
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let handler = crate::testing::without_comments(&code[at..(at + 700).min(code.len())]);
         assert!(
             !handler.contains("of_state("),
             "the tile filters before the dialog does, so three of its four tabs \

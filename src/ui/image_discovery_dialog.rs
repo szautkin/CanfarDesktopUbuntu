@@ -67,11 +67,23 @@ pub fn show_image_discovery_dialog(
     let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
     paned.set_wide_handle(true);
     paned.set_position(380);
+    // `shrink-*-child` defaults to TRUE, which lets GTK allocate a pane LESS
+    // than its own minimum and clip whatever does not fit — content pushed off
+    // the modal's left edge, with the divider still sitting where it was asked
+    // to. Refusing to shrink makes GTK move the divider instead, which is
+    // visible and recoverable. `cargo run --example facet_pane_probe` prints
+    // the default.
+    paned.set_shrink_start_child(false);
+    paned.set_shrink_end_child(false);
     paned.set_vexpand(true);
     paned.set_hexpand(true);
 
     // ── Left pane widgets ─────────────────────────────────────────────────
     let left = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    // A floor, not a ceiling: `set_size_request` is a minimum. With the facet
+    // labels now ellipsized the pane's own minimum is tiny, and without this
+    // the divider could be dragged until the filters were unreadable.
+    left.set_size_request(FACET_PANE_MIN, -1);
     left.set_margin_start(12);
     left.set_margin_end(12);
     left.set_margin_top(12);
@@ -270,15 +282,17 @@ impl DiscoveryUi {
                 continue;
             }
 
-            let header = gtk::Label::new(Some(&format!("{}  ({})", facet.category, visible.len())));
+            let header = facet_label(&format!("{}  ({})", facet.category, visible.len()));
             header.add_css_class("heading");
-            header.set_halign(gtk::Align::Start);
             header.set_margin_top(6);
             self.facet_container.append(&header);
 
             for value in visible {
-                let check =
-                    gtk::CheckButton::with_label(&format!("{}  ·  {}", value.value, value.count));
+                let check = gtk::CheckButton::new();
+                check.set_child(Some(&facet_label(&format!(
+                    "{}  ·  {}",
+                    value.value, value.count
+                ))));
                 let selected = is_selected(&self.query.borrow(), &facet.category, &value.value);
                 check.set_active(selected);
                 // A greyed value is unreachable; keep already-ticked values usable.
@@ -354,7 +368,13 @@ impl DiscoveryUi {
         }
 
         for (label, remove) in chips {
-            let btn = gtk::Button::with_label(&format!("{label}  ✕"));
+            // The widest thing in the pane, by measurement — an OS-version chip
+            // reads "OS version: 22.04.5 LTS (Jammy Jellyfish)". Left to size
+            // itself it sets the pane's minimum and pushes the divider, or is
+            // clipped. The text is on the chip AND in its tooltip.
+            let btn = gtk::Button::new();
+            btn.set_child(Some(&facet_label(&format!("{label}  ✕"))));
+            btn.set_tooltip_text(Some(&label));
             btn.add_css_class("pill");
             let ui = self.clone();
             let remove = Rc::new(remove);
@@ -756,6 +776,34 @@ fn clear_box(container: &gtk::Box) {
     }
 }
 
+/// How wide a facet label may get before it truncates.
+///
+/// The pane is 380px; this keeps the longest values — "22.04.5 LTS (Jammy
+/// Jellyfish)  ·  0" — from setting a minimum wider than that.
+const FACET_LABEL_CHARS: i32 = 26;
+
+/// The narrowest the filter pane may be dragged.
+const FACET_PANE_MIN: i32 = 240;
+
+/// A facet label that truncates instead of forcing the pane wider.
+///
+/// `CheckButton::with_label` builds a label with no ellipsize, so its MINIMUM
+/// width is the whole string — and a `ScrolledWindow` with a horizontal policy
+/// of `Never` passes its child's minimum straight through. Between them the
+/// left pane demanded more than its 380px and overflowed off the left edge of
+/// the modal, taking "Active filters" and half of every facet name with it.
+///
+/// The full text goes in a tooltip, since it is now allowed to truncate.
+fn facet_label(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.set_max_width_chars(FACET_LABEL_CHARS);
+    label.set_halign(gtk::Align::Start);
+    label.set_xalign(0.0);
+    label.set_tooltip_text(Some(text));
+    label
+}
+
 fn dim_label(text: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.add_css_class("dim-label");
@@ -763,4 +811,55 @@ fn dim_label(text: &str) -> gtk::Label {
     label.set_wrap(true);
     label.set_margin_top(8);
     label
+}
+
+#[cfg(test)]
+mod pane_layout_tests {
+    const SOURCE: &str = include_str!("image_discovery_dialog.rs");
+
+    #[test]
+    fn a_pane_may_not_be_squeezed_below_its_own_minimum() {
+        // GtkPaned defaults shrink-*-child to TRUE, which lets GTK allocate a
+        // pane LESS than its minimum and clip whatever does not fit — content
+        // pushed off the modal's left edge, with the divider still sitting
+        // where it was asked to. Refusing to shrink makes GTK move the divider
+        // instead: visible, and recoverable by dragging it back.
+        //
+        // `cargo run --example facet_pane_probe` prints the default and the
+        // pane's measured minimum.
+        let code = crate::testing::code(SOURCE);
+        assert!(code.contains("paned.set_shrink_start_child(false)"));
+        assert!(code.contains("paned.set_shrink_end_child(false)"));
+    }
+
+    #[test]
+    fn nothing_in_the_filter_pane_sizes_itself_by_its_text() {
+        // A label with no ellipsize demands its whole string as a MINIMUM, and
+        // a ScrolledWindow whose horizontal policy is Never passes that minimum
+        // straight through. One long facet value — "22.04.5 LTS (Jammy
+        // Jellyfish)" — is enough to widen the pane past the divider.
+        // Code only: the comment on `facet_label` explains the bug by
+        // naming it, and prose about a defect is not the defect.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        assert!(
+            !code.contains("CheckButton::with_label"),
+            "a facet row builds its own unellipsized label again"
+        );
+        assert!(
+            !code.contains("Button::with_label(&format!(\"{label}"),
+            "a chip builds its own unellipsized label again"
+        );
+        let at = code.find("fn facet_label").expect("facet_label is gone");
+        let end = code[at..]
+            .find("\n}\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        let body = &code[at..end];
+        assert!(body.contains("EllipsizeMode::End"));
+        assert!(body.contains("set_max_width_chars"));
+        assert!(
+            body.contains("set_tooltip_text"),
+            "a label allowed to truncate must still be readable in full somewhere"
+        );
+    }
 }

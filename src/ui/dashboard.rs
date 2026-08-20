@@ -36,12 +36,30 @@ pub struct DashboardView {
     services: Arc<AppServices>,
 }
 
+/// The Portal grid's column count, homogeneous.
+const TOTAL_COLUMNS: i32 = 3;
+
+/// How many of them the primary widgets span: all but the last.
+///
+/// The session list and the launch form get two thirds; storage and the
+/// secondary cards get the remaining third. Derived rather than written twice,
+/// so the fraction cannot drift.
+const PRIMARY_COLUMNS: i32 = TOTAL_COLUMNS - 1;
+
 impl DashboardView {
     pub fn new(services: Arc<AppServices>) -> Self {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         container.set_vexpand(true);
 
-        // Main grid: 2x2 layout
+        // Main grid: two rows over THREE homogeneous columns, the left widgets
+        // spanning two of them.
+        //
+        // Two homogeneous columns split the Portal 50/50, which gave the
+        // secondary column — storage, batch jobs, recents, platform load,
+        // templates — as much room as the launch form and the session list,
+        // the two things anyone actually came here to use. Three columns with a
+        // 2-span is exactly two thirds and one third, and it stays that way at
+        // every window size, which a fixed width would not.
         let grid = gtk::Grid::new();
         grid.set_row_homogeneous(false);
         grid.set_column_homogeneous(true);
@@ -70,10 +88,10 @@ impl DashboardView {
         right_bottom.append(platform_load.widget());
         right_bottom.append(template_manager.widget());
 
-        grid.attach(session_list.widget(), 0, 0, 1, 1);
-        grid.attach(storage_quota.widget(), 1, 0, 1, 1);
-        grid.attach(launch_form.widget(), 0, 1, 1, 1);
-        grid.attach(&right_bottom, 1, 1, 1, 1);
+        grid.attach(session_list.widget(), 0, 0, PRIMARY_COLUMNS, 1);
+        grid.attach(storage_quota.widget(), PRIMARY_COLUMNS, 0, 1, 1);
+        grid.attach(launch_form.widget(), 0, 1, PRIMARY_COLUMNS, 1);
+        grid.attach(&right_bottom, PRIMARY_COLUMNS, 1, 1, 1);
 
         // Full-width CANFAR Images widget below the 2×2 grid.
         let canfar_images = CanfarImagesView::new(services.clone());
@@ -478,7 +496,39 @@ fn update_session_limits(
 
 #[cfg(test)]
 mod use_image_tests {
+    use super::*;
+
     const SOURCE: &str = include_str!("dashboard.rs");
+
+    #[test]
+    fn the_secondary_column_gets_a_third_of_the_portal() {
+        // Two homogeneous columns split it 50/50, giving storage, batch jobs,
+        // recents, platform load and templates as much room as the launch form
+        // and the session list — the two things anyone came here to use.
+        assert_eq!(TOTAL_COLUMNS - PRIMARY_COLUMNS, 1);
+        assert_eq!(TOTAL_COLUMNS, 3, "the fraction is no longer a third");
+
+        // And the widgets are attached to match: primaries spanning, secondary
+        // starting where they end.
+        let code = crate::testing::code(SOURCE);
+        for primary in ["session_list.widget()", "launch_form.widget()"] {
+            assert!(
+                code.contains(&format!("grid.attach({primary}, 0, ")),
+                "{primary} no longer starts at the left edge"
+            );
+        }
+        assert_eq!(
+            code.matches("PRIMARY_COLUMNS, 1)").count(),
+            2,
+            "the primary widgets no longer span the primary columns"
+        );
+        assert_eq!(
+            code.matches("grid.attach(storage_quota.widget(), PRIMARY_COLUMNS")
+                .count(),
+            1,
+            "storage no longer sits in the secondary column"
+        );
+    }
 
     #[test]
     fn use_this_image_reaches_the_launch_form() {

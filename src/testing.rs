@@ -62,6 +62,22 @@ pub fn code(source: &str) -> &str {
     }
 }
 
+/// Strip Rust comment lines, leaving only code.
+///
+/// Source-scanning guards keep catching their own explanations: a comment
+/// naming the defect ("this used to call `of_state`") satisfies a guard looking
+/// for that call, so the guard passes while the defect is present. Prose about
+/// a bug is not the bug, and three guards learned that the same way.
+///
+/// Line comments only — a `/* */` spanning lines would need a parser, and no
+/// guard has needed one.
+pub fn without_comments(code: &str) -> String {
+    code.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::code;
@@ -74,6 +90,20 @@ mod tests {
             !code(file).contains("fn pretend()"),
             "a guard must not be able to find itself"
         );
+    }
+
+    #[test]
+    fn a_comment_naming_a_defect_does_not_look_like_the_defect() {
+        let file = "// this used to call of_state(x)\nlet y = keep(x);\n";
+        let code = super::without_comments(file);
+        assert!(!code.contains("of_state("));
+        assert!(code.contains("keep(x)"));
+    }
+
+    #[test]
+    fn a_doc_comment_is_stripped_too() {
+        // `///` is where the explanations that fooled the guards actually live.
+        assert!(!super::without_comments("/// calls foo()\nfn bar() {}").contains("foo()"));
     }
 
     #[test]
