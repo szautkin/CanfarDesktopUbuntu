@@ -235,7 +235,7 @@ mod tests {
     /// third case its own comment names: a tool the reference has not got yet.
     /// Deliberate divergence stays visible instead of the guard being loosened,
     /// and an entry the reference later gains is itself reported.
-    const VERBINAL_ONLY: &[(&str, &str)] = &[(
+    const VERBINAL_FIRST: &[(&str, &str)] = &[(
         "get_job_status",
         "The reference applies a download inside the tool call, so a 332 MB \
      observation times the client out and the transfer vanishes with no id, no \
@@ -250,8 +250,10 @@ mod tests {
     /// against the reference calls a tool this build does not have.
     ///
     /// Three separate failures, each naming the offending tools:
-    ///  * **extra** — we advertise something the reference doesn't. Always a bug:
-    ///    either a rename went the wrong way or a tool needs adding upstream.
+    ///  * **extra** — we advertise something the reference doesn't and
+    ///    [`VERBINAL_FIRST`] does not account for. A rename gone the wrong way,
+    ///    or a deliberate addition nobody wrote down. Parity is a floor: adding
+    ///    a tool is allowed, adding one silently is not.
     ///  * **unexpectedly missing** — a tool vanished that isn't on the porting
     ///    backlog. Catches an accidental rename or deletion.
     ///  * **stale backlog** — a tool is listed as unported but actually exists.
@@ -269,19 +271,23 @@ mod tests {
 
         let extra: Vec<&String> = ours
             .difference(&theirs)
-            .filter(|name| !VERBINAL_ONLY.iter().any(|(tool, _)| *tool == name.as_str()))
+            .filter(|name| {
+                !VERBINAL_FIRST
+                    .iter()
+                    .any(|(tool, _)| *tool == name.as_str())
+            })
             .collect();
         assert!(
             extra.is_empty(),
             "we advertise {} tool(s) CanfarDesktop 1.3.3 does not: {extra:?}. If the addition is \
-             deliberate, put it in VERBINAL_ONLY with the reason.",
+             deliberate, put it in VERBINAL_FIRST with the reason.",
             extra.len()
         );
 
         // And the allowance itself has to stay honest: an entry that the
         // reference has since gained is no longer a divergence, and leaving it
         // listed hides the next accidental one behind it.
-        let absorbed: Vec<&str> = VERBINAL_ONLY
+        let absorbed: Vec<&str> = VERBINAL_FIRST
             .iter()
             .map(|(tool, _)| *tool)
             .filter(|tool| theirs.contains(*tool))
@@ -290,7 +296,7 @@ mod tests {
             absorbed.is_empty(),
             "listed as Verbinal-only but the reference has them now: {absorbed:?}"
         );
-        let unadvertised: Vec<&str> = VERBINAL_ONLY
+        let unadvertised: Vec<&str> = VERBINAL_FIRST
             .iter()
             .map(|(tool, _)| *tool)
             .filter(|tool| !ours.contains(*tool))

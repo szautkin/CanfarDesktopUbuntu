@@ -29,6 +29,33 @@ cargo clippy --all-targets -- -D warnings
 - Follow existing code patterns and naming conventions
 - Keep changes focused — one feature or fix per PR
 
+## Parity with CanfarDesktop
+
+Verbinal is the native Linux clone of the Windows CanfarDesktop app, which is
+the reference for anything Verbinal is *missing*.
+
+**Parity is a floor, not a ceiling.**
+
+- **Something the reference has and we do not is a gap.** Port it faithfully —
+  same behaviour, same wire names, same messages — rather than reinventing it.
+  The reference has usually already met the failure you are about to meet: read
+  its version before designing yours.
+- **Something we need that the reference has not got is a feature, not a
+  violation.** Build it. A defect found here is worth fixing here, and waiting
+  for Windows to fix it first helps nobody.
+
+The MCP tool surface is guarded both ways by
+`aliases::advertised_names_match_the_reference`:
+
+- a tool the reference has and we do not must be on `NOT_YET_PORTED`, which
+  exists to shrink;
+- a tool we have and the reference does not must be on `VERBINAL_FIRST`, **with
+  the reason it exists here**.
+
+Neither list is a way to silence the guard. An accidental extra — a typo, a
+rename gone the wrong way — still fails, and both lists are themselves checked:
+an entry the reference later gains, or one we stop advertising, is reported.
+
 ## Pull Requests
 
 1. Ensure your code compiles without warnings (`cargo build`, `cargo clippy --all-targets`)
