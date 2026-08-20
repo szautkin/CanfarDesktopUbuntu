@@ -332,6 +332,13 @@ impl ToolRouter for McpToolRouter {
         manifest
     }
 
+    fn subscribe_manifest_changed(&self) -> Option<tokio::sync::broadcast::Receiver<()>> {
+        // The built-in descriptors are fixed at compile time; the only thing
+        // that moves is the user's AI Guide, which `external_manifest` reads
+        // live on every call.
+        Some(self.services.ai_guide.subscribe_tool_list_changed())
+    }
+
     fn dispatch<'a>(
         &'a self,
         name: &'a str,

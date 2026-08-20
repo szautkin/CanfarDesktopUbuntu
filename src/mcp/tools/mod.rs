@@ -387,6 +387,16 @@ pub trait ToolRouter: Send + Sync {
         args: Value,
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>>;
+
+    /// Fires when [`external_manifest`](Self::external_manifest) would return
+    /// something different, so the connection can tell its client to re-list.
+    ///
+    /// Defaulted to `None`: a router whose manifest is fixed for the life of
+    /// the process — every test router, and any future static one — says
+    /// nothing rather than being made to carry a channel it would never use.
+    fn subscribe_manifest_changed(&self) -> Option<tokio::sync::broadcast::Receiver<()>> {
+        None
+    }
 }
 
 #[cfg(test)]

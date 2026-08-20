@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tokio::sync::broadcast;
 
 /// Description cap — generous enough for a re-tuning paragraph, bounded so a
 /// pathological value can't bloat the wire manifest. Mirrors the Windows cap.
@@ -94,9 +95,27 @@ struct PersistState {
 /// Owns the AI Guide state (overrides + guide tools), guarded by a mutex and
 /// persisted to a JSON file. Synchronous throughout: the MCP serve loop reads a
 /// [`AiGuideSnapshot`], the UI edits.
+/// Queue depth per subscriber. The payload is "something changed", so a client
+/// that falls behind loses nothing by collapsing several into one re-list.
+const CHANGE_QUEUE: usize = 8;
+
 pub struct AiGuideService {
     state: Mutex<PersistState>,
     file_path: PathBuf,
+    /// Fires when the advertised tool list changes.
+    ///
+    /// Guide tools are read live on every `tools/list`, so adding or removing
+    /// one silently changes what a connected agent may call: names it cached at
+    /// connect time stop existing, and new ones stay invisible until it happens
+    /// to re-list. MCP has `notifications/tools/list_changed` for exactly this,
+    /// and the server could not send it because nothing told it anything had
+    /// happened.
+    ///
+    /// A broadcast rather than a callback list: senders never block on a slow
+    /// or vanished client, and a connection that missed an event while busy
+    /// gets a lagged marker — which for "go re-read the list" is the same
+    /// instruction anyway.
+    tool_list_changed: broadcast::Sender<()>,
 }
 
 impl AiGuideService {
@@ -110,6 +129,7 @@ impl AiGuideService {
         AiGuideService {
             state: Mutex::new(state),
             file_path,
+            tool_list_changed: broadcast::channel(CHANGE_QUEUE).0,
         }
     }
 
@@ -120,6 +140,7 @@ impl AiGuideService {
         AiGuideService {
             state: Mutex::new(state),
             file_path,
+            tool_list_changed: broadcast::channel(CHANGE_QUEUE).0,
         }
     }
 
@@ -286,6 +307,18 @@ impl AiGuideService {
     /// mirror remains the source of truth for the running session.
     fn persist_locked(&self, state: &PersistState) {
         let _ = write_atomic(&self.file_path, state);
+        // Every mutator funnels through here, so the signal cannot be forgotten
+        // by whoever adds the sixth one. `send` errs only when nobody is
+        // listening, which is the common case (no agent connected).
+        let _ = self.tool_list_changed.send(());
+    }
+
+    /// A receiver that fires whenever the advertised tool list changes.
+    ///
+    /// Public so the MCP connection loop can forward it to its client; nothing
+    /// in the UI needs it.
+    pub fn subscribe_tool_list_changed(&self) -> broadcast::Receiver<()> {
+        self.tool_list_changed.subscribe()
     }
 }
 

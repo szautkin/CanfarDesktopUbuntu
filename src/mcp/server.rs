@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::mcp::constants::{SERVER_NAME, SERVER_VERSION};
 use crate::mcp::framing;
@@ -90,6 +90,46 @@ where
         client_id: Mutex::new(String::from("unknown-client")),
     });
 
+    // Tell this client when the tool list changes underneath it. Guide tools
+    // are user-editable at any moment, so a name cached at connect time can
+    // stop existing mid-session — the client's next call fails as "unknown
+    // tool" with nothing to explain why.
+    //
+    // Held so it can be aborted when the connection ends; otherwise the task
+    // would outlive its writer and sit on a broadcast forever.
+    let notifier = router.subscribe_manifest_changed().map(|mut changed| {
+        let tx = tx.clone();
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            loop {
+                match changed.recv().await {
+                    Ok(()) => {}
+                    // Lagged: events were dropped while this connection was
+                    // busy. The payload is "re-read the list", so one
+                    // notification says everything several would have.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+                // Nothing before `initialize` — the client has not agreed a
+                // protocol version yet, and an unsolicited frame there is a
+                // spec violation rather than a helpful early warning.
+                if !state.initialized.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let frame = json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/tools/list_changed",
+                });
+                let Ok(bytes) = serde_json::to_vec(&frame) else {
+                    continue;
+                };
+                if tx.send(bytes).is_err() {
+                    break; // connection gone
+                }
+            }
+        })
+    });
+
     // Track in-flight handlers so we can drain them on a clean shutdown; prune
     // finished ones each iteration to bound the vector (mirrors the C# RemoveAll).
     let mut inflight: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -126,6 +166,14 @@ where
     // then drop our sender so the writer task observes the closed channel and exits.
     for h in inflight {
         let _ = h.await;
+    }
+    // The notifier holds a CLONE of `tx` and waits on a broadcast that outlives
+    // this connection, so dropping our own sender does not close the channel.
+    // Without this the writer task below never sees the channel close and
+    // `serve` never returns — the connection is not merely leaked, it never
+    // finishes ending.
+    if let Some(n) = notifier {
+        n.abort();
     }
     drop(tx);
     let _ = writer_task.await;
@@ -270,7 +318,10 @@ async fn handle_initialize(
         &req.id,
         json!({
             "protocolVersion": protocol,
-            "capabilities": { "tools": {} },
+            // `listChanged` is a promise, and it is kept below: the AI Guide's
+            // tools are read live, so this server's list genuinely does change
+            // while a client is connected.
+            "capabilities": { "tools": { "listChanged": true } },
             "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
         }),
     )
@@ -449,6 +500,217 @@ mod tests {
 
         // Drop BOTH client halves so the duplex fully closes and the server's read
         // side sees EOF; otherwise `serve` loops forever and the await below hangs.
+        drop(reader);
+        drop(wr);
+        server_task.await.unwrap();
+    }
+
+    /// A router whose tool list can be made to change, like the real one's.
+    struct ChangingRouter {
+        changed: broadcast::Sender<()>,
+    }
+
+    impl ToolRouter for ChangingRouter {
+        fn external_manifest(&self) -> Vec<crate::mcp::tools::ToolDescriptor> {
+            Vec::new()
+        }
+
+        fn dispatch<'a>(
+            &'a self,
+            _name: &'a str,
+            _args: Value,
+            _ctx: &'a ToolContext,
+        ) -> Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async { ToolResult::Failed("no tools".to_string()) })
+        }
+
+        fn subscribe_manifest_changed(&self) -> Option<broadcast::Receiver<()>> {
+            Some(self.changed.subscribe())
+        }
+    }
+
+    /// Wait until `serve` has subscribed its notifier.
+    ///
+    /// `send` on a broadcast with no receivers is an error, not a queued
+    /// message, so firing before the spawned connection task has run is a race
+    /// that fails the test rather than the code. Yielding until the subscriber
+    /// appears makes the ordering a fact instead of a hope.
+    async fn wait_for_subscriber(changed: &broadcast::Sender<()>) {
+        for _ in 0..1_000 {
+            if changed.receiver_count() > 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("serve never subscribed to manifest changes");
+    }
+
+    /// Drive a connection to the point where it has completed `initialize`.
+    async fn initialized_client<S>(
+        reader: &mut BufReader<tokio::io::ReadHalf<S>>,
+        wr: &mut tokio::io::WriteHalf<S>,
+    ) -> Value
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+    {
+        send(
+            wr,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "clientInfo": { "name": "test-client", "version": "0.1" }
+                }
+            }),
+        )
+        .await;
+        read_line(reader).await
+    }
+
+    #[tokio::test]
+    async fn the_server_promises_to_report_tool_list_changes() {
+        // A client has no reason to listen for the notification unless the
+        // server said it sends it, so the promise and the delivery are one
+        // feature. This half is the promise.
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (changed, _) = broadcast::channel(8);
+        let router: Arc<dyn ToolRouter> = Arc::new(ChangingRouter {
+            changed: changed.clone(),
+        });
+        let gate: Arc<dyn ApprovalGate> = Arc::new(AllowAllGate);
+        let server_task = tokio::spawn(async move {
+            let _ = serve(server, router, gate).await;
+        });
+
+        let (rd, mut wr) = tokio::io::split(client);
+        let mut reader = BufReader::new(rd);
+        let init = initialized_client(&mut reader, &mut wr).await;
+
+        assert_eq!(
+            init["result"]["capabilities"]["tools"]["listChanged"],
+            json!(true),
+            "the tool list does change; the capability has to say so"
+        );
+
+        drop(reader);
+        drop(wr);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_changed_tool_list_reaches_a_connected_client() {
+        // The AI Guide's tools are read live on every `tools/list`, so adding
+        // or removing one changes what this client may call. Without this frame
+        // the next call fails as "unknown tool" and nothing explains why.
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (changed, _) = broadcast::channel(8);
+        let router: Arc<dyn ToolRouter> = Arc::new(ChangingRouter {
+            changed: changed.clone(),
+        });
+        let gate: Arc<dyn ApprovalGate> = Arc::new(AllowAllGate);
+        let server_task = tokio::spawn(async move {
+            let _ = serve(server, router, gate).await;
+        });
+
+        let (rd, mut wr) = tokio::io::split(client);
+        let mut reader = BufReader::new(rd);
+        initialized_client(&mut reader, &mut wr).await;
+
+        // The user edits their AI Guide.
+        wait_for_subscriber(&changed).await;
+        changed.send(()).expect("a live subscriber");
+
+        // Bounded: a server that never sends it should FAIL here, not hang the
+        // suite until CI's own timeout kills it with no useful message.
+        let note = tokio::time::timeout(std::time::Duration::from_secs(5), read_line(&mut reader))
+            .await
+            .expect("no notifications/tools/list_changed arrived within 5s");
+        assert_eq!(note["method"], json!("notifications/tools/list_changed"));
+        assert!(
+            note.get("id").is_none(),
+            "a notification carries no id: {note}"
+        );
+
+        drop(reader);
+        drop(wr);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_notifier_does_not_outlive_its_connection() {
+        // It holds a clone of the connection's writer channel and waits on a
+        // broadcast owned by the app, so dropping the connection's own sender
+        // does not end it. One leaked task per connection, for as long as the
+        // app runs, and each one still holding a receiver slot.
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (changed, _) = broadcast::channel(8);
+        let router: Arc<dyn ToolRouter> = Arc::new(ChangingRouter {
+            changed: changed.clone(),
+        });
+        let gate: Arc<dyn ApprovalGate> = Arc::new(AllowAllGate);
+        let server_task = tokio::spawn(async move {
+            let _ = serve(server, router, gate).await;
+        });
+
+        let (rd, mut wr) = tokio::io::split(client);
+        let mut reader = BufReader::new(rd);
+        initialized_client(&mut reader, &mut wr).await;
+        wait_for_subscriber(&changed).await;
+        assert_eq!(changed.receiver_count(), 1, "the connection is subscribed");
+
+        drop(reader);
+        drop(wr);
+        // Bounded, because the failure mode here is a hang: the notifier's
+        // clone of the writer channel keeps it open, so `serve` waits on a
+        // writer task that will never see it close.
+        tokio::time::timeout(std::time::Duration::from_secs(5), server_task)
+            .await
+            .expect("serve never returned after the client hung up")
+            .unwrap();
+
+        // `serve` has returned. Nothing of this connection may still be
+        // listening.
+        for _ in 0..1_000 {
+            if changed.receiver_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("the notifier is still subscribed after its connection closed");
+    }
+
+    #[tokio::test]
+    async fn nothing_is_pushed_before_the_client_has_initialized() {
+        // An unsolicited frame before the protocol version is agreed is a spec
+        // violation, not an early warning.
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (changed, _) = broadcast::channel(8);
+        let router: Arc<dyn ToolRouter> = Arc::new(ChangingRouter {
+            changed: changed.clone(),
+        });
+        let gate: Arc<dyn ApprovalGate> = Arc::new(AllowAllGate);
+        let server_task = tokio::spawn(async move {
+            let _ = serve(server, router, gate).await;
+        });
+
+        let (rd, mut wr) = tokio::io::split(client);
+        let mut reader = BufReader::new(rd);
+
+        // Fire the change while the connection is still pre-initialize, and
+        // give the notifier a chance to act on it.
+        wait_for_subscriber(&changed).await;
+        changed.send(()).expect("a live subscriber");
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+
+        // The first frame the client ever sees must be its own initialize
+        // reply, not a notification that arrived before the handshake.
+        let first = initialized_client(&mut reader, &mut wr).await;
+        assert_eq!(first["id"], json!(1), "got an unsolicited frame: {first}");
+
         drop(reader);
         drop(wr);
         server_task.await.unwrap();
