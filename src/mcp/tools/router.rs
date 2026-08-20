@@ -33,6 +33,34 @@ pub struct McpToolRouter {
 }
 
 impl McpToolRouter {
+    /// Run an apply as a background job, on the runtime rather than in the
+    /// request.
+    ///
+    /// The registry is keyed by the proposal id, so the caller needs no second
+    /// identifier and the applier can report progress against the id it was
+    /// already given.
+    fn start_background_apply(&self, claimed: super::proposals::PendingProposal) {
+        self.services
+            .jobs
+            .start(&claimed.id, &claimed.kind, &claimed.summary);
+
+        let services = Arc::clone(&self.services);
+        let proposals = Arc::clone(&self.proposals);
+        tokio::spawn(async move {
+            let outcome = super::apply_any(&services, &claimed).await;
+            // Settle the proposal exactly as the synchronous path does, so the
+            // review UI and `list_proposals` do not leave it pending forever.
+            proposals.settle(
+                &claimed.id,
+                match outcome {
+                    Ok(_) => super::proposals::ProposalState::Applied,
+                    Err(_) => super::proposals::ProposalState::Rejected,
+                },
+            );
+            services.jobs.finish(&claimed.id, outcome);
+        });
+    }
+
     pub fn new(services: Arc<AppServices>, proposals: Arc<InMemoryProposalStore>) -> Self {
         McpToolRouter {
             services,
@@ -412,6 +440,25 @@ impl ToolRouter for McpToolRouter {
                             // so every artefact an agent created was recorded as the
                             // user's, and none of them ever showed the agent badge.
                             if let Some(claimed) = self.proposals.claim(&p.id) {
+                                // A slow apply does not get to hold the request
+                                // open. A 332 MB download did: the client timed
+                                // out at its own limit and the transfer carried
+                                // on unseen — no id, no progress, no error, and
+                                // the caller could not tell whether it was still
+                                // running. It now answers with the proposal id,
+                                // which `get_job_status` reports on.
+                                if claimed.long_running {
+                                    self.start_background_apply(claimed);
+                                    return ToolResult::Data(serde_json::json!({
+                                        "applied": false,
+                                        "started": true,
+                                        "jobId": p.id,
+                                        "proposalId": p.id,
+                                        "kind": p.kind,
+                                        "note": "Running in the background — poll get_job_status \
+                                                 with this jobId for progress and the result.",
+                                    }));
+                                }
                                 match super::apply_any(&self.services, &claimed).await {
                                     Ok(msg) => {
                                         self.proposals.settle(
@@ -504,6 +551,50 @@ impl ToolRouter for McpToolRouter {
 
 #[cfg(test)]
 mod tests {
+
+    /// A long apply must not be awaited inside the request.
+    ///
+    /// A 332 MB observation download was: the client timed out at its own
+    /// limit, the transfer carried on unseen, and the caller was left with no
+    /// id, no progress and no error — it could not even tell whether the thing
+    /// was still running.
+    #[test]
+    fn a_long_running_apply_is_started_not_awaited() {
+        const SOURCE: &str = include_str!("router.rs");
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+
+        let at = code
+            .find("if claimed.long_running")
+            .expect("the router no longer distinguishes a long apply from a quick one");
+        let branch = &code[at..(at + 600).min(code.len())];
+        assert!(
+            branch.contains("start_background_apply"),
+            "a long apply is being run inline again"
+        );
+        assert!(
+            branch.contains("\"jobId\""),
+            "the caller is not told how to ask about the work it started"
+        );
+
+        // And the spawner must settle the proposal, or `list_proposals` shows
+        // it pending forever after the work is done.
+        let spawn_at = code
+            .find("fn start_background_apply")
+            .expect("start_background_apply is gone");
+        let spawner = &code[spawn_at..(spawn_at + 900).min(code.len())];
+        assert!(
+            spawner.contains("tokio::spawn"),
+            "it still blocks the request"
+        );
+        assert!(
+            spawner.contains("proposals.settle"),
+            "the proposal is left pending"
+        );
+        assert!(
+            spawner.contains("jobs.finish"),
+            "the job never reaches a terminal state"
+        );
+    }
     use super::*;
 
     /// An agent's write is recorded as an agent's.

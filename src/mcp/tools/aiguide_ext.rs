@@ -782,6 +782,7 @@ mod tests {
             kind: "save_query".to_string(),
             summary: "not ours".to_string(),
             destructive: false,
+            long_running: false,
             payload: json!({}),
             state: crate::mcp::tools::proposals::ProposalState::Pending,
             origin: None,

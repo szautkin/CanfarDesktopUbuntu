@@ -36,6 +36,8 @@ pub struct AppServices {
     pub image_manifests: Arc<crate::services::manifest_store::JsonManifestStore>,
     /// The last finished batch jobs, kept after CANFAR has reaped them.
     pub job_history: Arc<crate::services::job_history_store::JobHistoryStore>,
+    /// Applies that run too long to hold a tool call open, and their progress.
+    pub jobs: Arc<crate::services::job_registry::JobRegistry>,
     /// Container-image probe orchestrator (schedules Skaha probe jobs).
     pub image_discovery:
         Arc<crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator>,
@@ -99,6 +101,7 @@ impl AppServices {
             mcp_clients: Arc::new(crate::mcp::client_approval::McpClientApprovalStore::load()),
             image_manifests: Arc::clone(&image_manifests),
             job_history: Arc::clone(&job_history),
+            jobs: Arc::new(crate::services::job_registry::JobRegistry::new()),
             image_discovery: Arc::new(
                 crate::services::image_discovery_coordinator::ImageDiscoveryCoordinator::new(
                     image_manifests,

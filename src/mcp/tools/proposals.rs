@@ -29,6 +29,13 @@ pub struct PendingProposal {
     pub summary: String,
     /// Whether applying this is destructive (destructive kinds NEVER auto-apply).
     pub destructive: bool,
+    /// Whether applying this takes longer than a tool call should be held open.
+    ///
+    /// The router runs these as background jobs and answers with the proposal
+    /// id instead of the result. Declared by the tool that creates the
+    /// proposal, because the tool is what knows: a 332 MB download and a
+    /// one-line note edit go through the same applier chain.
+    pub long_running: bool,
     /// Opaque payload consumed by the applier for `kind`.
     pub payload: Value,
     pub state: ProposalState,
@@ -106,6 +113,34 @@ impl InMemoryProposalStore {
         destructive: bool,
         payload: Value,
     ) -> PendingProposal {
+        self.enqueue_inner(kind, summary, destructive, false, payload)
+    }
+
+    /// Enqueue a proposal whose apply must NOT block the tool call — a large
+    /// transfer, an export. The router starts it as a background job and
+    /// answers with its id; `get_job_status` reports the rest.
+    ///
+    /// A separate method rather than a fifth boolean parameter: two adjacent
+    /// bools at a call site are a swap waiting to happen, and the name says
+    /// what the flag means without looking it up.
+    pub fn enqueue_background(
+        &self,
+        kind: &str,
+        summary: &str,
+        destructive: bool,
+        payload: Value,
+    ) -> PendingProposal {
+        self.enqueue_inner(kind, summary, destructive, true, payload)
+    }
+
+    fn enqueue_inner(
+        &self,
+        kind: &str,
+        summary: &str,
+        destructive: bool,
+        long_running: bool,
+        payload: Value,
+    ) -> PendingProposal {
         let mut g = self.inner.lock().unwrap();
         prune(&mut g);
         g.seq += 1;
@@ -117,6 +152,7 @@ impl InMemoryProposalStore {
             kind: kind.to_string(),
             summary: summary.to_string(),
             destructive,
+            long_running,
             payload,
             state: ProposalState::Pending,
             origin: None,

@@ -64,6 +64,9 @@ pub async fn download_observation(
     publisher_id: &str,
     artifact_index: Option<usize>,
     label: &str,
+    // `progress`: where to report bytes transferred, when someone is watching.
+    // `None` for the UI's own downloads, which have a progress strip already.
+    progress: Option<crate::services::transfer::ProgressSink>,
 ) -> Result<DownloadOutcome, String> {
     let publisher_id = publisher_id.trim();
     if publisher_id.is_empty() {
@@ -120,14 +123,17 @@ pub async fn download_observation(
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let dest = dir.join(&filename);
 
-    let file_size = crate::services::transfer::download_to_file(
+    let file_size = crate::services::transfer::download_with_progress(
         &url,
         token.as_deref(),
         &dest,
         &services.toast,
         label,
+        progress,
+        &crate::services::transfer::Cancel::never(),
     )
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Cache the preview alongside the data, best effort. The Research page shows
     // previews from disk and never touches the network, so skipping this leaves
@@ -209,9 +215,16 @@ pub async fn download_and_register(
     publisher_id: &str,
     artifact_index: Option<usize>,
     attribution: Option<crate::helpers::agent_attribution::AgentAttribution>,
+    progress: Option<crate::services::transfer::ProgressSink>,
 ) -> Result<String, String> {
-    let outcome =
-        download_observation(services, publisher_id, artifact_index, publisher_id).await?;
+    let outcome = download_observation(
+        services,
+        publisher_id,
+        artifact_index,
+        publisher_id,
+        progress,
+    )
+    .await?;
 
     let id = crate::helpers::caom2_uri::uuid_from_publisher_id(publisher_id);
     let existing = services.observation_store.load();

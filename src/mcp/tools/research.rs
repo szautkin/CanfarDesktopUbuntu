@@ -493,7 +493,7 @@ fn propose_download(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> Too
     };
     // Non-destructive: it ADDS to the library, so the auto-apply policy may run
     // it when the user has enabled autonomy.
-    let p = proposals.enqueue("download_observation", &summary, false, payload);
+    let p = proposals.enqueue_background("download_observation", &summary, false, payload);
     ToolResult::Proposed(p)
 }
 
@@ -524,7 +524,7 @@ fn propose_download_bulk(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
         items.len(),
         if items.len() == 1 { "" } else { "s" }
     );
-    let p = proposals.enqueue(
+    let p = proposals.enqueue_background(
         "download_observations_bulk",
         &summary,
         false,
@@ -541,8 +541,17 @@ async fn apply_download(
     let pid = str_arg(payload, "publisherId");
     let index = opt_u64(payload, "artifactIndex").map(|n| n as usize);
     let attribution = AgentAttribution::for_applied_proposal(proposal);
-    crate::services::observation_download::download_and_register(services, &pid, index, attribution)
-        .await
+    // Report bytes against the proposal id — the same id the caller was handed
+    // as its jobId, so it can watch a large transfer instead of waiting blind.
+    let progress = Some(services.jobs.sink(&proposal.id));
+    crate::services::observation_download::download_and_register(
+        services,
+        &pid,
+        index,
+        attribution,
+        progress,
+    )
+    .await
 }
 
 async fn apply_download_bulk(
@@ -566,6 +575,9 @@ async fn apply_download_bulk(
             &pid,
             index,
             attribution.clone(),
+            // Bulk reports per item; the registry shows the current one's
+            // bytes, which is the honest answer while a queue is draining.
+            Some(services.jobs.sink(&proposal.id)),
         )
         .await
         {
@@ -685,7 +697,7 @@ fn propose_export(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolR
     } else {
         format!("Export research bundle{with_files} to {path}")
     };
-    let p = proposals.enqueue("export_research_bundle", &summary, false, payload);
+    let p = proposals.enqueue_background("export_research_bundle", &summary, false, payload);
     ToolResult::Proposed(p)
 }
 

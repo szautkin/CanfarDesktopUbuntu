@@ -227,6 +227,22 @@ mod tests {
     /// This list is a **ratchet, and may only ever shrink**. Delete an entry the
     /// moment its tool lands; `advertised_names_match_the_reference` fails if a
     /// name here is actually implemented, so a stale entry cannot linger.
+    /// Tools Verbinal advertises that CanfarDesktop 1.3.3 does not, each with the
+    /// reason it exists here.
+    ///
+    /// The parity guard treats an extra tool as a bug — a rename gone the wrong
+    /// way, or something that ought to be ported upstream. This list is for the
+    /// third case its own comment names: a tool the reference has not got yet.
+    /// Deliberate divergence stays visible instead of the guard being loosened,
+    /// and an entry the reference later gains is itself reported.
+    const VERBINAL_ONLY: &[(&str, &str)] = &[(
+        "get_job_status",
+        "The reference applies a download inside the tool call, so a 332 MB \
+     observation times the client out and the transfer vanishes with no id, no \
+     progress and no error. Long applies here run as background jobs, which \
+     only helps if the caller can ask about them.",
+    )];
+
     const NOT_YET_PORTED: &[&str] = &[];
 
     /// **The wire contract.** Everything CanfarDesktop 1.3.3 advertises, we must
@@ -251,11 +267,37 @@ mod tests {
         let pending: std::collections::BTreeSet<String> =
             NOT_YET_PORTED.iter().map(|s| s.to_string()).collect();
 
-        let extra: Vec<&String> = ours.difference(&theirs).collect();
+        let extra: Vec<&String> = ours
+            .difference(&theirs)
+            .filter(|name| !VERBINAL_ONLY.iter().any(|(tool, _)| *tool == name.as_str()))
+            .collect();
         assert!(
             extra.is_empty(),
-            "we advertise {} tool(s) CanfarDesktop 1.3.3 does not: {extra:?}",
+            "we advertise {} tool(s) CanfarDesktop 1.3.3 does not: {extra:?}. If the addition is \
+             deliberate, put it in VERBINAL_ONLY with the reason.",
             extra.len()
+        );
+
+        // And the allowance itself has to stay honest: an entry that the
+        // reference has since gained is no longer a divergence, and leaving it
+        // listed hides the next accidental one behind it.
+        let absorbed: Vec<&str> = VERBINAL_ONLY
+            .iter()
+            .map(|(tool, _)| *tool)
+            .filter(|tool| theirs.contains(*tool))
+            .collect();
+        assert!(
+            absorbed.is_empty(),
+            "listed as Verbinal-only but the reference has them now: {absorbed:?}"
+        );
+        let unadvertised: Vec<&str> = VERBINAL_ONLY
+            .iter()
+            .map(|(tool, _)| *tool)
+            .filter(|tool| !ours.contains(*tool))
+            .collect();
+        assert!(
+            unadvertised.is_empty(),
+            "listed as Verbinal-only but we do not advertise them: {unadvertised:?}"
         );
 
         let missing: std::collections::BTreeSet<String> =

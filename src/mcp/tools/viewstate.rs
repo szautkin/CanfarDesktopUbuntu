@@ -156,6 +156,26 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "get_job_status".into(),
+            description: "Report a background job started by a long-running tool call — a large \
+                          download, an export. Pass the `jobId` that call returned. Answers \
+                          `status` (running / succeeded / failed), bytes transferred so far when \
+                          the transfer reports them, and the result or error once it ends. Omit \
+                          `jobId` to list every job still remembered, newest first."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "jobId": { "type":"string", "description":
+                        "The jobId from the tool call that started the work. Same value as its \
+                         proposalId." }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "open_fits_file".into(),
             description: "Open a FITS file in the 2D viewer and switch the app to it — by local \
                           file path, or by the id or publisher id of a DOWNLOADED observation \
@@ -221,6 +241,28 @@ pub async fn dispatch(
             let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("");
             let ok = view_state::navigate_to(view).await;
             Some(ToolResult::Data(json!({ "navigated": ok, "view": view })))
+        }
+        "get_job_status" => {
+            let id = args
+                .get("jobId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if id.is_empty() {
+                return Some(ToolResult::Data(json!({ "jobs": services.jobs.recent() })));
+            }
+            match services.jobs.get(&id) {
+                Some(job) => Some(ToolResult::Data(
+                    serde_json::to_value(job).unwrap_or(Value::Null),
+                )),
+                // A job the registry no longer holds is not the same as one
+                // that failed, and saying so saves a caller from waiting on it.
+                None => Some(ToolResult::Failed(format!(
+                    "no job '{id}' — it may have finished long enough ago to be forgotten, or \
+                     never started"
+                ))),
+            }
         }
         "open_fits_file" => {
             // Either spelling; the UI works out which it was given.
