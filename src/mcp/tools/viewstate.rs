@@ -29,6 +29,23 @@ fn current_view_payload(
 ) -> Value {
     use std::sync::atomic::Ordering;
 
+    // `None` when run_code is usable; otherwise why not, in the words the
+
+    // tool itself would have answered with.
+
+    let ai_compute_ready: Option<String> = {
+        let settings = crate::services::ai_compute_service::AIComputeService::new();
+
+        if settings.settings().is_enabled() {
+            None
+        } else {
+            Some(
+                "No AI compute image configured. Set one in Settings \u{25b8} AI compute."
+                    .to_string(),
+            )
+        }
+    };
+
     let pending = proposals.pending_count();
     let budget = services.proposal_budget;
     json!({
@@ -43,6 +60,15 @@ fn current_view_payload(
         "agentsEnabled": crate::services::mcp_settings_service::McpSettingsService::new()
             .server_enabled(),
         "autoApplyEnabled": services.mcp_auto_apply.load(Ordering::Relaxed),
+        // Whether run_code can work, BEFORE it is called.
+        //
+        // It needs a compute image set in Settings ▸ AI compute, and said so
+        // only when called — so an agent planning a session had no way to know
+        // that half its plan was unavailable until it got there.
+        "aiCompute": {
+            "ready": ai_compute_ready.is_none(),
+            "reason": ai_compute_ready,
+        },
         "followAgentActivityEnabled": services.mcp_follow_activity.load(Ordering::Relaxed),
         "pendingProposalsCount": pending,
         "proposalBudget": { "cap": budget.cap(), "remaining": budget.remaining(pending) },

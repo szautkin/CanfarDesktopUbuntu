@@ -75,6 +75,37 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             VerbClass::Read,
         ),
         desc(
+            "check_notebook_dependencies",
+            "List the third-party modules a notebook imports and which of them the kernel's Python \
+             cannot import. Read-only — it installs nothing. Returns the interpreter it asked, every \
+             import found, and for each missing one its module name and the pip package that \
+             provides it (they differ: cv2 is opencv-python). Use before running a notebook whose \
+             imports you have not seen succeed.",
+            sel.clone(),
+            VerbClass::Read,
+        ),
+        desc(
+            "install_notebook_dependencies",
+            "Install packages into the kernel's Python with pip. Queues for the user's approval — it \
+             changes their machine. Answers `installed`, and on failure pip's own error plus \
+             `externallyManaged`: true when the interpreter is one the distribution manages (PEP \
+             668), where a plain install cannot work. Retrying with allowSystemPythonOverride uses \
+             --break-system-packages, which can leave the system Python inconsistent with its \
+             package manager — ask the user before setting it.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "packages": { "type": "array", "items": { "type": "string" },
+                        "description": "pip package names, as check_notebook_dependencies reports them." },
+                    "allowSystemPythonOverride": { "type": "boolean",
+                        "description": "Use --break-system-packages. Only after externallyManaged came back true, and only with the user's agreement." }
+                },
+                "required": ["packages"],
+                "additionalProperties": false
+            }),
+            VerbClass::Write,
+        ),
+        desc(
             "get_kernel_state",
             "Read a notebook's kernel status (dead / starting / idle / busy / error) + kernel name. \
              Lighter than get_notebook for polling while a cell runs.",

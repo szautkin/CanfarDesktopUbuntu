@@ -433,6 +433,23 @@ prend en compte à son prochain démarrage."),
     ("Apply filters and re-render",                 "Appliquer les filtres et réafficher"),
     ("Apply filters to ADQL",                       "Appliquer les filtres à l’ADQL"),
     ("Clear filters",                               "Effacer les filtres"),
+    // Notebook dependency install, including the PEP 668 refusal.
+    ("Install failed: {}",                          "Échec de l’installation : {}"),
+    (
+        "This Python is managed by your system",
+        "Ce Python est géré par votre système",
+    ),
+    ("Install anyway",                              "Installer quand même"),
+    (
+        "Its packages come from your distribution, so pip will not add {} on its own \
+         (PEP 668).\n\nInstalling anyway uses --break-system-packages, which can leave \
+         your system Python inconsistent with its package manager. A virtual environment, \
+         selected in Notebook settings, avoids the choice.",
+        "Ses paquets proviennent de votre distribution : pip n’ajoutera donc pas {} de \
+         lui-même (PEP 668).\n\nInstaller quand même utilise --break-system-packages, ce \
+         qui peut rendre votre Python système incohérent avec son gestionnaire de paquets. \
+         Un environnement virtuel, choisi dans les réglages du carnet, évite ce choix.",
+    ),
     // Batch job history.
     ("Succeeded",                                   "Réussi"),
     ("Batch job",                                   "Tâche par lots"),

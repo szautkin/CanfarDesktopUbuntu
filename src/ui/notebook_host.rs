@@ -643,6 +643,91 @@ impl NotebookTabHost {
                 }))
             }
 
+            // The scan the UI runs on open, as a tool. Same helper, same
+            // interpreter, same answers — a second implementation would be a
+            // second set of module→package mappings to keep in step.
+            "check_dependencies" => {
+                use crate::helpers::dependency_scanner as deps;
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let doc = page.snapshot_document();
+                let python = self.kernel_python();
+                let imports = notebook_parser::extract_imports(&doc.cells);
+                if imports.is_empty() {
+                    return Ok(serde_json::json!({
+                        "python": python.display().to_string(),
+                        "imports": [], "missing": [],
+                    }));
+                }
+
+                let script = deps::probe_script(&imports);
+                let py = python.clone();
+                let probe = self
+                    .services
+                    .spawn(async move {
+                        tokio::process::Command::new(&py)
+                            .arg("-c")
+                            .arg(script)
+                            .output()
+                            .await
+                            .ok()
+                    })
+                    .await;
+                let Some(out) = probe else {
+                    return Err(format!("could not run {}", python.display()));
+                };
+                let missing = deps::missing_from_probe(&String::from_utf8_lossy(&out.stdout));
+                Ok(serde_json::json!({
+                    "python": python.display().to_string(),
+                    "imports": imports,
+                    "missing": missing
+                        .iter()
+                        .map(|m| serde_json::json!({ "module": m, "pipName": deps::pip_name(m) }))
+                        .collect::<Vec<_>>(),
+                }))
+            }
+
+            "install_dependencies" => {
+                use crate::helpers::dependency_scanner as deps;
+                let packages: Vec<String> = crate::mcp::tools::arg(args, "packages")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if packages.is_empty() {
+                    return Err("packages is required".to_string());
+                }
+                // The override is asked for, never inferred. An agent that has
+                // read `externallyManaged` from a previous attempt can set it;
+                // nothing sets it on the agent's behalf, because the flag risks
+                // a machine the agent does not own.
+                let scope = if crate::mcp::tools::arg(args, "allowSystemPythonOverride")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    deps::InstallScope::OverrideSystemPython
+                } else {
+                    deps::InstallScope::User
+                };
+                let python = self.kernel_python();
+                match self.run_pip(&python, &packages, scope).await {
+                    Ok(()) => Ok(serde_json::json!({
+                        "installed": true, "packages": packages,
+                        "python": python.display().to_string(),
+                    })),
+                    Err(stderr) => Ok(serde_json::json!({
+                        "installed": false,
+                        "packages": packages,
+                        "python": python.display().to_string(),
+                        "externallyManaged": deps::externally_managed(&stderr),
+                        "error": first_error_line(&stderr),
+                    })),
+                }
+            }
+
             "get_kernel_state" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 let label = page.current_kernel_status_label();
@@ -1092,25 +1177,99 @@ impl NotebookTabHost {
                     "Nb_InstallingPkgs",
                     &[&missing.len().to_string()],
                 )));
-            let args = deps::install_args(&missing);
-            let installed = host
-                .services
-                .spawn(async move {
-                    tokio::process::Command::new(&python)
-                        .args(&args)
-                        .output()
-                        .await
-                        .map(|o| o.status.success())
-                        .unwrap_or(false)
-                })
+            // Try the user's own site first, and if the interpreter is one the
+            // distribution manages, say so and offer the way past it.
+            //
+            // pip's stderr used to be thrown away — `.map(|o| o.status.success())`
+            // — so every failure read "Install failed — see the kernel log",
+            // and there is no kernel log for an install. On Ubuntu that hid the
+            // only thing worth knowing: the system Python is externally managed
+            // (PEP 668) and `--user` cannot work, whatever the package.
+            let outcome = host
+                .run_pip(&python, &missing, deps::InstallScope::User)
                 .await;
+            let outcome = match outcome {
+                Err(stderr) if deps::externally_managed(&stderr) => {
+                    if host.confirm_override_system_python(&missing).await {
+                        host.run_pip(&python, &missing, deps::InstallScope::OverrideSystemPython)
+                            .await
+                    } else {
+                        return;
+                    }
+                }
+                other => other,
+            };
 
-            host.toast_overlay.add_toast(adw::Toast::new(if installed {
-                crate::i18n::tr("Nb_DepsAllInstalled")
-            } else {
-                crate::tr_en!("Install failed — see the kernel log")
-            }));
+            host.toast_overlay
+                .add_toast(adw::Toast::new(&match outcome {
+                    Ok(()) => crate::i18n::tr("Nb_DepsAllInstalled").to_string(),
+                    // pip's own last line, which names the package or the reason.
+                    Err(stderr) => crate::tr_fmt!("Install failed: {}", first_error_line(&stderr)),
+                }));
         });
+    }
+
+    /// The interpreter the kernel runs, as the host resolved it at start-up.
+    ///
+    /// One accessor rather than each caller re-running discovery: a scan that
+    /// probed a different Python from the one executing the cells would report
+    /// packages that are missing somewhere nobody is looking.
+    fn kernel_python(self: &Rc<Self>) -> PathBuf {
+        self.python_path
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"))
+    }
+
+    /// Run pip and return its stderr on failure.
+    ///
+    /// One place that shells out to pip, so the UI flow and the retry cannot
+    /// drift in how they invoke it or how they read what came back.
+    async fn run_pip(
+        self: &Rc<Self>,
+        python: &std::path::Path,
+        packages: &[String],
+        scope: crate::helpers::dependency_scanner::InstallScope,
+    ) -> Result<(), String> {
+        let args = crate::helpers::dependency_scanner::install_args(packages, scope);
+        let python = python.to_path_buf();
+        self.services
+            .spawn(async move {
+                match tokio::process::Command::new(&python)
+                    .args(&args)
+                    .output()
+                    .await
+                {
+                    Ok(out) if out.status.success() => Ok(()),
+                    Ok(out) => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
+                    Err(e) => Err(e.to_string()),
+                }
+            })
+            .await
+    }
+
+    /// Ask before writing into a Python the distribution manages.
+    ///
+    /// Never implied by pressing Install: `--break-system-packages` is named
+    /// for what it risks, and the risk is to a machine we do not own.
+    async fn confirm_override_system_python(self: &Rc<Self>, packages: &[String]) -> bool {
+        let dialog = adw::MessageDialog::new(
+            self.widget.root().and_downcast_ref::<gtk::Window>(),
+            Some(crate::tr_en!("This Python is managed by your system")),
+            Some(&crate::tr_fmt!(
+                "Its packages come from your distribution, so pip will not add {} on its own \
+                 (PEP 668).\n\nInstalling anyway uses --break-system-packages, which can leave \
+                 your system Python inconsistent with its package manager. A virtual environment, \
+                 selected in Notebook settings, avoids the choice.",
+                packages.join(", ")
+            )),
+        );
+        dialog.add_response("cancel", crate::tr_en!("Cancel"));
+        dialog.add_response("override", crate::tr_en!("Install anyway"));
+        dialog.set_response_appearance("override", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        dialog.choose_future().await == "override"
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -2143,6 +2302,17 @@ fn build_empty_state() -> gtk::Box {
     page.append(&list_box);
 
     page
+}
+
+/// pip's first line that looks like the reason, for a one-line toast.
+fn first_error_line(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("ERROR:") || l.starts_with("error:"))
+        .or_else(|| stderr.lines().map(str::trim).find(|l| !l.is_empty()))
+        .unwrap_or("pip gave no reason")
+        .to_string()
 }
 
 #[cfg(test)]

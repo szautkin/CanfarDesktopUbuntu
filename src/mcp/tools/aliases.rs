@@ -235,7 +235,20 @@ mod tests {
     /// third case its own comment names: a tool the reference has not got yet.
     /// Deliberate divergence stays visible instead of the guard being loosened,
     /// and an entry the reference later gains is itself reported.
-    const VERBINAL_FIRST: &[(&str, &str)] = &[(
+    const VERBINAL_FIRST: &[(&str, &str)] = &[
+    (
+        "check_notebook_dependencies",
+        "The reference has the scanner (Helpers/Notebook/DependencyScanner.cs) but only behind its \
+         notebook UI. An agent asked to run a notebook could not find out what it would need \
+         until an import failed mid-cell.",
+    ),
+    (
+        "install_notebook_dependencies",
+        "The other half of the same gap, and it needs Linux behaviour the reference has no reason \
+         to have: pip refuses to write into a distribution-managed Python (PEP 668), so the tool \
+         reports `externallyManaged` and takes an explicit override rather than failing opaquely.",
+    ),
+    (
         "get_job_status",
         "The reference applies a download inside the tool call, so a 332 MB \
      observation times the client out and the transfer vanishes with no id, no \

@@ -73,25 +73,101 @@ pub fn missing_from_probe(output: &str) -> Vec<String> {
         .collect()
 }
 
+/// Where an install is allowed to write.
+///
+/// Debian and Ubuntu mark the system Python as externally managed (PEP 668) and
+/// pip refuses to write into it, because pip and apt would be fighting over the
+/// same files. The reference never meets this — Windows Python is not
+/// externally managed — so it simply runs `pip install`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallScope {
+    /// `--user`: the default, and enough for any Python the distribution does
+    /// not manage.
+    User,
+    /// `--break-system-packages`: writes into a Python the distribution owns.
+    ///
+    /// Never the default and never automatic. The flag is named as a warning,
+    /// and the consequences land on a machine we do not own — so it is offered
+    /// only after [`externally_managed`] has established that `--user` cannot
+    /// work, and only when someone asks for it in as many words.
+    OverrideSystemPython,
+}
+
+impl InstallScope {
+    fn flag(self) -> &'static str {
+        match self {
+            Self::User => "--user",
+            Self::OverrideSystemPython => "--break-system-packages",
+        }
+    }
+}
+
 /// The argv that installs `packages` with the interpreter's own pip.
 ///
 /// `python -m pip`, not a bare `pip`: a machine with several interpreters has
 /// several pips, and the one on `PATH` is regularly not the one running the
-/// kernel. `--user` keeps it out of a system directory the user may not own.
-pub fn install_args(packages: &[String]) -> Vec<String> {
+/// kernel.
+pub fn install_args(packages: &[String], scope: InstallScope) -> Vec<String> {
     let mut args = vec![
         "-m".to_string(),
         "pip".to_string(),
         "install".to_string(),
-        "--user".to_string(),
+        scope.flag().to_string(),
     ];
     args.extend(packages.iter().cloned());
     args
 }
 
+/// Whether pip refused because the interpreter is externally managed.
+///
+/// Read from pip's own words rather than probed beforehand: the marker file
+/// PEP 668 describes lives in a directory that varies by distribution and
+/// build, and pip already knows the answer. Getting this wrong in the safe
+/// direction costs a generic error message; getting it wrong the other way
+/// would offer to override something that was never in the way.
+pub fn externally_managed(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("externally-managed-environment") || lower.contains("externally managed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_install_targets_the_users_own_site_by_default() {
+        let args = install_args(&["numpy".into()], InstallScope::User);
+        assert_eq!(args, ["-m", "pip", "install", "--user", "numpy"]);
+    }
+
+    #[test]
+    fn the_override_is_a_different_flag_and_a_deliberate_one() {
+        // On Ubuntu the system Python is externally managed and `--user` fails
+        // by design. The way past it is named for what it does, and it is never
+        // what a plain install picks.
+        let args = install_args(&["numpy".into()], InstallScope::OverrideSystemPython);
+        assert!(args.contains(&"--break-system-packages".to_string()));
+        assert!(!args.contains(&"--user".to_string()));
+    }
+
+    #[test]
+    fn pips_refusal_is_recognised_from_its_own_words() {
+        assert!(externally_managed(
+            "error: externally-managed-environment\n\n\u{d7} This environment is externally managed"
+        ));
+        assert!(externally_managed("This environment is externally managed"));
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_not_mistaken_for_it() {
+        // Offering to override the system Python because a package name was
+        // wrong would be worse than the original failure.
+        assert!(!externally_managed(
+            "ERROR: Could not find a version that satisfies the requirement nosuchpkg"
+        ));
+        assert!(!externally_managed("ERROR: Network is unreachable"));
+        assert!(!externally_managed(""));
+    }
 
     #[test]
     fn a_module_that_installs_under_another_name_gets_that_name() {
@@ -146,7 +222,7 @@ mod tests {
 
     #[test]
     fn install_runs_the_interpreters_own_pip() {
-        let args = install_args(&["astropy".into(), "Pillow".into()]);
+        let args = install_args(&["astropy".into(), "Pillow".into()], InstallScope::User);
         assert_eq!(
             args,
             ["-m", "pip", "install", "--user", "astropy", "Pillow"]
