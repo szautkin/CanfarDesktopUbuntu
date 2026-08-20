@@ -18,7 +18,9 @@
 //! terminal-state detection, job-name/auth-header munging) are unit-tested; the
 //! headless round-trip itself needs a live Skaha and is exercised in the app.
 
-use crate::helpers::embedded_probe_scripts::{inspector_script, probe_script};
+use crate::helpers::embedded_probe_scripts::{
+    inspector_script, inspector_script_name, probe_script, probe_script_name, HOME_SUBDIR,
+};
 use crate::helpers::job_diagnostics::{tail, MAX_REASON_CHARS};
 use crate::helpers::manifest_parser::parse_manifest;
 use crate::models::image_manifest::{DiscoveryOutcome, ImageManifest};
@@ -66,6 +68,10 @@ pub struct ImageDiscoveryCoordinator {
     settings: Mutex<ImageDiscoverySettingsService>,
     /// Image ids with a probe currently in flight (coalescing gate).
     in_flight: Mutex<HashSet<String>>,
+    /// Script filenames already uploaded this run (mirrors the reference's
+    /// `_probeUploaded` / `_inspectorUploaded` flags). The name is a hash of
+    /// the body, so this is a cache, never a staleness risk.
+    uploaded: Mutex<HashSet<String>>,
     /// Backoff schedule for Skaha's informer-cache "job not visible yet" race.
     race_backoffs: Vec<Duration>,
     /// Delay between steady-state poll iterations.
@@ -84,6 +90,7 @@ impl ImageDiscoveryCoordinator {
             history,
             settings: Mutex::new(ImageDiscoverySettingsService::new()),
             in_flight: Mutex::new(HashSet::new()),
+            uploaded: Mutex::new(HashSet::new()),
             race_backoffs: vec![
                 Duration::from_secs(3),
                 Duration::from_secs(7),
@@ -212,12 +219,31 @@ impl ImageDiscoveryCoordinator {
             );
         }
 
-        // Pass the script inline via `bash -c`, exporting the id env var the
-        // script keys off of so we never depend on Skaha's env-field handling.
-        let inline = format!(
-            "export {env_name}={}\n{script_body}",
-            shell_single_quote(image_id)
-        );
+        // Upload the script and launch `bash <path>`.
+        //
+        // This used to pass the script INLINE as `bash -c <body>`, to skip the
+        // upload. Skaha reads a single `args` value, so of the two form fields
+        // we sent only `-c` arrived, and every probe died with
+        // "/bin/bash: -c: option requires an argument". There is no inline form
+        // that survives: one `args` value holding the whole script would be
+        // split on whitespace at the far end. The reference uploads and passes
+        // a path — one argument, no spaces in it — which is why the script
+        // names have been content-hashed all along.
+        let script_path = match self
+            .ensure_uploaded(services, &token, strategy, script_body)
+            .await
+        {
+            Ok(path) => path,
+            Err(msg) => {
+                return self.fail(
+                    image_id,
+                    category::JOB_SUBMIT_FAILED,
+                    &format!("Probe submit failed: could not stage the probe script — {msg}"),
+                    None,
+                );
+            }
+        };
+
         let prefix = if strategy == ProbeStrategy::InTarget {
             "vp"
         } else {
@@ -230,11 +256,12 @@ impl ImageDiscoveryCoordinator {
             cores: 1,
             ram: 1,
             gpus: 0,
-            cmd: Some("/bin/bash".to_string()),
-            env: None,
+            cmd: Some("bash".to_string()),
+            // The id the script keys off of, as the reference passes it.
+            env: Some(format!("{env_name}={image_id}")),
             registry_username,
             registry_secret,
-            args: Some(vec!["-c".to_string(), inline]),
+            args: Some(vec![script_path]),
             replicas: Some(1),
         };
 
@@ -435,6 +462,72 @@ impl ImageDiscoveryCoordinator {
             }
         }
         Err("Probe timed out".to_string())
+    }
+
+    /// Put the script in the user's home and return its absolute path.
+    ///
+    /// Uploaded once per script per app run — the name is a hash of the body,
+    /// so a copy already sitting there from a previous run is the same copy,
+    /// and editing the script produces a different name rather than a stale
+    /// one being reused.
+    async fn ensure_uploaded(
+        &self,
+        services: &AppServices,
+        token: &str,
+        strategy: ProbeStrategy,
+        body: &str,
+    ) -> Result<String, String> {
+        let username = services
+            .auth
+            .get_user_info(token)
+            .await
+            .map_err(|e| format!("could not resolve the CANFAR username: {e}"))?
+            .username
+            .filter(|name| !name.trim().is_empty())
+            // Every VOSpace path is /arc/home/{username}/…; an empty username
+            // collapses it to a directory that is not the user's.
+            .ok_or("the CANFAR username is empty")?;
+
+        let file_name = match strategy {
+            ProbeStrategy::InTarget => probe_script_name(),
+            ProbeStrategy::Inspector => inspector_script_name(),
+        };
+        let relative = format!("{HOME_SUBDIR}/{file_name}");
+        let absolute = format!("/arc/home/{username}/{relative}");
+
+        if self
+            .uploaded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&file_name)
+        {
+            return Ok(absolute);
+        }
+
+        // The directory may not exist yet; a failure here is not fatal on its
+        // own, because the usual cause is that it already does.
+        let _ = services
+            .vospace
+            .create_folder(token, &username, HOME_SUBDIR)
+            .await;
+
+        services
+            .vospace
+            .upload_file(
+                token,
+                &username,
+                &relative,
+                body.as_bytes().to_vec(),
+                "text/x-shellscript",
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        self.uploaded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(file_name);
+        Ok(absolute)
     }
 
     /// A failed job's own account of itself: our diagnosis, then its evidence.
@@ -639,21 +732,6 @@ fn decode_auth_header(header: &str) -> Option<(String, String)> {
     let text = String::from_utf8(decoded).ok()?;
     let (user, secret) = text.split_once(':')?;
     Some((user.to_string(), secret.to_string()))
-}
-
-/// Single-quote a value for safe interpolation into a POSIX shell command.
-fn shell_single_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(c);
-        }
-    }
-    out.push('\'');
-    out
 }
 
 /// Extract the manifest JSON object the probe printed to its stdout logs. Scans
@@ -891,15 +969,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_single_quote_escapes_embedded_quotes() {
-        assert_eq!(
-            shell_single_quote("images.canfar.net/x:1"),
-            "'images.canfar.net/x:1'"
-        );
-        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
-    }
-
-    #[test]
     fn extract_manifest_json_from_probe_logs() {
         let logs = "some setup noise\n\
             checking python...\n\
@@ -1134,6 +1203,47 @@ mod failure_reporting_guards {
             outcomes + 1,
             "{outcomes} failure paths and {remembered} history writes — every \
              failure after launch needs one, plus one for the success at the end"
+        );
+    }
+
+    #[test]
+    fn the_probe_is_launched_by_path_not_inline() {
+        // Skaha reads a single `args` value, so `bash -c <script>` arrives as
+        // `bash -c` and dies with "option requires an argument". There is no
+        // inline form that survives — one value holding the whole script would
+        // be split on whitespace at the far end. The reference uploads the
+        // script and passes its path, which is one argument with no spaces in
+        // it, and is why the script names have been content-hashed all along.
+        let body = run_discovery(SOURCE);
+        assert!(
+            body.contains("ensure_uploaded("),
+            "the probe script is no longer staged before launch"
+        );
+        assert!(
+            !body.contains(r#""-c""#),
+            "the probe is being passed inline again"
+        );
+        assert!(
+            body.contains("env: Some(format!(\"{env_name}={image_id}\"))"),
+            "the script's image id is no longer passed through the environment"
+        );
+    }
+
+    #[test]
+    fn a_staged_script_is_uploaded_once_per_body() {
+        // The filename is a hash of the body, so a copy already in the user's
+        // home is the same copy — re-uploading it on every inspection is a
+        // round trip per image for no gain, and editing the script produces a
+        // different name rather than a stale one being reused.
+        let code = SOURCE;
+        let at = code
+            .find("async fn ensure_uploaded")
+            .expect("ensure_uploaded is gone");
+        let body = &code[at..(at + 2500).min(code.len())];
+        assert!(body.contains("self.uploaded"), "the upload is never cached");
+        assert!(
+            body.contains("probe_script_name()") && body.contains("inspector_script_name()"),
+            "the staged name is no longer content-hashed"
         );
     }
 

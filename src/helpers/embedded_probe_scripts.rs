@@ -5,11 +5,9 @@
 //! filenames are content-hashed (`probe-<12hex>.sh`) so editing a script
 //! automatically busts the previously-uploaded copy.
 
-#[cfg(test)]
 use sha2::{Digest, Sha256};
 
-#[cfg(test)]
-/// Home-relative subdirectory the probe writes manifests into (`~/.verbinal`).
+/// Home-relative subdirectory the scripts are uploaded to (`~/.verbinal`).
 ///
 /// Mirrors `EmbeddedProbeScripts.HomeSubdirectory` and the `.verbinal` path the
 /// scripts themselves hard-code.
@@ -32,13 +30,11 @@ pub fn inspector_script() -> &'static str {
     INSPECTOR_SCRIPT
 }
 
-#[cfg(test)]
 /// Lowercase hex SHA-256 digest of `text`.
 fn sha256_hex(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
-#[cfg(test)]
 /// Content-hashed upload filename for the probe script (`probe-<first-12-hex>.sh`).
 ///
 /// Mirrors `EmbeddedProbeScripts.ProbeUploadFileName`.
@@ -46,7 +42,6 @@ pub fn probe_script_name() -> String {
     format!("probe-{}.sh", &sha256_hex(PROBE_SCRIPT)[..12])
 }
 
-#[cfg(test)]
 /// Content-hashed upload filename for the inspector script
 /// (`inspector-<first-12-hex>.sh`). Mirrors `InspectorUploadFileName`.
 pub fn inspector_script_name() -> String {

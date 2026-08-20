@@ -12,7 +12,8 @@ pub struct SessionLaunchParams {
     pub env: Option<String>,
     pub registry_username: Option<String>,
     pub registry_secret: Option<String>,
-    /// Headless-job command arguments (each becomes a repeated `args` form field).
+    /// Headless-job command arguments, joined by spaces into the single `args`
+    /// form field Skaha reads.
     #[serde(default)]
     pub args: Option<Vec<String>>,
     /// Headless-job replica count ([`REPLICAS_RANGE`]); `None` for interactive
@@ -94,9 +95,22 @@ impl SessionLaunchParams {
         if let Some(ref cmd) = self.cmd {
             pairs.push(("cmd", cmd.clone()));
         }
+        // ONE `args` field, whitespace-joined — not one field per argument.
+        //
+        // Skaha reads a single `args` value and splits it at the far end, which
+        // is also what the reference sends (`Args` is a string) and what the
+        // canonical Python client sends. Repeating the field meant everything
+        // after the first argument was silently dropped: an image probe
+        // launched as `bash -c <script>` arrived as `bash -c` and died with
+        // "option requires an argument", and a user's `python run.py --fast`
+        // ran as `python run.py`.
+        //
+        // The consequence to respect: an argument containing whitespace cannot
+        // survive this, on any client. Callers pass a path, not a script.
         if let Some(ref args) = self.args {
-            for arg in args {
-                pairs.push(("args", arg.clone()));
+            let joined = args.join(" ");
+            if !joined.trim().is_empty() {
+                pairs.push(("args", joined));
             }
         }
         if let Some(ref env) = self.env {
@@ -229,9 +243,46 @@ mod tests {
     #[test]
     fn a_headless_replica_carries_the_command_line() {
         let pairs = headless_params(5).headless_form_pairs(0, 5);
-        assert_eq!(pairs.iter().filter(|(k, _)| *k == "args").count(), 2);
-        assert!(pairs.contains(&("args", "run.py".to_string())));
+        // ONE field carrying both, not one field each: Skaha reads a single
+        // `args` value and drops the rest.
+        let args: Vec<&String> = pairs
+            .iter()
+            .filter(|(k, _)| *k == "args")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(args, vec!["run.py --fast"]);
         assert!(pairs.contains(&("cmd", "python".to_string())));
+    }
+
+    #[test]
+    fn a_multi_word_argument_list_is_never_split_across_fields() {
+        // Skaha reads ONE `args` value. Sending a field per argument meant
+        // everything after the first was dropped at the far end, with no error:
+        // `bash -c <script>` arrived as `bash -c`.
+        let mut params = headless_params(1);
+        params.args = Some(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ]);
+        let fields = params.to_form_pairs();
+        let args: Vec<&String> = fields
+            .iter()
+            .filter(|(k, _)| *k == "args")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(args.len(), 1, "{args:?}");
+        assert_eq!(args[0], "a b c d");
+    }
+
+    #[test]
+    fn an_empty_argument_list_sends_no_field_at_all() {
+        // A blank `args` is not the same as no `args`, and `bash ""` is not
+        // what anyone meant.
+        let mut params = headless_params(1);
+        params.args = Some(vec![String::new(), "  ".to_string()]);
+        assert!(!params.to_form_pairs().iter().any(|(k, _)| *k == "args"));
     }
 
     #[test]
