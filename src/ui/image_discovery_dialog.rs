@@ -20,7 +20,9 @@
 //! [`PackageQuery`]. Rebuilds are coalesced onto a GLib idle so a toggle handler
 //! never tears down the widget that emitted it.
 
-use crate::helpers::discovery_formatting::{category_label, package_count, time_ago};
+use crate::helpers::discovery_formatting::{
+    category_label, failure_summary, package_count, time_ago,
+};
 use crate::helpers::facet_engine;
 use crate::helpers::image_parser::ImageParser;
 use crate::models::image_manifest::{ImageManifest, LastOutcome, PackageQuery};
@@ -599,13 +601,13 @@ fn status_subtitle(outcome: Option<&LastOutcome>, running: bool, now: &str) -> S
             format!("{count} packages · {}", time_ago(&o.discovered_at, now))
         }
         Some(o) => match &o.outcome {
-            crate::models::image_manifest::DiscoveryOutcome::Failure { category, .. } => {
-                format!(
-                    "{} · {}",
-                    category_label(category),
-                    time_ago(&o.discovered_at, now)
-                )
-            }
+            crate::models::image_manifest::DiscoveryOutcome::Failure {
+                category, message, ..
+            } => format!(
+                "{} · {}",
+                failure_summary(category, message),
+                time_ago(&o.discovered_at, now)
+            ),
             _ => "Failed".to_string(),
         },
         None => "Not inspected yet".to_string(),

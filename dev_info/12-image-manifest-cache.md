@@ -3,6 +3,9 @@
 _Planned 2026-08-20 · read against `JsonManifestStore`, `ImageDiscoveryCoordinator`, both probe
 scripts, and the Windows and macOS references._
 
+**Status:** Phases 1–3 are implemented. Phase 4 (the grace task) and Phase 5 (registry digests)
+are not started.
+
 ## Short answers
 
 | Question | Answer |

@@ -6,6 +6,7 @@
 //! were about to grow two different treatments: one row that clipped it and one
 //! that let it push the dialog off the screen.
 
+use crate::helpers::job_diagnostics::{has_detail, summary_line};
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
@@ -14,27 +15,6 @@ use libadwaita::prelude::*;
 /// Height of the scrollable excerpt. Tall enough for a short traceback, short
 /// enough that the row it lives in is still a row.
 const DETAIL_HEIGHT: i32 = 180;
-
-/// The first line of a reason — the diagnosis, without the evidence.
-///
-/// Every reason is written summary-first precisely so this is meaningful.
-pub fn summary_line(reason: &str) -> &str {
-    reason
-        .trim()
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-}
-
-/// Whether a reason has anything beyond its first line worth expanding.
-pub fn has_detail(reason: &str) -> bool {
-    reason
-        .trim()
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count()
-        > 1
-}
 
 /// The full reason, monospaced, selectable, and scrolling inside its own box.
 ///
@@ -94,39 +74,4 @@ pub fn reason_row(
     }
     row.add_row(&detail_view(reason));
     row.upcast()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const REASON: &str = "job ended in failed state: Failed\n\n\
-                          --- job logs ---\nbash: syft: command not found\n";
-
-    #[test]
-    fn the_summary_is_the_diagnosis_alone() {
-        assert_eq!(summary_line(REASON), "job ended in failed state: Failed");
-    }
-
-    #[test]
-    fn a_leading_blank_line_does_not_become_the_summary() {
-        // The reason is assembled by joining sections, and a leading newline is
-        // one refactor away. An empty summary reads as "no reason recorded".
-        assert_eq!(summary_line("\n\nreal reason\nmore"), "real reason");
-    }
-
-    #[test]
-    fn an_empty_reason_summarises_to_nothing_rather_than_panicking() {
-        assert_eq!(summary_line(""), "");
-        assert_eq!(summary_line("   \n  "), "");
-    }
-
-    #[test]
-    fn evidence_under_the_diagnosis_is_what_makes_a_row_expandable() {
-        assert!(has_detail(REASON));
-        assert!(!has_detail("Probe submit failed: not signed in"));
-        assert!(!has_detail(""));
-        // Blank lines are not evidence.
-        assert!(!has_detail("one line\n\n\n"));
-    }
 }

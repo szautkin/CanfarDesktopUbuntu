@@ -449,6 +449,7 @@ prend en compte à son prochain démarrage."),
     ("History",                                     "Historique"),
     ("Clear history",                               "Effacer l’historique"),
     ("Probe job",                                   "Tâche de sondage"),
+    ("inspected {}",                                "inspectée {}"),
     (
         "{} — deleted after the probe finished; the full \
          output is kept under Batch Jobs → History",

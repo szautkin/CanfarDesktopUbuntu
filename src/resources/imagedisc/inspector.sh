@@ -93,7 +93,7 @@ fi
 # `python3 - <<'PYEOF'` + pipe collision that fed python its own
 # source as stdin (and silently 0-byte'd every manifest).
 cat > "$TRANSFORMER" <<'PYEOF'
-import json, sys, os, time
+import json, sys, os, time, hashlib
 
 target = os.environ["TARGET_IMAGE"]
 
@@ -252,10 +252,39 @@ for shell in ("bash", "zsh", "sh", "dash", "fish", "ksh"):
         shell_names_observed.append(shell)
 shells_list = sorted(set(shell_names_observed))
 
+fingerprint = json.dumps(
+    {
+        "packages": sorted(
+            f"{p.get('name','')}@{p.get('version','')}"
+            for p in (dpkg + rpm_pkgs + apk_pkgs + py_pkgs + r_pkgs)
+        ),
+        "distro": [
+            distro.get("id") or "",
+            distro.get("versionID") or "",
+        ],
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+)
+content_hash = "sha256:" + hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
 manifest = {
     "schemaVersion": 3,
     "imageID": target,
-    "contentHash": "sha256:syft",
+    # A digest of what was FOUND, not of the scan that found it.
+    #
+    # This was the literal string "sha256:syft" — a marker, so a
+    # re-inspection could never answer "did anything change?". Hashing
+    # syft's raw output would not work either: it carries a timestamp and
+    # a scan descriptor, so two scans of an unchanged image would disagree.
+    # The sorted package set plus the distro is stable across runs and
+    # changes exactly when the image does.
+    #
+    # Comparable within this path, not across paths: the in-container probe
+    # hashes marker FILES. An image is inspected by the same strategy every
+    # time (the strategy follows the image's declared types), so that is
+    # enough for the question being asked.
+    "contentHash": content_hash,
     "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     # `id` and `versionID`, not `name` and `version`: syft mirrors os-release
     # field for field, and the in-container probe reads ID / VERSION_ID. Using

@@ -25,6 +25,15 @@ pub struct ImageManifest {
     pub schema_version: u32,
     #[serde(alias = "imageID")]
     pub image_id: String,
+    /// SHA-256 over the image's stable marker files, as the probe computed it.
+    ///
+    /// Not a cache key and it cannot be one: it is computed INSIDE the image,
+    /// by the job the cache exists to avoid running. What it can do is answer
+    /// "did anything change?" after a re-inspection — the cheap, honest answer
+    /// most of the time, and the one that makes Refresh safe to press. The
+    /// reference keeps it as `ImageManifest.ContentHash` with this same
+    /// default; we parsed it and threw it away.
+    pub content_hash: String,
     pub os_family: Option<String>,
     pub os_version: Option<String>,
     pub os_release: Option<String>,
@@ -55,6 +64,7 @@ impl Default for ImageManifest {
         ImageManifest {
             schema_version: 1,
             image_id: String::new(),
+            content_hash: "sha256:none".to_string(),
             os_family: None,
             os_version: None,
             os_release: None,

@@ -80,6 +80,24 @@ pub fn parse_manifest(json: &str) -> Result<ImageManifest, ManifestError> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_content_hash_survives_parsing() {
+        // The probe computes it and we used to throw it away, so a
+        // re-inspection could not report "unchanged" — the cheap, honest answer
+        // most of the time, and the one that makes Refresh safe to press.
+        let m = parse_manifest(
+            r#"{"schemaVersion":3,"imageID":"img:1","contentHash":"sha256:abc123"}"#,
+        )
+        .expect("parsed");
+        assert_eq!(m.content_hash, "sha256:abc123");
+    }
+
+    #[test]
+    fn a_manifest_without_a_content_hash_gets_the_references_default() {
+        let m = parse_manifest(r#"{"schemaVersion":3,"imageID":"img:1"}"#).expect("parsed");
+        assert_eq!(m.content_hash, "sha256:none");
+    }
     use super::*;
 
     #[test]

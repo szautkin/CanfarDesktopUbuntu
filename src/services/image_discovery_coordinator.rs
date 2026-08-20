@@ -19,7 +19,8 @@
 //! headless round-trip itself needs a live Skaha and is exercised in the app.
 
 use crate::helpers::embedded_probe_scripts::{
-    inspector_script, inspector_script_name, probe_script, probe_script_name, HOME_SUBDIR,
+    inspector_script, inspector_script_name, manifest_path, probe_script, probe_script_name,
+    HOME_SUBDIR,
 };
 use crate::helpers::job_diagnostics::{tail, MAX_REASON_CHARS};
 use crate::helpers::manifest_parser::parse_manifest;
@@ -135,7 +136,7 @@ impl ImageDiscoveryCoordinator {
             }
         };
 
-        self.run_discovery(services, image_id).await
+        self.run_discovery(services, image_id, force).await
     }
 
     // -- cache / coalescing -------------------------------------------------
@@ -164,7 +165,12 @@ impl ImageDiscoveryCoordinator {
 
     // -- the discovery pipeline --------------------------------------------
 
-    async fn run_discovery(&self, services: &AppServices, image_id: &str) -> DiscoveryOutcome {
+    async fn run_discovery(
+        &self,
+        services: &AppServices,
+        image_id: &str,
+        force: bool,
+    ) -> DiscoveryOutcome {
         // Auth: every headless launch and log fetch needs a bearer token, and a
         // blank username fails opaquely deeper in the stack — reject clearly.
         let token = match services.get_token().await {
@@ -219,6 +225,40 @@ impl ImageDiscoveryCoordinator {
             );
         }
 
+        // Everything below needs the account name; resolve it once. A failure
+        // here is not fatal on its own — only the upload truly requires it, and
+        // it reports its own error.
+        let username = Self::username(services, &token).await;
+
+        // A manifest a previous probe published is a probe we do not have to
+        // run: cheaper, faster, and it works across machines and reinstalls in
+        // a way the local cache cannot. Skipped when forced, since forcing is
+        // how you ask for a fresh look.
+        if !force {
+            if let Ok(ref user) = username {
+                if let Some(manifest) = self
+                    .fetch_manifest_if_present(services, &token, user, image_id)
+                    .await
+                {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    self.store.set_manifest(image_id, manifest.clone(), now);
+                    return DiscoveryOutcome::Manifest(manifest);
+                }
+            }
+        }
+
+        let username = match username {
+            Ok(user) => user,
+            Err(msg) => {
+                return self.fail(
+                    image_id,
+                    category::JOB_SUBMIT_FAILED,
+                    &format!("Probe submit failed: could not stage the probe script — {msg}"),
+                    None,
+                );
+            }
+        };
+
         // Upload the script and launch `bash <path>`.
         //
         // This used to pass the script INLINE as `bash -c <body>`, to skip the
@@ -230,7 +270,7 @@ impl ImageDiscoveryCoordinator {
         // a path — one argument, no spaces in it — which is why the script
         // names have been content-hashed all along.
         let script_path = match self
-            .ensure_uploaded(services, &token, strategy, script_body)
+            .ensure_uploaded(services, &token, &username, strategy, script_body)
             .await
         {
             Ok(path) => path,
@@ -277,6 +317,21 @@ impl ImageDiscoveryCoordinator {
 
         // (5) Poll until terminal, tolerating the informer-cache visibility race.
         if let Err(msg) = self.poll_until_terminal(services, &token, &job_id).await {
+            // The job may have published just after our last poll — the
+            // reference calls this a "late manifest fetch", and it turns the
+            // most expensive failure mode (a slow probe, marked failed, job
+            // deleted) into a success.
+            if let Some(manifest) = self
+                .fetch_manifest_if_present(services, &token, &username, image_id)
+                .await
+            {
+                self.best_effort_delete(services, &token, &job_id).await;
+                self.remember(image_id, &params, &job_id, JobOutcome::Succeeded, "");
+                let now = chrono::Utc::now().to_rfc3339();
+                self.store.set_manifest(image_id, manifest.clone(), now);
+                return DiscoveryOutcome::Manifest(manifest);
+            }
+
             // Read the job's own account of itself BEFORE deleting it. This used
             // to report "job ended in failed state: Failed" and then destroy the
             // only copy of the logs and events that said why — leaving a status
@@ -464,6 +519,55 @@ impl ImageDiscoveryCoordinator {
         Err("Probe timed out".to_string())
     }
 
+    /// The signed-in account name, or why it could not be had.
+    ///
+    /// Every VOSpace path is `/arc/home/{username}/…`; an empty username
+    /// collapses it to a directory that is not the user's, so an absent name is
+    /// an error rather than a blank.
+    async fn username(services: &AppServices, token: &str) -> Result<String, String> {
+        services
+            .auth
+            .get_user_info(token)
+            .await
+            .map_err(|e| format!("could not resolve the CANFAR username: {e}"))?
+            .username
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| "the CANFAR username is empty".to_string())
+    }
+
+    /// The manifest a previous probe left in the user's VOSpace, if there is a
+    /// usable one.
+    ///
+    /// The scripts have always published to `~/.verbinal/manifests/`; on CANFAR
+    /// that is `/arc/home/<user>`, real storage. Nothing here read it until
+    /// now, so a probe that finished after we stopped watching was a total loss
+    /// — we recorded a failure, deleted the job, and its manifest sat unread.
+    /// It is also the only DURABLE copy: we recover from the job's stdout and
+    /// then delete the job, and the logs go with it.
+    ///
+    /// `None` on anything doubtful, so the caller simply launches a probe.
+    /// Both references apply the same two checks:
+    ///
+    /// * the manifest at the path must be FOR this image — two launches with
+    ///   mismatched id env vars would otherwise cross-contaminate;
+    /// * a stub is what a FAILED probe writes, and caching one turns a
+    ///   transient failure into a permanent wrong answer.
+    async fn fetch_manifest_if_present(
+        &self,
+        services: &AppServices,
+        token: &str,
+        username: &str,
+        image_id: &str,
+    ) -> Option<ImageManifest> {
+        let path = manifest_path(image_id);
+        let bytes = services
+            .vospace
+            .download_bytes(token, username, &path)
+            .await
+            .ok()?;
+        usable_manifest(&String::from_utf8(bytes).ok()?, image_id)
+    }
+
     /// Put the script in the user's home and return its absolute path.
     ///
     /// Uploaded once per script per app run — the name is a hash of the body,
@@ -474,20 +578,10 @@ impl ImageDiscoveryCoordinator {
         &self,
         services: &AppServices,
         token: &str,
+        username: &str,
         strategy: ProbeStrategy,
         body: &str,
     ) -> Result<String, String> {
-        let username = services
-            .auth
-            .get_user_info(token)
-            .await
-            .map_err(|e| format!("could not resolve the CANFAR username: {e}"))?
-            .username
-            .filter(|name| !name.trim().is_empty())
-            // Every VOSpace path is /arc/home/{username}/…; an empty username
-            // collapses it to a directory that is not the user's.
-            .ok_or("the CANFAR username is empty")?;
-
         let file_name = match strategy {
             ProbeStrategy::InTarget => probe_script_name(),
             ProbeStrategy::Inspector => inspector_script_name(),
@@ -508,14 +602,14 @@ impl ImageDiscoveryCoordinator {
         // own, because the usual cause is that it already does.
         let _ = services
             .vospace
-            .create_folder(token, &username, HOME_SUBDIR)
+            .create_folder(token, username, HOME_SUBDIR)
             .await;
 
         services
             .vospace
             .upload_file(
                 token,
-                &username,
+                username,
                 &relative,
                 body.as_bytes().to_vec(),
                 "text/x-shellscript",
@@ -732,6 +826,26 @@ fn decode_auth_header(header: &str) -> Option<(String, String)> {
     let text = String::from_utf8(decoded).ok()?;
     let (user, secret) = text.split_once(':')?;
     Some((user.to_string(), secret.to_string()))
+}
+
+/// Whether a published manifest may stand in for a fresh probe.
+///
+/// Pure, so the rules can be tested without a VOSpace; the fetch above does the
+/// I/O and this does the deciding. Both references apply the same two:
+///
+/// * the manifest must be FOR the image asked about — two launches with
+///   mismatched id env vars would otherwise cross-contaminate;
+/// * a stub is what a FAILED probe writes, and caching one turns a transient
+///   failure into a permanent wrong answer.
+fn usable_manifest(json: &str, image_id: &str) -> Option<ImageManifest> {
+    let manifest = parse_manifest(json).ok()?;
+    if manifest.image_id != image_id {
+        return None;
+    }
+    if is_stub_manifest(&manifest, probe_notes_of(json).as_deref()) {
+        return None;
+    }
+    Some(manifest)
 }
 
 /// Extract the manifest JSON object the probe printed to its stdout logs. Scans
@@ -1068,6 +1182,58 @@ mod tests {
 }
 
 #[cfg(test)]
+mod published_manifest_rules {
+    //! What a manifest found in the user's VOSpace has to satisfy before it is
+    //! allowed to stand in for running a probe.
+
+    use super::*;
+
+    const IMAGE: &str = "images.canfar.net/skaha/astroml:1.0";
+
+    fn manifest_json(image_id: &str, extra: &str) -> String {
+        format!(
+            r#"{{"schemaVersion":3,"imageID":"{image_id}","osFamily":"ubuntu",
+               "dpkgPackages":[{{"name":"bash","version":"5.2"}}],
+               "pythonPackages":[{{"name":"numpy","version":"1.26"}}]{extra}}}"#
+        )
+    }
+
+    #[test]
+    fn a_good_manifest_is_accepted() {
+        let manifest = usable_manifest(&manifest_json(IMAGE, ""), IMAGE).expect("accepted");
+        assert_eq!(manifest.image_id, IMAGE);
+    }
+
+    #[test]
+    fn a_manifest_for_another_image_is_refused() {
+        // Two launches with mismatched id env vars would write to the same
+        // path. Trusting it would describe one image with another's packages —
+        // wrong in a way nothing downstream could detect.
+        assert!(usable_manifest(&manifest_json("images.canfar.net/other:2", ""), IMAGE).is_none());
+    }
+
+    #[test]
+    fn a_stub_left_by_a_failed_probe_is_refused() {
+        // Caching a stub turns a transient failure — no network egress, syft
+        // missing — into a permanent answer of "this image contains nothing".
+        let stub = format!(
+            r#"{{"schemaVersion":3,"imageID":"{IMAGE}","dpkgPackages":[],
+               "rpmPackages":[],"apkPackages":[],"pythonPackages":[],
+               "probeNotes":"syft installation failed"}}"#
+        );
+        assert!(usable_manifest(&stub, IMAGE).is_none());
+    }
+
+    #[test]
+    fn unparseable_content_is_refused_rather_than_fatal() {
+        // A truncated or half-written file is a reason to launch a probe, not
+        // a reason to fail the inspection.
+        assert!(usable_manifest("not json at all", IMAGE).is_none());
+        assert!(usable_manifest("", IMAGE).is_none());
+    }
+}
+
+#[cfg(test)]
 mod real_probe_output {
     //! The recovery path, end to end, against output the probe script actually
     //! produced.
@@ -1180,30 +1346,45 @@ mod failure_reporting_guards {
     fn every_outcome_that_reached_skaha_is_remembered() {
         // A failure the history does not record is a failure nobody can look up
         // once the cache entry is overwritten by the next attempt on the same
-        // image. Counted rather than merely present: it is the path that gets
-        // ADDED without a `remember` that loses the evidence.
+        // image; a success it does not record leaves "did the inspection ever
+        // run?" unanswerable.
         //
-        // Only the paths after the launch parameters exist. The two before
-        // them — not signed in, no inspector image resolved — are refusals to
-        // start, not jobs, and the image row already shows them.
+        // Asserted as a property, not a count: every terminal return after the
+        // launch parameters exist must have a `self.remember(` between it and
+        // the previous one. A formula would have to be edited each time a path
+        // is added, which is precisely when it should be failing instead.
+        //
+        // Only the paths after the launch parameters. The ones before them —
+        // not signed in, no inspector image, a manifest recovered from VOSpace
+        // — are not jobs.
         let body = run_discovery(SOURCE);
         let at = body
             .find("let params = SessionLaunchParams")
             .expect("the launch parameters are gone");
         let attempted = &body[at..];
 
-        let outcomes = attempted.matches("return self.fail(").count();
-        let remembered = attempted.matches("self.remember(").count();
+        let terminals: Vec<usize> = attempted
+            .match_indices("return self.fail(")
+            .chain(attempted.match_indices("return DiscoveryOutcome::Manifest("))
+            .map(|(i, _)| i)
+            .collect();
         assert!(
-            outcomes >= 5,
-            "only {outcomes} failure paths — did they move?"
+            terminals.len() >= 6,
+            "only {} terminal paths after launch — did they move?",
+            terminals.len()
         );
-        assert_eq!(
-            remembered,
-            outcomes + 1,
-            "{outcomes} failure paths and {remembered} history writes — every \
-             failure after launch needs one, plus one for the success at the end"
-        );
+
+        let mut sorted = terminals;
+        sorted.sort_unstable();
+        let mut previous = 0usize;
+        for terminal in sorted {
+            assert!(
+                attempted[previous..terminal].contains("self.remember("),
+                "a job outcome at byte {terminal} of run_discovery is never \
+                 recorded in the history"
+            );
+            previous = terminal;
+        }
     }
 
     #[test]
@@ -1244,6 +1425,48 @@ mod failure_reporting_guards {
         assert!(
             body.contains("probe_script_name()") && body.contains("inspector_script_name()"),
             "the staged name is no longer content-hashed"
+        );
+    }
+
+    #[test]
+    fn a_published_manifest_is_looked_for_before_a_job_is_launched() {
+        // The scripts have always published to ~/.verbinal/manifests/; on CANFAR
+        // that is real storage. Launching a job without looking spends a
+        // headless slot to recompute something already sitting in the user's
+        // home — and, across machines or after a reinstall, something the local
+        // cache cannot know about.
+        let body = run_discovery(SOURCE);
+        let fetch = body
+            .find("fetch_manifest_if_present(")
+            .expect("the published manifest is never looked for");
+        let launch = body
+            .find("let params = SessionLaunchParams")
+            .expect("the launch parameters are gone");
+        assert!(fetch < launch, "the job is launched before the cheap check");
+        assert!(
+            body[..launch].contains("if !force"),
+            "the pre-launch recovery ignores `force`, so Refresh cannot refresh"
+        );
+    }
+
+    #[test]
+    fn a_late_manifest_rescues_a_job_that_looked_failed() {
+        // A probe that published just after our last poll used to be a total
+        // loss: failure recorded, job deleted, manifest unread. The check has
+        // to come BEFORE the diagnosis, or a success is reported as a failure
+        // that merely happens to have a manifest.
+        let body = run_discovery(SOURCE);
+        let at = body
+            .find("if let Err(msg) = self.poll_until_terminal")
+            .expect("the poll failure path is gone");
+        let tail = &body[at..];
+        let fetch = tail
+            .find("fetch_manifest_if_present(")
+            .expect("no late manifest fetch");
+        let diagnose = tail.find("self.diagnose(").expect("no diagnosis");
+        assert!(
+            fetch < diagnose,
+            "the job is written off before being asked"
         );
     }
 

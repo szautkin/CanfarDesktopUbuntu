@@ -1,9 +1,16 @@
-//! Embedded probe / inspector scripts and their content-hashed upload names.
+//! The contract between this app and the two probe scripts.
 //!
 //! Port of `Services/ImageDiscovery/EmbeddedProbeScripts.cs`. The script bodies
 //! are compiled into the binary via [`include_str!`]; their VOSpace upload
 //! filenames are content-hashed (`probe-<12hex>.sh`) so editing a script
 //! automatically busts the previously-uploaded copy.
+//!
+//! Everything both sides have to agree on lives here: the bodies, the upload
+//! names, the home subdirectory, and — since the scripts write a manifest the
+//! app then reads back — how an image id becomes a filename. Splitting that
+//! last rule across the two languages is how a reader looks in a place the
+//! writer never wrote to, so [`sanitize_image_id`] is checked against the
+//! scripts' own `tr` set rather than trusted to match it.
 
 use sha2::{Digest, Sha256};
 
@@ -46,6 +53,34 @@ pub fn probe_script_name() -> String {
 /// (`inspector-<first-12-hex>.sh`). Mirrors `InspectorUploadFileName`.
 pub fn inspector_script_name() -> String {
     format!("inspector-{}.sh", &sha256_hex(INSPECTOR_SCRIPT)[..12])
+}
+
+/// Turn an image id into a filename component, exactly as the scripts do.
+///
+/// The scripts are the WRITER — they publish the manifest — so their rule is
+/// the rule, and this follows it rather than the other way round.
+/// [`tests::the_sanitiser_matches_the_one_the_scripts_use`] reads the character
+/// set out of the scripts to make sure.
+pub fn sanitize_image_id(image_id: &str) -> String {
+    image_id
+        .chars()
+        .map(|c| if SANITIZED.contains(&c) { '_' } else { c })
+        .collect()
+}
+
+/// Characters the scripts collapse to `_`. Mirrors their `tr` set.
+const SANITIZED: &[char] = &['/', ':', '?', '*', '<', '>', '|', '"', '\\'];
+
+/// Where a manifest for `image_id` lands, relative to the user's home.
+///
+/// One spelling of this path, used by the scripts' Rust-side reader and by
+/// nothing else — the scripts hard-code the same shape, and the guard above
+/// ties the two together at the only part that varies.
+pub fn manifest_path(image_id: &str) -> String {
+    format!(
+        "{HOME_SUBDIR}/manifests/{}.json",
+        sanitize_image_id(image_id)
+    )
 }
 
 #[cfg(test)]
@@ -286,6 +321,68 @@ mod tests {
             .split(':')
             .map(|dir| std::path::Path::new(dir).join(program))
             .find(|path| path.is_file())
+    }
+
+    /// The Rust sanitiser and the scripts' `tr` must collapse the same set.
+    ///
+    /// They did not. Rust also mapped `@` and whitespace; the scripts did not.
+    /// The two agree on every ordinary image id and diverge on exactly the
+    /// character in a digest-pinned reference — so a reader built on the Rust
+    /// rule would look for `image_sha256_…json` while the writer had published
+    /// `image@sha256_…json`, and every lookup would miss with no error.
+    #[test]
+    fn the_sanitiser_matches_the_one_the_scripts_use() {
+        for (name, script) in [
+            ("probe.sh", probe_script()),
+            ("inspector.sh", inspector_script()),
+        ] {
+            let line = script
+                .lines()
+                .find(|l| l.contains("tr '") && l.contains("_"))
+                .unwrap_or_else(|| panic!("{name} no longer sanitises the image id"));
+            // `tr '/:?*<>|"\\' '_'` — take what is between the first quotes.
+            let set = line
+                .split_once("tr '")
+                .and_then(|(_, rest)| rest.split_once('\''))
+                .map(|(set, _)| set)
+                .unwrap_or_else(|| panic!("{name}: cannot read the tr set from {line}"));
+            // The shell literal escapes the backslash; the char set holds one.
+            let expected: String = SANITIZED.iter().collect();
+            let shell: String = set.replace("\\\\", "\\");
+            let mut a: Vec<char> = expected.chars().collect();
+            let mut b: Vec<char> = shell.chars().collect();
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "{name} collapses a different character set");
+        }
+    }
+
+    #[test]
+    fn a_manifest_path_is_the_one_the_scripts_write_to() {
+        assert_eq!(
+            manifest_path("images.canfar.net/skaha/astroml:1.0"),
+            ".verbinal/manifests/images.canfar.net_skaha_astroml_1.0.json"
+        );
+    }
+
+    /// Both scripts must publish a real content hash, not a marker.
+    ///
+    /// `inspector.sh` wrote the literal "sha256:syft", so a re-inspection could
+    /// never answer "did anything change?" — the one question the field exists
+    /// for. The stub branches keep the marker deliberately: a stub is rejected
+    /// before anything looks at its hash.
+    #[test]
+    fn the_success_path_publishes_a_computed_content_hash() {
+        assert!(
+            inspector_script().contains(r#""contentHash": content_hash,"#),
+            "inspector.sh is back to writing a marker instead of a hash"
+        );
+        assert!(
+            inspector_script().contains("hashlib.sha256("),
+            "inspector.sh no longer computes anything to publish"
+        );
+        // The in-container probe has always computed one, over marker files.
+        assert!(probe_script().contains("sha256sum") || probe_script().contains("shasum"));
     }
 
     #[test]

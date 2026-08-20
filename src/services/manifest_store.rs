@@ -10,6 +10,7 @@
 //! `<data_dir>` is `ProjectDirs::from("net","canfar","Verbinal").data_dir()`
 //! (e.g. `~/.local/share/net.canfar/Verbinal`).
 
+use crate::helpers::embedded_probe_scripts::sanitize_image_id;
 use crate::models::image_manifest::{DiscoveryOutcome, ImageManifest, LastOutcome, PackageQuery};
 use directories::ProjectDirs;
 use std::collections::HashMap;
@@ -276,6 +277,12 @@ impl JsonManifestStore {
         }
     }
 
+    /// Where `image_id`'s outcome lives on disk.
+    ///
+    /// The same naming rule the probe scripts use, so the local cache and the
+    /// VOSpace copy the scripts publish are addressed identically. In-memory
+    /// keys always use the real id, so a filename collision between two exotic
+    /// ids is harmless.
     fn file_path(&self, image_id: &str) -> PathBuf {
         self.directory
             .join(format!("{}.json", sanitize_image_id(image_id)))
@@ -291,22 +298,6 @@ impl Default for JsonManifestStore {
 /// Rank `(id, score)` pairs: score descending, then id ascending.
 fn sort_ranked(v: &mut [(String, u32)]) {
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-}
-
-/// Convert an image id such as `images.canfar.net/skaha/astroml:24.07` into a
-/// filesystem-safe stub for the cache filename. Filesystem-hostile characters
-/// (path separators, drive/registry punctuation, wildcard/quote glyphs and
-/// whitespace) collapse to `_`. In-memory keys always use the real id, so a
-/// filename collision between two exotic ids is harmless.
-fn sanitize_image_id(image_id: &str) -> String {
-    image_id
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '@' | '?' | '*' | '<' | '>' | '|' | '"' => '_',
-            c if c.is_whitespace() || c.is_control() => '_',
-            c => c,
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -522,11 +513,15 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_image_id_replaces_hostile_chars() {
+    fn the_cache_filename_is_the_one_the_scripts_publish_under() {
+        // Not a second rule: `sanitize_image_id` is the scripts' rule, checked
+        // against their own `tr` set. Asserted here because the local cache and
+        // the VOSpace copy have to be addressed identically for one to stand in
+        // for the other.
+        let store = JsonManifestStore::with_dir(PathBuf::from("/cache"));
         assert_eq!(
-            sanitize_image_id("images.canfar.net/skaha/astroml:24.07"),
-            "images.canfar.net_skaha_astroml_24.07"
+            store.file_path("images.canfar.net/skaha/astroml:24.07"),
+            PathBuf::from("/cache/images.canfar.net_skaha_astroml_24.07.json")
         );
-        assert!(!sanitize_image_id("a@b:c/d").contains(['/', ':', '@']));
     }
 }

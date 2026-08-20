@@ -78,8 +78,43 @@ pub fn package_count(m: &ImageManifest) -> usize {
     m.dpkg.len() + m.rpm.len() + m.apk.len() + m.python.len() + m.r_packages.len()
 }
 
+/// A failure, in one line: what kind, then the diagnosis without its evidence.
+///
+/// The one place a discovery failure becomes a subtitle. Both the image list
+/// and the discovery dialog render this, and both were building their own —
+/// the image list by dropping the WHOLE message in, which since failures
+/// started carrying the tail of a job's logs means a subtitle several hundred
+/// lines long. The full text is still there, behind
+/// [`crate::ui::failure_detail`], where it can scroll.
+pub fn failure_summary(category: &str, message: &str) -> String {
+    let summary = crate::helpers::job_diagnostics::summary_line(message);
+    if summary.is_empty() {
+        return category_label(category).to_string();
+    }
+    format!("{} · {summary}", category_label(category))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_failure_summary_names_the_kind_and_the_first_line_only() {
+        // Failure messages carry the tail of a job's logs and events. A
+        // subtitle that took the whole message made the row hundreds of lines
+        // tall; one that took only the category said nothing useful.
+        let reason = "Manifest fetch failed: no JSON in the logs\n\n\
+                      --- job logs ---\nbash: syft: not found";
+        assert_eq!(
+            failure_summary("ManifestFetchFailed", reason),
+            "No manifest · Manifest fetch failed: no JSON in the logs"
+        );
+    }
+
+    #[test]
+    fn a_failure_with_no_message_still_says_what_kind_it_was() {
+        assert_eq!(failure_summary("JobTimedOut", "   "), "Timed out");
+        assert_eq!(failure_summary("JobTimedOut", ""), "Timed out");
+    }
     use super::*;
     use crate::models::image_manifest::ImageManifest;
 

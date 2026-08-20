@@ -20,7 +20,7 @@
 //! buttons) plus a total-count badge sit in the header. Rows are ordered
 //! discovered → failed → never, then by image id (mirrors the reference sort).
 
-use crate::helpers::discovery_formatting::{category_label, package_count};
+use crate::helpers::discovery_formatting::{failure_summary, package_count, time_ago};
 use crate::helpers::image_parser::ImageParser;
 use crate::models::image_manifest::{DiscoveryOutcome, LastOutcome};
 use crate::models::ParsedImage;
@@ -296,7 +296,7 @@ impl CanfarImagesView {
         row.set_subtitle(&if is_running {
             crate::tr_en!("Inspecting…").to_string()
         } else {
-            meta_line(outcome.as_ref(), &img.id)
+            meta_line(outcome.as_ref(), &img.id, &chrono::Utc::now().to_rfc3339())
         });
         row.set_subtitle_lines(0);
 
@@ -425,9 +425,10 @@ fn status_order(s: DiscoveryStatus) -> u8 {
     }
 }
 
-/// Row subtitle: "os_family os_version · N packages" for a discovered image, the
-/// failure message (or category label) for a failed probe, else the image id.
-fn meta_line(outcome: Option<&LastOutcome>, image_id: &str) -> String {
+/// Row subtitle: "os_family os_version · N packages · inspected 3d ago" for a
+/// discovered image, a one-line failure summary for a failed probe, else the
+/// image id.
+fn meta_line(outcome: Option<&LastOutcome>, image_id: &str, now: &str) -> String {
     match outcome {
         Some(o) if o.is_success() => {
             let m = match o.manifest() {
@@ -440,18 +441,22 @@ fn meta_line(outcome: Option<&LastOutcome>, image_id: &str) -> String {
                 }
                 _ => String::new(),
             };
-            format!("{os}{} packages", package_count(m))
+            // WHEN, not just what. A successful manifest never expires and is
+            // never re-checked, so an image rebuilt under the same tag keeps
+            // showing packages it no longer has — silently, and for as long as
+            // the cache lives. The age is what turns that from invisible into
+            // a judgement the reader can make, next to the Inspect button that
+            // acts on it.
+            format!(
+                "{os}{} packages · {}",
+                package_count(m),
+                crate::tr_fmt!("inspected {}", time_ago(&o.discovered_at, now))
+            )
         }
         Some(o) => match &o.outcome {
             DiscoveryOutcome::Failure {
                 category, message, ..
-            } => {
-                if message.trim().is_empty() {
-                    category_label(category).to_string()
-                } else {
-                    message.clone()
-                }
-            }
+            } => failure_summary(category, message),
             DiscoveryOutcome::Manifest(_) => image_id.to_string(),
         },
         None => image_id.to_string(),
@@ -560,34 +565,59 @@ mod tests {
         );
     }
 
+    /// A clock five minutes after the outcomes below were recorded, so the
+    /// relative age is stable rather than depending on when the suite runs.
+    const NOW: &str = "2026-07-07T00:05:00Z";
+
     #[test]
-    fn meta_line_discovered_includes_os_and_count() {
+    fn meta_line_discovered_includes_os_count_and_age() {
+        // The age is the point: a successful manifest never expires and is
+        // never re-checked, so an image rebuilt under the same tag keeps
+        // showing packages it no longer has. Without a date on the row there
+        // is nothing to tell the reader that.
         let o = discovered_outcome(Some("ubuntu"), Some("22.04"), &["numpy", "scipy"]);
-        assert_eq!(meta_line(Some(&o), "img:1"), "ubuntu 22.04 · 2 packages");
+        assert_eq!(
+            meta_line(Some(&o), "img:1", NOW),
+            "ubuntu 22.04 · 2 packages · inspected 5m ago"
+        );
     }
 
     #[test]
     fn meta_line_discovered_hides_unknown_os() {
         let o = discovered_outcome(Some("unknown"), None, &["numpy"]);
-        assert_eq!(meta_line(Some(&o), "img:1"), "1 packages");
+        assert_eq!(
+            meta_line(Some(&o), "img:1", NOW),
+            "1 packages · inspected 5m ago"
+        );
         let none_os = discovered_outcome(None, None, &[]);
-        assert_eq!(meta_line(Some(&none_os), "img:1"), "0 packages");
+        assert_eq!(
+            meta_line(Some(&none_os), "img:1", NOW),
+            "0 packages · inspected 5m ago"
+        );
     }
 
     #[test]
-    fn meta_line_failed_uses_message_then_category() {
-        let with_msg =
-            LastOutcome::failure("img:1", "JobTimedOut", "the probe timed out", None, AT);
-        assert_eq!(meta_line(Some(&with_msg), "img:1"), "the probe timed out");
+    fn meta_line_failed_summarises_rather_than_dumping_the_logs() {
+        // A failure message now carries the tail of the job's logs and events.
+        // Dropping the whole thing into a subtitle — which is what this did —
+        // makes a row hundreds of lines tall. The full text is one click away
+        // in the detail pane.
+        let long = "Manifest fetch failed: no JSON in the logs\n\n\
+                    --- job logs ---\nline\nline\nline";
+        let with_msg = LastOutcome::failure("img:1", "JobTimedOut", long, None, AT);
+        assert_eq!(
+            meta_line(Some(&with_msg), "img:1", NOW),
+            "Timed out · Manifest fetch failed: no JSON in the logs"
+        );
 
         let blank_msg = LastOutcome::failure("img:1", "JobTimedOut", "  ", None, AT);
-        assert_eq!(meta_line(Some(&blank_msg), "img:1"), "Timed out");
+        assert_eq!(meta_line(Some(&blank_msg), "img:1", NOW), "Timed out");
     }
 
     #[test]
     fn meta_line_never_shows_image_id() {
         assert_eq!(
-            meta_line(None, "images.canfar.net/skaha/base:1.0"),
+            meta_line(None, "images.canfar.net/skaha/base:1.0", NOW),
             "images.canfar.net/skaha/base:1.0"
         );
     }
