@@ -48,6 +48,18 @@ mod category {
     pub const BUSY: &str = "Busy";
 }
 
+/// How many polls in a row may fail before the probe is written off.
+///
+/// The sessions listing is how the job is WATCHED, not part of it. At the
+/// 3-second poll interval this tolerates roughly half a minute of an unrelated
+/// CADC service being unreachable, which is the shape these outages take.
+const MAX_CONSECUTIVE_POLL_ERRORS: usize = 10;
+
+/// The message this code produces when the probe itself runs out of time. Used
+/// to categorise the failure, so it has to be matched exactly rather than by
+/// looking for "timed out" in prose that may have come from elsewhere.
+const PROBE_TIMED_OUT: &str = "Probe timed out";
+
 /// Which probe strategy applies to a target image (port of `ProbeStrategy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbeStrategy {
@@ -338,11 +350,7 @@ impl ImageDiscoveryCoordinator {
             // word where a reason should be.
             let diagnosis = self.diagnose(services, &token, &job_id, &msg).await;
             self.best_effort_delete(services, &token, &job_id).await;
-            let category = if msg.contains("timed out") {
-                category::JOB_TIMED_OUT
-            } else {
-                category::UNKNOWN
-            };
+            let category = failure_category(&msg);
             self.remember(image_id, &params, &job_id, JobOutcome::Failed, &diagnosis);
             return self.fail(image_id, category, &diagnosis, Some(job_id));
         }
@@ -475,11 +483,33 @@ impl ImageDiscoveryCoordinator {
     ) -> Result<(), String> {
         let mut ever_seen = false;
         let mut race_attempt = 0usize;
+        let mut consecutive_errors = 0usize;
 
         for _ in 0..self.max_polls {
             let jobs = match services.sessions.get_sessions(token).await {
-                Ok(j) => j,
-                Err(e) => return Err(format!("poll: {e}")),
+                Ok(jobs) => {
+                    consecutive_errors = 0;
+                    jobs
+                }
+                // One failed poll is not a failed job.
+                //
+                // This used to give up on the first error, so a 500 from an
+                // unrelated CADC service — the identity service behind
+                // `/ac/search` timing out, say — killed a probe that was
+                // running perfectly well, and reported the job as the thing
+                // that failed. The listing is how we WATCH the job, not part of
+                // it; losing sight of it briefly says nothing about the job.
+                Err(e) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS {
+                        return Err(format!(
+                            "could not reach the sessions listing {consecutive_errors} times \
+                             running while waiting for the job: {e}"
+                        ));
+                    }
+                    tokio::time::sleep(self.poll_delay).await;
+                    continue;
+                }
             };
 
             match jobs.iter().find(|s| s.id == job_id) {
@@ -516,7 +546,7 @@ impl ImageDiscoveryCoordinator {
                 }
             }
         }
-        Err("Probe timed out".to_string())
+        Err(PROBE_TIMED_OUT.to_string())
     }
 
     /// The signed-in account name, or why it could not be had.
@@ -826,6 +856,20 @@ fn decode_auth_header(header: &str) -> Option<(String, String)> {
     let text = String::from_utf8(decoded).ok()?;
     let (user, secret) = text.split_once(':')?;
     Some((user.to_string(), secret.to_string()))
+}
+
+/// Which category a poll failure belongs to.
+///
+/// Matched against the phrase THIS code produces, not any phrase containing
+/// "timed out". A `Connection timed out` reported by a CADC service we merely
+/// poll through was being filed as "the probe took too long", which sends the
+/// reader looking at the job when the job was fine.
+fn failure_category(message: &str) -> &'static str {
+    if message.starts_with(PROBE_TIMED_OUT) {
+        category::JOB_TIMED_OUT
+    } else {
+        category::UNKNOWN
+    }
 }
 
 /// Whether a published manifest may stand in for a fresh probe.
@@ -1178,6 +1222,81 @@ mod tests {
         drop(g1);
         // Slot released → reclaimable.
         assert!(coord.claim_in_flight("img:1").is_some());
+    }
+}
+
+#[cfg(test)]
+mod poll_resilience {
+    //! Watching a job is not part of the job.
+
+    use super::*;
+
+    const SOURCE: &str = include_str!("image_discovery_coordinator.rs");
+
+    #[test]
+    fn a_transient_listing_failure_is_retried_rather_than_fatal() {
+        // The poll loop used to `return Err` on the first error, so a 500 from
+        // an unrelated CADC service — the identity service behind /ac/search
+        // timing out — killed a probe that was running perfectly well, and
+        // reported the JOB as the thing that failed.
+        let code = SOURCE;
+        let at = code
+            .find("async fn poll_until_terminal")
+            .expect("poll_until_terminal is gone");
+        let end = code[at..]
+            .find("\n    }\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        let body = &code[at..end];
+
+        assert!(
+            body.contains("consecutive_errors"),
+            "a failed poll is fatal again"
+        );
+        assert!(
+            body.contains("MAX_CONSECUTIVE_POLL_ERRORS"),
+            "the retry has no bound, so an outage hangs the probe until max_polls"
+        );
+        // Reset on success, or a slow trickle of errors spread over ten minutes
+        // eventually adds up to a write-off.
+        assert!(
+            body.contains("consecutive_errors = 0"),
+            "the error count is never reset by a successful poll"
+        );
+    }
+
+    /// One retry is not resilience. At the 3s poll interval this is about half
+    /// a minute of an unrelated service being unreachable. A const assertion,
+    /// so cutting the tolerance back does not compile.
+    const _: () = assert!(MAX_CONSECUTIVE_POLL_ERRORS >= 5);
+
+    #[test]
+    fn a_connection_timeout_is_not_the_probe_timing_out() {
+        // "Connection timed out" contains "timed out", and a `contains` test
+        // filed it as JobTimedOut — telling the reader the probe took too long
+        // when the probe was fine and the network was not.
+        assert_eq!(
+            failure_category(
+                "could not reach the sessions listing 10 times running while \
+                 waiting for the job: Server error (500): unexpected exception: \
+                 ca.nrc.cadc.net.RemoteServiceException: url=https://ws-cadc.canfar.net/ac/search \
+                 Connection timed out"
+            ),
+            category::UNKNOWN
+        );
+    }
+
+    #[test]
+    fn the_probe_running_out_of_time_still_says_so() {
+        assert_eq!(failure_category(PROBE_TIMED_OUT), category::JOB_TIMED_OUT);
+    }
+
+    #[test]
+    fn a_failed_job_state_is_not_a_timeout() {
+        assert_eq!(
+            failure_category("job ended in failed state: Failed"),
+            category::UNKNOWN
+        );
     }
 }
 

@@ -388,3 +388,42 @@ fn parse_image_label(full_image: &str) -> String {
         .unwrap_or(full_image)
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    const SOURCE: &str = include_str!("batch_jobs_dialog.rs");
+
+    #[test]
+    fn the_dialog_is_what_filters_by_state() {
+        // The counterpart to the guard in batch_jobs_view: the tile hands over
+        // everything, so the per-tab filtering has to happen here or every tab
+        // shows every job.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("fn build_state_tab")
+            .expect("build_state_tab is gone");
+        let end = code[at..]
+            .find("\n}\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        assert!(
+            code[at..end].contains("of_state(all_entries, state)"),
+            "a tab no longer selects the jobs in its own state"
+        );
+    }
+
+    #[test]
+    fn every_state_gets_a_tab_and_so_does_the_history() {
+        let code = crate::testing::code(SOURCE);
+        for state in ["Pending", "Running", "Completed", "Failed"] {
+            assert!(
+                code.contains(&format!("BatchJobState::{state}")),
+                "no tab for {state}"
+            );
+        }
+        assert!(
+            code.contains("build_history_tab("),
+            "the History tab is gone"
+        );
+    }
+}

@@ -125,7 +125,13 @@ impl BatchJobsView {
         for (btn, state) in states {
             let v = view.clone();
             btn.connect_clicked(move |_| {
-                let jobs = batch_jobs_helper::of_state(&v.entries.borrow(), state);
+                // EVERY job, and which tab to open on — not just this tile's.
+                //
+                // This passed `of_state(...)`, so the dialog built its four
+                // tabs from a list already filtered to one of them: whichever
+                // tile you clicked had rows and the other three were empty,
+                // whatever the counts beside them said.
+                let jobs = v.entries.borrow().clone();
                 if let Some(cb) = v.on_state_click.borrow().as_ref() {
                     cb(state, jobs);
                 }
@@ -411,6 +417,37 @@ fn make_stat_tile(state: BatchJobState) -> (gtk::Button, gtk::Label) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SOURCE: &str = include_str!("batch_jobs_view.rs");
+
+    #[test]
+    fn a_tile_hands_the_dialog_every_job_not_just_its_own() {
+        // The click handler passed `of_state(...)`, so the dialog built its
+        // four tabs from a list already filtered to one of them: whichever tile
+        // you clicked had rows and the other three were empty, whatever the
+        // counts beside them said. Filtering is the DIALOG's job — it has a tab
+        // per state and does it there.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("btn.connect_clicked")
+            .expect("the tiles no longer open the dialog");
+        // Code only: the comment above the handler explains the bug by naming
+        // it, and prose about a defect is not the defect.
+        let handler: String = code[at..(at + 700).min(code.len())]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !handler.contains("of_state("),
+            "the tile filters before the dialog does, so three of its four tabs \
+             are always empty"
+        );
+        assert!(
+            handler.contains("cb(state, jobs)"),
+            "the dialog is no longer told which tab to open on"
+        );
+    }
 
     #[test]
     fn a_transition_carries_what_a_history_record_needs() {
