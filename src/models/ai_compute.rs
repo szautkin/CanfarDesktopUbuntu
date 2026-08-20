@@ -60,15 +60,42 @@ impl Default for AIComputeSettings {
 }
 
 impl AIComputeSettings {
+    /// The image reference to launch, from whichever field actually carries it,
+    /// with the repository to qualify it by — or `None` when nothing does.
+    ///
+    /// Normally that is the Compute image field. But "Registry repository
+    /// (project)" sits right above it and reads like the place a full
+    /// `project/name:tag` belongs, so that is where one gets typed — leaving
+    /// the image field empty, run_code silently off, and every other row on the
+    /// screen saying the configuration is fine, credentials included.
+    ///
+    /// A repository carrying a TAG is a complete reference and is taken as one.
+    /// A bare `private-test` has no tag and is left alone, so the ordinary
+    /// host + repository + image composition is untouched.
+    fn image_source(&self) -> Option<(&str, &str)> {
+        let image = self.image.trim();
+        if !image.is_empty() {
+            return Some((image, self.registry_repository.trim()));
+        }
+        let repository = self.registry_repository.trim();
+        // Qualifying it by itself would double the project segment.
+        (repository.contains(':')).then_some((repository, ""))
+    }
+
     /// run_code / start_compute are enabled only when a compute image is set.
     pub fn is_enabled(&self) -> bool {
-        !self.image.trim().is_empty()
+        self.image_source().is_some()
     }
 
     /// The compute image to launch, expanded to a full registry reference from
     /// the configured host + repository. Empty when run_code is disabled.
     pub fn resolve_image(&self) -> String {
-        resolve_registry_image(&self.image, &self.registry_host, &self.registry_repository)
+        match self.image_source() {
+            Some((image, repository)) => {
+                resolve_registry_image(image, &self.registry_host, repository)
+            }
+            None => String::new(),
+        }
     }
 
     /// The clamped (cores, ram) for the lazy compute launch.
@@ -313,6 +340,86 @@ mod tests {
         assert_eq!(s.ram, 1);
         assert_eq!(s.registry_host, DEFAULT_REGISTRY_HOST);
         assert_eq!(s.resolve_image(), "");
+    }
+
+    #[test]
+    fn a_full_reference_in_the_repository_field_still_launches() {
+        // What a real configuration looked like: everything filled, credentials
+        // verified, run_code off — because the whole reference had been typed
+        // into "Registry repository (project)", one row above the field that is
+        // actually checked, and nothing said so.
+        let s = AIComputeSettings {
+            image: String::new(),
+            registry_host: "images.canfar.net".to_string(),
+            registry_repository: "private-test/verbinal-execution:0.0.1".to_string(),
+            ..Default::default()
+        };
+        assert!(s.is_enabled());
+        assert_eq!(
+            s.resolve_image(),
+            "images.canfar.net/private-test/verbinal-execution:0.0.1",
+            "the project segment was doubled"
+        );
+    }
+
+    #[test]
+    fn a_bare_project_in_the_repository_field_is_still_just_a_project() {
+        // No tag, so it is what the label says and composition is unchanged.
+        let s = AIComputeSettings {
+            image: String::new(),
+            registry_repository: "private-test".to_string(),
+            ..Default::default()
+        };
+        assert!(!s.is_enabled());
+        assert_eq!(s.resolve_image(), "");
+
+        let s = AIComputeSettings {
+            image: "verbinal-compute:1.0".to_string(),
+            registry_host: "images.canfar.net".to_string(),
+            registry_repository: "private-test".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.resolve_image(),
+            "images.canfar.net/private-test/verbinal-compute:1.0"
+        );
+    }
+
+    #[test]
+    fn a_project_qualified_image_beside_its_own_project_is_not_doubled() {
+        // The configuration that works today, exactly as it sits on disk: the
+        // full reference in "Compute image", the project on its own in
+        // "Registry repository". Both name `private-test`, and a naive
+        // host + repository + image composition would launch
+        // `images.canfar.net/private-test/private-test/verbinal-execution:0.0.1`
+        // — a pull failure that reads like a missing image rather than a
+        // mangled name.
+        let s = AIComputeSettings {
+            image: "private-test/verbinal-execution:0.0.1".to_string(),
+            registry_host: "images.canfar.net".to_string(),
+            registry_repository: "private-test".to_string(),
+            ..Default::default()
+        };
+        assert!(s.is_enabled());
+        assert_eq!(
+            s.resolve_image(),
+            "images.canfar.net/private-test/verbinal-execution:0.0.1",
+            "the project segment was doubled"
+        );
+    }
+
+    #[test]
+    fn the_image_field_wins_when_both_are_filled() {
+        let s = AIComputeSettings {
+            image: "chosen:1.0".to_string(),
+            registry_host: "images.canfar.net".to_string(),
+            registry_repository: "proj/other:2.0".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.resolve_image(),
+            "images.canfar.net/proj/other:2.0/chosen:1.0"
+        );
     }
 
     #[test]

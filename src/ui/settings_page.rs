@@ -76,6 +76,27 @@ pub struct SettingsPage {
     config: Rc<RefCell<AppConfig>>,
 }
 
+/// Show `example` inside an empty entry row, as placeholder text.
+///
+/// `AdwEntryRow` has no placeholder of its own — an empty one shows its title
+/// and nothing else, and a title is not an example. "Registry repository
+/// (project)" gave no hint that it wanted `private-test` rather than
+/// `private-test/verbinal-execution:0.0.1`, so a whole configuration read as
+/// complete — credentials verified and all — with run_code switched off.
+///
+/// Takes any `Editable` so the password rows are covered by the same function:
+/// `AdwPasswordEntryRow` is not an `AdwEntryRow`, but a secret is still a field
+/// somebody has to fill in, and it still needs to say what it wants.
+///
+/// Reached through `Editable::delegate()`, the documented way to the row's
+/// inner `GtkText`. Walking its children would be a guess about libadwaita's
+/// internals that stops working without warning.
+fn with_example(row: &impl IsA<gtk::Editable>, example: &str) {
+    if let Some(text) = row.as_ref().delegate().and_downcast::<gtk::Text>() {
+        text.set_placeholder_text(Some(example));
+    }
+}
+
 impl SettingsPage {
     pub fn new(services: Arc<AppServices>) -> Self {
         let config = Rc::new(RefCell::new(services.settings.load()));
@@ -675,9 +696,13 @@ impl SettingsPage {
 
         let rows: Rc<RefCell<Vec<adw::EntryRow>>> = Rc::new(RefCell::new(Vec::new()));
 
-        for &(title, _default, getter, setter) in ENDPOINT_FIELDS.iter() {
+        for &(title, default, getter, setter) in ENDPOINT_FIELDS.iter() {
             let row = adw::EntryRow::new();
             row.set_title(title);
+            // The shipped default, as the example. An endpoint someone has
+            // cleared then shows what it was — the one thing needed to put it
+            // back, and already here in the table.
+            with_example(&row, default);
             row.set_text(getter(&self.config.borrow()));
 
             let config = self.config.clone();
@@ -847,6 +872,10 @@ impl SettingsPage {
         // Inspector image. Blank resets to the default (handled in the setter).
         let inspector_row = adw::EntryRow::new();
         inspector_row.set_title(crate::tr_en!("Inspector image"));
+        with_example(
+            &inspector_row,
+            crate::tr_en!("e.g. skaha/terminal:1.1.2 — a headless image that can inspect others"),
+        );
         inspector_row.set_text(&inspector0);
         {
             let service = service.clone();
@@ -859,6 +888,7 @@ impl SettingsPage {
         // Registry host.
         let host_row = adw::EntryRow::new();
         host_row.set_title(crate::tr_en!("Registry host"));
+        with_example(&host_row, crate::tr_en!("e.g. images.canfar.net"));
         host_row.set_text(&host0);
         {
             let service = service.clone();
@@ -871,6 +901,10 @@ impl SettingsPage {
         // Registry repository (project/namespace).
         let repo_row = adw::EntryRow::new();
         repo_row.set_title(crate::tr_en!("Registry repository (project)"));
+        with_example(
+            &repo_row,
+            crate::tr_en!("e.g. private-test — the project only, no image name"),
+        );
         repo_row.set_text(&repo0);
         {
             let service = service.clone();
@@ -883,6 +917,7 @@ impl SettingsPage {
         // Registry username.
         let username_row = adw::EntryRow::new();
         username_row.set_title(crate::tr_en!("Registry username"));
+        with_example(&username_row, crate::tr_en!("Your CADC username"));
         username_row.set_text(&user0);
         {
             let service = service.clone();
@@ -896,6 +931,12 @@ impl SettingsPage {
         // suffix label reports whether one is on file, plus a Remove button.
         let secret_row = adw::PasswordEntryRow::new();
         secret_row.set_title(crate::tr_en!("Registry secret (Harbor CLI secret)"));
+        // Not the CADC password: Harbor issues a separate CLI secret, and
+        // typing the account password here fails with a plain "unauthorized".
+        with_example(
+            &secret_row,
+            crate::tr_en!("The CLI secret from your Harbor user profile — not your CADC password"),
+        );
         secret_row.set_show_apply_button(true);
 
         let secret_status = gtk::Label::new(None);
@@ -1132,14 +1173,54 @@ impl SettingsPage {
         // Compute image. Blank disables run_code / start_compute (setter trims).
         let image_row = adw::EntryRow::new();
         image_row.set_title(crate::tr_en!("Compute image"));
+        with_example(
+            &image_row,
+            crate::tr_en!("e.g. verbinal-compute:1.0 or project/name:tag"),
+        );
         image_row.set_text(&image0);
+
+        // What run_code will actually launch, and whether it can.
+        //
+        // Named apart from the other groups' `refresh_status` on purpose: this
+        // one answers a different question and they sit in the same file.
+        //
+        // Every other row here reports on itself — the credentials even say
+        // "Credentials valid" — while the single thing that decides whether
+        // run_code works stayed invisible until it was called.
+        let compute_status_row = adw::ActionRow::new();
+        compute_status_row.add_css_class("property");
+        let refresh_compute_status = {
+            let service = service.clone();
+            let row = compute_status_row.clone();
+            Rc::new(move || {
+                let (ready, resolved) = {
+                    let s = service.borrow();
+                    let st = s.settings();
+                    (st.is_enabled(), st.resolve_image())
+                };
+                if ready {
+                    row.set_title(crate::tr_en!("run_code is ready"));
+                    row.set_subtitle(&resolved);
+                } else {
+                    row.set_title(crate::tr_en!("run_code is off"));
+                    row.set_subtitle(crate::tr_en!(
+                        "Set a compute image above — a name like verbinal-compute:1.0, or a \
+                         full project/name:tag reference."
+                    ));
+                }
+            })
+        };
+        refresh_compute_status();
         {
             let service = service.clone();
+            let refresh_compute_status = refresh_compute_status.clone();
             image_row.connect_changed(move |r| {
                 service.borrow_mut().set_image(&r.text());
+                refresh_compute_status();
             });
         }
         group.add(&image_row);
+        group.add(&compute_status_row);
 
         // Cores (1–64; the setter clamps).
         let cores_row = adw::SpinRow::new(
@@ -1197,6 +1278,7 @@ impl SettingsPage {
         // Registry host — blank restores the default in the setter.
         let host_row = adw::EntryRow::new();
         host_row.set_title(crate::tr_en!("Registry host"));
+        with_example(&host_row, crate::tr_en!("e.g. images.canfar.net"));
         host_row.set_text(&host0);
         {
             let service = service.clone();
@@ -1209,6 +1291,10 @@ impl SettingsPage {
         // Registry repository/project — prefixes a short compute image name.
         let repo_row = adw::EntryRow::new();
         repo_row.set_title(crate::tr_en!("Registry repository (project)"));
+        with_example(
+            &repo_row,
+            crate::tr_en!("e.g. private-test — the project only, no image name"),
+        );
         repo_row.set_text(&repo0);
         {
             let service = service.clone();
@@ -1221,6 +1307,7 @@ impl SettingsPage {
         // Registry username.
         let username_row = adw::EntryRow::new();
         username_row.set_title(crate::tr_en!("Registry username"));
+        with_example(&username_row, crate::tr_en!("Your CADC username"));
         username_row.set_text(&user0);
         {
             let service = service.clone();
@@ -1234,6 +1321,12 @@ impl SettingsPage {
         // label reports whether one is on file, plus a Remove button.
         let secret_row = adw::PasswordEntryRow::new();
         secret_row.set_title(crate::tr_en!("Registry secret (Harbor CLI secret)"));
+        // Not the CADC password: Harbor issues a separate CLI secret, and
+        // typing the account password here fails with a plain "unauthorized".
+        with_example(
+            &secret_row,
+            crate::tr_en!("The CLI secret from your Harbor user profile — not your CADC password"),
+        );
         secret_row.set_show_apply_button(true);
 
         let secret_status = gtk::Label::new(None);
@@ -1577,4 +1670,55 @@ fn show_mcp_diagnostics(
     toolbar.set_content(Some(&scroll));
     dialog.set_content(Some(&toolbar));
     dialog.present();
+}
+
+#[cfg(test)]
+mod settings_hint_tests {
+    /// Every text field in Settings shows an example of what belongs in it.
+    ///
+    /// This is the guard for the configuration that read as complete and was
+    /// not: `registry_repository` held `private-test/verbinal-execution:0.0.1`
+    /// because the row said "Registry repository (project)" and nothing said
+    /// what a project looks like. A title names a field; only an example
+    /// settles its shape.
+    ///
+    /// A source scan rather than a widget test because the answer has to hold
+    /// for the field somebody adds next year, and that field will be added
+    /// here — one `EntryRow::new()` at a time.
+    ///
+    /// Matched by position, not by variable name. The image-discovery group and
+    /// the AI-compute group each have a `host_row`, a `repo_row` and a
+    /// `username_row`; searching the file for the name lets either group's hint
+    /// answer for the other, and the first version of this test passed with a
+    /// hint deleted.
+    #[test]
+    fn every_entry_row_in_settings_shows_an_example() {
+        const WINDOW: usize = 12; // construction, title, apply button, hint
+
+        let source = include_str!("settings_page.rs");
+        let code = crate::testing::without_comments(crate::testing::code(source));
+        let lines: Vec<&str> = code.lines().collect();
+
+        let mut hintless = Vec::new();
+        let mut rows = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            let built = line.contains("= adw::EntryRow::new()")
+                || line.contains("= adw::PasswordEntryRow::new()");
+            if !built {
+                continue;
+            }
+            rows += 1;
+            let end = (i + WINDOW).min(lines.len());
+            if !lines[i..end].iter().any(|l| l.contains("with_example(")) {
+                hintless.push(format!("line {}: {}", i + 1, line.trim()));
+            }
+        }
+
+        assert!(rows >= 10, "only {rows} entry rows found — scan broken");
+        assert!(
+            hintless.is_empty(),
+            "Settings field(s) with a title but no example of what goes in \
+             them: {hintless:#?}"
+        );
+    }
 }

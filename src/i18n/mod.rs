@@ -433,6 +433,33 @@ prend en compte à son prochain démarrage."),
     ("Apply filters and re-render",                 "Appliquer les filtres et réafficher"),
     ("Apply filters to ADQL",                       "Appliquer les filtres à l’ADQL"),
     ("Clear filters",                               "Effacer les filtres"),
+    // AI-compute readiness and the settings-field examples.
+    ("run_code is ready",                           "run_code est prêt"),
+    ("run_code is off",                             "run_code est désactivé"),
+    (
+        "Set a compute image above — a name like verbinal-compute:1.0, or a full \
+         project/name:tag reference.",
+        "Indiquez une image de calcul ci-dessus — un nom tel que verbinal-compute:1.0, \
+         ou une référence complète projet/nom:version.",
+    ),
+    (
+        "e.g. verbinal-compute:1.0 or project/name:tag",
+        "ex. verbinal-compute:1.0 ou projet/nom:version",
+    ),
+    ("e.g. images.canfar.net",                      "ex. images.canfar.net"),
+    (
+        "The CLI secret from your Harbor user profile — not your CADC password",
+        "Le secret CLI de votre profil Harbor — et non votre mot de passe CADC",
+    ),
+    (
+        "e.g. private-test — the project only, no image name",
+        "ex. private-test — le projet seulement, sans nom d’image",
+    ),
+    ("Your CADC username",                          "Votre nom d’utilisateur CADC"),
+    (
+        "e.g. skaha/terminal:1.1.2 — a headless image that can inspect others",
+        "ex. skaha/terminal:1.1.2 — une image sans interface capable d’en inspecter d’autres",
+    ),
     // Notebook dependency install, including the PEP 668 refusal.
     ("Install failed: {}",                          "Échec de l’installation : {}"),
     (
