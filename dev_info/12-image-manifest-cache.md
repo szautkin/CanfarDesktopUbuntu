@@ -3,8 +3,15 @@
 _Planned 2026-08-20 · read against `JsonManifestStore`, `ImageDiscoveryCoordinator`, both probe
 scripts, and the Windows and macOS references._
 
-**Status:** Phases 1–3 are implemented. Phase 4 (the grace task) and Phase 5 (registry digests)
-are not started.
+**Status:** Phases 1–3 are implemented, plus one thing this plan did not anticipate: a **bulk
+sync**. The per-image recovery of §2 only fires when you inspect *that* image, so a fresh install
+still showed "Not inspected yet" against images whose manifests were already published. Signing in
+now lists `~/.verbinal/manifests/` and pulls them one at a time, paced, reporting through a
+callback the caller turns into snackbars. It also forced `capturedAt` into the model — without it
+a recovered manifest was stamped with the moment it was downloaded, so one captured three weeks
+ago read as "inspected just now".
+
+Phase 4 (the grace task) and Phase 5 (registry digests) are not started.
 
 ## Short answers
 
