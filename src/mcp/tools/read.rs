@@ -508,8 +508,21 @@ async fn get_service_health(services: &crate::state::AppServices) -> ToolResult 
         })
         .await;
 
-    let reachable_count = results.iter().filter(|r| r.reachable).count();
-    let healthy_count = results.iter().filter(|r| r.ok).count();
+    ToolResult::Data(health_payload(&results))
+}
+
+/// The `get_service_health` result, rendered from probe results.
+///
+/// Split from the probing so the shape can be tested without a network: the
+/// field names are promised by the tool's description — `reachable`, `ok`,
+/// `statusCode`, `healthyCount` — and a promise nothing checks is one a rename
+/// breaks silently. `health_payload_names_the_fields_its_description_promises`
+/// is that check, and it needs a payload it can build from known input.
+///
+/// Names are the reference's (`CanfarDesktop.Tests/Mcp/ServiceHealthToolTests`
+/// asserts the same `count` / `reachableCount` / `healthyCount` / `services[]`
+/// keys), so an agent written against either app reads the other.
+fn health_payload(results: &[crate::services::ServiceProbeResult]) -> Value {
     let entries: Vec<Value> = results
         .iter()
         .map(|r| {
@@ -525,18 +538,121 @@ async fn get_service_health(services: &crate::state::AppServices) -> ToolResult 
         })
         .collect();
 
-    ToolResult::Data(json!({
+    json!({
         "count": entries.len(),
-        "reachableCount": reachable_count,
-        "healthyCount": healthy_count,
+        "reachableCount": results.iter().filter(|r| r.reachable).count(),
+        "healthyCount": results.iter().filter(|r| r.ok).count(),
         "services": entries,
-    }))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::ServiceProbeResult;
     use std::collections::HashSet;
+
+    fn probe(name: &str, reachable: bool, ok: bool, status: Option<u16>) -> ServiceProbeResult {
+        ServiceProbeResult {
+            name: name.to_string(),
+            url: format!("https://example.invalid/{name}"),
+            reachable,
+            ok,
+            status,
+            latency_ms: 42,
+            error: None,
+        }
+    }
+
+    /// The counts mean what the description says they mean.
+    ///
+    /// `reachable` and `ok` differ exactly where it matters: a 404 or a 5xx
+    /// proves the HOST is up and the SERVICE is not, and reporting that as
+    /// healthy was the reference's own QA bug. The same rows as
+    /// `ServiceHealthToolTests` in CanfarDesktop, so both apps answer alike.
+    #[test]
+    fn reachable_and_healthy_are_counted_apart() {
+        let results = [
+            probe("TAP", true, true, Some(200)),
+            probe("Auth", true, false, Some(404)),
+            probe("Storage", true, false, Some(503)),
+            probe("Skaha", true, true, Some(401)),
+        ];
+        let payload = health_payload(&results);
+
+        assert_eq!(payload["count"], json!(4));
+        assert_eq!(payload["reachableCount"], json!(4));
+        assert_eq!(payload["healthyCount"], json!(2), "404 and 503 are not ok");
+        assert_eq!(payload["services"][1]["ok"], json!(false));
+        assert_eq!(payload["services"][1]["statusCode"], json!(404));
+        // 401 is a healthy service asking for credentials, not a broken one.
+        assert_eq!(payload["services"][3]["ok"], json!(true));
+    }
+
+    #[test]
+    fn an_unreachable_service_reports_no_status_and_an_error() {
+        let mut down = probe("Skaha", false, false, None);
+        down.error = Some("Timeout".to_string());
+        let payload = health_payload(&[down]);
+
+        assert_eq!(payload["reachableCount"], json!(0));
+        assert_eq!(payload["services"][0]["statusCode"], json!(null));
+        assert_eq!(payload["services"][0]["error"], json!("Timeout"));
+    }
+
+    /// Every field the description names is a field the payload has.
+    ///
+    /// The description tells an agent to "trust `ok`/`healthyCount`, with
+    /// `statusCode` as the detail". Those names are an API, written in prose,
+    /// two hundred lines from the code that produces them — so renaming
+    /// `statusCode` would leave the tool telling agents to read a field that no
+    /// longer exists, and nothing would have failed.
+    #[test]
+    fn health_payload_names_the_fields_its_description_promises() {
+        let description = descriptors()
+            .into_iter()
+            .find(|d| d.name == "get_service_health")
+            .expect("the tool is registered")
+            .description;
+
+        let payload = health_payload(&[probe("TAP", true, true, Some(200))]);
+        let top: HashSet<&str> = payload
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let per_service: HashSet<&str> = payload["services"][0]
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        // Backticked identifiers in the description are field names; the prose
+        // around them is not backticked.
+        let mut promised = 0usize;
+        let mut missing = Vec::new();
+        for quoted in description.split('`').skip(1).step_by(2) {
+            for field in quoted.split('/') {
+                let field = field.trim();
+                if field.is_empty() || !field.chars().all(|c| c.is_alphanumeric()) {
+                    continue;
+                }
+                promised += 1;
+                if !top.contains(field) && !per_service.contains(field) {
+                    missing.push(field.to_string());
+                }
+            }
+        }
+
+        assert!(promised >= 4, "only {promised} fields named — scan broken");
+        assert!(
+            missing.is_empty(),
+            "the description tells agents to read field(s) the payload does not \
+             have: {missing:#?}"
+        );
+    }
 
     #[test]
     fn descriptors_are_read_and_agent_safe() {
