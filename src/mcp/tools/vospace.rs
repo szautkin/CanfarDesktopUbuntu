@@ -701,6 +701,14 @@ pub async fn apply(
                 ));
             }
             // Read the local file off the async executor.
+            // A VOSpace source here reads as "file not found", which is true and
+            // unhelpful: the file exists, just not on this machine.
+            if let Err(e) = crate::helpers::local_path::reject_remote(
+                &local_path,
+                crate::helpers::local_path::FETCH_IT_FIRST,
+            ) {
+                return Some(Err(e));
+            }
             let lp = local_path.clone();
             let bytes = match tokio::task::spawn_blocking(move || std::fs::read(&lp)).await {
                 Ok(Ok(b)) => b,
@@ -742,6 +750,16 @@ pub async fn apply(
                 return Some(Err("download_vospace_file payload missing path".to_string()));
             }
             let local = str_arg(payload, "local_path");
+            // The two arguments sit side by side and only one of them is
+            // remote. A VOSpace path here would make a local directory called
+            // `vos:`, download into it, and report the bytes as delivered to a
+            // location that looks right and is not.
+            if let Err(e) = crate::helpers::local_path::reject_remote(
+                &local,
+                crate::helpers::local_path::SAVE_THEN_UPLOAD,
+            ) {
+                return Some(Err(e));
+            }
             let dest = if local.is_empty() {
                 let base = path
                     .rsplit('/')

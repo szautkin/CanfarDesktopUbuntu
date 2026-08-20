@@ -821,7 +821,16 @@ impl SearchPage {
         let body = self.export_delimited(delimiter);
 
         let path = match crate::mcp::tools::opt_str_arg(args, "path") {
-            Some(p) => std::path::PathBuf::from(p),
+            Some(p) => {
+                // Without this, `vos:/home/alice/out.csv` is created as a LOCAL
+                // directory named `vos:`, written into, and reported back as
+                // `"exported": true` with the path the caller recognises.
+                crate::helpers::local_path::reject_remote(
+                    &p,
+                    crate::helpers::local_path::SAVE_THEN_UPLOAD,
+                )?;
+                std::path::PathBuf::from(p)
+            }
             None => default_export_path(format),
         };
         if let Some(parent) = path.parent() {

@@ -169,7 +169,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "height": { "type": "integer", "minimum": 16, "maximum": 4096, "description": "Base output height px (default 768), before 'scale'." },
                     "scale": { "type": "integer", "minimum": 1, "maximum": 4, "description": "Resolution multiplier applied to width/height (default 1)." },
                     "transparent": { "type": "boolean", "description": "Clear the 3D background to alpha 0 (default false)." },
-                    "path": { "type": "string", "description": "Absolute output file path. When set, the figure is written to disk (PNG/PDF) and the path is returned instead of base64." },
+                    "path": { "type": "string", "description": "Absolute output path on the LOCAL filesystem — not a VOSpace path. When set, the figure is written to disk (PNG/PDF) and the path is returned instead of base64." },
                     "format": { "type": "string", "enum": ["png", "pdf"], "description": "Output format for a path export; defaults to the path's extension." }
                 },
                 "additionalProperties": false

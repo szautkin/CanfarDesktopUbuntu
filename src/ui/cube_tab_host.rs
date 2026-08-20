@@ -233,6 +233,13 @@ impl CubeTabHost {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "open_cube requires a 'path' string".to_string())?;
+                // `opened: true` is returned unconditionally below, so a path
+                // that could never open has to be refused here or the caller is
+                // told it worked.
+                crate::helpers::local_path::reject_remote(
+                    path,
+                    crate::helpers::local_path::FETCH_IT_FIRST,
+                )?;
                 self.open_path(std::path::Path::new(path));
                 Ok(json!({ "opened": true, "path": path }))
             }
@@ -617,6 +624,13 @@ impl CubeTabHost {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                 {
+                    // A `vos:` path is not absolute either, so the check below
+                    // would catch it — and blame the wrong thing. "must be
+                    // absolute" sends someone to write `/vos:/...`.
+                    crate::helpers::local_path::reject_remote(
+                        path_str,
+                        crate::helpers::local_path::SAVE_THEN_UPLOAD,
+                    )?;
                     let path = std::path::Path::new(path_str);
                     if !path.is_absolute() {
                         return Err("path must be a full (absolute) file path".to_string());

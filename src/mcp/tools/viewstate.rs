@@ -305,6 +305,16 @@ pub async fn dispatch(
                     "path or observationId is required".to_string(),
                 ));
             }
+            // Only when it came in as a path: an observationId is not one, and
+            // resolving it is the UI's job.
+            if args.get("path").is_some() {
+                if let Err(e) = crate::helpers::local_path::reject_remote(
+                    &target,
+                    crate::helpers::local_path::FETCH_IT_FIRST,
+                ) {
+                    return Some(ToolResult::Failed(e));
+                }
+            }
             let outcome = view_state::open_fits(&target).await;
             Some(ToolResult::Data(json!({
                 "opened": outcome.opened,

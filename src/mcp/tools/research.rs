@@ -639,11 +639,24 @@ fn propose_clear(proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
 /// The date in the generated name is deliberate — exporting twice in a week
 /// should not silently overwrite the first bundle.
 fn export_zip_path(args: &Value) -> Result<String, String> {
+    // Both spellings funnel through here, so the local-only rule is applied
+    // once. It matters more than usual: the proposal summary the user approves
+    // would otherwise read "Export research bundle to vos:/…", and they would
+    // be approving a local directory called `vos:`.
+    let local = |p: String| {
+        crate::helpers::local_path::reject_remote(
+            &p,
+            crate::helpers::local_path::USE_THE_UPLOAD_FLAG,
+        )
+        .map(|()| p)
+    };
     if let Some(path) = crate::mcp::tools::opt_str_arg(args, "path") {
-        return Ok(path);
+        return local(path);
     }
-    let folder = crate::mcp::tools::opt_str_arg(args, "destFolder")
-        .ok_or_else(|| "path (or destFolder) is required".to_string())?;
+    let folder = local(
+        crate::mcp::tools::opt_str_arg(args, "destFolder")
+            .ok_or_else(|| "path (or destFolder) is required".to_string())?,
+    )?;
     let name = format!("research-bundle-{}.zip", Utc::now().format("%Y-%m-%d"));
     Ok(std::path::Path::new(&folder)
         .join(name)
@@ -1080,6 +1093,23 @@ pub(super) fn observation_summary(obs: &DownloadedObservation) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_vospace_destination_is_refused_and_points_at_the_flag() {
+        // Both spellings, because the funnel exists so they behave alike. The
+        // proposal summary would otherwise ask the user to approve "Export
+        // research bundle to vos:/…" — a local directory named `vos:`.
+        for args in [
+            serde_json::json!({ "path": "vos:/home/a/bundle.zip" }),
+            serde_json::json!({ "destFolder": "vos:/home/a" }),
+        ] {
+            let err = export_zip_path(&args).expect_err("remote");
+            assert!(err.contains("uploadToVospace"), "{err}");
+        }
+        // And a local one still works, with the date-stamped name appended.
+        let got = export_zip_path(&serde_json::json!({ "destFolder": "/tmp/out" })).expect("local");
+        assert!(got.starts_with("/tmp/out/research-bundle-"), "{got}");
+    }
+
     use super::*;
     use std::collections::HashSet;
 

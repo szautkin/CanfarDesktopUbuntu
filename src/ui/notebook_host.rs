@@ -4,6 +4,7 @@
 //! [`NotebookPage`] instances.  When no notebooks are open it shows a welcome
 //! empty-state page with a list of recently-opened files.
 
+use crate::helpers::local_path;
 use crate::helpers::notebook_parser;
 use crate::helpers::python_discovery;
 use crate::models::notebook_document::{CellOutput, NotebookDocument};
@@ -928,7 +929,7 @@ impl NotebookTabHost {
                     // that path would be created as a LOCAL directory tree and
                     // the save would report success while VOSpace stayed empty —
                     // which is exactly what happened.
-                    crate::helpers::local_path::reject_remote(p)?;
+                    local_path::reject_remote(p, local_path::SAVE_THEN_UPLOAD)?;
                 }
                 match path {
                     Some(p) => page.save_as(PathBuf::from(p)),
@@ -946,8 +947,10 @@ impl NotebookTabHost {
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "path is required".to_string())?;
                 // Same trap in the other direction: a VOSpace path here would
-                // "open" nothing and report a tab that is not the file asked for.
-                crate::helpers::local_path::reject_remote(path)?;
+                // "open" nothing and report a tab that is not the file asked
+                // for. The remedy flips with it — the file has to be fetched
+                // here before it can be opened here.
+                local_path::reject_remote(path, local_path::FETCH_IT_FIRST)?;
                 self.load_from_path(&PathBuf::from(path));
                 let page = self
                     .current_page()

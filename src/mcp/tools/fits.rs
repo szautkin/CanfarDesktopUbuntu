@@ -269,9 +269,14 @@ fn to_tool_result(r: Result<Value, String>) -> ToolResult {
 /// is still accepted, since Verbinal shipped that spelling first.
 fn require_path(args: &Value) -> Result<String, String> {
     let from = |key: &str| super::opt_str_arg(args, key).filter(|s: &String| !s.is_empty());
-    from("localPath")
+    let path = from("localPath")
         .or_else(|| from("path"))
-        .ok_or_else(|| "localPath is required".to_string())
+        .ok_or_else(|| "localPath is required".to_string())?;
+    // cfitsio opens files, not URLs. Without this the failure surfaces as a
+    // cfitsio error about a file that does not exist — true, and no help at all
+    // to someone whose file plainly does exist, just not here.
+    crate::helpers::local_path::reject_remote(&path, crate::helpers::local_path::FETCH_IT_FIRST)?;
+    Ok(path)
 }
 
 fn get_fits_header(args: &Value) -> Result<Value, String> {
@@ -575,6 +580,18 @@ mod tests {
         );
         assert!(require_path(&json!({})).is_err());
         assert!(require_path(&json!({ "localPath": "   " })).is_err());
+    }
+
+    #[test]
+    fn a_vospace_path_is_refused_before_cfitsio_sees_it() {
+        // cfitsio would report a file that does not exist. It does exist — the
+        // caller is simply not on the machine that has it, and the error has to
+        // say which of those two things went wrong.
+        for key in ["localPath", "path"] {
+            let err = require_path(&json!({ key: "vos://cadc.nrc.ca~arc/home/a/x.fits" }))
+                .expect_err(key);
+            assert!(err.contains("download_vospace_file"), "{err}");
+        }
     }
 
     #[test]

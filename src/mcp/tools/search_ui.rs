@@ -261,7 +261,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "type": "object",
                 "properties": {
                     "format": {"type": "string", "enum": ["csv", "tsv"], "description": "Default csv."},
-                    "path": {"type": "string", "description": "Destination file path. Defaults to the Downloads folder."}
+                    "path": {"type": "string", "description": "Destination path on the LOCAL filesystem — not a VOSpace path. Defaults to the Downloads folder."}
                 },
                 "additionalProperties": false
             }),
