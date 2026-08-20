@@ -2,6 +2,78 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [1.3.4] - 2026-08-20
+
+A bug-fix release. Everything below was found by using the app against the
+live service, and every one was confirmed by measurement or by a live request
+rather than by reasoning about the code.
+
+### Image inspection worked for nobody
+
+Four separate defects stacked on the same feature, each hiding the next.
+
+- **The probe wrote its manifest where the app never looks.** Both scripts
+  publish to `~/.verbinal/manifests/` and echo only `ok: <path>`. This port
+  recovers the manifest from the job's *stdout* and then deletes the job, so
+  every inspection reported "job produced no manifest JSON in its logs". Worse,
+  every error branch writes a stub manifest whose `probeNotes` says exactly what
+  went wrong — to the same unread file. Both scripts now print the manifest on
+  every path that publishes one, with status on stderr.
+- **The script never reached the container.** Skaha reads a single `args`
+  value, and the launch sent one form field per argument — so `bash -c <script>`
+  arrived as `bash -c` and died with *"option requires an argument"*. The
+  reference uploads the script and passes its path; that half of the port had
+  never been finished. The same bug meant a user's `python run.py --fast` ran
+  `python run.py`, silently.
+- **`mktemp --suffix=` is GNU.** The inspector image is Alpine, so mktemp is
+  BusyBox's: it printed usage, the assignment came back empty, and the next line
+  died on an empty filename. Both scripts are POSIX now, checked by a deny-list
+  and by actually running them under a BusyBox-only PATH.
+- **One failed poll killed a healthy job.** A 500 from the CADC identity service
+  behind `/ac/search` aborted probes that were running fine, and blamed the job.
+
+### Failures you can now read
+
+- **Batch Jobs kept nothing.** CANFAR reaps finished headless jobs and the
+  discovery coordinator deletes its own probes within seconds, so the Completed
+  and Failed tiles were structurally always zero. The last 50 finished jobs are
+  remembered with the reason each failure failed — captured while the job still
+  existed, since its logs die with it — and the tiles count them.
+- **"Job ended in failed state: Failed"** was a status word, not a reason. The
+  job's logs and events are now read *before* it is deleted.
+- **The Batch Jobs modal showed only the tile you clicked**; its other three
+  tabs were always empty.
+
+### Search
+
+- **Filters accept boolean expressions**: `!`, `&`, `|` and parentheses over
+  CADC's own condition syntax (`a..b`, `>=`, `=`, substring). `!tess & !apass`
+  was previously read as one literal string, matched nothing, and — negated —
+  kept every row. The syntax is documented in a **?** popover beside the filter
+  buttons, not only in a tooltip.
+- **A new search no longer inherits the last one's filters.**
+- **Paging a large result set took nine seconds.** The column-width helper
+  measures a heading with Pango, and the row loop called it once per *cell* —
+  1,500 text-shaping runs per page turn. Memoised. Rows also built the
+  detail-modal payload for all 41 columns up front, for a modal that usually
+  never opens.
+
+### Images and the Portal
+
+- **"Use this image" did nothing** from the images card or from the
+  find-by-package dialog opened from it: it activated an app action that was
+  never registered, and GIO logs that and carries on.
+- **Manifests are shared through your VOSpace.** Every probe has always
+  published one there; nothing read it. Signing in now pulls them in the
+  background, paced, so a second machine or a reinstall costs no jobs.
+- **The find-by-package modal rendered 4,652 checkboxes per keystroke** — a real
+  catalogue facets to that many values. Capped, with ticked values always kept.
+- **Home is the landing page after sign-in**, not the Portal.
+- The Portal's primary column (sessions, launch form) gets two thirds of the
+  width instead of half.
+- **Session Templates is gone.** Recent Launches is a strict superset of what it
+  stored, records automatically, and its list actually refreshed.
+
 ## [1.3.3] - 2026-08-14
 
 Parity with the CanfarDesktop 1.3.2 + 1.3.3 (Windows) generation. 1.3.2 was
