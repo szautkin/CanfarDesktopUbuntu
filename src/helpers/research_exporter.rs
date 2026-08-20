@@ -161,7 +161,7 @@ pub async fn upload_bundle(
 
     // The folder usually exists already — every export after the first — so a
     // failure here is not an error; the upload below is the real test.
-    let _ = vospace.create_folder(token, username, EXPORT_FOLDER).await;
+    let _ = vospace.ensure_folder(token, username, EXPORT_FOLDER).await;
 
     let bytes = std::fs::read(local_path)
         .map_err(|e| format!("could not read {} back: {e}", local_path.display()))?;

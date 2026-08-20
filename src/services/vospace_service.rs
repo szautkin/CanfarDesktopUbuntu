@@ -72,6 +72,18 @@ impl BoundedReader {
 /// while the folder was invisible, and there was no way to tell from outside
 /// whether the request had been made, where it went, or what the service said.
 /// A toast reports the *app's* belief; this reports the exchange.
+/// Whether an error means the node already exists.
+///
+/// VOSpace signals it as `409` with a `DuplicateNode` body; both are checked,
+/// since the status alone is what the spec promises and the body is what makes
+/// it unambiguous.
+fn is_already_there(error: &ApiError) -> bool {
+    match error {
+        ApiError::Server { status, body } => *status == 409 || body.contains("DuplicateNode"),
+        _ => false,
+    }
+}
+
 fn log_storage(action: &str, url: &str, outcome: &Result<(), ApiError>) {
     match outcome {
         Ok(()) => eprintln!("[storage] {action} {url} -> ok"),
@@ -119,6 +131,32 @@ impl VoSpaceService {
         vospace_parser::parse_nodes(&xml_text).map_err(ApiError::Parse)
     }
 
+    /// Make sure a folder exists, without treating "it already does" as a
+    /// failure.
+    ///
+    /// VOSpace answers a repeat `setNode` with `409 DuplicateNode`, and
+    /// [`Self::create_folder`] reports that faithfully — which is right when a
+    /// user asked to create a folder and one is already there, and wrong for
+    /// the callers whose intent is "make sure the path is there". Those were
+    /// swallowing the error and leaving a line reading
+    /// `MKDIR … -> FAILED: DuplicateNode` in the log on every run: an alarming
+    /// message about the expected case.
+    ///
+    /// Two methods rather than one lenient one, because the strict answer is
+    /// load-bearing: the storage browser's New Folder must still tell the user
+    /// their name is taken.
+    pub async fn ensure_folder(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+    ) -> Result<(), ApiError> {
+        match self.create_folder(token, username, path).await {
+            Err(e) if is_already_there(&e) => Ok(()),
+            other => other,
+        }
+    }
+
     /// Create a folder at the given path under the user's home.
     pub async fn create_folder(
         &self,
@@ -144,7 +182,15 @@ impl VoSpaceService {
             .await?;
 
         let outcome = check_response(resp).await.map(|_| ());
-        log_storage("MKDIR", &url, &outcome);
+        // "Already there" is not a failure to report, whichever caller asked:
+        // for `ensure_folder` it is the success case, and for `create_folder`
+        // the CALLER turns it into a message for the user. Logging it as FAILED
+        // put an alarming line in the log for the expected case.
+        if outcome.as_ref().err().is_some_and(is_already_there) {
+            eprintln!("[storage] MKDIR {url} -> already exists");
+        } else {
+            log_storage("MKDIR", &url, &outcome);
+        }
         outcome
     }
 
@@ -423,6 +469,84 @@ impl VoSpaceService {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nobody_ignores_the_strict_create() {
+        // `let _ = create_folder(...)` says "I do not care whether this worked",
+        // which is never true — the caller cares about everything EXCEPT
+        // already-exists, and that is what `ensure_folder` expresses. Four
+        // callers wrote it the ignoring way, and between them logged
+        // "MKDIR … -> FAILED: DuplicateNode" on every ordinary run while also
+        // swallowing quota and permission errors without a word.
+        let mut offenders: Vec<String> = Vec::new();
+        for (path, text) in crate::testing::rust_sources() {
+            let code = crate::testing::without_comments(crate::testing::code(&text));
+            if code.contains("let _ = ") && code.contains(".create_folder(") {
+                for line in code.lines() {
+                    if line.contains("let _ =") && line.contains("create_folder") {
+                        offenders.push(format!("{}: {}", path.display(), line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "ignoring the result of the strict create — use ensure_folder: {offenders:#?}"
+        );
+    }
+
+    #[test]
+    fn the_strict_create_is_still_used_where_a_taken_name_matters() {
+        // `ensure_folder` must not become the only one. When a person types a
+        // folder name in the storage browser, or an agent asks for one, "that
+        // name is taken" is the answer they need.
+        let browser = crate::testing::rust_sources()
+            .into_iter()
+            .any(|(path, text)| {
+                path.ends_with("vospace_browser.rs") && text.contains(".create_folder(")
+            });
+        assert!(browser, "New Folder no longer reports a name collision");
+    }
+
+    #[test]
+    fn a_duplicate_node_means_the_folder_is_already_there() {
+        // VOSpace answers a repeat setNode with 409 DuplicateNode. For a caller
+        // whose intent is "make sure this path exists", that IS success.
+        assert!(is_already_there(&ApiError::Server {
+            status: 409,
+            body: "DuplicateNode: vos://cadc.nrc.ca~arc/home/u/.verbinal".into(),
+        }));
+        // The status alone is what the spec promises; the body is what makes it
+        // unambiguous. Either is enough.
+        assert!(is_already_there(&ApiError::Server {
+            status: 409,
+            body: String::new(),
+        }));
+        assert!(is_already_there(&ApiError::Server {
+            status: 500,
+            body: "DuplicateNode".into(),
+        }));
+    }
+
+    #[test]
+    fn a_real_failure_is_still_a_failure() {
+        // `ensure_folder` swallows exactly one condition. Quota, permissions and
+        // an expired session must all still reach the caller.
+        for error in [
+            ApiError::Server {
+                status: 403,
+                body: "PermissionDenied".into(),
+            },
+            ApiError::Server {
+                status: 500,
+                body: "internal".into(),
+            },
+            ApiError::Unauthorized,
+            ApiError::Network("timed out".into()),
+        ] {
+            assert!(!is_already_there(&error), "{error} was treated as success");
+        }
+    }
     use super::*;
 
     /// The node URI in the body must be the node the URL addresses.

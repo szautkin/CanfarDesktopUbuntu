@@ -752,11 +752,12 @@ impl ImageDiscoveryCoordinator {
             return Ok(absolute);
         }
 
-        // The directory may not exist yet; a failure here is not fatal on its
-        // own, because the usual cause is that it already does.
+        // Idempotent: "already there" is the success case for this caller, and
+        // the strict `create_folder` is for the storage browser, where a taken
+        // name is something the user has to be told about.
         let _ = services
             .vospace
-            .create_folder(token, username, HOME_SUBDIR)
+            .ensure_folder(token, username, HOME_SUBDIR)
             .await;
 
         services

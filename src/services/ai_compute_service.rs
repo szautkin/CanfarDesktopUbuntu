@@ -306,12 +306,15 @@ impl AIComputeService {
         user: &str,
     ) -> Result<(), String> {
         for level in RunCodeContract::inbox_tree_levels() {
-            match services.vospace.create_folder(token, user, level).await {
-                Ok(()) => {}
-                // Already exists — fine.
-                Err(ApiError::Server { status: 409, .. }) => {}
-                Err(e) => return Err(e.to_string()),
-            }
+            // `ensure_folder` owns the already-exists rule. This had its own
+            // copy, matching on the 409 status alone — so a service that
+            // signalled DuplicateNode with any other status would have failed
+            // the whole tree.
+            services
+                .vospace
+                .ensure_folder(token, user, level)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }

@@ -230,7 +230,7 @@ impl WorkflowStore {
 
         // The folder usually exists; the upload below is the real test, so a
         // failure here is deliberately ignored rather than aborting.
-        let _ = vospace.create_folder(token, username, VOSPACE_FOLDER).await;
+        let _ = vospace.ensure_folder(token, username, VOSPACE_FOLDER).await;
 
         let remote = format!(
             "{VOSPACE_FOLDER}/{}{FILE_EXTENSION}",
