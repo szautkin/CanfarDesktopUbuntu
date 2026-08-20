@@ -1462,6 +1462,7 @@ impl SignedInChrome {
         self.welcome.set_authenticated(true);
         build_dashboard(&self.portal_page, services, &self.dashboard).await;
         self.vospace.refresh().await;
+        sync_image_manifests(services);
 
         services
             .toast
@@ -1472,6 +1473,58 @@ impl SignedInChrome {
 // ---------------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------------
+
+/// Start the background pull of published image manifests.
+///
+/// Detached, so signing in never waits on it, and paced by the coordinator so
+/// it never competes with what the user is doing. Every manifest a probe has
+/// ever published lives in the user's VOSpace; without this the local cache
+/// learns about one only when that exact image is inspected, so a fresh install
+/// shows "Not inspected yet" against images that were inspected weeks ago on
+/// another machine.
+fn sync_image_manifests(services: &Arc<AppServices>) {
+    let services = Arc::clone(services);
+    glib::spawn_future_local(async move {
+        let toast = services.toast.clone();
+        // Toasts are fire-and-forget with a five-second life, so progress is
+        // reported occasionally rather than per file — forty manifests would
+        // otherwise be forty toasts.
+        let report = move |progress: crate::services::image_discovery_coordinator::SyncProgress| {
+            use crate::services::image_discovery_coordinator::SyncProgress as P;
+            match progress {
+                P::Started { total } => toast.toast(crate::tr_plural!(
+                    total,
+                    "Catching up on {} image manifest from CANFAR…",
+                    "Catching up on {} image manifests from CANFAR…"
+                )),
+                P::Advanced { done, total, .. } if done % SYNC_PROGRESS_EVERY == 0 => {
+                    toast.toast(crate::tr_fmt!("Image manifests: {} of {}", done, total))
+                }
+                P::Advanced { .. } => {}
+                P::Finished(summary) if summary.imported > 0 => toast.toast(crate::tr_plural!(
+                    summary.imported,
+                    "{} image manifest brought over from CANFAR",
+                    "{} image manifests brought over from CANFAR"
+                )),
+                // Nothing new is the normal case on a machine that is already
+                // up to date, and is not worth interrupting anyone for.
+                P::Finished(_) => {}
+            }
+        };
+
+        let coordinator = Arc::clone(&services.image_discovery);
+        // A sync that cannot run — not signed in, no username, VOSpace
+        // unreachable — is nothing to tell the user about: they did not ask for
+        // it, and the per-image recovery still covers everything they inspect.
+        let _ = coordinator.sync_from_vospace(&services, report).await;
+    });
+}
+
+/// How often the manifest sync says how far it has got.
+///
+/// Paced at 400ms a file, ten files is about four seconds — often enough to
+/// look alive, rare enough that the toasts do not stack.
+const SYNC_PROGRESS_EVERY: usize = 10;
 
 /// Build the Portal and load its data, WITHOUT navigating to it.
 ///

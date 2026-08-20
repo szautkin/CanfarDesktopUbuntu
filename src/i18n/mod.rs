@@ -450,6 +450,24 @@ prend en compte à son prochain démarrage."),
     ("Clear history",                               "Effacer l’historique"),
     ("Probe job",                                   "Tâche de sondage"),
     ("inspected {}",                                "inspectée {}"),
+    // Background sync of published image manifests.
+    (
+        "Catching up on {} image manifest from CANFAR…",
+        "Récupération de {} manifeste d’image depuis CANFAR…",
+    ),
+    (
+        "Catching up on {} image manifests from CANFAR…",
+        "Récupération de {} manifestes d’image depuis CANFAR…",
+    ),
+    ("Image manifests: {} of {}",                    "Manifestes d’image : {} sur {}"),
+    (
+        "{} image manifest brought over from CANFAR",
+        "{} manifeste d’image récupéré depuis CANFAR",
+    ),
+    (
+        "{} image manifests brought over from CANFAR",
+        "{} manifestes d’image récupérés depuis CANFAR",
+    ),
     (
         "{} — deleted after the probe finished; the full \
          output is kept under Batch Jobs → History",

@@ -34,6 +34,13 @@ pub struct ImageManifest {
     /// reference keeps it as `ImageManifest.ContentHash` with this same
     /// default; we parsed it and threw it away.
     pub content_hash: String,
+    /// When the probe captured this, in the probe's own words (RFC-3339).
+    ///
+    /// The store stamps its own `discovered_at` when it writes an outcome,
+    /// which is the right answer for a probe we just ran and the wrong one for
+    /// a manifest recovered from VOSpace — one captured three weeks ago would
+    /// otherwise be presented as "inspected just now".
+    pub captured_at: Option<String>,
     pub os_family: Option<String>,
     pub os_version: Option<String>,
     pub os_release: Option<String>,
@@ -65,6 +72,7 @@ impl Default for ImageManifest {
             schema_version: 1,
             image_id: String::new(),
             content_hash: "sha256:none".to_string(),
+            captured_at: None,
             os_family: None,
             os_version: None,
             os_release: None,

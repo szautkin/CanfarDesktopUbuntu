@@ -252,8 +252,8 @@ impl ImageDiscoveryCoordinator {
                     .fetch_manifest_if_present(services, &token, user, image_id)
                     .await
                 {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    self.store.set_manifest(image_id, manifest.clone(), now);
+                    self.store
+                        .set_manifest(image_id, manifest.clone(), captured_at(&manifest));
                     return DiscoveryOutcome::Manifest(manifest);
                 }
             }
@@ -339,8 +339,8 @@ impl ImageDiscoveryCoordinator {
             {
                 self.best_effort_delete(services, &token, &job_id).await;
                 self.remember(image_id, &params, &job_id, JobOutcome::Succeeded, "");
-                let now = chrono::Utc::now().to_rfc3339();
-                self.store.set_manifest(image_id, manifest.clone(), now);
+                self.store
+                    .set_manifest(image_id, manifest.clone(), captured_at(&manifest));
                 return DiscoveryOutcome::Manifest(manifest);
             }
 
@@ -563,6 +563,130 @@ impl ImageDiscoveryCoordinator {
             .username
             .filter(|name| !name.trim().is_empty())
             .ok_or_else(|| "the CANFAR username is empty".to_string())
+    }
+
+    /// Pull every manifest in the user's VOSpace into the local cache, slowly.
+    ///
+    /// The per-image recovery only fires when you inspect THAT image, so a
+    /// fresh install shows "Not inspected yet" against a list of images whose
+    /// manifests are already sitting in the user's home — you would have to
+    /// press Inspect on each one to find out it did not need pressing.
+    ///
+    /// Deliberately unhurried: it lists once, then fetches one file at a time
+    /// with [`SYNC_PACING`] between them. This is background work nobody asked
+    /// for, so it must never compete with what the user is doing — not with
+    /// their bandwidth, and not with VOSpace's attention while they are
+    /// browsing storage in another tab.
+    ///
+    /// One-way, VOSpace → local, successes only. Nothing here writes: every
+    /// manifest originates from a probe that published it, and a locally
+    /// recorded FAILURE is about this machine's attempt, not about the image.
+    /// A local success is replaced only by a strictly newer capture, so a sync
+    /// can never move the cache backwards.
+    ///
+    /// `progress` is called on the caller's thread so it can decide how to
+    /// present this; the coordinator does not know about toasts.
+    pub async fn sync_from_vospace(
+        &self,
+        services: &AppServices,
+        progress: impl Fn(SyncProgress),
+    ) -> Result<SyncSummary, String> {
+        let token = services
+            .get_token()
+            .await
+            .filter(|t| !t.trim().is_empty())
+            .ok_or("not signed in")?;
+        let username = Self::username(services, &token).await?;
+        let dir = format!("{HOME_SUBDIR}/manifests");
+
+        let paths = match services.vospace.list_nodes(&token, &username, &dir).await {
+            Ok(nodes) => nodes
+                .into_iter()
+                .filter(|n| !n.is_container() && n.name.ends_with(".json"))
+                .map(|n| format!("{dir}/{}", n.name))
+                .collect::<Vec<String>>(),
+            // No directory yet simply means nothing has ever been published.
+            Err(_) => Vec::new(),
+        };
+
+        let mut summary = SyncSummary {
+            scanned: paths.len(),
+            ..SyncSummary::default()
+        };
+        if paths.is_empty() {
+            progress(SyncProgress::Finished(summary));
+            return Ok(summary);
+        }
+        progress(SyncProgress::Started { total: paths.len() });
+
+        for (done, path) in paths.iter().enumerate() {
+            match self
+                .import_published(services, &token, &username, path)
+                .await
+            {
+                Import::Imported => summary.imported += 1,
+                Import::AlreadyCurrent => summary.skipped += 1,
+                Import::Unusable => summary.unusable += 1,
+            }
+            progress(SyncProgress::Advanced {
+                done: done + 1,
+                total: paths.len(),
+                imported: summary.imported,
+            });
+            tokio::time::sleep(SYNC_PACING).await;
+        }
+
+        progress(SyncProgress::Finished(summary));
+        Ok(summary)
+    }
+
+    /// Fetch, validate and store one published manifest.
+    async fn import_published(
+        &self,
+        services: &AppServices,
+        token: &str,
+        username: &str,
+        path: &str,
+    ) -> Import {
+        let Ok(bytes) = services.vospace.download_bytes(token, username, path).await else {
+            return Import::Unusable;
+        };
+        let Ok(json) = String::from_utf8(bytes) else {
+            return Import::Unusable;
+        };
+        // The filename is a sanitised id and cannot be reversed, so the
+        // manifest's own `imageID` is the only trustworthy key — here the id is
+        // what we are learning, which is why `usable_manifest`'s
+        // wrote-for-another-image check has nothing to compare against and the
+        // remaining rules are applied directly.
+        let Ok(manifest) = parse_manifest(&json) else {
+            return Import::Unusable;
+        };
+        if manifest.image_id.trim().is_empty()
+            || is_stub_manifest(&manifest, probe_notes_of(&json).as_deref())
+        {
+            return Import::Unusable;
+        }
+
+        let captured = captured_at(&manifest);
+        if !self.worth_importing(&manifest.image_id, &captured) {
+            return Import::AlreadyCurrent;
+        }
+        let image_id = manifest.image_id.clone();
+        self.store.set_manifest(&image_id, manifest, captured);
+        Import::Imported
+    }
+
+    /// Whether a published manifest is news: we hold no success for the image,
+    /// or the published one was captured later than what we hold.
+    fn worth_importing(&self, image_id: &str, captured_at: &str) -> bool {
+        match self.store.get(image_id) {
+            Some(existing) if matches!(existing.outcome, DiscoveryOutcome::Manifest(_)) => {
+                is_newer(captured_at, &existing.discovered_at)
+            }
+            // No entry, or a failure — a published manifest beats both.
+            _ => true,
+        }
     }
 
     /// The manifest a previous probe left in the user's VOSpace, if there is a
@@ -856,6 +980,83 @@ fn decode_auth_header(header: &str) -> Option<(String, String)> {
     let text = String::from_utf8(decoded).ok()?;
     let (user, secret) = text.split_once(':')?;
     Some((user.to_string(), secret.to_string()))
+}
+
+/// How long to wait between manifests.
+///
+/// This is background work nobody asked for. At a few hundred milliseconds a
+/// file, forty manifests take under half a minute and never look like the app
+/// is busy — which is the point. Fetching them back-to-back would spend the
+/// user's bandwidth and VOSpace's attention on something they did not request.
+const SYNC_PACING: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// What happened to one published manifest.
+enum Import {
+    /// The local cache learned something.
+    Imported,
+    /// We already hold a manifest for that image, captured no earlier.
+    AlreadyCurrent,
+    /// Missing, unreadable, unparseable, or a stub a failed probe wrote.
+    Unusable,
+}
+
+/// What one sync did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SyncSummary {
+    /// Manifest files found in the user's VOSpace.
+    pub scanned: usize,
+    /// Files that told the local cache something it did not know.
+    pub imported: usize,
+    /// Files describing an image we already hold at least as fresh a manifest
+    /// for.
+    pub skipped: usize,
+    /// Files that could not be used.
+    pub unusable: usize,
+}
+
+/// How a sync reports itself, so the caller decides how to show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncProgress {
+    Started {
+        total: usize,
+    },
+    Advanced {
+        done: usize,
+        total: usize,
+        imported: usize,
+    },
+    Finished(SyncSummary),
+}
+
+/// Whether `candidate` is strictly later than `existing`.
+///
+/// An unparseable timestamp on either side means "cannot tell", and the answer
+/// is no: a sync that cannot prove it is bringing something newer must leave
+/// the cache alone rather than churn it.
+fn is_newer(candidate: &str, existing: &str) -> bool {
+    use chrono::DateTime;
+    match (
+        DateTime::parse_from_rfc3339(candidate),
+        DateTime::parse_from_rfc3339(existing),
+    ) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => false,
+    }
+}
+
+/// When a manifest was captured: the probe's own timestamp, falling back to now
+/// for one that does not carry it.
+///
+/// The store stamps `discovered_at` at write time, which is right for a probe
+/// we just ran and wrong for one recovered from VOSpace — a manifest captured
+/// three weeks ago would be shown as "inspected just now", which is the one
+/// thing the age label exists to prevent.
+fn captured_at(manifest: &ImageManifest) -> String {
+    manifest
+        .captured_at
+        .clone()
+        .filter(|at| !at.trim().is_empty())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
 }
 
 /// Which category a poll failure belongs to.
@@ -1222,6 +1423,144 @@ mod tests {
         drop(g1);
         // Slot released → reclaimable.
         assert!(coord.claim_in_flight("img:1").is_some());
+    }
+}
+
+#[cfg(test)]
+mod manifest_sync {
+    //! The decisions a sync makes, without a VOSpace to make them against.
+
+    use super::*;
+
+    const SOURCE: &str = include_str!("image_discovery_coordinator.rs");
+
+    fn store_in(name: &str) -> (Arc<JsonManifestStore>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("verbinal_sync_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        (Arc::new(JsonManifestStore::with_dir(dir.clone())), dir)
+    }
+
+    fn coordinator(
+        store: Arc<JsonManifestStore>,
+        dir: &std::path::Path,
+    ) -> ImageDiscoveryCoordinator {
+        ImageDiscoveryCoordinator::new(
+            store,
+            Arc::new(JobHistoryStore::with_dir(dir.to_path_buf())),
+        )
+    }
+
+    fn manifest_for(image_id: &str) -> ImageManifest {
+        ImageManifest {
+            image_id: image_id.to_string(),
+            dpkg: vec!["bash".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_image_we_know_nothing_about_is_worth_importing() {
+        let (store, dir) = store_in("unknown");
+        let coord = coordinator(store, &dir);
+        assert!(coord.worth_importing("img:1", "2026-08-20T10:00:00Z"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_published_manifest_beats_a_local_failure() {
+        // A failure is about THIS machine's attempt — the probe could not be
+        // launched, the poll lost the job — not about the image. A manifest
+        // someone else's probe published answers the question the failure did
+        // not.
+        let (store, dir) = store_in("failure");
+        store.set_failure(
+            "img:1",
+            category::JOB_TIMED_OUT,
+            "boom",
+            None,
+            "2026-08-20T12:00:00Z".into(),
+        );
+        let coord = coordinator(store, &dir);
+        assert!(coord.worth_importing("img:1", "2026-08-20T09:00:00Z"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sync_never_moves_the_cache_backwards() {
+        // Two machines inspecting the same image would otherwise trade places
+        // on every sign-in, each overwriting the other's fresher answer.
+        let (store, dir) = store_in("backwards");
+        store.set_manifest(
+            "img:1",
+            manifest_for("img:1"),
+            "2026-08-20T12:00:00Z".into(),
+        );
+        let coord = coordinator(store, &dir);
+        assert!(
+            !coord.worth_importing("img:1", "2026-08-20T09:00:00Z"),
+            "an older capture replaced a newer one"
+        );
+        assert!(
+            !coord.worth_importing("img:1", "2026-08-20T12:00:00Z"),
+            "an identical capture was rewritten for nothing"
+        );
+        assert!(coord.worth_importing("img:1", "2026-08-20T15:00:00Z"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_timestamp_leaves_the_cache_alone() {
+        // "Cannot tell" must mean "do not touch": churning the cache on a date
+        // we could not parse would make the age label meaningless.
+        let (store, dir) = store_in("undated");
+        store.set_manifest("img:1", manifest_for("img:1"), "not a date".into());
+        let coord = coordinator(store, &dir);
+        assert!(!coord.worth_importing("img:1", "2026-08-20T09:00:00Z"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recovered_manifest_keeps_the_age_the_probe_gave_it() {
+        // The store stamps `discovered_at` at write time, which for a recovery
+        // is the moment we happened to download the file. A manifest captured
+        // three weeks ago would be shown as "inspected just now" — the one
+        // thing the age label exists to prevent.
+        let mut m = manifest_for("img:1");
+        m.captured_at = Some("2026-07-30T08:00:00Z".into());
+        assert_eq!(captured_at(&m), "2026-07-30T08:00:00Z");
+
+        // A manifest without one falls back to now rather than to nothing.
+        m.captured_at = None;
+        assert!(captured_at(&m).starts_with("20"));
+        m.captured_at = Some("   ".into());
+        assert!(captured_at(&m).starts_with("20"));
+    }
+
+    #[test]
+    fn the_sync_is_paced_and_reports_as_it_goes() {
+        // Background work nobody asked for. Fetching back-to-back would spend
+        // the user's bandwidth and VOSpace's attention on something they did
+        // not request, and a sync that says nothing looks like a hang.
+        let at = SOURCE
+            .find("pub async fn sync_from_vospace")
+            .expect("sync_from_vospace is gone");
+        let end = SOURCE[at..]
+            .find("\n    }\n")
+            .map(|e| at + e)
+            .unwrap_or(SOURCE.len());
+        let body = &SOURCE[at..end];
+        assert!(
+            body.contains("SYNC_PACING"),
+            "the sync no longer paces itself"
+        );
+        assert!(
+            body.contains("SyncProgress::Advanced"),
+            "it reports no progress"
+        );
+        assert!(
+            body.contains("SyncProgress::Finished"),
+            "it never says it finished"
+        );
     }
 }
 
