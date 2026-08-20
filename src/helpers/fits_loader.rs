@@ -134,14 +134,12 @@ unsafe fn read_hdu_header_raw(path: &Path, hdu: i32) -> Result<HduHeader, String
 /// Load a specific HDU (1-based) from a FITS file — used by the extension
 /// selector and the cube viewer (spectral-axis extension).
 #[cfg(feature = "fits")]
-#[allow(dead_code)]
 pub fn load_fits_image_hdu(path: &Path, hdu: usize) -> Result<FitsImageData, String> {
     unsafe { load_fits_image_raw(path, Some(hdu as i32)) }
 }
 
 /// Enumerate all HDUs in a FITS file (index, name, dimensions, image flag).
 #[cfg(feature = "fits")]
-#[allow(dead_code)]
 pub fn list_hdus(path: &Path) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
     unsafe { list_hdus_raw(path) }
 }
@@ -388,7 +386,6 @@ unsafe fn load_fits_image_raw(
 }
 
 #[cfg(feature = "fits")]
-#[allow(dead_code)]
 unsafe fn list_hdus_raw(path: &Path) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
     use crate::models::fits_image::HduInfo;
 
@@ -474,7 +471,6 @@ unsafe fn list_hdus_raw(path: &Path) -> Result<Vec<crate::models::fits_image::Hd
 
 /// Read a string-valued keyword from the *current* HDU, or `None` if absent.
 #[cfg(feature = "fits")]
-#[allow(dead_code)]
 unsafe fn read_string_key(fptr: *mut sys::fitsfile, key: &str) -> Option<String> {
     let c_key = CString::new(key).ok()?;
     let mut val_buf = [0i8; (sys::FLEN_VALUE as usize) + 1];

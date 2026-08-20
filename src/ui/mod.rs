@@ -47,7 +47,6 @@ pub mod settings_page;
 pub mod share_dialog;
 pub mod space;
 pub mod storage_quota;
-pub mod template_manager;
 pub mod text_viewer_dialog;
 pub mod vospace_browser;
 pub mod workflows_page;

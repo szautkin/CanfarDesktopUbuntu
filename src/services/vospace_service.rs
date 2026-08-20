@@ -334,7 +334,6 @@ impl VoSpaceService {
 
     /// Download a file's contents into memory (e.g. to parse a VOSpace-stored
     /// workflow document without touching disk).
-    #[allow(dead_code)]
     pub async fn download_bytes(
         &self,
         token: &str,

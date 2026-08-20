@@ -40,11 +40,6 @@ impl NetworkMonitor {
     }
 
     /// The last-known connectivity state.
-    #[allow(dead_code)]
-    pub fn is_online(&self) -> bool {
-        self.online.load(Ordering::Relaxed)
-    }
-
     /// Store a freshly-observed connectivity state.
     ///
     /// Returns `true` if the state *changed* (so the caller can update the
@@ -89,26 +84,6 @@ impl Default for NetworkMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn starts_online() {
-        assert!(NetworkMonitor::new().is_online());
-    }
-
-    #[test]
-    fn set_online_reports_transitions_only() {
-        let m = NetworkMonitor::new();
-        // Same as current state → no change.
-        assert!(!m.set_online(true));
-        // Going offline is a change.
-        assert!(m.set_online(false));
-        assert!(!m.is_online());
-        // Staying offline → no change.
-        assert!(!m.set_online(false));
-        // Back online is a change.
-        assert!(m.set_online(true));
-        assert!(m.is_online());
-    }
 
     #[tokio::test]
     async fn connect_to_unreachable_port_is_false() {

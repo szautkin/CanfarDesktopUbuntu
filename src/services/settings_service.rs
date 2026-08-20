@@ -6,7 +6,6 @@ pub struct SettingsService {
     config_path: PathBuf,
 }
 
-#[allow(dead_code)]
 impl SettingsService {
     pub fn new() -> Self {
         let config_path = ProjectDirs::from("net", "canfar", "Verbinal")

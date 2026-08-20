@@ -133,12 +133,6 @@ impl Category {
 ///
 /// Part of the public faceting contract (the dialog drives its live pane through
 /// [`facets_for_query`]); retained for callers that want the unfiltered universe.
-#[allow(dead_code)]
-pub fn build_facets(store: &JsonManifestStore) -> Vec<Facet> {
-    let manifests = discovered_manifests(store);
-    facets_from(&manifests, None)
-}
-
 /// Recompute the facets against a live query: counts are scoped to the images
 /// that match the OTHER active constraints, and any value that would drop the
 /// result set to zero is marked `enabled = false` (unless it is already ticked).
@@ -413,7 +407,7 @@ mod tests {
         // A failure contributes nothing to the facets.
         store.set_failure("c:1", "Unknown", "boom", None, AT.into());
 
-        let facets = build_facets(&store);
+        let facets = facets_for_query(&store, &PackageQuery::default());
 
         // OS family: a single "ubuntu" value present in both images.
         let os = facet(&facets, "OS family");
@@ -451,7 +445,7 @@ mod tests {
         m.capabilities = vec!["gpu".to_string()];
         store.set_manifest("a:1", m, AT.into());
 
-        let facets = build_facets(&store);
+        let facets = facets_for_query(&store, &PackageQuery::default());
         let py = facet(&facets, "Python");
         assert!(py.values.iter().any(|v| v.value == "torch"));
         assert!(py.values.iter().any(|v| v.value == "numpy"));

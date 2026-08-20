@@ -1,4 +1,3 @@
-use crate::models::SessionLaunchParams;
 use crate::state::AppServices;
 use crate::ui::batch_jobs_dialog::show_batch_jobs_dialog;
 use crate::ui::batch_jobs_view::BatchJobsView;
@@ -12,7 +11,6 @@ use crate::ui::session_card::SessionAction;
 use crate::ui::session_events_dialog::show_events_dialog;
 use crate::ui::session_list::SessionListView;
 use crate::ui::storage_quota::StorageQuotaView;
-use crate::ui::template_manager::TemplateManager;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -30,7 +28,6 @@ pub struct DashboardView {
     platform_load: Rc<PlatformLoadView>,
     storage_quota: Rc<StorageQuotaView>,
     recent_launches: Rc<RecentLaunchesView>,
-    template_manager: Rc<TemplateManager>,
     batch_jobs: Rc<BatchJobsView>,
     canfar_images: Rc<CanfarImagesView>,
     services: Arc<AppServices>,
@@ -81,12 +78,10 @@ impl DashboardView {
         let batch_jobs = BatchJobsView::new(services.clone());
         let recent_launches = RecentLaunchesView::new(services.clone());
         let platform_load = PlatformLoadView::new(services.clone());
-        let template_manager = TemplateManager::new(services.clone());
 
         right_bottom.append(batch_jobs.widget());
         right_bottom.append(recent_launches.widget());
         right_bottom.append(platform_load.widget());
-        right_bottom.append(template_manager.widget());
 
         grid.attach(session_list.widget(), 0, 0, PRIMARY_COLUMNS, 1);
         grid.attach(storage_quota.widget(), PRIMARY_COLUMNS, 0, 1, 1);
@@ -120,7 +115,6 @@ impl DashboardView {
             platform_load,
             storage_quota,
             recent_launches,
-            template_manager,
             batch_jobs,
             canfar_images,
             services,
@@ -136,7 +130,6 @@ impl DashboardView {
         let session_list = self.session_list.clone();
         let launch_form = self.launch_form.clone();
         let recent_launches = self.recent_launches.clone();
-        let template_manager = self.template_manager.clone();
 
         self.session_list.set_on_action(move |action| {
             let services = services.clone();
@@ -361,69 +354,6 @@ impl DashboardView {
         }
 
         // Launch from template
-        {
-            let services = self.services.clone();
-            let session_list = self.session_list.clone();
-            let template_manager_ref = template_manager.clone();
-            template_manager.set_on_launch(move |template| {
-                let services = services.clone();
-                let session_list = session_list.clone();
-                let template_manager_ref = template_manager_ref.clone();
-
-                glib::spawn_future_local(async move {
-                    let type_count = session_list.session_count_by_type(&template.session_type);
-                    let name = format!("{}{}", template.session_type, type_count + 1);
-                    let params = SessionLaunchParams {
-                        name: name.clone(),
-                        image: template.image.clone(),
-                        session_type: template.session_type.clone(),
-                        cores: template.cores,
-                        ram: template.ram,
-                        gpus: template.gpus,
-                        cmd: None,
-                        env: None,
-                        registry_username: None,
-                        registry_secret: None,
-                        args: None,
-                        replicas: None,
-                    };
-
-                    let svc = services.clone();
-                    let result = services
-                        .spawn(async move {
-                            let token = svc.get_token().await;
-                            let Some(token) = token else {
-                                return Err("No token".to_string());
-                            };
-                            svc.sessions.launch_session(&token, &params).await
-                        })
-                        .await;
-
-                    let image_display = match template.image.rsplit_once('/') {
-                        Some((_, tail)) => tail.to_string(),
-                        None => template.image.clone(),
-                    };
-
-                    show_launch_dialog(
-                        template_manager_ref.widget(),
-                        &name,
-                        &image_display,
-                        &template.session_type,
-                        template.cores,
-                        template.ram,
-                        template.gpus,
-                        result.clone(),
-                    )
-                    .await;
-
-                    if result.is_ok() {
-                        glib::timeout_future_seconds(2).await;
-                        session_list.refresh().await;
-                    }
-                });
-            });
-        }
-
         // Batch Jobs — state-click opens the drill-down dialog
         {
             let services = self.services.clone();

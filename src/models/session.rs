@@ -62,7 +62,6 @@ pub struct SkahaSessionResponse {
 /// leave unchanged cards alone instead of rebuilding the whole strip — which
 /// reset the user's scroll position and dropped hover four times a minute.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct Session {
     pub id: String,
     pub userid: String,

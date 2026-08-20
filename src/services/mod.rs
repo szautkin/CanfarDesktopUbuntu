@@ -31,7 +31,6 @@ pub mod session_service;
 pub mod settings_service;
 pub mod storage_service;
 pub mod tap_service;
-pub mod template_service;
 pub mod token_storage;
 pub mod transfer;
 pub mod vizier_service;
@@ -57,7 +56,6 @@ pub use service_health_probe::{probe_all, probe_core, ServiceProbeResult};
 pub use session_service::SessionService;
 pub use settings_service::SettingsService;
 pub use storage_service::StorageService;
-pub use template_service::TemplateService;
 pub use token_storage::TokenStorage;
 pub use vospace_service::VoSpaceService;
 #[allow(unused_imports)]

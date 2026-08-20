@@ -46,11 +46,6 @@ impl LegalAgreementService {
     }
 
     /// The version the running build asks users to accept.
-    #[allow(dead_code)]
-    pub fn current_version(&self) -> u32 {
-        legal_terms::CURRENT_VERSION
-    }
-
     fn read(&self) -> LegalRecord {
         std::fs::read_to_string(&self.path)
             .ok()

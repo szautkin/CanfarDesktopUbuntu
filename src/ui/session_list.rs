@@ -402,15 +402,6 @@ impl SessionListView {
             .filter(|s| !s.is_headless())
             .count()
     }
-
-    pub fn session_count_by_type(&self, session_type: &str) -> usize {
-        self.sessions
-            .borrow()
-            .iter()
-            .filter(|s| s.session_type.eq_ignore_ascii_case(session_type))
-            .count()
-    }
-
     pub fn sessions_ref(&self) -> Rc<RefCell<Vec<Session>>> {
         self.sessions.clone()
     }

@@ -6,7 +6,6 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-#[allow(dead_code)]
 pub struct AppServices {
     pub auth: AuthService,
     pub sessions: SessionService,
@@ -23,7 +22,6 @@ pub struct AppServices {
     /// 30–50s `caom2ops/meta` request.
     pub caom2: crate::services::caom2_service::CAOM2Service,
     pub search_store: SearchStoreService,
-    pub templates: TemplateService,
     pub notifications: NotificationService,
     pub toast: ToastNotifier,
     pub health: ServiceHealthTracker,
@@ -91,7 +89,6 @@ impl AppServices {
             search_store: SearchStoreService::new(),
             settings,
             recent_launches: RecentLaunchService::new(),
-            templates: TemplateService::new(),
             notifications: NotificationService::new(),
             toast,
             health: ServiceHealthTracker::new(),

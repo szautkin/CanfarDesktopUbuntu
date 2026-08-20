@@ -102,7 +102,6 @@ mod tests {
         ("batch_jobs_view", include_str!("batch_jobs_view.rs")),
         ("platform_load", include_str!("platform_load.rs")),
         ("recent_launches", include_str!("recent_launches.rs")),
-        ("template_manager", include_str!("template_manager.rs")),
         ("canfar_images", include_str!("canfar_images.rs")),
         // The eighth, and the one this list originally missed — so it kept a
         // hand-rolled header with no margins while the guard reported the
@@ -133,26 +132,21 @@ mod tests {
                 "{name} is guarded but the Portal does not show it"
             );
         }
-        // And nothing the Portal shows is missing from the list.
-        for ty in [
-            "SessionListView",
-            "StorageQuotaView",
-            "LaunchFormView",
-            "BatchJobsView",
-            "RecentLaunchesView",
-            "PlatformLoadView",
-            "TemplateManager",
-            "CanfarImagesView",
-        ] {
-            assert!(
-                dashboard.contains(ty),
-                "{ty} is in the guard's expectations but not in the Portal"
-            );
-        }
+        // And nothing the Portal shows is missing from the list — counted out
+        // of `dashboard.rs` rather than written down.
+        //
+        // This used to assert against a hand-kept list plus the literal `8`, so
+        // adding a card meant remembering to edit three places and removing one
+        // meant editing three again. A count derived from the Portal itself
+        // cannot be forgotten: every card is built as `X::new(services.clone())`
+        // there, and the launch form takes the session list too, so it is
+        // counted separately.
+        let built = dashboard.matches("::new(services.clone())").count()
+            + dashboard.matches("LaunchFormView::new(").count();
         assert_eq!(
             PORTAL_CARDS.len(),
-            8,
-            "the Portal shows eight components; the guard checks {}",
+            built,
+            "the Portal builds {built} components; the guard checks {}",
             PORTAL_CARDS.len()
         );
     }

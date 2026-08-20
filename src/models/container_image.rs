@@ -7,12 +7,10 @@ pub struct RawImage {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ParsedImage {
     pub id: String,
     pub registry: String,
     pub project: String,
-    pub name: String,
     pub version: String,
     pub types: Vec<String>,
     pub display_name: String,
@@ -27,7 +25,6 @@ impl ParsedImage {
             id: id.clone(),
             registry,
             project,
-            name,
             version,
             types: raw.types.clone(),
             display_name,
@@ -124,7 +121,8 @@ mod tests {
         assert_eq!(parsed.display_name, "skaha/notebook:1.0");
         assert_eq!(parsed.registry, "images.canfar.net");
         assert_eq!(parsed.project, "skaha");
-        assert_eq!(parsed.name, "notebook");
+        // `name` is folded into `display_name` at construction; `parse_image_id`
+        // still returns it, and that is what the parsing tests above check.
         assert_eq!(parsed.version, "1.0");
         assert_eq!(parsed.types, vec!["notebook"]);
     }

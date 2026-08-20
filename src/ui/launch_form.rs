@@ -1,6 +1,6 @@
 use crate::helpers::ImageParser;
 use crate::models::session::{INTERACTIVE_SESSION_TYPES, LAUNCHABLE_SESSION_TYPES};
-use crate::models::{ParsedImage, RecentLaunch, Session, SessionLaunchParams, SessionTemplate};
+use crate::models::{ParsedImage, RecentLaunch, Session, SessionLaunchParams};
 use crate::state::AppServices;
 use crate::ui::launch_dialog::show_launch_dialog;
 use crate::ui::resource_selector::ResourceSelector;
@@ -25,7 +25,6 @@ pub struct LaunchFormView {
     resource_selector: ResourceSelector,
     images: Rc<RefCell<Vec<ParsedImage>>>,
     launch_btn: gtk::Button,
-    save_template_btn: gtk::Button,
     status_label: gtk::Label,
     #[allow(clippy::type_complexity)]
     on_launched: Rc<RefCell<Option<Box<dyn Fn()>>>>,
@@ -383,11 +382,6 @@ impl LaunchFormView {
         status_label.set_halign(gtk::Align::Start);
         bottom.append(&status_label);
 
-        let save_template_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
-        save_template_btn.set_tooltip_text(Some(crate::tr_en!("Save as template")));
-        save_template_btn.add_css_class("flat");
-        bottom.append(&save_template_btn);
-
         let launch_btn = gtk::Button::with_label(crate::tr_en!("Launch"));
         launch_btn.add_css_class("suggested-action");
         bottom.append(&launch_btn);
@@ -422,7 +416,6 @@ impl LaunchFormView {
             resource_selector,
             images: Rc::new(RefCell::new(Vec::new())),
             launch_btn,
-            save_template_btn,
             status_label,
             on_launched: Rc::new(RefCell::new(None)),
             session_limit_reached: Rc::new(RefCell::new(false)),
@@ -523,16 +516,6 @@ impl LaunchFormView {
         }
 
         // Save as template button
-        {
-            let view_clone = view.clone();
-            let save_template_btn = view.save_template_btn.clone();
-            save_template_btn.connect_clicked(move |_| {
-                let view_clone = view_clone.clone();
-                glib::spawn_future_local(async move {
-                    view_clone.show_save_template_dialog().await;
-                });
-            });
-        }
 
         // Launch button
         {
@@ -1258,84 +1241,6 @@ impl LaunchFormView {
         self.headless_launch_btn.set_sensitive(true);
     }
 
-    async fn show_save_template_dialog(&self) {
-        let is_advanced = self.notebook.current_page() == Some(1);
-
-        let (session_type, image) = if is_advanced {
-            let st = self.advanced_session_type().to_string();
-            let img = self.advanced_image_uri();
-            (st, img)
-        } else {
-            let st = self.selected_type();
-            let img = match self.get_selected_image_id() {
-                Some(id) => id,
-                None => {
-                    self.status_label
-                        .set_text(crate::tr_en!("Please select an image first"));
-                    return;
-                }
-            };
-            (st, img)
-        };
-
-        let (cores, ram, gpus) = if self.resource_type_switch.is_active() {
-            (
-                self.resource_selector.cores(),
-                self.resource_selector.ram(),
-                self.resource_selector.gpus(),
-            )
-        } else {
-            (
-                self.services.endpoints.config().default_cores,
-                self.services.endpoints.config().default_ram,
-                0,
-            )
-        };
-
-        let name_entry = adw::EntryRow::builder()
-            .title(crate::tr_en!("Template Name"))
-            .build();
-
-        let dialog = adw::MessageDialog::builder()
-            .heading(crate::tr_en!("Save as Template"))
-            .body(crate::tr_en!("Enter a name for this template:"))
-            .build();
-        if let Some(win) = self.container.root().and_downcast_ref::<gtk::Window>() {
-            dialog.set_transient_for(Some(win));
-        }
-
-        dialog.set_extra_child(Some(&name_entry));
-        dialog.add_response("cancel", crate::tr_en!("Cancel"));
-        dialog.add_response("save", crate::tr_en!("Save"));
-        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("save"));
-        dialog.set_close_response("cancel");
-
-        let response = dialog.choose_future().await;
-
-        if response == "save" {
-            let template_name = name_entry.text().to_string();
-            if template_name.is_empty() {
-                return;
-            }
-            let template = SessionTemplate::new(
-                template_name,
-                String::new(),
-                session_type,
-                image,
-                cores,
-                ram,
-                gpus,
-            );
-            match self.services.templates.add(template) {
-                Ok(()) => self.status_label.set_text(crate::tr_en!("Template saved")),
-                Err(e) => self
-                    .status_label
-                    .set_text(&crate::tr_fmt!("Failed to save template: {}", e)),
-            }
-        }
-    }
-
     pub fn widget(&self) -> &gtk::Box {
         &self.container
     }
@@ -1352,7 +1257,6 @@ mod use_this_image_tests {
             id: id.to_string(),
             registry: "images.canfar.net".into(),
             project: "skaha".into(),
-            name: "astroml".into(),
             version: "1.0".into(),
             types: types.iter().map(|t| t.to_string()).collect(),
             display_name: "astroml:1.0".into(),

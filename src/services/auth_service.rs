@@ -26,14 +26,12 @@ impl AuthService {
                                 AuthResult {
                                     success: false,
                                     token: None,
-                                    username: None,
                                     error: Some("Empty token received".to_string()),
                                 }
                             } else {
                                 AuthResult {
                                     success: true,
                                     token: Some(token),
-                                    username: Some(username.to_string()),
                                     error: None,
                                 }
                             }
@@ -41,7 +39,6 @@ impl AuthService {
                         Err(e) => AuthResult {
                             success: false,
                             token: None,
-                            username: None,
                             error: Some(format!("Failed to read response: {}", e)),
                         },
                     }
@@ -49,14 +46,12 @@ impl AuthService {
                     AuthResult {
                         success: false,
                         token: None,
-                        username: None,
                         error: Some("Invalid username or password".to_string()),
                     }
                 } else {
                     AuthResult {
                         success: false,
                         token: None,
-                        username: None,
                         error: Some(format!("Server error: {}", resp.status())),
                     }
                 }
@@ -64,7 +59,6 @@ impl AuthService {
             Err(e) => AuthResult {
                 success: false,
                 token: None,
-                username: None,
                 error: Some(format!("Network error: {}", e)),
             },
         }

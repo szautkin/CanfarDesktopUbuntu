@@ -18,13 +18,6 @@ pub fn is_accepted(accepted_version: Option<u32>) -> bool {
 ///
 /// Retained for parity with `LegalTerms.IsFrench`; the shell currently resolves
 /// the terms language via [`crate::i18n::current_lang`] instead.
-#[allow(dead_code)]
-pub fn is_french(two_letter_iso_language: Option<&str>) -> bool {
-    two_letter_iso_language
-        .map(|s| s.eq_ignore_ascii_case("fr"))
-        .unwrap_or(false)
-}
-
 /// Terms title in the requested language.
 pub fn title(french: bool) -> &'static str {
     if french {
@@ -133,14 +126,6 @@ mod tests {
     fn current_or_newer_is_accepted() {
         assert!(is_accepted(Some(CURRENT_VERSION)));
         assert!(is_accepted(Some(CURRENT_VERSION + 1)));
-    }
-
-    #[test]
-    fn french_detection_is_case_insensitive() {
-        assert!(is_french(Some("fr")));
-        assert!(is_french(Some("FR")));
-        assert!(!is_french(Some("en")));
-        assert!(!is_french(None));
     }
 
     #[test]

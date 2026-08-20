@@ -91,11 +91,6 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Discovering…",                                "Découverte en cours…"),
     ("Kernel: not started",                         "Noyau : non démarré"),
     ("Failed to load platform data",                "Échec du chargement des données de la plateforme"),
-    ("Session Templates",                           "Modèles de session"),
-    ("Launch from template",                        "Lancer depuis un modèle"),
-    ("Delete template",                             "Supprimer le modèle"),
-    ("No saved templates — save one from the launch form",
-     "Aucun modèle enregistré — enregistrez-en un depuis le formulaire de lancement"),
     ("Export Figure",                                "Exporter la figure"),
     ("Find image by package",                        "Trouver une image par paquet"),
     ("Destructive changes requested by an AI agent are held here until you approve them. \
@@ -122,7 +117,6 @@ prend en compte à son prochain démarrage."),
     ("Selected image: {}",                          "Image sélectionnée : {}"),
     ("Launch failed: {}",                           "Échec du lancement : {}"),
     ("Batch launch failed: {}",                     "Échec du lancement par lots : {}"),
-    ("Failed to save template: {}",                 "Échec de l’enregistrement du modèle : {}"),
     ("Launched batch job '{}' ({})",                "Tâche par lots « {} » lancée ({})"),
     ("Failed to load: {}",                          "Échec du chargement : {}"),
     ("Save failed: {}",                             "Échec de l’enregistrement : {}"),
@@ -180,11 +174,8 @@ prend en compte à son prochain démarrage."),
     ("Downloaded {} ({} bytes)",                    "Téléchargé {} ({} octets)"),
     ("Download failed: {}",                         "Échec du téléchargement : {}"),
     ("Opened {} in FITS Viewer",                    "{} ouvert dans la visionneuse FITS"),
-    ("Failed to open FITS: {}",                     "Échec de l’ouverture du FITS : {}"),
     ("Opened {} in Cube Viewer",                    "{} ouvert dans la visionneuse de cubes"),
-    ("Failed to open cube: {}",                     "Échec de l’ouverture du cube : {}"),
     ("Opened {} in Notebook",                       "{} ouvert dans le carnet"),
-    ("Failed to open notebook: {}",                 "Échec de l’ouverture du carnet : {}"),
     ("Deleted {}",                                  "{} supprimé"),
     ("Delete failed: {}",                           "Échec de la suppression : {}"),
     ("Sharing updated for {}",                      "Partage mis à jour pour {}"),
@@ -561,14 +552,6 @@ prend en compte à son prochain démarrage."),
     ),
     // CADC's own two filter-syntax hints, translated but keeping the operator
     // symbols verbatim — they are what you type, not words.
-    (
-        "Number: 10 or >=10 or 10..20 for a range , ! to negate",
-        "Nombre : 10 ou >=10 ou 10..20 pour un intervalle , ! pour exclure",
-    ),
-    (
-        "String: Substring match , ! to negate matches",
-        "Texte : correspondance partielle , ! pour exclure",
-    ),
     ("Append the active column filters as an ADQL WHERE clause",
      "Ajouter les filtres de colonne actifs sous forme de clause WHERE ADQL"),
     ("Rows/page:",                                  "Lignes/page :"),
@@ -639,7 +622,6 @@ prend en compte à son prochain démarrage."),
      "Utilisez « Enregistrer sous » pour choisir un chemin, puis fermez"),
     ("Recover notebooks?",                          "Récupérer les carnets ?"),
     ("Discard All",                                 "Tout abandonner"),
-    ("Use Save As to choose a file path",           "Utilisez « Enregistrer sous » pour choisir un chemin"),
     ("Untitled",                                    "Sans titre"),
     ("Save Notebook As",                            "Enregistrer le carnet sous"),
     ("Kernel status: idle",                         "État du noyau : inactif"),
@@ -757,7 +739,6 @@ prend en compte à son prochain démarrage."),
     ("Email",                                       "Courriel"),
     ("Institute",                                   "Établissement"),
     ("Internal ID",                                 "Identifiant interne"),
-    ("Dashboard",                                   "Tableau de bord"),
     ("A CANFAR Science Portal Companion\n\nLaunch, monitor, and manage your interactive computing sessions (Notebook, Desktop, CARTA, Firefly) directly from your desktop without needing a browser.\n\nCANFAR is operated by the Canadian Astronomy Data Centre (CADC) and the Digital Research Alliance of Canada.",
      "Un compagnon du portail scientifique CANFAR\n\nLancez, surveillez et gérez vos sessions de calcul interactives (carnet, bureau, CARTA, Firefly) directement depuis votre poste, sans navigateur.\n\nCANFAR est exploité par le Centre canadien de données astronomiques (CADC) et l’Alliance de recherche numérique du Canada."),
     ("Runtime Info",                                "Informations d’exécution"),
@@ -825,7 +806,6 @@ prend en compte à son prochain démarrage."),
     ("Arguments (space-separated)",                 "Arguments (séparés par des espaces)"),
     ("Off: flexible (platform-managed). On: specify exact CPU/RAM/GPU.",
      "Désactivé : flexible (géré par la plateforme). Activé : préciser exactement CPU/RAM/GPU."),
-    ("Save as template",                            "Enregistrer comme modèle"),
     ("Session limit reached (max 3 concurrent sessions)",
      "Limite de sessions atteinte (3 sessions simultanées au maximum)"),
     ("Please select an image",                      "Veuillez sélectionner une image"),
@@ -834,11 +814,6 @@ prend en compte à son prochain démarrage."),
     ("Launching session...",                        "Lancement de la session..."),
     ("Please enter a container image",              "Veuillez saisir une image de conteneur"),
     ("Launching batch job…",                        "Lancement de la tâche par lots…"),
-    ("Please select an image first",                "Veuillez d’abord sélectionner une image"),
-    ("Template Name",                               "Nom du modèle"),
-    ("Save as Template",                            "Enregistrer comme modèle"),
-    ("Enter a name for this template:",             "Saisissez un nom pour ce modèle :"),
-    ("Template saved",                              "Modèle enregistré"),
     // Observation detail
     ("The service returned no observation.",        "Le service n’a renvoyé aucune observation."),
     ("The metadata service is unreachable.",        "Le service de métadonnées est injoignable."),
@@ -943,14 +918,6 @@ prend en compte à son prochain démarrage."),
     ("View events/logs",                            "Afficher les évènements/journaux"),
     ("Delete session",                              "Supprimer la session"),
     // Resource selector
-    ("Resources (Fixed)",                           "Ressources (fixes)"),
-    ("Number of CPU cores",                         "Nombre de cœurs CPU"),
-    ("Number of cores used by the session.",        "Nombre de cœurs utilisés par la session."),
-    ("Memory allocation in gigabytes",              "Mémoire allouée en gigaoctets"),
-    ("System memory (RAM) to be used for the session. Slider snaps to powers of 2.",
-     "Mémoire vive utilisée par la session. Le curseur s’aligne sur les puissances de 2."),
-    ("Number of GPU cores",                         "Nombre de cœurs GPU"),
-    ("Number of GPUs to allocate for the session.", "Nombre de GPU à allouer à la session."),
     // Images
     ("CANFAR Images",                               "Images CANFAR"),
     ("Find images by package…",                     "Trouver des images par paquet…"),
@@ -1582,6 +1549,83 @@ mod tests {
     /// "NaN" and "Verbinal" are all in `HAND_PAIRS` mapped to themselves. A pair
     /// that says "this is the same in French" is a decision someone made; an
     /// omission is a decision nobody made.
+    /// A French form for a string the app no longer shows is dead weight.
+    ///
+    /// The counterpart to `every_localized_string_has_a_french_form`: that one
+    /// stops a string shipping untranslated, this one stops the table filling
+    /// with translations for text that has been deleted. Removing the Session
+    /// Templates card left fifteen behind, and nothing noticed; ten more had
+    /// been sitting there from earlier changes.
+    #[test]
+    fn no_french_form_survives_the_string_it_translates() {
+        /// What rustc would make of the source text: line continuations joined
+        /// and escapes decoded, so it can be compared against the strings the
+        /// table actually holds.
+        ///
+        /// Comparing raw source instead reports every string containing a
+        /// newline, a quote, or a `\u{...}` as orphaned — three separate
+        /// false-positive families, each found the hard way.
+        fn as_rustc_sees_it(text: &str) -> String {
+            let mut out = String::with_capacity(text.len());
+            let mut chars = text.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c != '\\' {
+                    out.push(c);
+                    continue;
+                }
+                match chars.next() {
+                    // A line continuation: the newline and the indent after it
+                    // are not part of the string.
+                    Some('\n') => {
+                        while chars
+                            .peek()
+                            .is_some_and(|c| c.is_whitespace() && *c != '\n')
+                        {
+                            chars.next();
+                        }
+                    }
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('"') => out.push('"'),
+                    Some('\'') => out.push('\''),
+                    Some('\\') => out.push('\\'),
+                    Some('u') if chars.peek() == Some(&'{') => {
+                        chars.next();
+                        let hex: String = chars.by_ref().take_while(|c| *c != '}').collect();
+                        match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                            Some(decoded) => out.push(decoded),
+                            None => out.push_str(&format!("\\u{{{hex}}}")),
+                        }
+                    }
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            }
+            out
+        }
+
+        let app: String = call_sites()
+            .map(|(_, text)| as_rustc_sees_it(&text))
+            .collect();
+        assert!(app.len() > 100_000, "the source scan came back empty");
+
+        let mut orphans: Vec<&str> = HAND_PAIRS
+            .iter()
+            .map(|(english, _)| *english)
+            .filter(|english| !english.is_empty() && !app.contains(*english))
+            .collect();
+        orphans.sort();
+
+        assert!(
+            orphans.is_empty(),
+            "French forms for strings the app no longer shows: {orphans:#?}"
+        );
+    }
+
     #[test]
     fn every_localized_string_has_a_french_form() {
         let hand: std::collections::HashSet<&str> = HAND_PAIRS.iter().map(|(en, _)| *en).collect();

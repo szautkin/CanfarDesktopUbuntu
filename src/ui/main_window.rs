@@ -586,7 +586,7 @@ pub fn build_main_window(
     let notebook_host = NotebookTabHost::new(services.clone());
 
     // Cube Viewer module (3D spectral cubes)
-    let cube_host = CubeTabHost::new(services.clone());
+    let cube_host = CubeTabHost::new();
 
     // AI Guide module (tune how an MCP agent sees each tool)
     let ai_guide_page = crate::ui::ai_guide_page::AiGuidePage::new(services.ai_guide.clone());

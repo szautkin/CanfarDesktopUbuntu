@@ -12,7 +12,6 @@ use crate::helpers::cube_loader;
 use crate::helpers::cube_wcs::CubeWcs;
 use crate::models::volume_data::VolumeData;
 use crate::services::recent_cubes_service::RecentCubesService;
-use crate::state::AppServices;
 use crate::ui::cube_viewer::CubeViewer;
 use base64::Engine as _;
 use gtk4::glib;
@@ -22,7 +21,6 @@ use libadwaita as adw;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 
 /// Top-level widget owning the toolbar, the tab strip, and every open cube.
 pub struct CubeTabHost {
@@ -45,9 +43,6 @@ pub struct CubeTabHost {
     recents_list: gtk::ListBox,
     /// Paths backing the recents rows (row index → path).
     recents_paths: RefCell<Vec<PathBuf>>,
-    /// App services (unused today; retained for parity/future MCP control).
-    #[allow(dead_code)]
-    services: Arc<AppServices>,
 }
 
 /// Push the open cube tabs + active index into the MCP view state.
@@ -68,7 +63,7 @@ fn publish_cube_tabs(tab_view: &adw::TabView, viewers: &Rc<RefCell<Vec<Rc<CubeVi
 }
 
 impl CubeTabHost {
-    pub fn new(services: Arc<AppServices>) -> Rc<Self> {
+    pub fn new() -> Rc<Self> {
         // ── Root ─────────────────────────────────────────────────────────────
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_vexpand(true);
@@ -144,7 +139,6 @@ impl CubeTabHost {
             recents_section,
             recents_list,
             recents_paths: RefCell::new(Vec::new()),
-            services,
         });
 
         // ── Wire signals ─────────────────────────────────────────────────────
