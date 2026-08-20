@@ -870,18 +870,37 @@ pub fn build_main_window(
             let search_page = search_page.clone();
             glib::spawn_future_local(async move {
                 while let Some(cmd) = vc_rx.recv().await {
-                    let result = match cmd.target.as_str() {
-                        "cube" => cube_host.handle_viewer_command(&cmd.op, &cmd.args).await,
-                        "notebook" => {
-                            notebook_host
-                                .handle_viewer_command(&cmd.op, &cmd.args)
-                                .await
-                        }
-                        "fits" => fits_viewer.handle_viewer_command(&cmd.op, &cmd.args).await,
-                        "search" => search_page.handle_viewer_command(&cmd.op, &cmd.args).await,
-                        other => Err(format!("unknown viewer target: {other}")),
-                    };
-                    let _ = cmd.reply.send(result);
+                    // Each command gets its own task. This loop used to await
+                    // the handler inline, so ONE slow command held the queue and
+                    // every unrelated command behind it timed out — a notebook
+                    // cell fetching for ninety seconds made get_cell_output, the
+                    // FITS viewer and even execute_adql_query answer "UI busy"
+                    // until it finished. The window was never blocked; the queue
+                    // was serialised.
+                    //
+                    // Still on the GTK main context, so widget access stays
+                    // single-threaded; what changes is that commands may now
+                    // interleave at their await points. That is what makes a
+                    // second run_cell wait on the kernel's own mutex — where it
+                    // belongs — instead of on the bridge.
+                    let cube_host = cube_host.clone();
+                    let notebook_host = notebook_host.clone();
+                    let fits_viewer = fits_viewer.clone();
+                    let search_page = search_page.clone();
+                    glib::spawn_future_local(async move {
+                        let result = match cmd.target.as_str() {
+                            "cube" => cube_host.handle_viewer_command(&cmd.op, &cmd.args).await,
+                            "notebook" => {
+                                notebook_host
+                                    .handle_viewer_command(&cmd.op, &cmd.args)
+                                    .await
+                            }
+                            "fits" => fits_viewer.handle_viewer_command(&cmd.op, &cmd.args).await,
+                            "search" => search_page.handle_viewer_command(&cmd.op, &cmd.args).await,
+                            other => Err(format!("unknown viewer target: {other}")),
+                        };
+                        let _ = cmd.reply.send(result);
+                    });
                 }
             });
         }
@@ -2331,6 +2350,37 @@ mod navigation_tests {
         assert!(
             !body.contains(r#"Some("home")"#),
             "the dashboard is being installed over the landing page again"
+        );
+    }
+
+    #[test]
+    fn one_slow_viewer_command_does_not_starve_the_others() {
+        // The bridge ran commands one at a time, awaiting each handler inline,
+        // so a notebook cell fetching for ninety seconds made get_cell_output,
+        // the FITS viewer and even execute_adql_query answer "UI busy" until it
+        // finished. Nothing was blocked — the queue was serialised.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        let at = code
+            .find("while let Some(cmd) = vc_rx.recv().await")
+            .expect("the viewer command loop is gone");
+        let body = &code[at..(at + 1400).min(code.len())];
+        assert!(
+            body.contains("glib::spawn_future_local"),
+            "the loop awaits each handler inline again, so one slow command \
+             starves every other"
+        );
+        // The dispatch has to be INSIDE the spawned task, or spawning changes
+        // nothing.
+        let spawn_at = body
+            .find("glib::spawn_future_local")
+            .expect("checked above");
+        assert!(
+            body[spawn_at..].contains("cmd.target.as_str()"),
+            "the handler still runs before the task it was meant to run in"
+        );
+        assert!(
+            body[spawn_at..].contains("cmd.reply.send"),
+            "the reply is sent outside the task, so it cannot carry the result"
         );
     }
 

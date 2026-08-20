@@ -115,9 +115,14 @@ pub async fn viewer_command(
     // until the transport itself gave up. Fail with a descriptive error instead.
     match tokio::time::timeout(UI_COMMAND_TIMEOUT, reply_rx).await {
         Ok(reply) => reply.map_err(|_| "viewer did not respond".to_string())?,
+        // Says what is known, not what is guessed. It used to assert "the
+        // window is blocked by a long-running operation", which sent readers
+        // looking at GTK — the real cause was a bridge that ran commands one at
+        // a time, so an unrelated slow command starved this one. Commands
+        // interleave now, and a timeout here means THIS operation is slow.
         Err(_) => Err(format!(
-            "UI busy: the {} viewer did not answer '{}' within {}s (the window is blocked by a \
-             long-running operation) — retry once it is idle.",
+            "the {} viewer did not answer '{}' within {}s — the operation may still be \
+             running; check its own status before retrying.",
             target,
             op,
             UI_COMMAND_TIMEOUT.as_secs()
