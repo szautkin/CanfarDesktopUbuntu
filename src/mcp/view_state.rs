@@ -53,8 +53,10 @@ pub enum ViewAction {
         reply: oneshot::Sender<bool>,
     },
     OpenFits {
-        path: String,
-        reply: oneshot::Sender<bool>,
+        /// A local file path, or the id / publisher id of a downloaded
+        /// observation. The UI resolves whichever it is.
+        target: String,
+        reply: oneshot::Sender<OpenFitsOutcome>,
     },
     CloseActiveTab {
         reply: oneshot::Sender<bool>,
@@ -231,11 +233,53 @@ pub async fn navigate_to(key: &str) -> bool {
 }
 
 /// Open a local FITS file in the FITS viewer.
-pub async fn open_fits(path: &str) -> bool {
-    let path = path.to_string();
-    send_action(|reply| ViewAction::OpenFits { path, reply })
-        .await
-        .unwrap_or(false)
+/// Open a FITS file by path, or by the id of a downloaded observation.
+pub async fn open_fits(target: &str) -> OpenFitsOutcome {
+    let target = target.to_string();
+    send_action(|reply| ViewAction::OpenFits {
+        target: target.clone(),
+        reply,
+    })
+    .await
+    .unwrap_or_else(|| OpenFitsOutcome::failed(&target, None, "could not dispatch to the UI"))
+}
+
+/// What came of an `open_fits_file`: whether a tab actually appeared, the id and
+/// path it resolved to, and why not when it did not.
+///
+/// Port of the reference's `OpenFitsOutcome`. A bare boolean was not enough:
+/// the old tool answered `opened: true` for a path that did not exist, an id it
+/// could not resolve, and a file that would not parse, because it reported that
+/// it had *dispatched* a request rather than that a file was open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenFitsOutcome {
+    pub opened: bool,
+    /// The observation id it resolved to, or the target as given.
+    pub observation_id: String,
+    /// Where the file is, once resolved — useful even on failure.
+    pub local_path: Option<String>,
+    /// Why it did not open. `None` on success.
+    pub message: Option<String>,
+}
+
+impl OpenFitsOutcome {
+    pub fn opened(observation_id: &str, local_path: &str) -> Self {
+        Self {
+            opened: true,
+            observation_id: observation_id.to_string(),
+            local_path: Some(local_path.to_string()),
+            message: None,
+        }
+    }
+
+    pub fn failed(observation_id: &str, local_path: Option<&str>, message: &str) -> Self {
+        Self {
+            opened: false,
+            observation_id: observation_id.to_string(),
+            local_path: local_path.map(str::to_string),
+            message: Some(message.to_string()),
+        }
+    }
 }
 
 /// Close the active tab of the current module.
@@ -254,6 +298,38 @@ pub async fn set_search_focus_action(ra: f64, dec: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_outcome_carries_why_it_failed() {
+        // A bare boolean was the bug: `open_fits_file` answered `opened: true`
+        // for a path that did not exist, an id it could not resolve, and a file
+        // that would not parse — because it reported that it had DISPATCHED a
+        // request, not that a file was open. An agent following that answer
+        // went looking for a tab that was never going to appear.
+        let bad = OpenFitsOutcome::failed("obs-1", None, "file not found");
+        assert!(!bad.opened);
+        assert_eq!(bad.message.as_deref(), Some("file not found"));
+
+        let good = OpenFitsOutcome::opened("obs-1", "/home/u/f.fits");
+        assert!(good.opened);
+        assert_eq!(good.message, None, "a success must not carry a complaint");
+        assert_eq!(good.local_path.as_deref(), Some("/home/u/f.fits"));
+    }
+
+    #[test]
+    fn a_failure_still_says_where_it_looked() {
+        // "not downloaded yet" is only actionable if the agent can see which
+        // file was expected.
+        let outcome = OpenFitsOutcome::failed(
+            "obs-1",
+            Some("/home/u/research/obs-1.fits"),
+            "not downloaded yet — use download_observation first",
+        );
+        assert_eq!(
+            outcome.local_path.as_deref(),
+            Some("/home/u/research/obs-1.fits")
+        );
+    }
     use super::*;
 
     #[test]

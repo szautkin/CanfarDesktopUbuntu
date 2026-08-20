@@ -1352,12 +1352,14 @@ impl FitsViewer {
 
         if let Ok(file) = dialog.open_future(root.as_ref()).await {
             if let Some(path) = file.path() {
-                self.load_file(&path);
+                // The picker's own error goes to the status label the user is
+                // already looking at; only the agent needs it as a value.
+                let _ = self.load_file(&path);
             }
         }
     }
 
-    fn load_file(&self, path: &std::path::Path) {
+    fn load_file(&self, path: &std::path::Path) -> Result<(), String> {
         match fits_loader::load_fits_image(path) {
             Ok(data) => {
                 let filename = path
@@ -1403,8 +1405,10 @@ impl FitsViewer {
             }
             Err(e) => {
                 self.status_label.set_text(&crate::tr_fmt!("Error: {}", e));
+                return Err(e.to_string());
             }
         }
+        Ok(())
     }
 
     /// Wire a freshly-built tab's crosshair callback: update the coords readout
@@ -1928,8 +1932,16 @@ impl FitsViewer {
     }
 
     /// Load a FITS file from a path (used by VOSpace integration).
-    pub fn load_from_path(&self, path: &std::path::Path) {
-        self.load_file(path);
+    /// Open `path`, reporting why if it does not load.
+    ///
+    /// The MCP `open_fits_file` tool answers with this. It used to report
+    /// `opened: true` for any path at all, because the request was dispatched
+    /// as a fire-and-forget GTK action and nothing waited to see what happened
+    /// — so an agent was told a file had opened when no tab existed. The
+    /// reference's own comment on this path reads "report opened:true only on a
+    /// confirmed load … not optimism".
+    pub fn load_from_path(&self, path: &std::path::Path) -> Result<(), String> {
+        self.load_file(path)
     }
 }
 

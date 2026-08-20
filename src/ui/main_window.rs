@@ -745,7 +745,11 @@ pub fn build_main_window(
         open_fits_action.connect_activate(move |_, param| {
             if let Some(path_str) = param.and_then(|v| v.str()) {
                 let path = std::path::PathBuf::from(path_str);
-                fits_viewer.load_from_path(&path);
+                // This action is the UI's own route in (the storage browser's
+                // "Open in FITS viewer"), and a failure shows in the viewer's
+                // status label. The agent's route reports the error as data —
+                // see `open_fits_target`.
+                let _ = fits_viewer.load_from_path(&path);
                 navigate("fits");
             }
         });
@@ -809,6 +813,11 @@ pub fn build_main_window(
             let navigate = navigate.clone();
             let app = app.clone();
             let search_page = search_page.clone();
+            // The agent's open-FITS path resolves observation ids against the
+            // store and loads through the viewer, so it needs both.
+            let services_for_actions = services.clone();
+            let fits_viewer_for_actions = fits_viewer.clone();
+            let navigate_for_actions = navigate.clone();
             glib::spawn_future_local(async move {
                 use crate::mcp::view_state::ViewAction;
                 while let Some(action) = vs_rx.recv().await {
@@ -828,12 +837,13 @@ pub fn build_main_window(
                             };
                             let _ = reply.send(ok);
                         }
-                        ViewAction::OpenFits { path, reply } => {
-                            app.activate_action(
-                                "open-fits-file",
-                                Some(&glib::Variant::from(path.as_str())),
-                            );
-                            let _ = reply.send(true);
+                        ViewAction::OpenFits { target, reply } => {
+                            let _ = reply.send(open_fits_target(
+                                &target,
+                                &services_for_actions,
+                                &fits_viewer_for_actions,
+                                &navigate_for_actions,
+                            ));
                         }
                         ViewAction::SetSearchFocus { ra, dec, reply } => {
                             navigate("search");
@@ -923,7 +933,9 @@ pub fn build_main_window(
         let notebook_host = notebook_host.clone();
         file_panel.set_on_open_file(move |path, file_type| match file_type {
             FileType::Fits => {
-                fits_viewer.load_from_path(&path);
+                // The file panel's own route in; the error shows in the
+                // viewer's status label.
+                let _ = fits_viewer.load_from_path(&path);
                 navigate("fits");
             }
             FileType::Notebook => {
@@ -1474,6 +1486,66 @@ impl SignedInChrome {
 // ---------------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------------
+
+/// Open a FITS file for the agent: by path, or by the id of a downloaded
+/// observation, reporting what actually happened.
+///
+/// Ported from the reference's `OpenFitsActionAsync`, including its resolution
+/// order and its messages. Ours dispatched a fire-and-forget GTK action and
+/// answered `opened: true` unconditionally — so an agent that asked for a
+/// research-library file it had no path for was told the file was open while
+/// no tab existed, and had nothing to go on.
+fn open_fits_target(
+    target: &str,
+    services: &Arc<AppServices>,
+    viewer: &Rc<FitsViewer>,
+    navigate: &Rc<dyn Fn(&str)>,
+) -> crate::mcp::view_state::OpenFitsOutcome {
+    use crate::mcp::view_state::OpenFitsOutcome;
+
+    let target = target.trim();
+    if target.is_empty() {
+        return OpenFitsOutcome::failed(target, None, "path or observationId is required");
+    }
+
+    // A real file opens directly — the file-picker equivalent. Anything else is
+    // an observation id, which is what an agent has after
+    // `list_downloaded_observations`: the listing gives a filename, never a
+    // path, so resolving here is the only way it can open its own downloads.
+    let (observation_id, local_path) = if std::path::Path::new(target).is_file() {
+        (target.to_string(), target.to_string())
+    } else {
+        let downloaded = services.observation_store.load();
+        let Some(obs) = downloaded
+            .iter()
+            .find(|o| o.id == target || o.publisher_id == target)
+        else {
+            return OpenFitsOutcome::failed(
+                target,
+                None,
+                "file not found and observation not in Research",
+            );
+        };
+        if obs.local_path.is_empty() || !std::path::Path::new(&obs.local_path).is_file() {
+            return OpenFitsOutcome::failed(
+                &obs.id,
+                Some(&obs.local_path),
+                "not downloaded yet — use download_observation first",
+            );
+        }
+        (obs.id.clone(), obs.local_path.clone())
+    };
+
+    // Report success only on a confirmed load, so a file that will not parse —
+    // an HTML error page saved with a .fits name, say — returns the real error.
+    match viewer.load_from_path(std::path::Path::new(&local_path)) {
+        Ok(()) => {
+            navigate("fits");
+            OpenFitsOutcome::opened(&observation_id, &local_path)
+        }
+        Err(e) => OpenFitsOutcome::failed(&observation_id, Some(&local_path), &e),
+    }
+}
 
 /// Start the background pull of published image manifests.
 ///
@@ -2259,6 +2331,53 @@ mod navigation_tests {
         assert!(
             !body.contains(r#"Some("home")"#),
             "the dashboard is being installed over the landing page again"
+        );
+    }
+
+    #[test]
+    fn opening_a_fits_file_reports_what_actually_happened() {
+        // It dispatched a fire-and-forget GTK action and replied `true`
+        // unconditionally, so `opened: true` meant "a request was sent", not
+        // "a tab exists". An agent asking for a research-library file was told
+        // it had opened while nothing had.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        let at = code
+            .find("fn open_fits_target")
+            .expect("the open-FITS resolution is gone");
+        let end = code[at..]
+            .find("\n}\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        let body = &code[at..end];
+
+        assert!(
+            body.contains("viewer.load_from_path"),
+            "the outcome is no longer taken from an actual load"
+        );
+        assert!(
+            !body.contains("activate_action"),
+            "the open is dispatched fire-and-forget again, so its result is a guess"
+        );
+        // The two resolution failures an agent can act on.
+        assert!(body.contains("observation not in Research"));
+        assert!(body.contains("use download_observation first"));
+    }
+
+    #[test]
+    fn an_observation_id_is_enough_to_open_a_download() {
+        // `list_downloaded_observations` returns a FILENAME, never a path — as
+        // the reference does — so an id has to be openable, or an agent can
+        // download something and then have no way to look at it.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        let at = code.find("fn open_fits_target").expect("gone");
+        let end = code[at..]
+            .find("\n}\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        let body = &code[at..end];
+        assert!(
+            body.contains("o.id == target || o.publisher_id == target"),
+            "an observation id no longer resolves to its file"
         );
     }
 

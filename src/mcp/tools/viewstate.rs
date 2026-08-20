@@ -157,11 +157,22 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "open_fits_file".into(),
-            description: "Open a local FITS file path in the FITS viewer.".into(),
+            description: "Open a FITS file in the 2D viewer and switch the app to it — by local \
+                          file path, or by the id or publisher id of a DOWNLOADED observation \
+                          (from list_downloaded_observations; call download_observation first if \
+                          it is not downloaded yet). Answers `opened` only when a tab actually \
+                          appeared, with `localPath` and a `message` explaining any failure."
+                .into(),
             input_schema: json!({
                 "type":"object",
-                "properties": { "path": { "type":"string" } },
-                "required": ["path"], "additionalProperties": false
+                "properties": {
+                    "observationId": { "type":"string", "description":
+                        "Id or publisher id of a downloaded observation. The listing gives a \
+                         filename, not a path, so this is how you open your own downloads." },
+                    "path": { "type":"string", "description":
+                        "Local filesystem path, if you have one." }
+                },
+                "additionalProperties": false
             }),
             verb: VerbClass::Write,
             agent_safe: true,
@@ -212,9 +223,27 @@ pub async fn dispatch(
             Some(ToolResult::Data(json!({ "navigated": ok, "view": view })))
         }
         "open_fits_file" => {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let ok = view_state::open_fits(path).await;
-            Some(ToolResult::Data(json!({ "opened": ok, "path": path })))
+            // Either spelling; the UI works out which it was given.
+            let target = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| args.get("observationId").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if target.is_empty() {
+                return Some(ToolResult::Failed(
+                    "path or observationId is required".to_string(),
+                ));
+            }
+            let outcome = view_state::open_fits(&target).await;
+            Some(ToolResult::Data(json!({
+                "opened": outcome.opened,
+                "observationId": outcome.observation_id,
+                "localPath": outcome.local_path,
+                "message": outcome.message,
+            })))
         }
         "close_active_tab" => {
             let ok = view_state::close_active_tab().await;
