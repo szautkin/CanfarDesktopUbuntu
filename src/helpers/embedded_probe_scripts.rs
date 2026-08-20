@@ -113,6 +113,186 @@ mod tests {
         }
     }
 
+    /// Constructs that exist in GNU coreutils and not in BusyBox.
+    ///
+    /// Both scripts run inside a container the app did not build: the inspector
+    /// image is Alpine (BusyBox), and the in-target probe runs inside whatever
+    /// the user asks about. Every utility they reach for has to be the POSIX
+    /// one.
+    ///
+    /// `mktemp --suffix=.py` is the entry that put this list here. BusyBox
+    /// printed its usage, the assignment came back empty, and the next line —
+    /// `cat > "$TRANSFORMER"` — died with "No such file or directory" naming a
+    /// line number and nothing else. Every inspection on Alpine failed there.
+    const GNU_ONLY: &[(&str, &str)] = &[
+        (
+            "mktemp --",
+            "BusyBox mktemp takes only [-dqtup] and a TEMPLATE",
+        ),
+        ("grep -P", "BusyBox grep has no PCRE mode"),
+        ("find -printf", "GNU find extension"),
+        ("-printf ", "GNU find extension"),
+        ("sort -V", "GNU version sort"),
+        ("--suffix=", "GNU long option"),
+        ("cp --", "GNU long option"),
+        ("ls --", "GNU long option"),
+        ("date --", "GNU long option"),
+        ("head --", "GNU long option"),
+        ("tail --", "GNU long option"),
+        ("wc --", "GNU long option"),
+        ("sed --", "GNU long option"),
+        ("tr --", "GNU long option"),
+    ];
+
+    #[test]
+    fn the_scripts_use_no_gnu_only_constructs() {
+        for (name, script) in [
+            ("probe.sh", probe_script()),
+            ("inspector.sh", inspector_script()),
+        ] {
+            for (needle, why) in GNU_ONLY {
+                // Comments explaining the rule are not violations of it.
+                let offending = script
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with('#'))
+                    .find(|l| l.contains(needle));
+                assert!(
+                    offending.is_none(),
+                    "{name} uses {needle:?} ({why}): {}",
+                    offending.unwrap().trim()
+                );
+            }
+        }
+    }
+
+    /// Both probe paths must name an OS the same way.
+    ///
+    /// The in-container probe reads os-release `ID` / `VERSION_ID`; the
+    /// inspector reads syft's `distro`, which mirrors os-release field for
+    /// field. Reading `name` / `version` there instead described the same image
+    /// as "alpine linux" / "3.20.3" from one path and "alpine" / "3.20" from
+    /// the other — so the discovery facets listed both and a filter on either
+    /// matched half the images.
+    #[test]
+    fn both_paths_name_an_os_the_same_way() {
+        assert!(probe_script().contains(r#"data.get("ID""#));
+        assert!(probe_script().contains(r#"data.get("VERSION_ID""#));
+        assert!(inspector_script().contains(r#"distro.get("id")"#));
+        assert!(inspector_script().contains(r#"distro.get("versionID")"#));
+    }
+
+    /// Run both scripts under a BusyBox-only PATH and require a real manifest.
+    ///
+    ///     cargo test --quiet under_busybox -- --ignored --nocapture
+    ///
+    /// The deny-list above catches the GNU-isms someone thought to write down.
+    /// This catches the rest, by being the environment the inspector image
+    /// actually is: Alpine, where every coreutil is a BusyBox applet.
+    ///
+    /// Ignored rather than skipped-when-missing: a test that quietly passes
+    /// because its tooling is absent reads as coverage it does not provide.
+    /// Run it explicitly and it either works or tells you to install busybox.
+    #[test]
+    #[ignore = "needs busybox on the host"]
+    fn the_scripts_run_under_busybox() {
+        use std::os::unix::fs::symlink;
+        use std::process::Command;
+
+        let busybox = which("busybox").expect(
+            "busybox is not installed — `apt install busybox` (or run this on a host that has it)",
+        );
+        let root = std::env::temp_dir().join("verbinal-busybox-probe");
+        let bin = root.join("bin");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bin).expect("scratch dir");
+
+        // Every applet BusyBox provides, as BusyBox provides it.
+        let applets = Command::new(&busybox)
+            .arg("--list")
+            .output()
+            .expect("busybox --list");
+        for applet in String::from_utf8_lossy(&applets.stdout).lines() {
+            let _ = symlink(&busybox, bin.join(applet.trim()));
+        }
+        // What the inspector image adds from apk, and so is NOT BusyBox.
+        for real in ["bash", "python3"] {
+            let path = which(real).unwrap_or_else(|| panic!("{real} is not installed"));
+            let _ = std::fs::remove_file(bin.join(real));
+            symlink(&path, bin.join(real)).expect("link");
+        }
+
+        for (script_name, script, env_var) in [
+            ("probe.sh", probe_script(), "IMAGE_ID"),
+            ("inspector.sh", inspector_script(), "TARGET_IMAGE"),
+        ] {
+            let dir = root.join(script_name);
+            std::fs::create_dir_all(&dir).expect("home");
+            let path = dir.join(script_name);
+            std::fs::write(&path, script).expect("write script");
+
+            // The inspector shells out to syft; stand in for it with output
+            // shaped the way syft's syft-json is, so the transformer is
+            // exercised rather than skipped.
+            if script_name == "inspector.sh" {
+                let stub = bin.join("syft");
+                std::fs::write(
+                    &stub,
+                    "#!/usr/bin/env python3\nimport json\nprint(json.dumps({\
+                     \"artifacts\":[{\"name\":\"musl\",\"version\":\"1.2.5-r0\",\"type\":\"apk\"}],\
+                     \"distro\":{\"id\":\"alpine\",\"name\":\"Alpine Linux\",\
+                     \"version\":\"3.20.3\",\"versionID\":\"3.20\",\
+                     \"prettyName\":\"Alpine Linux v3.20\"},\
+                     \"source\":{\"metadata\":{\"config\":{\"config\":{\"Env\":[]}}}}}))\n",
+                )
+                .expect("syft stub");
+                let mut perms = std::fs::metadata(&stub).expect("stat").permissions();
+                std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+                std::fs::set_permissions(&stub, perms).expect("chmod");
+            }
+
+            let out = Command::new(bin.join("bash"))
+                .arg(&path)
+                .env_clear()
+                .env("PATH", &bin)
+                .env("HOME", &dir)
+                .env(env_var, "images.canfar.net/skaha/astroml:1.0")
+                .output()
+                .expect("run script");
+
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            println!("--- {script_name} stderr ---\n{}", stderr.trim());
+
+            assert!(
+                !stderr.contains("unrecognized option") && !stderr.contains("Usage:"),
+                "{script_name} used something BusyBox does not have:\n{stderr}"
+            );
+            let manifest: serde_json::Value =
+                serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+                    panic!("{script_name} stdout is not a manifest ({e}): {stdout:.400}")
+                });
+            assert_eq!(
+                manifest["imageID"], "images.canfar.net/skaha/astroml:1.0",
+                "{script_name}"
+            );
+            assert!(
+                manifest["probeNotes"].is_null(),
+                "{script_name} gave up: {}",
+                manifest["probeNotes"]
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Where an executable lives, or `None`.
+    fn which(program: &str) -> Option<std::path::PathBuf> {
+        std::env::var_os("PATH")?
+            .to_string_lossy()
+            .split(':')
+            .map(|dir| std::path::Path::new(dir).join(program))
+            .find(|path| path.is_file())
+    }
+
     #[test]
     fn sha256_hex_matches_known_vector() {
         assert_eq!(

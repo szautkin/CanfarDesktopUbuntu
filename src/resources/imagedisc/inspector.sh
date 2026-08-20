@@ -15,9 +15,23 @@ mkdir -p "$OUT_DIR"
 SAFE_ID=$(printf '%s' "$TARGET_IMAGE" | tr '/:?*<>|"\\' '_')
 OUT="$OUT_DIR/$SAFE_ID.json"
 TMP="$OUT.partial"
-SYFT_OUT="$(mktemp)"
-SYFT_ERR="$(mktemp)"
-TRANSFORMER="$(mktemp --suffix=.py)"
+# Temp files, portably.
+#
+# `mktemp --suffix=` is a GNU coreutils extension. The inspector image is
+# Alpine, where mktemp is BusyBox's and takes only [-dqtup] and a TEMPLATE — it
+# printed a usage message, the assignment came back empty, and the very next
+# `cat > "$TRANSFORMER"` died on an empty filename. An explicit TEMPLATE is
+# understood by both, and python3 does not care what a script it is handed by
+# path is called.
+#
+# This script runs inside whatever image the user points it at, so every
+# utility it uses has to be the POSIX one, not the GNU one.
+new_temp() {
+    mktemp "${TMPDIR:-/tmp}/verbinal-$1-XXXXXX" 2>/dev/null
+}
+SYFT_OUT="$(new_temp syft-out)"
+SYFT_ERR="$(new_temp syft-err)"
+TRANSFORMER="$(new_temp transform)"
 cleanup() { rm -f "$SYFT_OUT" "$SYFT_ERR" "$TRANSFORMER" "$TMP"; }
 trap cleanup EXIT
 
@@ -40,6 +54,15 @@ MINIMAL
     # `probeNotes` explanation was being written to a file and thrown away.
     cat "$OUT"
 }
+
+# A temp file we could not create is not survivable, and the failure mode is
+# obscure: `> ""` reports "No such file or directory" against a line number,
+# naming neither the variable nor the reason.
+if [ -z "$SYFT_OUT" ] || [ -z "$SYFT_ERR" ] || [ -z "$TRANSFORMER" ]; then
+    write_minimal "mktemp failed in the inspector image; cannot stage temporary files"
+    echo "mktemp failed; minimal manifest written" >&2
+    exit 0
+fi
 
 # ---- Install syft (binary, ~80MB) into ~/.local/bin if missing.
 SYFT="$(command -v syft || true)"
@@ -234,8 +257,14 @@ manifest = {
     "imageID": target,
     "contentHash": "sha256:syft",
     "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "osFamily": (distro.get("name") or "unknown").lower(),
-    "osVersion": distro.get("version") or "unknown",
+    # `id` and `versionID`, not `name` and `version`: syft mirrors os-release
+    # field for field, and the in-container probe reads ID / VERSION_ID. Using
+    # the other pair made the same image come out as "alpine linux" / "24.04.4
+    # LTS (Noble Numbat)" from this path and "alpine" / "24.04" from the other,
+    # so the discovery facets listed both and a filter on either missed half
+    # the images.
+    "osFamily": (distro.get("id") or distro.get("name") or "unknown").lower(),
+    "osVersion": distro.get("versionID") or distro.get("version") or "unknown",
     "osRelease": os_release_str,
     "kernel": "unknown (static layer scan)",
     "dpkgPackages": dpkg,
