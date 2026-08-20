@@ -1537,6 +1537,45 @@ mod manifest_sync {
     }
 
     #[test]
+    fn every_ui_call_into_the_coordinator_goes_through_the_tokio_runtime() {
+        // `glib::spawn_future_local` runs on the GTK main loop, which has no
+        // Tokio reactor. Anything doing HTTP or `tokio::time::sleep` from there
+        // panics with "there is no reactor running" — which is exactly what the
+        // manifest sync did the first time anyone signed in, because it was
+        // spawned on the loop and never handed to `services.spawn`.
+        //
+        // The rule the rest of the app already follows: spawn_future_local for
+        // the UI half, services.spawn for the work.
+        const ENTRY_POINTS: &[&str] = &["sync_from_vospace(", "discover_image("];
+
+        for (path, text) in crate::testing::rust_sources() {
+            let name = path.display().to_string();
+            if !name.contains("/ui/") {
+                continue;
+            }
+            let code = crate::testing::code(&text);
+            for entry in ENTRY_POINTS {
+                for (at, _) in code.match_indices(entry) {
+                    // From the enclosing `spawn_future_local` — the point the
+                    // work leaves the UI — to the call. A byte window would
+                    // depend on how long the closure in between happens to be.
+                    let opened = code[..at]
+                        .rfind("spawn_future_local")
+                        .map(|i| i + "spawn_future_local".len())
+                        .unwrap_or(0);
+                    let before = &code[opened..at];
+                    assert!(
+                        before.contains(".spawn("),
+                        "{name} calls {entry} without handing it to the Tokio \
+                         runtime — it will panic with \"there is no reactor \
+                         running\" the moment it runs"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_sync_is_paced_and_reports_as_it_goes() {
         // Background work nobody asked for. Fetching back-to-back would spend
         // the user's bandwidth and VOSpace's attention on something they did

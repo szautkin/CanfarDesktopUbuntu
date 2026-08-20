@@ -1,4 +1,5 @@
 use crate::models::UserInfo;
+use crate::services::image_discovery_coordinator::SyncProgress;
 use crate::services::TokenStorage;
 use crate::state::AppServices;
 use crate::ui::cube_tab_host::CubeTabHost;
@@ -1485,38 +1486,51 @@ impl SignedInChrome {
 fn sync_image_manifests(services: &Arc<AppServices>) {
     let services = Arc::clone(services);
     glib::spawn_future_local(async move {
-        let toast = services.toast.clone();
-        // Toasts are fire-and-forget with a five-second life, so progress is
-        // reported occasionally rather than per file — forty manifests would
-        // otherwise be forty toasts.
-        let report = move |progress: crate::services::image_discovery_coordinator::SyncProgress| {
-            use crate::services::image_discovery_coordinator::SyncProgress as P;
-            match progress {
-                P::Started { total } => toast.toast(crate::tr_plural!(
-                    total,
-                    "Catching up on {} image manifest from CANFAR…",
-                    "Catching up on {} image manifests from CANFAR…"
-                )),
-                P::Advanced { done, total, .. } if done % SYNC_PROGRESS_EVERY == 0 => {
-                    toast.toast(crate::tr_fmt!("Image manifests: {} of {}", done, total))
-                }
-                P::Advanced { .. } => {}
-                P::Finished(summary) if summary.imported > 0 => toast.toast(crate::tr_plural!(
-                    summary.imported,
-                    "{} image manifest brought over from CANFAR",
-                    "{} image manifests brought over from CANFAR"
-                )),
-                // Nothing new is the normal case on a machine that is already
-                // up to date, and is not worth interrupting anyone for.
-                P::Finished(_) => {}
-            }
-        };
-
+        let svc = Arc::clone(&services);
         let coordinator = Arc::clone(&services.image_discovery);
-        // A sync that cannot run — not signed in, no username, VOSpace
-        // unreachable — is nothing to tell the user about: they did not ask for
-        // it, and the per-image recovery still covers everything they inspect.
-        let _ = coordinator.sync_from_vospace(&services, report).await;
+        // Onto the Tokio runtime, not the GTK loop. The sync does HTTP and
+        // sleeps, both of which need a reactor — running it on the main loop
+        // panicked with "there is no reactor running" the moment anyone signed
+        // in. `ToastNotifier` is documented as safe to call from any thread,
+        // which is what lets the progress callback go over with it.
+        let toast = services.toast.clone();
+        let _ = services
+            .spawn(async move {
+                // Toasts are fire-and-forget with a five-second life, so
+                // progress is reported occasionally rather than per file —
+                // forty manifests would otherwise be forty toasts.
+                let report = move |progress: SyncProgress| match progress {
+                    SyncProgress::Started { total } => toast.toast(crate::tr_plural!(
+                        total,
+                        "Catching up on {} image manifest from CANFAR…",
+                        "Catching up on {} image manifests from CANFAR…"
+                    )),
+                    SyncProgress::Advanced { done, total, .. }
+                        if done % SYNC_PROGRESS_EVERY == 0 =>
+                    {
+                        toast.toast(crate::tr_fmt!("Image manifests: {} of {}", done, total))
+                    }
+                    SyncProgress::Advanced { .. } => {}
+                    SyncProgress::Finished(summary) if summary.imported > 0 => {
+                        toast.toast(crate::tr_plural!(
+                            summary.imported,
+                            "{} image manifest brought over from CANFAR",
+                            "{} image manifests brought over from CANFAR"
+                        ))
+                    }
+                    // Nothing new is the normal case on a machine that is
+                    // already up to date, and is not worth interrupting anyone
+                    // for.
+                    SyncProgress::Finished(_) => {}
+                };
+
+                // A sync that cannot run — not signed in, no username, VOSpace
+                // unreachable — is nothing to tell the user about: they did not
+                // ask for it, and the per-image recovery still covers
+                // everything they inspect.
+                let _ = coordinator.sync_from_vospace(&svc, report).await;
+            })
+            .await;
     });
 }
 
