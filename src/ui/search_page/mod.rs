@@ -132,11 +132,39 @@ pub(crate) fn pin_width(widget: &impl IsA<gtk::Widget>, width: i32) {
 /// that elides by fifty. GTK is initialised by the time any of this runs, so
 /// asking Pango is both available and exact.
 pub(crate) fn column_width_for(key: &str, display_name: &str) -> i32 {
-    // The button's own padding, plus room for the sort indicator.
-    const CHROME: i32 = 34;
-    let probe = gtk::Label::new(Some(display_name));
-    let (_, heading, _, _) = probe.measure(gtk::Orientation::Horizontal, -1);
-    column_width(key).max(heading + CHROME)
+    // Measured once per column, then remembered.
+    //
+    // The measurement builds a throwaway `Label` and asks Pango to shape its
+    // text — font resolution and all. That is fine once per column and ruinous
+    // per CELL, which is how the row loop calls it: a hundred rows times
+    // fifteen columns is fifteen hundred shaping runs per page turn, and it
+    // took nine and a half seconds. Paging looked broken because of this.
+    //
+    // Safe to keep forever: the width is a pure function of the key and the
+    // heading. A font change would leave it stale, and a stale column width is
+    // cosmetic and outlives only until the next launch.
+    thread_local! {
+        static MEASURED: RefCell<std::collections::HashMap<(String, String), i32>> =
+            RefCell::new(std::collections::HashMap::new());
+    }
+
+    MEASURED.with(|cache| {
+        if let Some(width) = cache
+            .borrow()
+            .get(&(key.to_string(), display_name.to_string()))
+        {
+            return *width;
+        }
+        // The button's own padding, plus room for the sort indicator.
+        const CHROME: i32 = 34;
+        let probe = gtk::Label::new(Some(display_name));
+        let (_, heading, _, _) = probe.measure(gtk::Orientation::Horizontal, -1);
+        let width = column_width(key).max(heading + CHROME);
+        cache
+            .borrow_mut()
+            .insert((key.to_string(), display_name.to_string()), width);
+        width
+    })
 }
 
 /// A label that fills its cell and ellipsizes rather than widening it.
@@ -613,6 +641,36 @@ pub struct SearchPage {
 }
 
 const DEFAULT_PAGE_SIZE: usize = 100;
+
+/// Reports how long a page render took, split between fetching the rows and
+/// building their widgets. Prints on drop, so it covers the whole function
+/// without threading a timer through it.
+///
+/// Off unless `VERBINAL_TRACE_PAGING` is set. It exists because a page turn
+/// once took nine and a half seconds and looked like a broken button — nobody
+/// could tell whether the click was landing, the filter was wrong, or the
+/// render was slow, and one run of this answered it. Kept for the next time.
+struct TraceRender {
+    page: usize,
+    rows: usize,
+    slice_took: std::time::Duration,
+    built: std::time::Instant,
+}
+
+impl Drop for TraceRender {
+    fn drop(&mut self) {
+        if std::env::var_os("VERBINAL_TRACE_PAGING").is_none() {
+            return;
+        }
+        eprintln!(
+            "[paging] page {} — {} rows: data {:?}, widgets {:?}",
+            self.page,
+            self.rows,
+            self.slice_took,
+            self.built.elapsed()
+        );
+    }
+}
 
 impl SearchPage {
     pub fn new(services: Arc<AppServices>, main_window: adw::ApplicationWindow) -> Rc<Self> {
@@ -1132,11 +1190,15 @@ impl SearchPage {
             glib::spawn_future_local(async move { p.execute_raw_adql().await });
         });
 
-        // Pagination
+        // Pagination.
+        //
+        // Rows only: a page turn changes neither the columns nor their filter
+        // boxes, and rebuilding the heading strip would destroy whichever box
+        // the user was typing in.
         let p = page.clone();
         first_btn.connect_clicked(move |_| {
             *p.current_page.borrow_mut() = 0;
-            p.render_results_page();
+            p.render_rows();
         });
         let p = page.clone();
         prev_btn.connect_clicked(move |_| {
@@ -1144,7 +1206,7 @@ impl SearchPage {
             if cur > 0 {
                 *p.current_page.borrow_mut() = cur - 1;
             }
-            p.render_results_page();
+            p.render_rows();
         });
         let p = page.clone();
         next_btn.connect_clicked(move |_| {
@@ -1153,7 +1215,7 @@ impl SearchPage {
             if cur + 1 < total {
                 *p.current_page.borrow_mut() = cur + 1;
             }
-            p.render_results_page();
+            p.render_rows();
         });
         let p = page.clone();
         last_btn.connect_clicked(move |_| {
@@ -1161,7 +1223,7 @@ impl SearchPage {
             if total > 0 {
                 *p.current_page.borrow_mut() = total - 1;
             }
-            p.render_results_page();
+            p.render_rows();
         });
 
         // Clear recent
@@ -2201,7 +2263,17 @@ impl SearchPage {
 
         // Data rows. Only this page is materialised — the other 9,900 rows of a
         // maxed-out result set are never cloned.
+        let shared_columns = Rc::new(columns.clone());
+        let sliced = std::time::Instant::now();
         let page_rows = self.processed_slice(start, ps);
+        let slice_took = sliced.elapsed();
+        let built = std::time::Instant::now();
+        let _trace = TraceRender {
+            page,
+            rows: page_rows.len(),
+            slice_took,
+            built,
+        };
         for row in page_rows.iter() {
             let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row_box.set_margin_top(1);
@@ -2330,37 +2402,28 @@ impl SearchPage {
             row_btn.set_margin_start(0);
             row_btn.set_margin_end(0);
 
-            let row_data: Vec<(String, String)> = columns
-                .iter()
-                .filter(|c| c.visible)
-                .map(|c| {
-                    let raw = row.get(&c.header);
-                    let formatted = format_cell(raw, c.format);
-                    (c.display_name.clone(), formatted)
-                })
-                .collect();
-            // Try multiple possible header names for target name
-            let target_name = {
-                let t = row.get("Target Name");
-                if t.is_empty() {
-                    row.get("\"Target Name\"").to_string()
-                } else {
-                    t.to_string()
-                }
-            };
-            let pub_id_for_detail = row.get("publisherID").to_string();
-            let raw_row_for_detail = row.clone();
+            // The detail payload is built WHEN THE ROW IS CLICKED, not before.
+            //
+            // This used to format every column of every row up front — a
+            // hundred rows times forty-one columns, so eight thousand strings
+            // allocated per page turn, plus a second full clone of each row —
+            // to populate a modal that usually never opens. Paging felt broken
+            // because it was doing all of that between the click and the
+            // redraw.
+            let row_for_detail = Rc::new(row.clone());
+            let columns_for_detail = Rc::clone(&shared_columns);
             let services_for_detail = self.services.clone();
             let main_window_for_detail = self.main_window.clone();
             row_btn.connect_clicked(move |_| {
-                let data = row_data.clone();
-                let name = target_name.clone();
-                let pub_id = pub_id_for_detail.clone();
+                let row = Rc::clone(&row_for_detail);
+                let columns = Rc::clone(&columns_for_detail);
                 let services = services_for_detail.clone();
-                let raw_row = raw_row_for_detail.clone();
                 let main_window = main_window_for_detail.clone();
                 glib::spawn_future_local(async move {
-                    show_row_detail(&name, &data, &pub_id, &raw_row, &services, &main_window).await;
+                    let data = detail_rows(&row, &columns);
+                    let name = detail_target_name(&row);
+                    let pub_id = row.get("publisherID").to_string();
+                    show_row_detail(&name, &data, &pub_id, &row, &services, &main_window).await;
                 });
             });
 
@@ -3350,6 +3413,36 @@ fn is_narrowable(key: &str) -> bool {
 // =============================================================================
 // Row detail dialog
 // =============================================================================
+
+/// The label/value pairs the detail modal shows for one row.
+///
+/// Called from the row's click handler, so the formatting happens once for the
+/// row someone opened rather than for all hundred on the page.
+fn detail_rows(
+    row: &SearchResultRow,
+    columns: &[crate::models::search_result::ResultColumnInfo],
+) -> Vec<(String, String)> {
+    columns
+        .iter()
+        .filter(|c| c.visible)
+        .map(|c| {
+            (
+                c.display_name.clone(),
+                format_cell(row.get(&c.header), c.format),
+            )
+        })
+        .collect()
+}
+
+/// The row's target name, under either spelling TAP may have used.
+fn detail_target_name(row: &SearchResultRow) -> String {
+    let name = row.get("Target Name");
+    if name.is_empty() {
+        row.get("\"Target Name\"").to_string()
+    } else {
+        name.to_string()
+    }
+}
 
 async fn show_row_detail(
     target_name: &str,
@@ -4675,6 +4768,36 @@ mod numeric_range_tests {
 mod results_layout_tests {
 
     const SOURCE: &str = include_str!("mod.rs");
+
+    #[test]
+    fn measuring_a_heading_happens_once_per_column_not_once_per_cell() {
+        // `column_width_for` builds a throwaway Label and asks Pango to shape
+        // its text. The row loop calls it for every CELL, so a hundred rows of
+        // fifteen columns meant fifteen hundred shaping runs per page turn —
+        // 9.7 seconds in a debug build, which reads as a dead button rather
+        // than a slow one.
+        //
+        // Measured with `cargo run --example cell_measure_probe`: 61ms per page
+        // measuring per cell, 0.8ms memoised, against 14ms to build the widgets
+        // themselves. The measuring was four times the render it was part of.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        let at = code
+            .find("fn column_width_for")
+            .expect("column_width_for is gone");
+        let end = code[at..]
+            .find("\n}\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        let body = &code[at..end];
+        assert!(
+            body.contains("thread_local!"),
+            "the heading measurement is no longer remembered, so every cell pays for it"
+        );
+        assert!(
+            body.contains("MEASURED"),
+            "the memo is gone from column_width_for"
+        );
+    }
 
     #[test]
     fn a_cell_label_fills_its_parent_rather_than_sitting_at_its_start() {
