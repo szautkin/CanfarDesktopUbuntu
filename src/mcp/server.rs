@@ -21,6 +21,14 @@ use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::mcp::constants::{SERVER_NAME, SERVER_VERSION};
+
+/// How long the tool list must stop changing before clients are told.
+///
+/// Long enough to swallow a burst — every AI Guide edit persists, and every
+/// persist fires — and short enough that a single deliberate change still feels
+/// immediate to whoever made it. The notification carries no payload beyond
+/// "re-read the list", so collapsing several loses nothing at all.
+const LIST_CHANGED_QUIET: std::time::Duration = std::time::Duration::from_millis(250);
 use crate::mcp::framing;
 use crate::mcp::jsonrpc::{self, error_code, JsonRpcId, JsonRpcRequest};
 use crate::mcp::tools::{ToolContext, ToolResult, ToolRouter};
@@ -109,6 +117,29 @@ where
                     // notification says everything several would have.
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => break,
+                }
+
+                // Coalesce a burst into one notification. Every guide edit
+                // persists, and each persist fires — so renaming a guide, or
+                // any UI that saves per keystroke, would tell the client to
+                // re-read a 141-tool catalogue once per event. Wait for the
+                // churn to stop, draining whatever arrives meanwhile.
+                let mut closed = false;
+                loop {
+                    match tokio::time::timeout(LIST_CHANGED_QUIET, changed.recv()).await {
+                        // More churn: keep waiting for it to settle.
+                        Ok(Ok(())) => continue,
+                        Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                        Ok(Err(broadcast::error::RecvError::Closed)) => {
+                            closed = true;
+                            break;
+                        }
+                        // Quiet: send the one notification the burst earned.
+                        Err(_) => break,
+                    }
+                }
+                if closed {
+                    break;
                 }
                 // Nothing before `initialize` — the client has not agreed a
                 // protocol version yet, and an unsolicited frame there is a
@@ -679,6 +710,51 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("the notifier is still subscribed after its connection closed");
+    }
+
+    /// A burst of edits produces one notification, not one each.
+    ///
+    /// QA report #2 (P3-D): re-registering 138 tools thrashes a client, and
+    /// every AI Guide edit persists — so a rename, or any save-per-keystroke
+    /// path, would fire once per event. The payload is only "re-read the list",
+    /// so collapsing a burst loses nothing.
+    #[tokio::test]
+    async fn a_burst_of_changes_is_one_notification() {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (changed, _) = broadcast::channel(64);
+        let router: Arc<dyn ToolRouter> = Arc::new(ChangingRouter {
+            changed: changed.clone(),
+        });
+        let gate: Arc<dyn ApprovalGate> = Arc::new(AllowAllGate);
+        let server_task = tokio::spawn(async move {
+            let _ = serve(server, router, gate).await;
+        });
+
+        let (rd, mut wr) = tokio::io::split(client);
+        let mut reader = BufReader::new(rd);
+        initialized_client(&mut reader, &mut wr).await;
+        wait_for_subscriber(&changed).await;
+
+        // Ten edits in quick succession.
+        for _ in 0..10 {
+            changed.send(()).expect("a live subscriber");
+        }
+
+        let note = tokio::time::timeout(std::time::Duration::from_secs(5), read_line(&mut reader))
+            .await
+            .expect("the burst must still produce one notification");
+        assert_eq!(note["method"], json!("notifications/tools/list_changed"));
+
+        // And no second one: the other nine were coalesced into that.
+        let extra = tokio::time::timeout(LIST_CHANGED_QUIET * 8, read_line(&mut reader)).await;
+        assert!(
+            extra.is_err(),
+            "a burst of ten produced more than one notification: {extra:?}"
+        );
+
+        drop(reader);
+        drop(wr);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_task).await;
     }
 
     #[tokio::test]

@@ -124,6 +124,60 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    /// The bridge lets go when the APP goes away, not just when the client does.
+    ///
+    /// QA report #2 (P3-D) found bridges that never exit. They do exit on stdin
+    /// EOF — the case already covered below — but Claude Desktop abandons a
+    /// bridge on each retry WITHOUT closing its stdin, so that signal never
+    /// arrives and four of them accumulated in fourteen minutes.
+    ///
+    /// This is the other end: when the app quits or the socket drops, the
+    /// bridge must not sit holding a pipe forever waiting for a client that has
+    /// stopped listening.
+    #[tokio::test]
+    async fn ends_when_the_socket_closes_even_if_stdin_stays_open() {
+        let (bridge_input, _client_stdin) = tokio::io::duplex(64);
+        let (bridge_output, _client_stdout) = tokio::io::duplex(64);
+        let (bridge_sock, peer) = tokio::io::duplex(64);
+
+        let handle = tokio::spawn(relay(bridge_input, bridge_output, bridge_sock));
+
+        // The app exits: its side of the socket goes away. `_client_stdin` is
+        // deliberately still held, so stdin never reaches EOF.
+        drop(peer);
+
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        assert!(
+            ended.is_ok(),
+            "the bridge outlived its socket — this is the process that leaks"
+        );
+    }
+
+    /// A client that closes its read end takes the bridge with it.
+    ///
+    /// The other way a client can disappear without closing stdin: it stops
+    /// reading. The next relayed frame fails with a broken pipe, and that is a
+    /// signal worth acting on rather than retrying forever.
+    #[tokio::test]
+    async fn ends_when_the_client_stops_reading() {
+        let (bridge_input, _client_stdin) = tokio::io::duplex(64);
+        let (bridge_output, client_stdout) = tokio::io::duplex(64);
+        let (bridge_sock, mut peer) = tokio::io::duplex(64);
+
+        let handle = tokio::spawn(relay(bridge_input, bridge_output, bridge_sock));
+
+        // The client is gone; nothing will read stdout again.
+        drop(client_stdout);
+        // The app answers anyway. Enough to overrun the pipe buffer.
+        let _ = peer.write_all(&vec![b'x'; 8192]).await;
+
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        assert!(
+            ended.is_ok(),
+            "the bridge kept relaying into a pipe nobody reads"
+        );
+    }
+
     #[tokio::test]
     async fn relays_both_directions_then_ends_on_stdin_eof() {
         // Each duplex pair: writing one end appears on the other end's reads.
