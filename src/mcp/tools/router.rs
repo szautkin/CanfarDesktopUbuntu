@@ -138,7 +138,14 @@ impl McpToolRouter {
                 ))
             }
             "get_proposal_state" => {
-                let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let Some(id) = proposal_id(args) else {
+                    // Distinct from "unknown": nothing was asked about. A
+                    // missing argument used to read as a missing proposal.
+                    return Some(ToolResult::Failed(
+                        "id (or proposalId) is required".to_string(),
+                    ));
+                };
+                let id = id.as_str();
                 match self.proposals.get(id) {
                     // Don't leak another agent's proposal — report it as unknown.
                     Some(p) if visible(&p.origin) => {
@@ -162,7 +169,12 @@ impl McpToolRouter {
                 }
             }
             "withdraw_proposal" => {
-                let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let Some(id) = proposal_id(args) else {
+                    return Some(ToolResult::Failed(
+                        "id (or proposalId) is required".to_string(),
+                    ));
+                };
+                let id = id.as_str();
                 // Only the owner may withdraw (external callers scoped by origin).
                 let owned = self
                     .proposals
@@ -244,13 +256,75 @@ fn parse_since_token(args: &Value) -> u64 {
     0
 }
 
+/// Argument keys a tool does not declare.
+///
+/// The schemas all say `additionalProperties: false` and nothing enforced it,
+/// so a misspelled or invented argument was accepted and ignored. Three
+/// separate misreadings in one QA session came from that: `get_job_status`
+/// with an `executionId` returned the whole job list as if called with `{}`,
+/// `set_fits_view` silently ignored a `tabIndex` (which changed the reporter's
+/// diagnosis of an unrelated bug), and `create_analysis_notebook` was thought
+/// to ignore a `title` it never had.
+///
+/// Both spellings of a declared name are accepted, because `arg` bridges
+/// camelCase and snake_case at read time — rejecting the spelling the tool
+/// itself would have honoured would break callers that work today.
+fn undeclared_arguments(schema: &Value, args: &Value) -> Vec<String> {
+    if schema.get("additionalProperties") != Some(&Value::Bool(false)) {
+        return Vec::new();
+    }
+    let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+    let Some(given) = args.as_object() else {
+        return Vec::new();
+    };
+
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for name in props.keys() {
+        declared.insert(name.clone());
+        declared.insert(super::camel_case(name));
+        declared.insert(super::snake_case(name));
+    }
+
+    let mut unknown: Vec<String> = given
+        .keys()
+        .filter(|k| !declared.contains(k.as_str()))
+        .cloned()
+        .collect();
+    unknown.sort();
+    unknown
+}
+
+/// The proposal id from a lifecycle call, under either spelling.
+///
+/// Queueing answers `proposalId`; these tools asked for `id`. An agent passing
+/// back the key it was just handed got `{"id": "", "state": "unknown"}` — the
+/// same answer as for a proposal that never existed, so a polling loop could
+/// not tell "waiting for approval" from "gone". `arg` bridges case, not two
+/// different words.
+fn proposal_id(args: &Value) -> Option<String> {
+    ["id", "proposalId"]
+        .iter()
+        .find_map(|k| super::arg(args, k).and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Descriptors for the proposal-lifecycle tools (agent-safe: they only inspect /
 /// withdraw the agent's own queued proposals).
 fn lifecycle_descriptors() -> Vec<ToolDescriptor> {
     let id_schema = serde_json::json!({
         "type": "object",
-        "properties": { "id": { "type": "string", "description": "The proposal id" } },
-        "required": ["id"], "additionalProperties": false
+        "properties": {
+            "id": { "type": "string", "description": "The proposal id" },
+            "proposalId": {
+                "type": "string",
+                "description": "The same thing, under the name the queueing call answered with. Pass either."
+            }
+        },
+        "additionalProperties": false
     });
     let empty = serde_json::json!({"type":"object","properties":{},"additionalProperties":false});
     vec![
@@ -375,6 +449,24 @@ impl ToolRouter for McpToolRouter {
                 if !is_builtin {
                     if let Some(body) = self.services.ai_guide.snapshot().guide_body(name) {
                         return ToolResult::Text(body);
+                    }
+                }
+
+                // An argument the tool does not declare is a mistake worth naming.
+                // Only for names we actually know: an unknown tool must still
+                // answer "no such tool" rather than complaining about its args.
+                if let Some(d) = Self::all_descriptors().iter().find(|d| d.name == resolved) {
+                    let unknown = undeclared_arguments(&d.input_schema, &args);
+                    if !unknown.is_empty() {
+                        let declared: Vec<&str> = d
+                            .input_schema
+                            .get("properties")
+                            .and_then(|p| p.as_object())
+                            .map(|p| p.keys().map(String::as_str).collect())
+                            .unwrap_or_default();
+                        return ToolResult::Failed(format!(
+                            "{name}: unknown argument(s) {unknown:?}; it takes {declared:?}"
+                        ));
                     }
                 }
 
@@ -553,6 +645,114 @@ impl ToolRouter for McpToolRouter {
 
             result
         })
+    }
+}
+
+#[cfg(test)]
+mod undeclared_argument_tests {
+    use super::undeclared_arguments;
+    use serde_json::json;
+
+    fn schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "publisherId": {"type": "string"},
+                "template": {"type": "string"}
+            },
+            "required": ["publisherId"],
+            "additionalProperties": false
+        })
+    }
+
+    /// An argument the tool never declared is named, not ignored.
+    #[test]
+    fn an_invented_argument_is_reported() {
+        let unknown = undeclared_arguments(&schema(), &json!({"publisherId": "x", "title": "T"}));
+        assert_eq!(unknown, vec!["title".to_string()]);
+    }
+
+    /// Both spellings of a DECLARED name are fine.
+    ///
+    /// `arg` bridges camelCase and snake_case at read time, so a tool honours
+    /// `publisher_id` even though its schema says `publisherId`. Rejecting it
+    /// here would break callers that work today — the whole point of checking
+    /// is to catch mistakes, not to un-fix the aliasing.
+    #[test]
+    fn either_spelling_of_a_declared_argument_is_accepted() {
+        assert!(undeclared_arguments(&schema(), &json!({"publisher_id": "x"})).is_empty());
+        assert!(undeclared_arguments(&schema(), &json!({"publisherId": "x"})).is_empty());
+    }
+
+    /// A schema that permits extras still permits them.
+    #[test]
+    fn a_permissive_schema_is_left_alone() {
+        let open = json!({"type": "object", "properties": {"a": {"type": "string"}}});
+        assert!(undeclared_arguments(&open, &json!({"anything": 1})).is_empty());
+    }
+
+    /// Nothing to check is not an error.
+    #[test]
+    fn empty_and_non_object_arguments_are_fine() {
+        assert!(undeclared_arguments(&schema(), &json!({})).is_empty());
+        assert!(undeclared_arguments(&schema(), &json!(null)).is_empty());
+    }
+
+    /// Every reported miss is listed, in a stable order.
+    #[test]
+    fn every_unknown_key_is_named() {
+        let unknown = undeclared_arguments(
+            &schema(),
+            &json!({"zeta": 1, "alpha": 2, "template": "image"}),
+        );
+        assert_eq!(unknown, vec!["alpha".to_string(), "zeta".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod proposal_id_tests {
+    use super::proposal_id;
+    use serde_json::json;
+
+    /// The key we hand out is a key we accept.
+    ///
+    /// Queueing answers `proposalId`; these tools asked for `id`. Passing back
+    /// the key you were just given produced
+    /// `{"id": "", "state": "unknown"}` — indistinguishable from a proposal
+    /// that never existed, so an agent polling for approval could not tell
+    /// "still waiting" from "gone".
+    #[test]
+    fn either_spelling_resolves_to_the_same_proposal() {
+        assert_eq!(
+            proposal_id(&json!({"id": "prop-13"})).as_deref(),
+            Some("prop-13")
+        );
+        assert_eq!(
+            proposal_id(&json!({"proposalId": "prop-13"})).as_deref(),
+            Some("prop-13")
+        );
+        // And the camel/snake bridge still applies on top.
+        assert_eq!(
+            proposal_id(&json!({"proposal_id": "prop-13"})).as_deref(),
+            Some("prop-13")
+        );
+    }
+
+    /// Nothing asked about is not the same as nothing found.
+    #[test]
+    fn a_missing_id_is_absent_rather_than_empty() {
+        assert!(proposal_id(&json!({})).is_none());
+        // Whitespace is not an id either; it used to look up "" and miss.
+        assert!(proposal_id(&json!({"id": "   "})).is_none());
+    }
+
+    /// `id` wins when both are present, so the documented name stays primary.
+    #[test]
+    fn the_documented_name_takes_precedence() {
+        assert_eq!(
+            proposal_id(&json!({"id": "a", "proposalId": "b"})).as_deref(),
+            Some("a")
+        );
     }
 }
 

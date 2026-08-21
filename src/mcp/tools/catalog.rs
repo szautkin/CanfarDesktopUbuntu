@@ -79,6 +79,58 @@ mod tests {
     /// One agent must never see another agent's queued proposals: lifecycle reads
     /// are scoped by the originating client (defence-in-depth against a second
     /// external client on the shared socket enumerating the first's activity).
+    /// An argument the tool does not declare is refused by name.
+    ///
+    /// Every schema says `additionalProperties: false` and nothing enforced it,
+    /// so an invented argument was accepted and ignored. That silence cost a QA
+    /// session three misreadings: `get_job_status` with an `executionId`
+    /// answered with the whole job list as if called with `{}`,
+    /// `set_fits_view` dropped a `tabIndex` — which changed their diagnosis of
+    /// an unrelated viewer bug — and `create_analysis_notebook` was reported as
+    /// ignoring a `title` it never had.
+    ///
+    /// Driven through `dispatch`, because the validator being right is not the
+    /// same as it being wired in.
+    #[test]
+    fn an_undeclared_argument_is_refused_rather_than_ignored() {
+        use crate::mcp::tools::{ToolContext, ToolResult};
+
+        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+        let (services, _toast_rx) = AppServices::new(rt.handle().clone());
+        let (router, _proposals) = build_router(services);
+
+        rt.block_on(async {
+            let ctx = ToolContext::for_external("agent".into(), "req-1".into());
+
+            let r = router
+                .dispatch(
+                    "get_job_status",
+                    serde_json::json!({ "executionId": "abc" }),
+                    &ctx,
+                )
+                .await;
+            match r {
+                ToolResult::Failed(msg) => {
+                    assert!(
+                        msg.contains("executionId"),
+                        "the bad key is not named: {msg}"
+                    );
+                    assert!(msg.contains("unknown argument"), "{msg}");
+                }
+                _ => panic!("an invented argument was accepted instead of refused"),
+            }
+
+            // And a call with no surprises still runs.
+            let ok = router
+                .dispatch("get_job_status", serde_json::json!({}), &ctx)
+                .await;
+            assert!(
+                !matches!(ok, ToolResult::Failed(_)),
+                "a valid call was refused"
+            );
+        });
+    }
+
     #[test]
     fn lifecycle_reads_are_origin_scoped_per_agent() {
         use crate::mcp::tools::{ToolContext, ToolResult};

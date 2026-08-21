@@ -177,56 +177,65 @@ print('shape:', None if data is None else data.shape, '| BUNIT:', header.get('BU
     )
 }
 
+/// Every stub below is a RAW string on purpose.
+///
+/// These were written with `\n\` line continuations, which strip the newline
+/// AND the leading whitespace of the next line — so a cell that reads as
+/// correctly indented Python in this file was emitted flush against column 0,
+/// and every generated notebook died on
+/// `IndentationError: expected an indented block after 'if' statement`.
+/// Thirteen lines across three stubs were affected. A raw string is what the
+/// reader sees.
 fn image_stub() -> String {
-    "# Quick look (zscale + WCS axes)\n\
-import matplotlib.pyplot as plt\n\
-from astropy.visualization import ZScaleInterval, ImageNormalize\n\
-\n\
-if data is not None and data.ndim == 2:\n\
-    norm = ImageNormalize(data, interval=ZScaleInterval())\n\
-    ax = plt.subplot(projection=wcs)\n\
-    im = ax.imshow(data, origin='lower', norm=norm, cmap='gray')\n\
-    plt.colorbar(im, label=header.get('BUNIT', ''))\n\
-    ax.grid(color='white', ls=':', alpha=0.5)\n\
-    plt.show()"
+    r#"# Quick look (zscale + WCS axes)
+import matplotlib.pyplot as plt
+from astropy.visualization import ZScaleInterval, ImageNormalize
+
+if data is not None and data.ndim == 2:
+    norm = ImageNormalize(data, interval=ZScaleInterval())
+    ax = plt.subplot(projection=wcs)
+    im = ax.imshow(data, origin='lower', norm=norm, cmap='gray')
+    plt.colorbar(im, label=header.get('BUNIT', ''))
+    ax.grid(color='white', ls=':', alpha=0.5)
+    plt.show()"#
         .to_string()
 }
 
 fn photometry_stub() -> String {
-    "# Aperture photometry — set the source position + radius, then run\n\
-from astropy.coordinates import SkyCoord\n\
-import astropy.units as u\n\
-from photutils.aperture import SkyCircularAperture, aperture_photometry\n\
-\n\
-# TODO: your source position (degrees)\n\
-coord = SkyCoord(ra=0.0, dec=0.0, unit='deg')\n\
-aperture = SkyCircularAperture(coord, r=2.0 * u.arcsec).to_pixel(wcs)\n\
-print(aperture_photometry(data, aperture))\n\
-print('Pixel units (BUNIT):', header.get('BUNIT'))"
+    r#"# Aperture photometry — set the source position + radius, then run
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+from photutils.aperture import SkyCircularAperture, aperture_photometry
+
+# TODO: your source position (degrees)
+coord = SkyCoord(ra=0.0, dec=0.0, unit='deg')
+aperture = SkyCircularAperture(coord, r=2.0 * u.arcsec).to_pixel(wcs)
+print(aperture_photometry(data, aperture))
+print('Pixel units (BUNIT):', header.get('BUNIT'))"#
         .to_string()
 }
 
 fn cube_stub() -> String {
-    "# Spectral cube — moment map + spectrum (edit the spaxel)\n\
-try:\n\
-    from spectral_cube import SpectralCube\n\
-except ModuleNotFoundError:\n\
-    # Not shipped in every compute image — fail with the fix, not a bare import error.\n\
-    raise SystemExit(\n\
-        'spectral_cube is not installed in this kernel.\\n'\n\
-        'Run:  %pip install spectral-cube\\n'\n\
-        'then re-run this cell.'\n\
-    )\n\
-\n\
-cube = SpectralCube.read(path)  # carries SPECSYS / RESTFRQ / beam\n\
-print(cube)\n\
-\n\
-mom0 = cube.moment(order=0)     # integrated intensity (moment 0)\n\
-mom0.quicklook()\n\
-\n\
-# Spectrum at the central spaxel — edit (x, y)\n\
-x, y = cube.shape[2] // 2, cube.shape[1] // 2\n\
-cube[:, y, x].quicklook()"
+    r#"# Spectral cube — moment map + spectrum (edit the spaxel)
+try:
+    from spectral_cube import SpectralCube
+except ModuleNotFoundError:
+    # Not shipped in every compute image — fail with the fix, not a bare import error.
+    raise SystemExit(
+        'spectral_cube is not installed in this kernel.\n'
+        'Run:  %pip install spectral-cube\n'
+        'then re-run this cell.'
+    )
+
+cube = SpectralCube.read(path)  # carries SPECSYS / RESTFRQ / beam
+print(cube)
+
+mom0 = cube.moment(order=0)     # integrated intensity (moment 0)
+mom0.quicklook()
+
+# Spectrum at the central spaxel — edit (x, y)
+x, y = cube.shape[2] // 2, cube.shape[1] // 2
+cube[:, y, x].quicklook()"#
         .to_string()
 }
 
@@ -236,6 +245,86 @@ cube[:, y, x].quicklook()"
 
 #[cfg(test)]
 mod tests {
+    /// Every generated code cell is Python that parses.
+    ///
+    /// The quick-look cell shipped as:
+    ///
+    /// ```text
+    /// if data is not None and data.ndim == 2:
+    /// norm = ImageNormalize(data, interval=ZScaleInterval())
+    /// ```
+    ///
+    /// because `\n\` continuations eat the newline AND the next line's
+    /// indentation, so source that reads as correct Python in the editor is
+    /// emitted flush left. Every notebook this tool produced died on the first
+    /// run with `IndentationError: expected an indented block`.
+    ///
+    /// Checked by compiling the cell with the interpreter rather than by
+    /// eyeballing the literal — the literal is exactly what looked right.
+    #[test]
+    fn every_generated_code_cell_is_valid_python() {
+        let Some(python) = crate::helpers::python_discovery::find_python(None) else {
+            eprintln!("no python on PATH; skipping");
+            return;
+        };
+
+        for template in ["image", "photometry", "cube"] {
+            let nb = build_analysis_notebook(&obs(), Some(template));
+            for (i, cell) in nb.cells.iter().enumerate() {
+                if cell.cell_type != "code" {
+                    continue;
+                }
+                let source = cell.source.joined();
+                if source.trim().is_empty() {
+                    continue;
+                }
+                let out = std::process::Command::new(&python)
+                    .arg("-c")
+                    .arg("import ast,sys; ast.parse(sys.stdin.read())")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .and_then(|mut child| {
+                        use std::io::Write;
+                        child
+                            .stdin
+                            .as_mut()
+                            .expect("stdin")
+                            .write_all(source.as_bytes())?;
+                        child.wait_with_output()
+                    })
+                    .expect("run python");
+
+                assert!(
+                    out.status.success(),
+                    "template {template:?} cell {i} is not valid Python:\n{}\n--- source ---\n{source}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
+
+    /// The indentation survives into the emitted cell.
+    ///
+    /// A narrower check that does not need an interpreter, so it runs
+    /// everywhere: the line after the `if` must be indented.
+    #[test]
+    fn the_quick_look_body_is_indented_under_its_if() {
+        let source = build_analysis_notebook(&obs(), Some("image")).cells[2]
+            .source
+            .joined();
+        let body = source
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("if data is not None"))
+            .nth(1)
+            .expect("a line after the if");
+        assert!(
+            body.starts_with("    "),
+            "the if-body is at column 0, which is an IndentationError: {body:?}"
+        );
+    }
+
     use super::*;
 
     fn obs() -> DownloadedObservation {
