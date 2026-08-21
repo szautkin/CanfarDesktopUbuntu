@@ -45,7 +45,7 @@ pub async fn show_tabbed_text_dialog(
 ) {
     let window = gtk::Window::builder()
         .title(title)
-        .default_width(600)
+        .default_width(crate::ui::fit::DETAIL)
         .default_height(500)
         .modal(true)
         .build();

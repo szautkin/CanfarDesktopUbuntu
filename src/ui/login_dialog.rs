@@ -17,7 +17,7 @@ pub async fn show_login_dialog(
 ) -> Option<(String, String, UserInfo)> {
     let dialog = adw::Window::builder()
         .title(crate::tr_en!("Login to CANFAR"))
-        .default_width(400)
+        .default_width(crate::ui::fit::PROMPT)
         .default_height(380)
         .modal(true)
         .transient_for(parent)

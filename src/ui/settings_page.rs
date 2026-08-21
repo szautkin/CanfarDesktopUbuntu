@@ -5,6 +5,7 @@ use crate::services::ai_compute_service::AIComputeService;
 use crate::services::image_discovery_settings_service::ImageDiscoverySettingsService;
 use crate::services::mcp_settings_service::{McpSettingsService, PortalDefaultsService};
 use crate::state::AppServices;
+use crate::ui::fit;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -824,8 +825,10 @@ impl SettingsPage {
                             )
                         };
                         row.add_prefix(&gtk::Image::from_icon_name(icon));
-                        let label = gtk::Label::new(Some(&detail));
-                        label.add_css_class("dim-label");
+                        // The detail carries a transport error of unknown
+                        // length; the tooltip keeps all of it.
+                        let label = fit::status_label();
+                        fit::set_status(&label, &detail);
                         row.add_suffix(&label);
                         results_group.add(&row);
                         result_rows.borrow_mut().push(row);
@@ -939,8 +942,9 @@ impl SettingsPage {
         );
         secret_row.set_show_apply_button(true);
 
-        let secret_status = gtk::Label::new(None);
-        secret_status.add_css_class("dim-label");
+        // A suffix label's minimum width is its text, and this one's text is a
+        // sentence — see `ui::fit`.
+        let secret_status = fit::status_label();
         let remove_btn = gtk::Button::with_label(crate::tr_en!("Remove"));
         remove_btn.add_css_class("flat");
         remove_btn.set_valign(gtk::Align::Center);
@@ -954,11 +958,14 @@ impl SettingsPage {
             let remove_btn = remove_btn.clone();
             move || {
                 let has = service.borrow().has_secret();
-                secret_status.set_text(if has {
-                    crate::tr_en!("secret stored")
-                } else {
-                    crate::tr_en!("no secret")
-                });
+                fit::set_status(
+                    &secret_status,
+                    if has {
+                        crate::tr_en!("secret stored")
+                    } else {
+                        crate::tr_en!("no secret")
+                    },
+                );
                 remove_btn.set_visible(has);
             }
         };
@@ -1329,8 +1336,9 @@ impl SettingsPage {
         );
         secret_row.set_show_apply_button(true);
 
-        let secret_status = gtk::Label::new(None);
-        secret_status.add_css_class("dim-label");
+        // A suffix label's minimum width is its text, and this one's text is a
+        // sentence — see `ui::fit`.
+        let secret_status = fit::status_label();
         let remove_btn = gtk::Button::with_label(crate::tr_en!("Remove secret"));
         remove_btn.add_css_class("flat");
         remove_btn.set_valign(gtk::Align::Center);
@@ -1344,13 +1352,16 @@ impl SettingsPage {
             let remove_btn = remove_btn.clone();
             move || {
                 let has = service.borrow().settings().has_secret;
-                secret_status.set_text(if has {
-                    crate::tr_en!(
+                fit::set_status(
+                    &secret_status,
+                    if has {
+                        crate::tr_en!(
                         "A secret is stored. Type a new one to replace it, or leave blank to keep it."
                     )
-                } else {
-                    crate::tr_en!("No secret stored.")
-                });
+                    } else {
+                        crate::tr_en!("No secret stored.")
+                    },
+                );
                 remove_btn.set_visible(has);
             }
         };
@@ -1626,7 +1637,7 @@ fn show_mcp_diagnostics(
 
     let dialog = adw::Window::builder()
         .title(crate::tr_en!("MCP Diagnostics"))
-        .default_width(520)
+        .default_width(crate::ui::fit::FORM)
         .default_height(440)
         .modal(true)
         .build();

@@ -30,7 +30,7 @@ const PAGES: [&str; 4] = ["enable", "client", "configure", "verify"];
 pub fn show_connect_wizard(parent: &impl IsA<gtk::Widget>, services: Arc<AppServices>) {
     let window = adw::Window::builder()
         .title(crate::tr_en!("Connect an AI agent"))
-        .default_width(540)
+        .default_width(crate::ui::fit::FORM)
         .default_height(560)
         .width_request(400)
         .height_request(480)

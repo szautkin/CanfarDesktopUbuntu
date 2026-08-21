@@ -16,7 +16,7 @@ pub async fn show_rename_dialog(
 ) -> Option<String> {
     let dialog = adw::Window::builder()
         .title(title)
-        .default_width(360)
+        .default_width(crate::ui::fit::PROMPT)
         .modal(true)
         .build();
 

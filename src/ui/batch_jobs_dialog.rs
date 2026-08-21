@@ -27,7 +27,7 @@ pub async fn show_batch_jobs_dialog(
 ) {
     let window = gtk::Window::builder()
         .title(crate::tr_en!("Batch Jobs"))
-        .default_width(720)
+        .default_width(crate::ui::fit::DETAIL)
         .default_height(520)
         .modal(true)
         .build();

@@ -1226,7 +1226,7 @@ impl VoSpaceBrowser {
     async fn create_folder_dialog(self: &Rc<Self>) {
         let dialog = adw::Window::builder()
             .title(crate::tr_en!("New Folder"))
-            .default_width(360)
+            .default_width(crate::ui::fit::PROMPT)
             .modal(true)
             .build();
 

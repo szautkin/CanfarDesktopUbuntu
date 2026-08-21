@@ -26,7 +26,7 @@ pub fn pending_count(services: &AppServices) -> usize {
 pub fn show_agent_proposals(parent: &impl IsA<gtk::Widget>, services: Arc<AppServices>) {
     let dialog = adw::Window::builder()
         .title(crate::tr_en!("Agent proposals"))
-        .default_width(540)
+        .default_width(crate::ui::fit::FORM)
         .default_height(460)
         .modal(true)
         .build();

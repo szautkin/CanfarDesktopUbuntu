@@ -692,7 +692,7 @@ pub fn build_main_window(
         let prefs = adw::PreferencesWindow::new();
         prefs.set_transient_for(Some(&window));
         prefs.set_hide_on_close(true);
-        prefs.set_default_size(720, 640);
+        prefs.set_default_size(crate::ui::fit::DIALOG_CONTENT_WIDTH, 640);
         prefs.add(&settings_page.widget);
         let prefs_action = gtk::gio::SimpleAction::new("preferences", None);
         prefs_action.connect_activate(move |_, _| prefs.present());
@@ -1184,6 +1184,9 @@ pub fn build_main_window(
 
                 let status_lbl = gtk::Label::new(None);
                 status_lbl.add_css_class("caption");
+                // Suffix slot: the unreachable branch below sets a reason of
+                // unbounded length.
+                crate::ui::fit::fit_label(&status_lbl);
                 match &status {
                     ServiceStatus::Unknown => {
                         status_lbl.set_text(crate::tr_en!("Unknown"));
@@ -1368,7 +1371,7 @@ fn setup_keyboard_shortcuts(
 fn show_profile_dialog(window: &adw::ApplicationWindow, info: &UserInfo) {
     let dialog = adw::Window::builder()
         .title(crate::tr_en!("User Profile"))
-        .default_width(360)
+        .default_width(crate::ui::fit::PROMPT)
         .default_height(300)
         .modal(true)
         .transient_for(window)

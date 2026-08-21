@@ -33,7 +33,7 @@ pub async fn show_share_dialog(
 ) -> Option<ShareResult> {
     let dialog = adw::Window::builder()
         .title(crate::tr_fmt!("Share {}", node_name))
-        .default_width(480)
+        .default_width(crate::ui::fit::FORM)
         .modal(true)
         .build();
 

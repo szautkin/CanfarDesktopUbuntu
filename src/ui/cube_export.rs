@@ -673,7 +673,7 @@ pub fn show_cube_export(
 
     let window = adw::Window::builder()
         .title(crate::tr_en!("Export Figure"))
-        .default_width(920)
+        .default_width(crate::ui::fit::BROWSE)
         .default_height(620)
         .modal(true)
         .build();

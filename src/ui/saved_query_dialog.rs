@@ -45,7 +45,7 @@ pub async fn show_saved_query_dialog(
 ) -> SavedQueryAction {
     let dialog = adw::Window::builder()
         .title(crate::tr_fmt!("Query: {}", name))
-        .default_width(640)
+        .default_width(crate::ui::fit::DETAIL)
         .default_height(520)
         .modal(true)
         .build();

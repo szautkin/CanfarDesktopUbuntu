@@ -52,7 +52,7 @@ pub fn show_image_discovery_dialog(
 ) {
     let window = adw::Window::builder()
         .title(crate::tr_en!("Find image by package"))
-        .default_width(1040)
+        .default_width(crate::ui::fit::BROWSE)
         .default_height(700)
         .modal(true)
         .build();

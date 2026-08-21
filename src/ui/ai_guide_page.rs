@@ -882,6 +882,7 @@ impl AiGuidePage {
 
         // "overridden" pill, visible only while an override is in effect.
         let badge = gtk::Label::new(Some(crate::tr_en!("overridden")));
+        crate::ui::fit::fit_label(&badge);
         badge.add_css_class("accent");
         badge.add_css_class("caption-heading");
         badge.set_valign(gtk::Align::Center);
@@ -1001,6 +1002,7 @@ impl AiGuidePage {
             let chars = g.body.trim().chars().count();
             if chars > 0 {
                 let info = gtk::Label::new(Some(&crate::tr_fmt!("returns {} chars", chars)));
+                crate::ui::fit::fit_label(&info);
                 info.add_css_class("dim-label");
                 info.add_css_class("caption");
                 info.set_valign(gtk::Align::Center);
@@ -1133,7 +1135,7 @@ async fn show_guide_dialog(
         } else {
             crate::tr_en!("New guide tool")
         })
-        .default_width(500)
+        .default_width(crate::ui::fit::FORM)
         .default_height(520)
         .modal(true)
         .build();

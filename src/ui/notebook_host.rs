@@ -1788,7 +1788,7 @@ impl NotebookTabHost {
     fn open_settings_dialog(self: &Rc<Self>, parent: &gtk::Widget) {
         let dialog = adw::Window::builder()
             .title(crate::tr_en!("Notebook Settings"))
-            .default_width(480)
+            .default_width(crate::ui::fit::FORM)
             .default_height(560)
             .modal(true)
             .build();

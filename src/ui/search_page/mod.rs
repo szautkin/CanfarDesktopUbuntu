@@ -2835,7 +2835,7 @@ impl SearchPage {
 
         let dialog = adw::Window::builder()
             .title(crate::tr_en!("Select Columns"))
-            .default_width(500)
+            .default_width(crate::ui::fit::FORM)
             .default_height(400)
             .modal(true)
             .build();
@@ -3459,7 +3459,7 @@ async fn show_row_detail(
         } else {
             format!("Observation — {}", target_name)
         })
-        .default_width(680)
+        .default_width(crate::ui::fit::DETAIL)
         .default_height(580)
         .modal(true)
         .resizable(true)

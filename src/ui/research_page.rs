@@ -594,6 +594,7 @@ impl ResearchPage {
 
         // Kind badge: "Bookmarked" or "FITS · size"
         let kind_badge = gtk::Label::new(None);
+        crate::ui::fit::fit_label(&kind_badge);
         kind_badge.set_valign(gtk::Align::Center);
         kind_badge.set_margin_end(6);
         if obs.is_bookmarked() {
