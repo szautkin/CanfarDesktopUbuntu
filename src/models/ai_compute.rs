@@ -198,26 +198,35 @@ impl RunCodeContract {
             .collect()
     }
 
-    /// VOSpace path of the request file:
-    /// `<username>/.verbinal/exec/inbox/<id>.json`.
-    pub fn inbox_path(username: &str, id: &str) -> String {
-        format!(
-            "{}/{}/{}.json",
-            username,
-            Self::INBOX_DIR,
-            Self::sanitize_id(id)
-        )
+    /// Request file, relative to the user's VOSpace home:
+    /// `.verbinal/exec/inbox/<id>.json`.
+    ///
+    /// This is the ONLY form, on purpose.
+    ///
+    /// The reference builds `<username>/.verbinal/…` because its storage layer
+    /// roots at `/home/`. Ours roots at `/home/<username>/`, so the same string
+    /// handed to `vospace_files_url` produced
+    /// `/home/szautkin/szautkin/.verbinal/exec/inbox/…` — a directory one level
+    /// below one that exists. Every run_code failed on upload, and every result
+    /// read 404 and looked like "not ready yet" rather than a wrong address.
+    ///
+    /// A `inbox_path(username, id)` mirroring the reference used to live beside
+    /// this. It was correct, tested, and had exactly one use: being passed to a
+    /// function that adds the username itself. A function whose only caller is
+    /// a mistake is a mistake, so it is gone and the compiler now refuses what
+    /// the tests could not see — the fault was never in the path, it was at the
+    /// seam, and no test of the path alone can reach a seam.
+    ///
+    /// The literals (`INBOX_DIR`, `OUT_DIR`) still match the watcher and the
+    /// other two apps, which is what the shared contract actually requires.
+    pub fn inbox_relpath(id: &str) -> String {
+        format!("{}/{}.json", Self::INBOX_DIR, Self::sanitize_id(id))
     }
 
-    /// VOSpace path of the result file:
-    /// `<username>/.verbinal/exec/out/<id>.json`.
-    pub fn out_path(username: &str, id: &str) -> String {
-        format!(
-            "{}/{}/{}.json",
-            username,
-            Self::OUT_DIR,
-            Self::sanitize_id(id)
-        )
+    /// Result file, relative to the user's VOSpace home:
+    /// `.verbinal/exec/out/<id>.json`.
+    pub fn out_relpath(id: &str) -> String {
+        format!("{}/{}.json", Self::OUT_DIR, Self::sanitize_id(id))
     }
 
     /// The inbox folder tree to create one level at a time (create_folder rejects
@@ -494,15 +503,68 @@ mod tests {
         assert_eq!(RunCodeContract::sanitize_id("clean-id_123"), "clean-id_123");
     }
 
+    /// The URL run_code actually PUTs to names the user exactly once.
+    ///
+    /// This is the test that was missing. The old one asserted
+    /// `inbox_path("alice", ...) == "alice/.verbinal/…"`, which was correct and
+    /// proved nothing: the fault was not in the path, it was in handing that
+    /// path to a URL builder that inserts `/home/<username>/` itself. The
+    /// result was `/home/szautkin/szautkin/.verbinal/exec/inbox/…` — every
+    /// run_code failed on upload, and every result read 404 and looked like
+    /// "not ready yet" rather than a wrong address.
+    ///
+    /// So this asserts against the composed URL, which is the only place the
+    /// two halves meet.
     #[test]
-    fn inbox_and_out_paths_are_built_under_user_home() {
+    fn the_url_run_code_uploads_to_names_the_user_once() {
+        let endpoints = crate::config::ApiEndpoints::new(crate::config::AppConfig::default());
+
+        for url in [
+            endpoints.vospace_files_url("szautkin", &RunCodeContract::inbox_relpath("abc")),
+            endpoints.vospace_files_url("szautkin", &RunCodeContract::out_relpath("abc")),
+        ] {
+            assert_eq!(
+                url.matches("szautkin").count(),
+                1,
+                "the username is doubled in {url}"
+            );
+            assert!(
+                url.ends_with("/home/szautkin/.verbinal/exec/inbox/abc.json")
+                    || url.ends_with("/home/szautkin/.verbinal/exec/out/abc.json"),
+                "{url}"
+            );
+        }
+    }
+
+    /// The tree that gets CREATED is the tree the files are written into.
+    ///
+    /// `ensure_inbox_tree` walks home-relative levels while the upload used a
+    /// username-rooted path, so the app created `.verbinal/exec/inbox` and then
+    /// wrote one directory deeper. Each was defensible alone.
+    #[test]
+    fn the_inbox_tree_is_the_parent_of_the_inbox_file() {
+        let deepest = RunCodeContract::inbox_tree_levels()
+            .last()
+            .copied()
+            .expect("levels");
+        let file = RunCodeContract::inbox_relpath("abc");
         assert_eq!(
-            RunCodeContract::inbox_path("alice", "abc/def"),
-            "alice/.verbinal/exec/inbox/abc_def.json"
+            file,
+            format!("{deepest}/abc.json"),
+            "the file is not written into the folder the app creates"
+        );
+    }
+
+    #[test]
+    fn inbox_and_out_paths_are_built_under_dot_verbinal() {
+        // An id with a slash is sanitized, so it cannot climb out of the inbox.
+        assert_eq!(
+            RunCodeContract::inbox_relpath("abc/def"),
+            ".verbinal/exec/inbox/abc_def.json"
         );
         assert_eq!(
-            RunCodeContract::out_path("alice", "abc"),
-            "alice/.verbinal/exec/out/abc.json"
+            RunCodeContract::out_relpath("abc"),
+            ".verbinal/exec/out/abc.json"
         );
         assert_eq!(
             RunCodeContract::inbox_tree_levels(),

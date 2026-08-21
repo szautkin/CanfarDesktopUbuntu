@@ -229,7 +229,8 @@ impl AIComputeService {
         self.ensure_inbox_tree(services, &token, &user).await?;
 
         let json = RunCodeJson::serialize_request(request)?;
-        let path = RunCodeContract::inbox_path(&user, &request.id);
+        // Home-relative: `vospace_files_url` already inserts `/home/<user>/`.
+        let path = RunCodeContract::inbox_relpath(&request.id);
         services
             .vospace
             .upload_file(&token, &user, &path, json.into_bytes(), "application/json")
@@ -248,7 +249,7 @@ impl AIComputeService {
     ) -> Result<Option<RunCodeResult>, String> {
         let token = services.get_token().await.ok_or_else(sign_in_msg)?;
         let user = services.get_username().await.ok_or_else(sign_in_msg)?;
-        let path = RunCodeContract::out_path(&user, id);
+        let path = RunCodeContract::out_relpath(id);
         match services.vospace.download_bytes(&token, &user, &path).await {
             Ok(bytes) => {
                 let text = bounded_utf8(&bytes, RunCodeContract::MAX_RESULT_BYTES);

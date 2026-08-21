@@ -2,6 +2,26 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [Unreleased]
+
+### run_code could never have worked
+
+Every execution failed with a doubled path —
+`/home/szautkin/szautkin/.verbinal/exec/inbox` — and every result read 404 and
+looked like "not ready yet" rather than a wrong address.
+
+`RunCodeContract::inbox_path` built `<username>/.verbinal/…`, matching the
+reference exactly. The reference's storage layer roots at `/home/`; ours roots
+at `/home/<username>/`, so the same string produced the username twice. The app
+created the folder tree at the correct location and then wrote one level below
+it.
+
+The paths are home-relative now, which is the only form our storage seam can
+take. The username-rooted builders are gone rather than fixed: they were
+correct, they were tested, and their only remaining use was being passed to a
+function that adds the username itself. Reintroducing the original line no
+longer compiles.
+
 ## [1.3.5] - 2026-08-21
 
 A bug-fix release, and one of the bugs was invisible from inside the app: an
