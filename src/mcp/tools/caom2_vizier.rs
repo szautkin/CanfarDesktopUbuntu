@@ -99,7 +99,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 `radiusArcsec` is in ARCSECONDS for typical cluster work; the tool converts to \
                 degrees internally. Position columns default to RAJ2000/DEJ2000 — override \
                 `raColumn`/`decColumn` if the catalogue uses different names. Returns parsed rows \
-                plus a `probablyTruncated` hint when the row count hit `maxRec`."
+                plus a `probablyTruncated` hint when the row count hit `maxRec`. Pass `columns` to \
+                return only the fields you need — the default is every column, which for a wide \
+                catalogue will not fit in a reply."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -129,6 +131,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "minimum": 1,
                         "maximum": MAX_REC_CAP,
                         "description": "Row cap; default 500."
+                    },
+                    "columns": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Column names to return, e.g. [\"RA_ICRS\",\"DE_ICRS\",\"Plx\",\"Gmag\",\"_r\"]. Omit for every column — but a Gaia DR3 row has ~230 of them, so 500 rows is ~760 KB and will not fit in a reply. Name the columns you need for anything but a spot check."
                     }
                 },
                 "required": ["catalogue", "raDeg", "decDeg", "radiusArcsec"],
@@ -313,19 +320,34 @@ async fn vizier_cone_search(services: &AppServices, args: &Value) -> ToolResult 
     let dec_column =
         opt_str_arg(args, "decColumn").unwrap_or_else(|| DEFAULT_DEC_COLUMN.to_string());
 
+    // Column projection. Omitted means every column, which is what this tool
+    // did before: a Gaia DR3 cone is ~230 columns per row, and 500 rows of that
+    // is ~760 KB — past what an agent can hold, so the answer arrived as a file
+    // it then had to parse.
+    let columns: Vec<String> = crate::mcp::tools::arg(args, "columns")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let service = VizierService::new(reqwest::Client::new(), services.endpoints.clone());
-    match service
-        .cone_search(
-            &catalog,
-            ra,
-            dec,
-            radius_deg,
-            &ra_column,
-            &dec_column,
-            max_rec as usize,
-        )
-        .await
-    {
+    let query = crate::services::vizier_service::ConeQuery {
+        catalogue: &catalog,
+        ra_deg: ra,
+        dec_deg: dec,
+        radius_deg,
+        ra_column: &ra_column,
+        dec_column: &dec_column,
+        max_rec: max_rec as usize,
+        columns: &columns,
+    };
+    match service.cone_search(&query).await {
         Ok(res) => {
             let row_count = res.rows.len();
             // Hitting the cap means the server likely had more matches.

@@ -419,6 +419,59 @@ impl ApiEndpoints {
 
 #[cfg(test)]
 mod tests {
+    /// A settings.json written before `vizier_mirrors` existed still loads.
+    ///
+    /// Every endpoint here is `#[serde(default)]` for exactly this reason, and
+    /// a new field is the moment that stops being theoretical: an existing
+    /// install has a file with eight endpoint keys and no ninth. Deserialising
+    /// it must yield the shipped mirrors, not an empty list and a tool with
+    /// nowhere to ask.
+    #[test]
+    fn a_settings_file_from_before_this_field_still_loads() {
+        // A real-shaped file: customised endpoints, no vizier_mirrors.
+        let old = r#"{
+            "login_base": "https://example.org/ac",
+            "skaha_base": "https://example.org/skaha",
+            "theme": "dark"
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(old).expect("old settings must still parse");
+
+        // The customisation survives …
+        assert_eq!(cfg.login_base, "https://example.org/ac");
+        assert_eq!(cfg.theme, "dark");
+        // … and the new field arrives with the shipped list, not empty.
+        assert!(!cfg.vizier_mirrors.trim().is_empty());
+        assert_eq!(
+            ApiEndpoints::new(cfg).vizier_mirrors(),
+            api_endpoint_defaults::VIZIER_MIRRORS
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Editing the setting takes effect without a restart.
+    ///
+    /// `apply_from` is what Settings calls on save; a field it does not rebuild
+    /// is a field the user can change and watch do nothing.
+    #[test]
+    fn changing_the_mirrors_applies_without_a_restart() {
+        let endpoints = ApiEndpoints::new(AppConfig::default());
+        let before = endpoints.vizier_mirrors();
+
+        let edited = AppConfig {
+            vizier_mirrors: "https://mirror.example.org/tap/sync".to_string(),
+            ..Default::default()
+        };
+        endpoints.apply_from(&edited);
+
+        assert_ne!(endpoints.vizier_mirrors(), before);
+        assert_eq!(
+            endpoints.vizier_mirrors(),
+            vec!["https://mirror.example.org/tap/sync".to_string()]
+        );
+    }
+
     use super::*;
 
     fn endpoints() -> ApiEndpoints {

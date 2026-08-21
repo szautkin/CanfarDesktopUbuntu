@@ -17,6 +17,51 @@ use std::time::Duration;
 const PER_HOST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One public VizieR TAP mirror — `host` (for error messages) + canonical
+/// Everything one cone search needs.
+///
+/// A struct rather than an eighth positional parameter: the call already took
+/// seven, five of them adjacent strings and numbers that are easy to transpose,
+/// and `clippy::too_many_arguments` is right about where that ends.
+#[derive(Debug, Clone)]
+pub struct ConeQuery<'a> {
+    pub catalogue: &'a str,
+    pub ra_deg: f64,
+    pub dec_deg: f64,
+    pub radius_deg: f64,
+    pub ra_column: &'a str,
+    pub dec_column: &'a str,
+    pub max_rec: usize,
+    /// Columns to return. Empty means every column, which is what the tool did
+    /// before this existed — a Gaia DR3 cone returns ~230 columns per row, and
+    /// 500 of those rows is ~760 KB, past what an agent can hold.
+    pub columns: &'a [String],
+}
+
+/// The SELECT list: the named columns, or `*` when none are named.
+///
+/// Names are quoted because VizieR has columns an unquoted ADQL identifier
+/// cannot spell — `_r`, the computed distance from the cone centre, is the one
+/// callers ask for most. Anything that could end the quoting is removed rather
+/// than escaped: these strings come from an agent, they end up in a query, and
+/// a column name has no legitimate use for a quote or a parenthesis.
+fn projection(columns: &[String]) -> String {
+    let safe: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            c.chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+                .collect::<String>()
+        })
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("\"{c}\""))
+        .collect();
+    if safe.is_empty() {
+        "*".to_string()
+    } else {
+        safe.join(", ")
+    }
+}
+
 /// Parsed cone-search response: the CSV header row plus data rows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VizierConeResult {
@@ -67,19 +112,25 @@ impl VizierService {
         self.endpoints.vizier_mirrors()
     }
 
-    /// The canonical VizieR cone-search ADQL (byte-compatible with the reference
-    /// C#/macOS clients).
-    pub fn build_adql(
-        catalogue: &str,
-        ra_deg: f64,
-        dec_deg: f64,
-        radius_deg: f64,
-        ra_column: &str,
-        dec_column: &str,
-        max_rec: usize,
-    ) -> String {
+    /// The canonical VizieR cone-search ADQL.
+    ///
+    /// Byte-compatible with the reference C#/macOS clients when no columns are
+    /// named — `SELECT TOP n *` is still exactly what they send. A projection
+    /// only appears when the caller asks for one.
+    pub fn build_adql(q: &ConeQuery) -> String {
+        let ConeQuery {
+            catalogue,
+            ra_deg,
+            dec_deg,
+            radius_deg,
+            ra_column,
+            dec_column,
+            max_rec,
+            columns,
+        } = q;
+        let select = projection(columns);
         format!(
-            "SELECT TOP {max_rec} *\n\
+            "SELECT TOP {max_rec} {select}\n\
              FROM \"{catalogue}\"\n\
              WHERE 1 = CONTAINS(\n    \
              POINT('ICRS', {ra_column}, {dec_column}),\n    \
@@ -90,19 +141,9 @@ impl VizierService {
     /// Cone-search a VizieR catalogue, rotating through the configured mirrors on
     /// host-specific failures. Returns the parsed rows, or a human-readable
     /// error string describing the failover path.
-    pub async fn cone_search(
-        &self,
-        catalogue: &str,
-        ra_deg: f64,
-        dec_deg: f64,
-        radius_deg: f64,
-        ra_column: &str,
-        dec_column: &str,
-        max_rec: usize,
-    ) -> Result<VizierConeResult, String> {
-        let adql = Self::build_adql(
-            catalogue, ra_deg, dec_deg, radius_deg, ra_column, dec_column, max_rec,
-        );
+    pub async fn cone_search(&self, q: &ConeQuery<'_>) -> Result<VizierConeResult, String> {
+        let adql = Self::build_adql(q);
+        let max_rec = q.max_rec;
 
         let mut attempts: Vec<(String, String)> = Vec::new();
         for url in self.mirrors() {
@@ -322,14 +363,89 @@ mod tests {
     use super::default_mirrors;
     use super::*;
 
+    fn query<'a>(columns: &'a [String]) -> ConeQuery<'a> {
+        ConeQuery {
+            catalogue: "V/97/catalog",
+            ra_deg: 10.5,
+            dec_deg: 41.2,
+            radius_deg: 0.05,
+            ra_column: "RAJ2000",
+            dec_column: "DEJ2000",
+            max_rec: 500,
+            columns,
+        }
+    }
+
+    /// Naming no columns sends exactly what it always sent.
+    ///
+    /// The projection is a new feature; the existing query is not. Any drift
+    /// here changes what every caller that does not use `columns` receives.
     #[test]
     fn adql_is_canonical() {
-        let adql =
-            VizierService::build_adql("V/97/catalog", 10.5, 41.2, 0.05, "RAJ2000", "DEJ2000", 500);
+        let adql = VizierService::build_adql(&query(&[]));
         assert!(adql.starts_with("SELECT TOP 500 *"));
         assert!(adql.contains("FROM \"V/97/catalog\""));
         assert!(adql.contains("POINT('ICRS', RAJ2000, DEJ2000)"));
         assert!(adql.contains("CIRCLE('ICRS', 10.5, 41.2, 0.05)"));
+    }
+
+    /// Named columns become the SELECT list, quoted.
+    ///
+    /// Quoted because VizieR has columns an unquoted ADQL identifier cannot
+    /// spell: `_r` is the computed distance from the cone centre and the one
+    /// callers ask for most.
+    #[test]
+    fn named_columns_become_the_select_list() {
+        let cols = ["RA_ICRS".to_string(), "Plx".to_string(), "_r".to_string()];
+        let adql = VizierService::build_adql(&query(&cols));
+        assert!(
+            adql.starts_with("SELECT TOP 500 \"RA_ICRS\", \"Plx\", \"_r\"\n"),
+            "{adql}"
+        );
+        // The rest of the query is untouched by the projection.
+        assert!(adql.contains("FROM \"V/97/catalog\""));
+        assert!(adql.contains("POINT('ICRS', RAJ2000, DEJ2000)"));
+    }
+
+    /// A column name cannot end the quoting and start something else.
+    ///
+    /// These strings come from an agent and end up inside a query. A real
+    /// column name has no use for a quote, a parenthesis or a semicolon, so
+    /// they are removed rather than escaped.
+    #[test]
+    fn a_column_name_cannot_smuggle_in_more_query() {
+        let cols = [
+            "RA\"; DROP TABLE x; --".to_string(),
+            "ok_name".to_string(),
+            "(SELECT 1)".to_string(),
+        ];
+        let adql = VizierService::build_adql(&query(&cols));
+        let select = adql
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("SELECT TOP 500 "))
+            .expect("a select list");
+        // Every quoted region is a bare column name, and quoting is balanced.
+        assert_eq!(select.matches('"').count() % 2, 0, "{select}");
+        for quoted in select.split('"').skip(1).step_by(2) {
+            assert!(
+                quoted
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')),
+                "{quoted:?} escaped its quotes in {select}"
+            );
+        }
+        assert!(!select.contains(';'), "{select}");
+        assert!(!select.contains('('), "{select}");
+    }
+
+    /// Columns that sanitize away entirely fall back to every column, rather
+    /// than producing `SELECT TOP 500 ` and a syntax error.
+    #[test]
+    fn columns_that_are_all_punctuation_fall_back_to_star() {
+        let cols = ["***".to_string(), "  ".to_string()];
+        let adql = VizierService::build_adql(&query(&cols));
+        assert!(adql.starts_with("SELECT TOP 500 *\n"), "{adql}");
     }
 
     #[test]
