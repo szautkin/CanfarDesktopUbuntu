@@ -428,6 +428,20 @@ prend en compte à son prochain démarrage."),
     ("Apply filters and re-render",                 "Appliquer les filtres et réafficher"),
     ("Apply filters to ADQL",                       "Appliquer les filtres à l’ADQL"),
     ("Clear filters",                               "Effacer les filtres"),
+    // CANFAR Images: the manual manifest check.
+    ("Check images",                                "Vérifier les images"),
+    (
+        "Look in your CANFAR storage for image manifests this machine does not have yet",
+        "Chercher dans votre stockage CANFAR les manifestes d’images que cette machine n’a pas encore",
+    ),
+    (
+        "Image manifests are already up to date",
+        "Les manifestes d’images sont déjà à jour",
+    ),
+    (
+        "Could not check CANFAR images: {}",
+        "Impossible de vérifier les images CANFAR : {}",
+    ),
     // AI-compute readiness and the settings-field examples.
     ("run_code is ready",                           "run_code est prêt"),
     ("run_code is off",                             "run_code est désactivé"),

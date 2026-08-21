@@ -24,6 +24,7 @@ use crate::helpers::discovery_formatting::{failure_summary, package_count, time_
 use crate::helpers::image_parser::ImageParser;
 use crate::models::image_manifest::{DiscoveryOutcome, LastOutcome};
 use crate::models::ParsedImage;
+use crate::services::image_discovery_coordinator::SyncProgress;
 use crate::state::AppServices;
 use crate::ui::image_discovery_dialog::show_image_discovery_dialog;
 use gtk4::glib;
@@ -76,6 +77,19 @@ impl CanfarImagesView {
         count_badge.add_css_class("dim-label");
         count_badge.add_css_class("caption");
         header.insert_child_after(&count_badge, header.first_child().as_ref());
+
+        // Pull any manifests this machine has not seen from the user's ARC
+        // space. This ran automatically on every sign-in and nobody asked for
+        // it: it walks every manifest at 400ms a file and toasts its way
+        // through, on the screen where someone is trying to start work. Now it
+        // happens when it is wanted.
+        let check_btn = gtk::Button::with_label(crate::tr_en!("Check images"));
+        check_btn.add_css_class("flat");
+        check_btn.set_valign(gtk::Align::Center);
+        check_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Look in your CANFAR storage for image manifests this machine does not have yet"
+        )));
+        header.append(&check_btn);
 
         let find_btn = gtk::Button::with_label(crate::tr_en!("Find images by package…"));
         find_btn.add_css_class("flat");
@@ -140,6 +154,26 @@ impl CanfarImagesView {
                 let view = view.clone();
                 glib::spawn_future_local(async move {
                     view.refresh().await;
+                });
+            });
+        }
+
+        // Check images: pull manifests from VOSpace, then re-render the list so
+        // anything imported is visible without a second click.
+        {
+            let view = view.clone();
+            let btn = check_btn.clone();
+            check_btn.connect_clicked(move |_| {
+                let view = view.clone();
+                let btn = btn.clone();
+                // Disabled while it runs: the walk takes as long as the user
+                // has manifests, and a second press would start a second walk
+                // over the same files.
+                btn.set_sensitive(false);
+                glib::spawn_future_local(async move {
+                    view.sync_manifests_from_vospace().await;
+                    view.refresh().await;
+                    btn.set_sensitive(true);
                 });
             });
         }
@@ -653,5 +687,148 @@ mod tests {
             Some("warning")
         );
         assert_eq!(status_icon_css(DiscoveryStatus::Discovered, true), None);
+    }
+}
+
+/// How often the manifest sync says how far it has got.
+///
+/// Paced at 400ms a file, ten files is about four seconds — often enough to
+/// look alive, rare enough that the toasts do not stack.
+const SYNC_PROGRESS_EVERY: usize = 10;
+
+impl CanfarImagesView {
+    /// Walk the user's ARC space for image manifests this machine has not seen.
+    ///
+    /// Awaited rather than fire-and-forget, so the caller knows when to
+    /// re-render — the button that starts this also refreshes the list, and
+    /// doing that before the import finished showed the old contents.
+    ///
+    /// Ran on every sign-in until 1.3.7. Nobody asked for it, it toasted its
+    /// way through, and the per-image recovery already covers anything the user
+    /// actually inspects.
+    ///
+    /// Worth having as a button, though: every manifest a probe has ever
+    /// published lives in the user's VOSpace, and without this the local cache
+    /// learns about one only when that exact image is inspected. A fresh
+    /// install shows "Not inspected yet" against images that were inspected
+    /// weeks ago on another machine, and this is how someone fixes that when
+    /// they notice it.
+    pub(crate) async fn sync_manifests_from_vospace(self: &Rc<Self>) {
+        let services = Arc::clone(&self.services);
+        let coordinator = Arc::clone(&services.image_discovery);
+        let toast = services.toast.clone();
+        let svc = Arc::clone(&services);
+
+        // Onto the Tokio runtime, not the GTK loop: the sync does HTTP and
+        // sleeps, both of which need a reactor, and running it on the main loop
+        // panicked with "there is no reactor running". `ToastNotifier` is
+        // documented as safe to call from any thread, which is what lets the
+        // progress callback go over with it.
+        let _ = services
+            .spawn(async move {
+                // Toasts are fire-and-forget with a five-second life, so
+                // progress is reported occasionally rather than per file —
+                // forty manifests would otherwise be forty toasts.
+                let report = move |progress: SyncProgress| match progress {
+                    SyncProgress::Started { total } => toast.toast(crate::tr_plural!(
+                        total,
+                        "Catching up on {} image manifest from CANFAR…",
+                        "Catching up on {} image manifests from CANFAR…"
+                    )),
+                    SyncProgress::Advanced { done, total, .. }
+                        if done % SYNC_PROGRESS_EVERY == 0 =>
+                    {
+                        toast.toast(crate::tr_fmt!("Image manifests: {} of {}", done, total))
+                    }
+                    SyncProgress::Advanced { .. } => {}
+                    SyncProgress::Finished(summary) if summary.imported > 0 => {
+                        toast.toast(crate::tr_plural!(
+                            summary.imported,
+                            "{} image manifest brought over from CANFAR",
+                            "{} image manifests brought over from CANFAR"
+                        ))
+                    }
+                    // Nothing new is the normal case on a machine that is
+                    // already up to date. It used to stay silent, which was
+                    // right for a background sync — but this one was ASKED for,
+                    // and a button that appears to do nothing reads as broken.
+                    SyncProgress::Finished(_) => {
+                        toast.toast(crate::tr_en!("Image manifests are already up to date"))
+                    }
+                };
+
+                if let Err(e) = coordinator.sync_from_vospace(&svc, report).await {
+                    // Silence was right when nobody asked. Now somebody did.
+                    toast_error(&svc, &e);
+                }
+            })
+            .await;
+    }
+}
+
+/// Report a sync failure to whoever pressed the button.
+fn toast_error(services: &Arc<AppServices>, error: &str) {
+    services
+        .toast
+        .toast(crate::tr_fmt!("Could not check CANFAR images: {}", error));
+}
+
+#[cfg(test)]
+mod startup_tests {
+    /// The manifest sync runs when asked, and only when asked.
+    ///
+    /// It used to run on every sign-in: a walk of every manifest in the user's
+    /// ARC space at 400ms a file, toasting its progress, on the screen where
+    /// someone is trying to start work. Nobody asked for it, and the per-image
+    /// recovery already covers anything they actually inspect.
+    ///
+    /// A source scan because there is nothing to assert at runtime — the
+    /// regression is a CALL somewhere it should not be, and the only evidence
+    /// is that the call exists.
+    #[test]
+    fn the_manifest_sync_is_only_reachable_from_a_button() {
+        let mut callers = Vec::new();
+        for (path, text) in crate::testing::rust_sources() {
+            let code = crate::testing::without_comments(crate::testing::code(&text));
+            for (n, line) in code.lines().enumerate() {
+                if !line.contains("sync_manifests_from_vospace(") {
+                    continue;
+                }
+                // The definition itself is not a call.
+                if line.contains("async fn sync_manifests_from_vospace") {
+                    continue;
+                }
+                callers.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+
+        assert_eq!(
+            callers.len(),
+            1,
+            "the manifest sync should have exactly one caller — the Check images \
+             button. Found: {callers:#?}"
+        );
+        assert!(
+            callers[0].contains("canfar_images.rs"),
+            "the sync is called from outside the CANFAR Images card, which is \
+             how it ended up running at sign-in: {callers:#?}"
+        );
+    }
+
+    /// Signing in does not start it.
+    ///
+    /// Narrower and more direct than the count above: whatever else changes,
+    /// the window that handles sign-in must not reach for this.
+    #[test]
+    fn signing_in_does_not_start_a_manifest_walk() {
+        let main_window = include_str!("main_window.rs");
+        let code = crate::testing::without_comments(crate::testing::code(main_window));
+        for forbidden in ["sync_manifests_from_vospace", "sync_image_manifests"] {
+            assert!(
+                !code.contains(forbidden),
+                "main_window calls {forbidden} — the sync is a button, not a \
+                 sign-in step"
+            );
+        }
     }
 }
