@@ -71,10 +71,8 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Destructive",                                 "Irréversible"),
     ("Which AI client will connect to Verbinal?",   "Quel client IA se connectera à Verbinal ?"),
     ("Start MCP server",                            "Démarrer le serveur MCP"),
-    ("Write config",                                "Écrire la configuration"),
     ("Copy command",                                "Copier la commande"),
     ("Test connection",                             "Tester la connexion"),
-    ("Testing…",                                    "Test en cours…"),
     ("Start the MCP server to continue.",           "Démarrez le serveur MCP pour continuer."),
     ("MCP server is running.",                      "Le serveur MCP est en cours d’exécution."),
     ("MCP server is stopped.",                      "Le serveur MCP est arrêté."),
@@ -84,9 +82,6 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Delete job",                                  "Supprimer la tâche"),
     ("refreshing…",                                 "actualisation…"),
     ("Filter packages…",                            "Filtrer les paquets…"),
-    ("Active filters",                              "Filtres actifs"),
-    ("Clear all",                                   "Tout effacer"),
-    ("Search images…",                              "Rechercher des images…"),
     ("Loading images…",                             "Chargement des images…"),
     ("Discovering…",                                "Découverte en cours…"),
     ("Kernel: not started",                         "Noyau : non démarré"),
@@ -481,7 +476,6 @@ prend en compte à son prochain démarrage."),
     ("Succeeded",                                   "Réussi"),
     ("Batch job",                                   "Tâche par lots"),
     ("Image inspection",                            "Inspection d’image"),
-    ("History",                                     "Historique"),
     ("Clear history",                               "Effacer l’historique"),
     ("Probe job",                                   "Tâche de sondage"),
     ("inspected {}",                                "inspectée {}"),
@@ -1376,6 +1370,63 @@ fn literal_at(src: &str, at: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_removed_duplicates_still_translate() {
+        // Removing a HAND_PAIRS entry is only safe if the catalog answers for
+        // it. These six were removed as duplicates; each must still resolve.
+        for (english, expected) in [
+            ("Write config", "Écrire la configuration"),
+            ("Testing…", "Test en cours…"),
+            ("Active filters", "Filtres actifs"),
+            ("Clear all", "Tout effacer"),
+            ("Search images…", "Rechercher des images…"),
+            ("History", "Historique"),
+        ] {
+            assert_eq!(
+                super::french(english),
+                Some(expected),
+                "{english:?} lost its French when its duplicate was removed"
+            );
+        }
+    }
+
+    /// A string is translated in one place, not two.
+    ///
+    /// There are two tables: the key-aligned EN/FR catalogs ported from the
+    /// reference, and [`HAND_PAIRS`] for strings the catalogs do not carry.
+    /// `french` consults HAND first, so a duplicate entry silently overrides
+    /// the catalog — and when the two disagree, the app shows one wording and
+    /// the reference another for the same string. Adding French for the AI
+    /// Guide's category headings turned up thirty-five duplicates in one go:
+    /// every one of those strings was already translated, and the reason the
+    /// headings appeared in English was that the CODE never looked them up.
+    #[test]
+    fn no_hand_pair_duplicates_the_catalog() {
+        // The one deliberate override. The catalog's French for this string
+        // uses a straight apostrophe where the rest of this app's French uses a
+        // typographic one; the catalog is mixed on that (28 to 64) and is a
+        // port of the reference's resources, so it is left alone and the
+        // override is kept for consistency with its neighbours on screen.
+        const DELIBERATE_OVERRIDES: &[&str] = &["Clear history"];
+
+        let mut duplicated = Vec::new();
+        for (english, hand) in HAND_PAIRS {
+            if DELIBERATE_OVERRIDES.contains(english) {
+                continue;
+            }
+            if let Some(catalog) = EN_TO_FR.get(english) {
+                duplicated.push(format!("{english:?}: HAND {hand:?} vs catalog {catalog:?}"));
+            }
+        }
+
+        assert!(
+            duplicated.is_empty(),
+            "HAND_PAIRS entr(ies) the key-aligned catalog already translates. \
+             HAND wins, so these override the catalog — remove them, or change \
+             the catalog if its wording is wrong: {duplicated:#?}"
+        );
+    }
+
+    #[test]
     fn the_literal_decoder_matches_what_rustc_produces() {
         // The guard compares a decoded SOURCE literal against the compiled value
         // in FMT_PAIRS, so its decoder has to agree with rustc — otherwise the
@@ -1546,7 +1597,12 @@ mod tests {
         let mut wrong: Vec<String> = Vec::new();
         let mut checked = 0usize;
         for (path, text) in call_sites() {
-            let code = crate::testing::code(&text);
+            // Comments stripped too: a doc comment that mentions the macro
+            // with a literal argument — explaining this very scan — was read as
+            // a call site and demanded a French form for the word "literal".
+            // Fifth time a guard in this codebase has matched its own prose.
+            let code = crate::testing::without_comments(crate::testing::code(&text));
+            let code = code.as_str();
             for (start, _) in code.match_indices("tr_fmt!") {
                 let open = start + "tr_fmt!".len();
                 let Some(args) = call_args(code, open) else {
@@ -1677,7 +1733,12 @@ mod tests {
         let mut missing: Vec<String> = Vec::new();
         let mut scanned = 0usize;
         for (path, text) in call_sites() {
-            let code = crate::testing::code(&text);
+            // Comments stripped too: a doc comment that mentions the macro
+            // with a literal argument — explaining this very scan — was read as
+            // a call site and demanded a French form for the word "literal".
+            // Fifth time a guard in this codebase has matched its own prose.
+            let code = crate::testing::without_comments(crate::testing::code(&text));
+            let code = code.as_str();
             for (start, _) in code.match_indices("tr_en!(") {
                 let open = start + "tr_en!(".len();
                 let open = open + (code[open..].len() - code[open..].trim_start().len());
@@ -1728,7 +1789,12 @@ mod tests {
         let mut localized = 0usize;
         for (path, text) in call_sites() {
             // Test code is not shipped, and a fixture label needs no French.
-            let code = crate::testing::code(&text);
+            // Comments stripped too: a doc comment that mentions the macro
+            // with a literal argument — explaining this very scan — was read as
+            // a call site and demanded a French form for the word "literal".
+            // Fifth time a guard in this codebase has matched its own prose.
+            let code = crate::testing::without_comments(crate::testing::code(&text));
+            let code = code.as_str();
             // `skip` is how many arguments come before the text: none for a
             // setter, one for `add_response("close", "Close")`.
             let sinks = TEXT_SETTERS

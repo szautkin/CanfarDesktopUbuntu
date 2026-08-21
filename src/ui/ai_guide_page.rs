@@ -183,7 +183,37 @@ mod catalog {
         match name {
             // Foundational
             "describe_app" | "get_auth_state" | "get_current_view" | "get_service_health"
-            | "get_platform_load" => "foundational",
+            | "get_platform_load" | "get_job_status" => "foundational",
+            // The search UI: the form, the ADQL editor, the results grid and
+            // recent/saved history. Twenty-seven tools were landing in "Other"
+            // because this match is a hand-kept list and whole families were
+            // added without it — including the ones an agent uses most.
+            "get_search_form"
+            | "set_search_form"
+            | "reset_search_form"
+            | "get_search_constraints"
+            | "set_search_constraints"
+            | "run_search"
+            | "set_adql_query"
+            | "execute_adql_query"
+            | "get_search_results"
+            | "set_search_results_view"
+            | "export_search_results"
+            | "load_recent_search"
+            | "run_saved_query"
+            | "remove_recent_search"
+            | "clear_recent_searches"
+            | "describe_tap_schema" => "search",
+            // FITS viewer tabs.
+            "switch_fits_tab" | "close_fits_tab" | "blink_fits_tabs" => "fits",
+            // Cube viewer.
+            "switch_cube_tab"
+            | "list_recent_cubes"
+            | "set_cube_transfer"
+            | "show_cube_spectrum"
+            | "get_cube_channel_profile" => "cube",
+            // Notebook dependencies.
+            "check_notebook_dependencies" | "install_notebook_dependencies" => "notebook",
             // Search & Archive
             "search_observations"
             | "vizier_cone_search"
@@ -669,7 +699,11 @@ impl AiGuidePage {
         let icon = gtk::Image::from_icon_name(cat.icon);
         icon.add_css_class("accent");
         icon.set_valign(gtk::Align::Center);
-        let title = gtk::Label::new(Some(cat.title));
+        // Translated here rather than at definition: `NAMED` is a static, and
+        // a static cannot call a function. The French forms are guarded by
+        // `every_category_label_has_a_french_form` — the generic i18n scan only
+        // sees `tr_en!("literal")` call sites, and these are variables.
+        let title = gtk::Label::new(Some(crate::i18n::tr_en(cat.title)));
         title.add_css_class("heading");
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -677,7 +711,7 @@ impl AiGuidePage {
         top.append(&title);
         v.append(&top);
 
-        let summary = gtk::Label::new(Some(cat.summary));
+        let summary = gtk::Label::new(Some(crate::i18n::tr_en(cat.summary)));
         summary.set_wrap(true);
         summary.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         summary.set_lines(2);
@@ -742,7 +776,11 @@ impl AiGuidePage {
         icon.set_valign(gtk::Align::Center);
         let titles = gtk::Box::new(gtk::Orientation::Vertical, 2);
         titles.set_hexpand(true);
-        let title = gtk::Label::new(Some(cat.title));
+        // Translated here rather than at definition: `NAMED` is a static, and
+        // a static cannot call a function. The French forms are guarded by
+        // `every_category_label_has_a_french_form` — the generic i18n scan only
+        // sees `tr_en!("literal")` call sites, and these are variables.
+        let title = gtk::Label::new(Some(crate::i18n::tr_en(cat.title)));
         title.add_css_class("title-4");
         title.set_xalign(0.0);
         let summary = gtk::Label::new(Some(cat.summary));
@@ -1421,6 +1459,100 @@ mod affordance_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Every advertised tool appears in the guide, or is excluded on purpose.
+    ///
+    /// The guide is where a user reads and re-tunes what the agent is told, so
+    /// a tool missing from it is a tool nobody can see or correct.
+    #[test]
+    fn every_advertised_tool_is_in_the_guide() {
+        use std::collections::HashSet;
+
+        // Advertised but deliberately absent.
+        //
+        // The proposal-lifecycle four are plumbing: they act on the queue, not
+        // on the archive, and re-describing them would not change what an agent
+        // does. The other three are the macOS-parity ALIASES — the same tools
+        // under a second name, already listed under their canonical one.
+        const DELIBERATELY_ABSENT: &[&str] = &[
+            "download_from_vospace",
+            "get_proposal_state",
+            "list_events",
+            "list_pending_proposals",
+            "upload_to_vospace",
+            "vospace_mkdir",
+            "withdraw_proposal",
+        ];
+
+        let advertised: HashSet<String> =
+            crate::mcp::tools::router::McpToolRouter::all_descriptors()
+                .into_iter()
+                .filter(|d| d.agent_safe)
+                .map(|d| d.name)
+                .collect();
+        let guided: HashSet<String> = super::all_live_descriptors()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+
+        let mut missing: Vec<&str> = advertised
+            .iter()
+            .map(String::as_str)
+            .filter(|n| !guided.contains(*n))
+            .filter(|n| !DELIBERATELY_ABSENT.contains(n))
+            .collect();
+        missing.sort();
+
+        assert!(
+            missing.is_empty(),
+            "tool(s) an agent is offered that the user cannot see or re-describe \
+             in the AI Guide: {missing:#?}"
+        );
+    }
+
+    /// No tool is dumped in the catch-all category.
+    ///
+    /// `category_id_for_tool` is a hand-kept match, and whole families were
+    /// added without touching it: twenty-seven tools sat in "Other", including
+    /// every search-UI tool an agent uses most. Nothing failed — they were
+    /// listed, just under a heading that says nothing.
+    #[test]
+    fn every_tool_lands_in_a_real_category() {
+        let mut uncategorised: Vec<String> = super::all_live_descriptors()
+            .into_iter()
+            .filter(|d| super::catalog::category_id_for_tool(&d.name) == "other")
+            .map(|d| d.name)
+            .collect();
+        uncategorised.sort();
+
+        assert!(
+            uncategorised.is_empty(),
+            "tool(s) in the catch-all category — add them to \
+             `category_id_for_tool`: {uncategorised:#?}"
+        );
+    }
+
+    /// Every category heading a user reads has a French form.
+    ///
+    /// These are user-facing chrome, not wire text, but they are variables at
+    /// the call site — `NAMED` is a static and a static cannot call a function
+    /// — so the generic `tr_en!` source scan cannot see them. Without this they
+    /// would sit in a French UI in English and no guard would notice.
+    #[test]
+    fn every_category_label_has_a_french_form() {
+        let mut untranslated = Vec::new();
+        for cat in super::catalog::all() {
+            for text in [cat.title, cat.summary] {
+                if crate::i18n::french(text).is_none() {
+                    untranslated.push(text.to_string());
+                }
+            }
+        }
+        assert!(
+            untranslated.is_empty(),
+            "AI Guide category text with no French form: {untranslated:#?}"
+        );
+    }
+
     use super::*;
     use serde_json::json;
 
