@@ -11,6 +11,7 @@
 //! Downloads are STREAMED to a sibling `.tmp` and renamed on success, so an
 //! interrupted multi-GB cube never leaves a half-file that looks complete.
 
+use crate::models::search_result::DataLinkResult;
 use crate::services::observation_store::{managed_dir_for, DownloadedObservation};
 use crate::state::AppServices;
 use std::path::PathBuf;
@@ -79,43 +80,11 @@ pub async fn download_observation(
         .resolve(publisher_id, token.as_deref())
         .await;
 
-    // Pick the artifact: an explicit index addresses the SCIENCE files, in the
-    // order `get_data_links` reports them under `directFiles`; otherwise the
-    // first science row, and failing that the synthesised package URL.
-    //
-    // Indexing `direct_files()` rather than the raw row list is what keeps the
-    // two tools honest — a preview or thumbnail row ahead of the science data
-    // would otherwise shift every index the agent was given.
-    let (url, filename) = match (&resolved, artifact_index) {
-        (Ok(dl), Some(index)) => {
-            let direct = dl.direct_files();
-            let file = direct.get(index).ok_or_else(|| {
-                format!(
-                    "artifactIndex {index} is out of range — this observation resolved {} science artifact(s)",
-                    direct.len()
-                )
-            })?;
-            (file.url.clone(), Some(file.filename()))
-        }
-        (Ok(dl), None) => match dl.direct_files().first() {
-            Some(f) => (f.url.clone(), Some(f.filename())),
-            None => (
-                dl.download_url
-                    .clone()
-                    .unwrap_or_else(|| services.datalink.download_url(publisher_id)),
-                None,
-            ),
-        },
-        // A DataLink failure is not fatal on its own: the package endpoint is a
-        // valid fallback. But it IS fatal when a specific artifact was asked for,
-        // since the fallback cannot honour that request.
-        (Err(e), Some(_)) => {
-            return Err(format!(
-                "cannot select artifactIndex — DataLink did not resolve: {e}"
-            ))
-        }
-        (Err(_), None) => (services.datalink.download_url(publisher_id), None),
-    };
+    let (url, filename) = select_artifact(
+        &resolved,
+        artifact_index,
+        &services.datalink.download_url(publisher_id),
+    )?;
 
     let id = crate::helpers::caom2_uri::uuid_from_publisher_id(publisher_id);
     let filename = filename.unwrap_or_else(|| format!("{id}.fits"));
@@ -210,6 +179,57 @@ async fn cache_preview(
 ///
 /// Registration happens only after the bytes are on disk, so a failed transfer
 /// never leaves a library entry pointing at a file that isn't there.
+/// Which artifact to fetch, and what to call it on disk.
+///
+/// Pure, and separated from the transfer for one reason: the fault this fixes
+/// was in the CHOICE, not the download. Our transfer code writes every JWST
+/// artifact correctly — checked against the live archive — while the choice
+/// took an association index instead of the image. A test of the model helper
+/// alone did not catch reverting this call site; a test of this function does.
+///
+/// `package_url` is the synthesised fallback, passed in so this needs no
+/// services and can be exercised with captured rows.
+fn select_artifact<E: std::fmt::Display>(
+    resolved: &Result<DataLinkResult, E>,
+    artifact_index: Option<usize>,
+    package_url: &str,
+) -> Result<(String, Option<String>), String> {
+    match (resolved, artifact_index) {
+        // An explicit index addresses the SCIENCE files, in the order
+        // `get_data_links` reports them under `directFiles`. Indexing
+        // `direct_files()` rather than the raw row list is what keeps the two
+        // tools honest — a preview or thumbnail row ahead of the science data
+        // would otherwise shift every index the agent was given.
+        (Ok(dl), Some(index)) => {
+            let direct = dl.direct_files();
+            let file = direct.get(index).ok_or_else(|| {
+                format!(
+                    "artifactIndex {index} is out of range — this observation resolved {} science artifact(s)",
+                    direct.len()
+                )
+            })?;
+            Ok((file.url.clone(), Some(file.filename())))
+        }
+        // No index: the row that carries data, not merely the first `#this`.
+        (Ok(dl), None) => Ok(match dl.preferred_science_file() {
+            Some(f) => (f.url.clone(), Some(f.filename())),
+            None => (
+                dl.download_url
+                    .clone()
+                    .unwrap_or_else(|| package_url.to_string()),
+                None,
+            ),
+        }),
+        // A DataLink failure is not fatal on its own: the package endpoint is a
+        // valid fallback. But it IS fatal when a specific artifact was asked
+        // for, since the fallback cannot honour that request.
+        (Err(e), Some(_)) => Err(format!(
+            "cannot select artifactIndex — DataLink did not resolve: {e}"
+        )),
+        (Err(_), None) => Ok((package_url.to_string(), None)),
+    }
+}
+
 pub async fn download_and_register(
     services: &AppServices,
     publisher_id: &str,
@@ -315,5 +335,106 @@ mod tests {
         // stored rather than dropped.
         assert_eq!(preview_extension("https://x/preview"), "bin");
         assert_eq!(preview_extension(""), "bin");
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::select_artifact;
+    use crate::models::search_result::{DataLinkFile, DataLinkResult};
+
+    const PKG: &str = "https://ws.example/caom2ops/pkg?ID=x";
+
+    fn row(url: &str, semantics: &str, content_type: &str) -> DataLinkFile {
+        DataLinkFile {
+            url: url.to_string(),
+            semantics: semantics.to_string(),
+            content_type: content_type.to_string(),
+            size: None,
+            description: String::new(),
+        }
+    }
+
+    /// A JWST plane as CADC returns it, captured 2026-08-21.
+    fn jwst() -> Result<DataLinkResult, String> {
+        let b = "https://cadc-west-01.canfar.net/raven/files/mast:JWST/product";
+        Ok(DataLinkResult {
+            publisher_id: "ivo://cadc.nrc.ca/mirror/JWST?jw01727".to_string(),
+            download_url: None,
+            files: vec![
+                row(
+                    &format!("{b}/jw01727_segm.fits"),
+                    "#auxiliary",
+                    "application/fits",
+                ),
+                row(
+                    &format!("{b}/jw01727_image3_asn.json"),
+                    "#this",
+                    "text/plain",
+                ),
+                row(&format!("{b}/jw01727_cat.ecsv"), "#this", "text/plain"),
+                row(
+                    &format!("{b}/jw01727_i2d.fits"),
+                    "#this",
+                    "application/fits",
+                ),
+            ],
+        })
+    }
+
+    /// Downloading a JWST plane fetches the image.
+    ///
+    /// This is the call site, not the model helper. Reverting it to
+    /// `direct_files().first()` compiled and left every model test passing —
+    /// the fault lives in the CHOICE, and only a test of the choosing function
+    /// reaches it.
+    #[test]
+    fn a_jwst_plane_downloads_its_image_not_its_association_file() {
+        let (url, filename) = select_artifact(&jwst(), None, PKG).expect("a selection");
+        assert!(url.ends_with("jw01727_i2d.fits"), "picked {url}");
+        assert_eq!(filename.as_deref(), Some("jw01727_i2d.fits"));
+    }
+
+    /// An explicit index still addresses `direct_files` in its own order.
+    #[test]
+    fn an_explicit_index_is_unchanged_by_the_preference() {
+        // 0 is the association file; asking for it must still get it.
+        let (url, _) = select_artifact(&jwst(), Some(0), PKG).expect("index 0");
+        assert!(url.ends_with("jw01727_image3_asn.json"), "picked {url}");
+
+        let (url, _) = select_artifact(&jwst(), Some(2), PKG).expect("index 2");
+        assert!(url.ends_with("jw01727_i2d.fits"), "picked {url}");
+    }
+
+    /// An out-of-range index says how many there were.
+    #[test]
+    fn an_out_of_range_index_is_refused_with_the_count() {
+        let err = select_artifact(&jwst(), Some(9), PKG).expect_err("out of range");
+        assert!(err.contains("artifactIndex 9"), "{err}");
+        assert!(err.contains("3 science artifact"), "{err}");
+    }
+
+    /// No science rows: the package endpoint, which is the honest fallback.
+    #[test]
+    fn a_plane_with_no_science_rows_falls_back_to_the_package() {
+        let dl: Result<DataLinkResult, String> = Ok(DataLinkResult {
+            publisher_id: "ivo://cadc.nrc.ca/mirror/JWST?empty".to_string(),
+            download_url: None,
+            files: vec![row("https://e/x.jpg", "#preview", "image/jpeg")],
+        });
+        let (url, filename) = select_artifact(&dl, None, PKG).expect("fallback");
+        assert_eq!(url, PKG);
+        assert!(filename.is_none(), "the package names itself");
+    }
+
+    /// DataLink failing is fatal only when a specific artifact was requested.
+    #[test]
+    fn a_datalink_failure_is_fatal_only_for_an_explicit_index() {
+        let failed: Result<DataLinkResult, String> = Err("503".to_string());
+        let (url, _) = select_artifact(&failed, None, PKG).expect("package fallback");
+        assert_eq!(url, PKG);
+
+        let err = select_artifact(&failed, Some(1), PKG).expect_err("cannot honour an index");
+        assert!(err.contains("DataLink did not resolve"), "{err}");
     }
 }

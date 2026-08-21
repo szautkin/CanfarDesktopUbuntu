@@ -226,6 +226,29 @@ impl DataLinkResult {
         self.files.iter().filter(|f| f.is_science_data()).collect()
     }
 
+    /// The row to fetch when the caller did NOT name an `artifactIndex`.
+    ///
+    /// `#this` marks a science product, and for most collections there is one
+    /// of them. JWST publishes several: a 46 MB `_i2d.fits` beside an
+    /// association `_asn.json`, a `_cat.ecsv` source catalogue and a
+    /// `_pool.csv` — all `#this`, and the FITS is rarely first. Taking
+    /// `direct_files().first()` therefore downloaded a four-kilobyte JSON
+    /// index instead of the image, for four of six JWST planes sampled against
+    /// the live archive on 2026-08-21.
+    ///
+    /// So: the first row that actually carries data, falling back to the first
+    /// row at all. The ORDER of `direct_files` is deliberately untouched —
+    /// `artifactIndex` addresses that list, and reordering it would silently
+    /// change which file every previously-noted index refers to.
+    pub fn preferred_science_file(&self) -> Option<&DataLinkFile> {
+        let science = self.direct_files();
+        science
+            .iter()
+            .find(|f| f.carries_pixel_data())
+            .or(science.first())
+            .copied()
+    }
+
     /// Preview-image URLs (`#preview` rows with an image content type).
     pub fn preview_urls(&self) -> Vec<String> {
         self.files
@@ -262,6 +285,26 @@ impl DataLinkResult {
 impl DataLinkFile {
     pub fn is_science_data(&self) -> bool {
         self.semantics == "#this"
+    }
+
+    /// Whether this row is the data itself rather than something describing it.
+    ///
+    /// Content type first, because that is what the archive declares; the
+    /// filename is the fallback for a row typed only as a byte stream. An
+    /// association list and a source catalogue are both `#this` and both
+    /// `text/plain` — real products, but not what "download this observation"
+    /// means.
+    pub fn carries_pixel_data(&self) -> bool {
+        let ct = self.content_type.to_ascii_lowercase();
+        if ct.contains("fits") || ct.contains("octet-stream") {
+            return true;
+        }
+        let name = self.filename().to_ascii_lowercase();
+        // `.fits`, and the compressed spellings CADC serves.
+        name.ends_with(".fits")
+            || name.ends_with(".fits.fz")
+            || name.ends_with(".fits.gz")
+            || name.ends_with(".fz")
     }
     pub fn is_preview(&self) -> bool {
         // Require an image content-type so a mislabelled #preview row (e.g. a data
@@ -922,6 +965,160 @@ mod tests {
     }
 
     use super::*;
+
+    fn dl_file(url: &str, semantics: &str, content_type: &str) -> DataLinkFile {
+        DataLinkFile {
+            url: url.to_string(),
+            semantics: semantics.to_string(),
+            content_type: content_type.to_string(),
+            size: None,
+            description: String::new(),
+        }
+    }
+
+    /// The rows CADC returns for a JWST plane, captured 2026-08-21.
+    ///
+    /// Order matters and is preserved from the response: the association JSON
+    /// comes FIRST, and the 46 MB science image third.
+    fn jwst_plane() -> DataLinkResult {
+        let base = "https://cadc-west-01.canfar.net/raven/files/mast:JWST/product";
+        DataLinkResult {
+            publisher_id: "ivo://cadc.nrc.ca/mirror/JWST?jw01727-o001_t001_miri_f770w".to_string(),
+            download_url: None,
+            files: vec![
+                dl_file(
+                    &format!("{base}/jw01727_segm.fits"),
+                    "#auxiliary",
+                    "application/fits",
+                ),
+                dl_file(
+                    &format!("{base}/jw01727_image3_00003_asn.json"),
+                    "#this",
+                    "text/plain",
+                ),
+                dl_file(
+                    &format!("{base}/jw01727_miri_f770w_cat.ecsv"),
+                    "#this",
+                    "text/plain",
+                ),
+                dl_file(
+                    &format!("{base}/jw01727_miri_f770w_i2d.jpg"),
+                    "#preview",
+                    "image/jpeg",
+                ),
+                dl_file(
+                    &format!("{base}/jw01727_miri_f770w_i2d.fits"),
+                    "#this",
+                    "application/fits",
+                ),
+                dl_file(&format!("{base}/jw01727_pool.csv"), "#this", "text/plain"),
+            ],
+        }
+    }
+
+    /// Downloading a JWST plane fetches the image, not its index file.
+    ///
+    /// `direct_files().first()` is the association JSON — four kilobytes of
+    /// filenames. An agent asking to download the observation got that instead
+    /// of the 46 MB image, and nothing said so.
+    #[test]
+    fn the_default_download_is_the_data_not_the_association_file() {
+        let dl = jwst_plane();
+
+        // The old behaviour, kept visible: this is what was being fetched.
+        assert_eq!(
+            dl.direct_files().first().map(|f| f.filename()),
+            Some("jw01727_image3_00003_asn.json".to_string())
+        );
+
+        assert_eq!(
+            dl.preferred_science_file().map(|f| f.filename()),
+            Some("jw01727_miri_f770w_i2d.fits".to_string()),
+            "the default download is not the science image"
+        );
+    }
+
+    /// `artifactIndex` still addresses the same list, in the same order.
+    ///
+    /// The fix must not renumber it: an agent that read index 2 from
+    /// `get_data_links` and passed it to `download_observation` would otherwise
+    /// receive a different file than the one it chose.
+    #[test]
+    fn the_addressable_order_is_unchanged() {
+        let names: Vec<String> = jwst_plane()
+            .direct_files()
+            .iter()
+            .map(|f| f.filename())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "jw01727_image3_00003_asn.json".to_string(),
+                "jw01727_miri_f770w_cat.ecsv".to_string(),
+                "jw01727_miri_f770w_i2d.fits".to_string(),
+                "jw01727_pool.csv".to_string(),
+            ]
+        );
+    }
+
+    /// A collection with one science row is unaffected.
+    ///
+    /// CFHT and the rest publish a single `#this`; this changed nothing for
+    /// them, which is why the fault only appeared with JWST.
+    #[test]
+    fn a_single_science_row_is_still_the_one_chosen() {
+        let dl = DataLinkResult {
+            publisher_id: "ivo://cadc.nrc.ca/CFHT?1040701".to_string(),
+            download_url: None,
+            files: vec![
+                dl_file(
+                    "https://example.org/1040701p.fits.fz",
+                    "#this",
+                    "application/fits",
+                ),
+                dl_file("https://example.org/1040701p.jpg", "#preview", "image/jpeg"),
+            ],
+        };
+        assert_eq!(
+            dl.preferred_science_file().map(|f| f.filename()),
+            Some("1040701p.fits.fz".to_string())
+        );
+    }
+
+    /// With nothing data-shaped, the first science row is still returned.
+    ///
+    /// Better a catalogue than nothing: the caller asked for this observation's
+    /// product, and refusing because no row is a FITS would be worse than
+    /// handing over the only product there is.
+    #[test]
+    fn a_plane_with_no_pixel_data_falls_back_to_the_first_row() {
+        let dl = DataLinkResult {
+            publisher_id: "ivo://cadc.nrc.ca/mirror/JWST?spectra".to_string(),
+            download_url: None,
+            files: vec![
+                dl_file("https://example.org/x_cat.ecsv", "#this", "text/plain"),
+                dl_file("https://example.org/x_pool.csv", "#this", "text/plain"),
+            ],
+        };
+        assert_eq!(
+            dl.preferred_science_file().map(|f| f.filename()),
+            Some("x_cat.ecsv".to_string())
+        );
+    }
+
+    /// A row typed only as a byte stream is recognised by its name.
+    #[test]
+    fn a_compressed_fits_is_recognised_by_extension() {
+        assert!(dl_file(
+            "https://e.org/a.fits.fz",
+            "#this",
+            "application/octet-stream"
+        )
+        .carries_pixel_data());
+        assert!(dl_file("https://e.org/a.fits.gz", "#this", "").carries_pixel_data());
+        assert!(!dl_file("https://e.org/a.ecsv", "#this", "text/plain").carries_pixel_data());
+        assert!(!dl_file("https://e.org/a.json", "#this", "text/plain").carries_pixel_data());
+    }
 
     #[test]
     fn parse_csv_basic() {
