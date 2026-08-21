@@ -29,6 +29,8 @@ pub enum AgentEventKind {
     ProposalArrived,
     ProposalApplied,
     ProposalRejected,
+    /// The apply ran and failed — as opposed to being refused before it ran.
+    ProposalFailed,
     ProposalWithdrawn,
 }
 

@@ -154,6 +154,7 @@ impl McpToolRouter {
                             ProposalState::Applying => "applying",
                             ProposalState::Applied => "applied",
                             ProposalState::Rejected => "rejected",
+                            ProposalState::Failed => "failed",
                             ProposalState::Withdrawn => "withdrawn",
                         };
                         // `{id, state}` and nothing else, as the reference does —
@@ -572,11 +573,19 @@ impl ToolRouter for McpToolRouter {
                                         }));
                                     }
                                     Err(e) => {
-                                        self.proposals.settle(
-                                            &p.id,
-                                            super::proposals::ProposalState::Rejected,
-                                        );
-                                        return ToolResult::Failed(format!("apply failed: {e}"));
+                                        // `Failed`, not `Rejected`: this one was
+                                        // approved and attempted, and the service
+                                        // said no. Recording it as rejected made
+                                        // an upstream 400 look like a local policy
+                                        // refusal, and the caller could not tell
+                                        // whether its request had ever been sent.
+                                        self.proposals
+                                            .settle(&p.id, super::proposals::ProposalState::Failed);
+                                        return ToolResult::Failed(format!(
+                                            "{} was approved and applied, and the service \
+                                             refused it: {e}",
+                                            p.kind
+                                        ));
                                     }
                                 }
                             }

@@ -64,6 +64,14 @@ pub enum ProposalState {
     Applying,
     Applied,
     Rejected,
+    /// Claimed, applied, and the apply itself failed.
+    ///
+    /// Distinct from `Rejected`, which means a person or a policy said no. Both
+    /// used to record as rejected, so a proposal that reached CANFAR and came
+    /// back 400 was indistinguishable in the event log from one that was never
+    /// approved — a QA session read its own apply failure as an auto-rejection
+    /// and reported the upstream error as fictional.
+    Failed,
     Withdrawn,
 }
 
@@ -311,7 +319,7 @@ impl InMemoryProposalStore {
     pub fn settle(&self, id: &str, state: ProposalState) -> Option<PendingProposal> {
         debug_assert!(matches!(
             state,
-            ProposalState::Applied | ProposalState::Rejected
+            ProposalState::Applied | ProposalState::Rejected | ProposalState::Failed
         ));
         let resolved = {
             let mut g = self.inner.lock().unwrap();
@@ -361,6 +369,7 @@ impl InMemoryProposalStore {
         let kind = match state {
             ProposalState::Applied => AgentEventKind::ProposalApplied,
             ProposalState::Rejected => AgentEventKind::ProposalRejected,
+            ProposalState::Failed => AgentEventKind::ProposalFailed,
             ProposalState::Withdrawn => AgentEventKind::ProposalWithdrawn,
             ProposalState::Pending | ProposalState::Applying => return,
         };
@@ -428,6 +437,47 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ))
+    }
+
+    /// A refusal and a failure are different events.
+    ///
+    /// `renew_session` is non-destructive, so it auto-applies; CANFAR answered
+    /// 400 and the store recorded `ProposalRejected`. The reporter read that as
+    /// a local policy auto-reject and concluded the renewal had never been sent
+    /// and the upstream 400 was fictional. It had been sent. Both outcomes were
+    /// simply spelled the same.
+    #[test]
+    fn an_apply_that_failed_is_not_recorded_as_a_rejection() {
+        let store = InMemoryProposalStore::new();
+        let events = store.events();
+
+        let refused = store.enqueue("renew_session", "Renew a", false, json!({}));
+        store.resolve(&refused.id, ProposalState::Rejected);
+
+        let attempted = store.enqueue("renew_session", "Renew b", false, json!({}));
+        store.claim(&attempted.id);
+        store.settle(&attempted.id, ProposalState::Failed);
+
+        let kinds: Vec<_> = events
+            .since(0)
+            .0
+            .into_iter()
+            .filter(|e| e.proposal_id == refused.id || e.proposal_id == attempted.id)
+            .map(|e| (e.proposal_id.clone(), e.kind))
+            .collect();
+
+        assert!(
+            kinds.contains(&(refused.id.clone(), AgentEventKind::ProposalRejected)),
+            "a refusal is not ProposalRejected: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&(attempted.id.clone(), AgentEventKind::ProposalFailed)),
+            "an apply failure is not ProposalFailed: {kinds:?}"
+        );
+        assert!(
+            !kinds.contains(&(attempted.id, AgentEventKind::ProposalRejected)),
+            "the failure was still recorded as a rejection: {kinds:?}"
+        );
     }
 
     /// A pending proposal outlives the process.

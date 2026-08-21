@@ -302,6 +302,14 @@ mod tests {
     /// and an entry the reference later gains is itself reported.
     const VERBINAL_FIRST: &[(&str, &str)] = &[
     (
+        "close_fits_tab",
+        "The reference closes tabs only through the window chrome. `close_active_tab` is \
+         app-level and never reached a module's own tabs — it answered `closed: false` for \
+         every call with no reason, and the documented switch-then-close sequence could not \
+         work because `switch_fits_tab` moves the viewer's focus and not the app's. An agent \
+         that opens FITS tabs needs a way to close them.",
+    ),
+    (
         "check_notebook_dependencies",
         "The reference has the scanner (Helpers/Notebook/DependencyScanner.cs) but only behind its \
          notebook UI. An agent asked to run a notebook could not find out what it would need \

@@ -325,7 +325,20 @@ pub async fn dispatch(
         }
         "close_active_tab" => {
             let ok = view_state::close_active_tab().await;
-            Some(ToolResult::Data(json!({ "closed": ok })))
+            // Silence was the complaint: this answered `closed: false` for
+            // every call, with nothing to say why, and the documented
+            // switch-then-close sequence could not work because
+            // `switch_fits_tab` moves the viewer's focus and not the app's.
+            // Per-module closing is still unwired; the FITS viewer has its own
+            // tool, and saying so beats a bare false.
+            let mut out = json!({ "closed": ok });
+            if !ok {
+                out["message"] = json!(
+                    "close_active_tab does not reach a module's own tabs. To close a FITS tab \
+                     use close_fits_tab (it takes a tabIndex, or acts on the active tab)."
+                );
+            }
+            Some(ToolResult::Data(out))
         }
         "set_search_focus" => Some(match sky_focus_args(args) {
             Ok((ra, dec)) => {

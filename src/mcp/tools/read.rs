@@ -114,8 +114,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         read_tool(
             "list_sessions",
-            "List the user's active Skaha sessions (id, name, type, status, image, resources, and \
-             the connectUrl to open an interactive session in the browser).",
+            "List the user's active INTERACTIVE Skaha sessions (id, name, type, status, image, \
+             resources, and the connectUrl to open one in the browser). Takes no arguments and \
+             does no filtering — headless jobs are a different tool, list_headless_jobs.",
             empty_schema(),
         ),
         read_tool(

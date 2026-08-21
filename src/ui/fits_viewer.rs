@@ -947,6 +947,52 @@ impl FitsViewer {
                     .ok_or_else(|| "no FITS open".to_string())?;
                 Ok(self.fits_view_state(&tab))
             }
+            // Closing a FITS tab. `close_active_tab` is app-level and was never
+            // wired for the viewer, so it answered `closed: false` with no
+            // reason for every attempt — and `switch_fits_tab` focuses the
+            // viewer's tab without changing app-level focus, so the documented
+            // "switch then close" sequence could not work either.
+            "close_fits_tab" => {
+                let count = self.tabs.borrow().len();
+                if count == 0 {
+                    return Err("no FITS open".to_string());
+                }
+                let index = match crate::mcp::tools::arg(args, "tabIndex")
+                    .or_else(|| crate::mcp::tools::arg(args, "index"))
+                    .and_then(|v| v.as_u64())
+                {
+                    Some(i) => {
+                        let i = i as usize;
+                        if i >= count {
+                            return Err(format!(
+                                "tab {i} is out of range — {count} FITS tab(s) are open"
+                            ));
+                        }
+                        i
+                    }
+                    // No index: the one the other FITS tools act on.
+                    None => self
+                        .selected_index()
+                        .ok_or_else(|| "no FITS tab is active".to_string())?,
+                };
+
+                let closed_file = self.tabs.borrow()[index].source_file().to_string();
+                let page = {
+                    let tab = self.tabs.borrow()[index].clone();
+                    self.tab_view.page(tab.widget())
+                };
+                // The close handler owns the registry; it removes the tab and
+                // republishes the snapshot.
+                self.tab_view.close_page(&page);
+
+                let remaining = self.tabs.borrow().len();
+                Ok(json!({
+                    "closed": true,
+                    "closedIndex": index,
+                    "closedFile": closed_file,
+                    "tabCount": remaining,
+                }))
+            }
             "set_fits_view" => {
                 let mut tab = self
                     .current_tab()

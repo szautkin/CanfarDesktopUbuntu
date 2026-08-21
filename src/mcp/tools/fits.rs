@@ -162,6 +162,23 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "close_fits_tab".into(),
+            description: "Close an open FITS tab by its 0-based index (see list_open_tabs), or the \
+                          ACTIVE tab when no index is given. close_active_tab is app-level and does \
+                          not reach the FITS viewer, so this is how a FITS tab is closed. Returns \
+                          which tab closed and how many remain."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "tabIndex": { "type":"integer", "minimum":0, "description":"0-based FITS tab index from list_open_tabs; omit for the active tab" }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "switch_fits_tab".into(),
             description: "Bring one of the open FITS tabs to the front by its 0-based index (see \
                           list_open_tabs). Every other FITS tool acts on the ACTIVE tab, so this is how \
@@ -237,6 +254,7 @@ pub async fn dispatch(
         | "save_fits_bookmark"
         | "delete_fits_bookmark"
         | "switch_fits_tab"
+        | "close_fits_tab"
         | "blink_fits_tabs" => Some(to_tool_result(
             viewer_command("fits", name, args.clone()).await,
         )),
