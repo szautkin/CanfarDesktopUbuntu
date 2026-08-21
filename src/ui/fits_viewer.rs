@@ -111,6 +111,15 @@ pub struct FitsViewer {
     suppress_sync: Rc<RefCell<bool>>,
     /// Guards the selected-page handler during an in-place HDU swap.
     suppress_page_switch: Rc<RefCell<bool>>,
+    /// True while a page is being swapped for a rebuilt one.
+    ///
+    /// `close_page` is how a page is replaced as well as how it is closed, and
+    /// the close handler cannot tell the two apart — it retains the tab out of
+    /// the registry either way. During a swap that leaves `tabs` one shorter
+    /// than the page list, and the re-registration below it silently does
+    /// nothing, so the viewer keeps a page nobody owns and every tool answers
+    /// "no FITS open".
+    rebuilding_page: Rc<RefCell<bool>>,
     /// Persistent sync-zoom toggle (mirrors Windows `IsSyncZoomEnabled`): when on,
     /// every tab is re-zoomed to a shared angular field as it becomes active.
     sync_zoom_enabled: Rc<Cell<bool>>,
@@ -528,6 +537,7 @@ impl FitsViewer {
             hdu_current_pos,
             suppress_sync: Rc::new(RefCell::new(false)),
             suppress_page_switch: Rc::new(RefCell::new(false)),
+            rebuilding_page: Rc::new(RefCell::new(false)),
             sync_zoom_enabled: Rc::new(Cell::new(false)),
             sync_fov_btn: sync_fov_btn.clone(),
             shared_angular_zoom: Rc::new(Cell::new(0.0)),
@@ -794,7 +804,9 @@ impl FitsViewer {
                     *v.suppress_sync.borrow_mut() = false;
                     return;
                 }
-                v.switch_hdu(info.index);
+                // The status label already carries the reason on failure; the
+                // dropdown reverts itself inside `switch_hdu`.
+                let _ = v.switch_hdu(info.index);
             });
         }
 
@@ -829,14 +841,25 @@ impl FitsViewer {
         // page by comparing label widgets.
         {
             let tabs = viewer.tabs.clone();
+            let rebuilding = viewer.rebuilding_page.clone();
             viewer.tab_view.connect_close_page(move |view, page| {
-                let child = page.child();
-                tabs.borrow_mut()
-                    .retain(|t| t.widget().clone().upcast::<gtk::Widget>() != child);
+                // A rebuild closes the old page and inserts its replacement at
+                // the same position. Dropping the tab here would leave the
+                // registry one short, and the swap's re-registration indexes
+                // into a vector that no longer has that slot — so it does
+                // nothing, and the file becomes invisible to every tool while
+                // its page is still on screen. The swap owns the registry.
+                if !*rebuilding.borrow() {
+                    let child = page.child();
+                    tabs.borrow_mut()
+                        .retain(|t| t.widget().clone().upcast::<gtk::Widget>() != child);
+                }
                 view.close_page_finish(page, true);
                 // Closing a NON-active tab changes no selection, so the MCP
                 // snapshot has to be republished here or it keeps the closed file.
-                publish_fits_tabs(view, &tabs);
+                if !*rebuilding.borrow() {
+                    publish_fits_tabs(view, &tabs);
+                }
                 glib::Propagation::Stop
             });
         }
@@ -925,7 +948,7 @@ impl FitsViewer {
                 Ok(self.fits_view_state(&tab))
             }
             "set_fits_view" => {
-                let tab = self
+                let mut tab = self
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
 
@@ -969,18 +992,34 @@ impl FitsViewer {
                 if let Some(h) = crate::mcp::tools::arg(args, "hdu").and_then(|v| v.as_u64()) {
                     let hdus = tab.hdus();
                     let h = h as usize;
-                    if h >= hdus.len() {
+                    // 1-based, as FITS numbers HDUs and as `hdus[].index`
+                    // reports them. Zero used to pass this check and reach
+                    // cfitsio, which answered "status 301" from inside a status
+                    // label while the tool reported success.
+                    if h < 1 || h > hdus.len() {
                         return Err(format!(
-                            "hdu {h} is out of range — this file has {} HDU(s)",
+                            "hdu {h} is out of range — this file has HDUs 1..{}",
                             hdus.len()
                         ));
                     }
-                    if !hdus[h].is_image {
+                    if !hdus[h - 1].is_image {
                         return Err(format!(
                             "HDU {h} carries no image data; get_fits_view lists which are images"
                         ));
                     }
-                    self.switch_hdu(h);
+                    // Propagated. The switch used to write its failure into a
+                    // status label and return, so the tool answered
+                    // `isError: false` with the PREVIOUS HDU's view state and
+                    // the caller had no way to know the switch had not happened.
+                    self.switch_hdu(h)?;
+                    // The swap replaced the tab: the binding above now points
+                    // at a FitsTab detached from the view. Everything below —
+                    // crosshair, viewport centre, and the state this returns —
+                    // has to act on the one that is actually on screen, or the
+                    // reply describes the HDU the caller just left.
+                    tab = self
+                        .current_tab()
+                        .ok_or_else(|| "the HDU switch left no active tab".to_string())?;
                 }
                 // Crosshair by DISPLAY PIXEL — works with no WCS at all, unlike
                 // fits_goto_coordinate. Both halves are required together: one
@@ -1224,12 +1263,16 @@ impl FitsViewer {
             "crosshairY": tab.crosshair_pixel_pos().map(|(_, y)| y),
             // HDU list + which one is displayed, so a caller can pick a valid
             // `hdu` for set_fits_view without guessing.
+            // 1-BASED, matching `hdu` below and what `set_fits_view` takes.
+            // These were published from a 0-based `enumerate()` while the list
+            // itself is CFITSIO's `1..=n` — so an agent reading `hdus[1].index`
+            // and passing it back selected the PRIMARY, one HDU off from the
+            // one it had just read about.
             "hdus": tab
                 .hdus()
                 .iter()
-                .enumerate()
-                .map(|(i, h)| json!({
-                    "index": i,
+                .map(|h| json!({
+                    "index": h.index,
                     "label": h.label(),
                     "isImage": h.is_image,
                 }))
@@ -1524,17 +1567,18 @@ impl FitsViewer {
 
     /// Reload a different image HDU of the active tab's file, replacing the
     /// current tab's content in place (mirrors Windows `SelectHdu`).
-    fn switch_hdu(&self, hdu_index: usize) {
-        let page_idx = match self.selected_index() {
-            Some(i) => i,
-            None => return,
-        };
-        let old_tab = match self.tabs.borrow().get(page_idx).cloned() {
-            Some(t) => t,
-            None => return,
-        };
+    fn switch_hdu(&self, hdu_index: usize) -> Result<(), String> {
+        let page_idx = self
+            .selected_index()
+            .ok_or_else(|| "no FITS tab is selected".to_string())?;
+        let old_tab = self
+            .tabs
+            .borrow()
+            .get(page_idx)
+            .cloned()
+            .ok_or_else(|| "the selected tab has no viewer".to_string())?;
         if old_tab.hdu_index() == hdu_index {
-            return;
+            return Ok(());
         }
 
         let path_str = old_tab.source_file().to_string();
@@ -1545,7 +1589,9 @@ impl FitsViewer {
                 self.status_label.set_text(&crate::tr_fmt!("Error: {}", e));
                 // Revert the dropdown to the still-displayed HDU.
                 self.set_hdu_selector(&old_tab.hdus(), old_tab.hdu_index());
-                return;
+                // And tell the caller. This used to return quietly, leaving the
+                // tool to answer with the old HDU's state and no error.
+                return Err(format!("could not switch to HDU {hdu_index}: {e}"));
             }
         };
 
@@ -1563,19 +1609,35 @@ impl FitsViewer {
         let title = old_page.title();
         let tooltip = old_page.tooltip().unwrap_or_default();
         *self.suppress_page_switch.borrow_mut() = true;
+        *self.rebuilding_page.borrow_mut() = true;
+        // The handler runs `close_page_finish` itself; calling it again here
+        // finished an already-finished page.
         self.tab_view.close_page(&old_page);
-        self.tab_view.close_page_finish(&old_page, true);
         let new_page = self.tab_view.insert(new_tab.widget(), page_idx as i32);
         new_page.set_title(&title);
         new_page.set_tooltip(&tooltip);
-        if let Some(slot) = self.tabs.borrow_mut().get_mut(page_idx) {
-            *slot = new_tab.clone();
+        // The slot is still there because the close handler left it alone.
+        // Registering unconditionally rather than only when the index happens
+        // to exist: a viewer with a page and no tab answers "no FITS open" for
+        // a file that is plainly on screen.
+        {
+            let mut tabs = self.tabs.borrow_mut();
+            let at = page_idx.min(tabs.len());
+            match tabs.get_mut(page_idx) {
+                Some(slot) => *slot = new_tab.clone(),
+                None => tabs.insert(at, new_tab.clone()),
+            }
         }
         self.tab_view.set_selected_page(&new_page);
+        *self.rebuilding_page.borrow_mut() = false;
         *self.suppress_page_switch.borrow_mut() = false;
+        // Republished here instead of by the close handler, which was told to
+        // stay quiet: the snapshot must describe the NEW tab, not the old one.
+        publish_fits_tabs(&self.tab_view, &self.tabs);
 
         self.sync_controls_to_tab(&new_tab);
         self.update_hdu_and_banner(&new_tab);
+        Ok(())
     }
 
     /// Begin a cross-fade blink: overlay the target tab (B) onto the active tab
