@@ -81,7 +81,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
              import found, and for each missing one its module name and the pip package that \
              provides it (they differ: cv2 is opencv-python). Use before running a notebook whose \
              imports you have not seen succeed.",
-            sel.clone(),
+            // Wrapped, like every other use of `sel`. Passed raw it made the
+            // tool advertise `inputSchema: {"type":"string"}` — not an object
+            // schema, which is what the spec requires and what a strict client
+            // validates the whole list against.
+            json!({"type":"object","properties":{"notebook":sel.clone()},"additionalProperties":false}),
             VerbClass::Read,
         ),
         desc(

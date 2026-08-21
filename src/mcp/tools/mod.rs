@@ -421,6 +421,62 @@ impl ToolRouter for NullRouter {
 }
 
 #[cfg(test)]
+mod schema_shape_tests {
+    /// Every advertised tool takes an OBJECT.
+    ///
+    /// MCP tool arguments are a named map, so `inputSchema` must be an object
+    /// schema. `check_notebook_dependencies` shipped
+    /// `{"type": "string", "description": "…"}` — the schema for the `notebook`
+    /// PROPERTY, passed where the whole schema goes, which every other tool in
+    /// that file wraps correctly.
+    ///
+    /// Nothing caught it. It dispatched fine, its own tests passed, and the
+    /// tool worked when called: the damage was to `tools/list`, where a client
+    /// that validates the catalogue rejects it — and some reject the entire
+    /// list over one bad entry, which reads as "the server has no tools"
+    /// rather than "one tool is malformed". Claude Desktop connected, listed,
+    /// and reported the server with zero tools for a week.
+    #[test]
+    fn every_tool_advertises_an_object_schema() {
+        let mut bad = Vec::new();
+        for d in super::family_descriptors() {
+            let schema = &d.input_schema;
+            let Some(obj) = schema.as_object() else {
+                bad.push(format!("{}: inputSchema is not an object", d.name));
+                continue;
+            };
+            match obj.get("type").and_then(|t| t.as_str()) {
+                Some("object") => {}
+                other => bad.push(format!("{}: type = {other:?}, must be \"object\"", d.name)),
+            }
+            // `properties`, when present, is a map; and anything `required`
+            // must be one of them, or a caller cannot satisfy the tool.
+            if let Some(props) = obj.get("properties") {
+                if !props.is_object() {
+                    bad.push(format!("{}: properties is not an object", d.name));
+                }
+                if let Some(req) = obj.get("required").and_then(|r| r.as_array()) {
+                    for r in req.iter().filter_map(|v| v.as_str()) {
+                        if props.get(r).is_none() {
+                            bad.push(format!(
+                                "{}: requires {r:?}, which it does not declare",
+                                d.name
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            bad.is_empty(),
+            "tool(s) advertising a schema no client can call them by; a strict \
+             client may drop the WHOLE catalogue over one of these: {bad:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod arg_tests {
     use super::*;
     use serde_json::json;
