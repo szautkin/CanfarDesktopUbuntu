@@ -155,7 +155,7 @@ pub async fn dispatch(
     let result = match name {
         "get_observation_caom2" => get_observation_caom2(services, args).await,
         "get_data_links" => get_data_links(services, args).await,
-        "vizier_cone_search" => vizier_cone_search(args).await,
+        "vizier_cone_search" => vizier_cone_search(services, args).await,
         _ => return None,
     };
     Some(result)
@@ -280,7 +280,7 @@ fn cone_radius_deg(args: &Value) -> Result<f64, String> {
     Ok(radius)
 }
 
-async fn vizier_cone_search(args: &Value) -> ToolResult {
+async fn vizier_cone_search(services: &AppServices, args: &Value) -> ToolResult {
     let (ra, dec) = match (
         num_arg(args, "raDeg").or_else(|| num_arg(args, "ra")),
         num_arg(args, "decDeg").or_else(|| num_arg(args, "dec")),
@@ -313,7 +313,7 @@ async fn vizier_cone_search(args: &Value) -> ToolResult {
     let dec_column =
         opt_str_arg(args, "decColumn").unwrap_or_else(|| DEFAULT_DEC_COLUMN.to_string());
 
-    let service = VizierService::new(reqwest::Client::new());
+    let service = VizierService::new(reqwest::Client::new(), services.endpoints.clone());
     match service
         .cone_search(
             &catalog,

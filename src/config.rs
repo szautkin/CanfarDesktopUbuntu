@@ -24,9 +24,30 @@ pub mod api_endpoint_defaults {
     /// CADC target-name resolver.
     pub const RESOLVER_BASE: &str =
         "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/cadc-target-resolver";
+    /// VizieR TAP mirrors, tried in order, whitespace-separated.
+    ///
+    /// A list rather than one base because VizieR is one operator with several
+    /// front doors, and they do not fail together — a search that finds the
+    /// first two down should still answer. TLS hosts first; the plain-HTTP
+    /// mirror is last, for callers who cannot complete a handshake at all.
+    ///
+    /// Editable in Settings like every other endpoint here: these hostnames
+    /// have moved before. Two of the four shipped previously
+    /// (`tap.cds.unistra.fr`, `tapvizier.esac.esa.int`) had become NXDOMAIN,
+    /// and being a constant in the binary meant nobody could route around it.
+    pub const VIZIER_MIRRORS: &str = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync \
+                                      https://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync \
+                                      http://vizier.china-vo.org/tap/sync";
 }
 
 // ---- per-field serde defaults (so old settings.json keeps loading) ----------
+fn d_vizier_mirrors() -> String {
+    api_endpoint_defaults::VIZIER_MIRRORS
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn d_login_base() -> String {
     api_endpoint_defaults::LOGIN_BASE.to_string()
 }
@@ -93,6 +114,9 @@ pub struct AppConfig {
     pub caom2ops_base: String,
     #[serde(default = "d_resolver_base")]
     pub resolver_base: String,
+    /// VizieR TAP mirrors, tried in order (whitespace-separated).
+    #[serde(default = "d_vizier_mirrors")]
+    pub vizier_mirrors: String,
 
     // --- appearance / session defaults ---
     #[serde(default = "d_theme")]
@@ -120,6 +144,7 @@ impl Default for AppConfig {
             tap_base: d_tap_base(),
             caom2ops_base: d_caom2ops_base(),
             resolver_base: d_resolver_base(),
+            vizier_mirrors: d_vizier_mirrors(),
             theme: d_theme(),
             default_session_type: d_session_type(),
             default_cores: d_cores(),
@@ -155,6 +180,31 @@ pub struct EndpointBases {
     pub tap_base: String,
     pub caom2ops_base: String,
     pub resolver_base: String,
+    /// VizieR TAP sync URLs, in the order they should be tried.
+    pub vizier_mirrors: Vec<String>,
+}
+
+/// The VizieR mirrors to try, in order.
+///
+/// Each entry is validated like any other base; anything that is not an
+/// absolute http/https URL is dropped rather than silently prefixed onto a
+/// request. An empty or wholly invalid setting falls back to the shipped list,
+/// because a user who clears the field wants the defaults back, not a tool that
+/// has no mirrors at all.
+fn sanitize_mirrors(value: &str) -> Vec<String> {
+    let parsed: Vec<String> = value
+        .split_whitespace()
+        .map(|m| m.trim_end_matches('/'))
+        .filter(|m| m.starts_with("http://") || m.starts_with("https://"))
+        .map(str::to_string)
+        .collect();
+    if parsed.is_empty() {
+        return api_endpoint_defaults::VIZIER_MIRRORS
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+    }
+    parsed
 }
 
 /// Validate a single base URL. Trims whitespace and a trailing '/', and requires
@@ -185,6 +235,7 @@ impl EndpointBases {
             tap_base: sanitize_base(&cfg.tap_base, d::TAP_BASE),
             caom2ops_base: sanitize_base(&cfg.caom2ops_base, d::CAOM2OPS_BASE),
             resolver_base: sanitize_base(&cfg.resolver_base, d::RESOLVER_BASE),
+            vizier_mirrors: sanitize_mirrors(&cfg.vizier_mirrors),
         }
     }
 }
@@ -308,6 +359,11 @@ impl ApiEndpoints {
         } else {
             format!("{}/home/{}/{}", arc_nodes, username, path)
         }
+    }
+
+    /// The VizieR TAP mirrors to try, in order. Reflects the user's setting.
+    pub fn vizier_mirrors(&self) -> Vec<String> {
+        self.bases.read().unwrap().vizier_mirrors.clone()
     }
 
     pub fn vospace_files_url(&self, username: &str, path: &str) -> String {

@@ -647,7 +647,7 @@ impl NotebookTabHost {
             // The scan the UI runs on open, as a tool. Same helper, same
             // interpreter, same answers — a second implementation would be a
             // second set of module→package mappings to keep in step.
-            "check_dependencies" => {
+            "check_notebook_dependencies" => {
                 use crate::helpers::dependency_scanner as deps;
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 let doc = page.snapshot_document();
@@ -687,7 +687,7 @@ impl NotebookTabHost {
                 }))
             }
 
-            "install_dependencies" => {
+            "install_notebook_dependencies" => {
                 use crate::helpers::dependency_scanner as deps;
                 let packages: Vec<String> = crate::mcp::tools::arg(args, "packages")
                     .and_then(|v| v.as_array())

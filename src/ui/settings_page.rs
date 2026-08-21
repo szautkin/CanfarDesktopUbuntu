@@ -20,7 +20,16 @@ use std::sync::Arc;
 type Getter = fn(&AppConfig) -> &String;
 type Setter = fn(&mut AppConfig, String);
 
-const ENDPOINT_FIELDS: [(&str, &str, Getter, Setter); 8] = [
+const ENDPOINT_FIELDS: [(&str, &str, Getter, Setter); 9] = [
+    // Several mirrors, whitespace-separated and tried in order. Editable for the
+    // same reason as the rest: two of the hostnames shipped previously had
+    // become NXDOMAIN, and a constant in the binary left nobody a way around it.
+    (
+        "VizieR TAP mirrors",
+        dflt::VIZIER_MIRRORS,
+        |c| &c.vizier_mirrors,
+        |c, v| c.vizier_mirrors = v,
+    ),
     (
         "CADC login (ac)",
         dflt::LOGIN_BASE,

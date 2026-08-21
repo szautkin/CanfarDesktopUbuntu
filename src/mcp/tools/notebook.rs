@@ -303,7 +303,15 @@ pub async fn dispatch(
         | "restart_kernel"
         | "save_notebook"
         | "open_notebook"
-        | "create_notebook" => name,
+        | "create_notebook"
+        // Announced since the dependency work went in, and dispatched by
+        // nobody: the host implemented them as `check_dependencies` /
+        // `install_dependencies` while the catalogue advertised the
+        // `_notebook_` spelling, so both answered "no such tool". The host ops
+        // are renamed to match rather than mapped here — the invariant above
+        // is worth more than an exception to it.
+        | "check_notebook_dependencies"
+        | "install_notebook_dependencies" => name,
         _ => return None,
     };
 
@@ -396,6 +404,53 @@ async fn create_analysis_notebook(services: &AppServices, args: &Value) -> ToolR
             "publisherId": pid,
             "note": format!("notebook written but not opened in the editor: {e}"),
         })),
+    }
+}
+
+#[cfg(test)]
+mod wiring_tests {
+    /// Every notebook tool this module advertises is one it will dispatch.
+    ///
+    /// `check_notebook_dependencies` and `install_notebook_dependencies` were
+    /// announced in `tools/list` for a week and answered "no such tool" when
+    /// called: the viewer host implemented them under a shorter name, and the
+    /// op match — which maps tool name to bridge op 1:1 — had no arm for
+    /// either, so both fell through to `None`.
+    ///
+    /// Nothing failed. The descriptors were valid, the handlers existed, and
+    /// the two halves simply never met. An agent following the catalogue is
+    /// the only thing that touches that seam.
+    #[test]
+    fn every_advertised_notebook_tool_is_dispatchable() {
+        let source = include_str!("notebook.rs");
+        let code = crate::testing::without_comments(crate::testing::code(source));
+
+        // Scope to `dispatch` itself. The first version searched the whole
+        // file, which contains `descriptors()` — so every tool "matched" its
+        // own declaration and the guard passed with both tools unwired again.
+        let dispatch = code
+            .find("pub async fn dispatch(")
+            .expect("the dispatch fn");
+        let body = &code[dispatch..];
+
+        // The op match, and whatever handled a name before reaching it.
+        let match_at = body.find("let op = match name {").expect("the op match");
+        let end = body[match_at..].find("_ =>").expect("its fallthrough") + match_at;
+        let handled = &body[..end];
+
+        let mut unwired = Vec::new();
+        for d in super::descriptors() {
+            let quoted = format!("\"{}\"", d.name);
+            if !handled.contains(&quoted) {
+                unwired.push(d.name.clone());
+            }
+        }
+
+        assert!(
+            unwired.is_empty(),
+            "notebook tool(s) advertised in tools/list that dispatch to nothing — \
+             an agent calling them gets \"no such tool\": {unwired:#?}"
+        );
     }
 }
 
