@@ -176,6 +176,40 @@ pub fn advertised_descriptors(canonical_descriptors: &[ToolDescriptor]) -> Vec<T
         .collect()
 }
 
+/// Every wire name this port has ever answered to.
+///
+/// Not derived from [`ALIASES`] — written down separately on purpose. Derived,
+/// it would shrink whenever an entry was deleted, which is precisely the event
+/// it exists to catch.
+///
+/// QA report #1 (#10) called this churn: an agent's saved workflow says
+/// `get_quota`, the catalogue now says `get_storage_quota`, and nothing
+/// connects the two. Dispatch already bridges it — verified against a live
+/// server, all three cited names still answer — but the module says deprecated
+/// entries are "scheduled for removal one release after the rename", and the
+/// day one is removed, every prompt written against it fails with "no such
+/// tool" and no explanation.
+///
+/// A name is cheap. Removing one from this list is a decision about somebody
+/// else's saved work, and it should read like one.
+#[cfg(test)]
+const ONCE_ADVERTISED: &[&str] = &[
+    "clear_outputs",
+    "create_folder",
+    "delete_node",
+    "get_node",
+    "get_quota",
+    "get_session_events",
+    "get_session_logs",
+    "list_fits_bookmark",
+    "list_observations",
+    "list_storage",
+    "read_file",
+    "run_all",
+    "set_acl",
+    "upload_text",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +227,37 @@ mod tests {
 
     /// Every alias must point at a tool that actually exists, or a caller using
     /// the old name gets a baffling "no such tool" for a name we do advertise.
+    /// A name this port has answered to keeps answering.
+    ///
+    /// Deleting an alias is invisible from inside: the other guards only check
+    /// the entries that are still there, so a removal passes everything. What
+    /// breaks is somebody's saved prompt, a release later, with "no such tool".
+    #[test]
+    fn a_name_this_port_has_advertised_never_stops_resolving() {
+        let real: std::collections::HashSet<String> = McpToolRouter::canonical_descriptors()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+
+        let mut broken = Vec::new();
+        for name in ONCE_ADVERTISED {
+            let target = canonical(name);
+            if target == *name {
+                broken.push(format!("{name}: no longer maps to anything"));
+            } else if !real.contains(target) {
+                broken.push(format!("{name} -> {target}, which is not a tool"));
+            }
+        }
+
+        assert!(
+            broken.is_empty(),
+            "wire name(s) this port used to answer to that would now fail with \
+             \"no such tool\". Removing one is a decision about somebody else's \
+             saved work — if it is deliberate, take it out of ONCE_ADVERTISED in \
+             the same commit: {broken:#?}"
+        );
+    }
+
     #[test]
     fn every_alias_resolves_to_a_real_tool() {
         let names: Vec<String> = McpToolRouter::canonical_descriptors()
