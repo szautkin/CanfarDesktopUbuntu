@@ -91,6 +91,33 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "describe_tap_schema".to_string(),
+            description: "What the CADC TAP service's tables actually contain — read from the \
+                service itself, so it matches the archive you are querying. With no arguments: \
+                every table with its description, column count and the declared joins between \
+                them. With `table` (e.g. caom2.Plane, caom2.Observation, ivoa.ObsCore): that \
+                table's columns with datatype, description, unit and UCD, plus how it joins to \
+                others. Use it before writing ADQL for execute_adql_query instead of guessing \
+                column names — caom2.Plane alone has 78."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Fully-qualified table name, e.g. \"caom2.Plane\". Omit for the table list."
+                    },
+                    "search": {
+                        "type": "string",
+                        "description": "Only columns whose name, description or UCD contains this (case-insensitive). Use with `table` to find e.g. every column about energy without reading all 78."
+                    }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "vizier_cone_search".to_string(),
             description: "Cone-search a VizieR catalogue at CDS. The standard pattern for catalogue \
                 cross-matches against any of VizieR's holdings (Clement+2001 variables-in-globular- \
@@ -163,6 +190,7 @@ pub async fn dispatch(
         "get_observation_caom2" => get_observation_caom2(services, args).await,
         "get_data_links" => get_data_links(services, args).await,
         "vizier_cone_search" => vizier_cone_search(services, args).await,
+        "describe_tap_schema" => describe_tap_schema(services, args).await,
         _ => return None,
     };
     Some(result)
@@ -508,6 +536,102 @@ fn plane_to_json(p: &Caom2Plane) -> Value {
 // Arg helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// The TAP service's own schema: tables, or one table's columns.
+///
+/// One tool with two levels rather than a `list_` and a `describe_`: they would
+/// share the fetch, the cache and most of the rendering, and an agent choosing
+/// between them is one more thing to get wrong.
+async fn describe_tap_schema(services: &AppServices, args: &Value) -> ToolResult {
+    let schema = match services.tap_schema.schema().await {
+        Ok(s) => s,
+        Err(e) => return ToolResult::Failed(e),
+    };
+
+    let search = opt_str_arg(args, "search").map(|s| s.to_lowercase());
+
+    let Some(wanted) = opt_str_arg(args, "table") else {
+        // No table: what is there, and how it joins.
+        let tables: Vec<Value> = schema
+            .tables
+            .iter()
+            .map(|t| {
+                json!({
+                    "table": t.name,
+                    "description": t.description,
+                    "columnCount": t.columns.len(),
+                })
+            })
+            .collect();
+        let joins: Vec<Value> = schema
+            .keys
+            .iter()
+            .map(|k| {
+                json!({
+                    "from": format!("{}.{}", k.from_table, k.from_column),
+                    "to": format!("{}.{}", k.target_table, k.target_column),
+                    "description": k.description,
+                })
+            })
+            .collect();
+        return ToolResult::Data(json!({
+            "tableCount": tables.len(),
+            "tables": tables,
+            "joins": joins,
+            "note": "Pass `table` for one table's columns, e.g. {\"table\": \"caom2.Plane\"}.",
+        }));
+    };
+
+    let Some(table) = schema.table(&wanted) else {
+        let known: Vec<&str> = schema.tables.iter().map(|t| t.name.as_str()).collect();
+        return ToolResult::Failed(format!(
+            "no table named {wanted:?}; this service has {known:?}"
+        ));
+    };
+
+    let columns: Vec<Value> = table
+        .columns
+        .iter()
+        .filter(|c| match &search {
+            None => true,
+            Some(needle) => {
+                c.name.to_lowercase().contains(needle)
+                    || c.description.to_lowercase().contains(needle)
+                    || c.ucd.to_lowercase().contains(needle)
+            }
+        })
+        .map(|c| {
+            json!({
+                "column": c.name,
+                "datatype": c.datatype,
+                "description": c.description,
+                "unit": c.unit,
+                "ucd": c.ucd,
+            })
+        })
+        .collect();
+
+    let joins: Vec<Value> = schema
+        .keys_touching(&table.name)
+        .into_iter()
+        .map(|k| {
+            json!({
+                "from": format!("{}.{}", k.from_table, k.from_column),
+                "to": format!("{}.{}", k.target_table, k.target_column),
+                "description": k.description,
+            })
+        })
+        .collect();
+
+    ToolResult::Data(json!({
+        "table": table.name,
+        "description": table.description,
+        "columnCount": table.columns.len(),
+        "returned": columns.len(),
+        "columns": columns,
+        "joins": joins,
+    }))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -521,7 +645,7 @@ mod tests {
     #[test]
     fn descriptor_names_unique_read_and_agent_safe() {
         let ds = descriptors();
-        assert_eq!(ds.len(), 3);
+        assert_eq!(ds.len(), 4);
         let mut seen = HashSet::new();
         for d in &ds {
             assert!(!d.name.is_empty());

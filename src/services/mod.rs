@@ -31,6 +31,7 @@ pub mod service_health_probe;
 pub mod session_service;
 pub mod settings_service;
 pub mod storage_service;
+pub mod tap_schema_service;
 pub mod tap_service;
 pub mod token_storage;
 pub mod transfer;

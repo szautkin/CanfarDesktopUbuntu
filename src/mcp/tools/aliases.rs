@@ -302,6 +302,14 @@ mod tests {
     /// and an entry the reference later gains is itself reported.
     const VERBINAL_FIRST: &[(&str, &str)] = &[
     (
+        "describe_tap_schema",
+        "Neither app tells an agent what the CAOM2 tables contain. An agent writing ADQL had \
+         two table names and one join, both from a sentence in a tool description, and had to \
+         guess every column — caom2.Plane alone has 78. The service publishes all of it in \
+         TAP_SCHEMA, with prose and units and UCDs, and even states in words that Plane joins \
+         Observation on obsID.",
+    ),
+    (
         "close_fits_tab",
         "The reference closes tabs only through the window chrome. `close_active_tab` is \
          app-level and never reached a module's own tabs — it answered `closed: false` for \

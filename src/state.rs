@@ -16,6 +16,11 @@ pub struct AppServices {
     pub recent_launches: RecentLaunchService,
     pub vospace: VoSpaceService,
     pub tap: tap_service::TAPService,
+    /// The TAP service's own table/column metadata, fetched on first use.
+    ///
+    /// Shared so the cache is shared: built per call, every `describe_tap_schema`
+    /// would re-read 401 columns from CADC.
+    pub tap_schema: crate::services::tap_schema_service::TapSchemaService,
     pub datalink: DataLinkService,
     /// Shared so its 100-entry LRU actually caches. Constructed per call, the
     /// cache was always empty and every observation-detail open re-issued a
@@ -83,6 +88,12 @@ impl AppServices {
             storage: StorageService::new(client.clone(), endpoints.clone()),
             vospace: VoSpaceService::new(client.clone(), endpoints.clone()),
             tap: tap_service::TAPService::new(client.clone(), endpoints.clone()),
+            tap_schema: crate::services::tap_schema_service::TapSchemaService::new(
+                std::sync::Arc::new(tap_service::TAPService::new(
+                    client.clone(),
+                    endpoints.clone(),
+                )),
+            ),
             datalink: DataLinkService::new(client.clone(), endpoints.clone()),
             caom2: crate::services::caom2_service::CAOM2Service::new(
                 client.clone(),
