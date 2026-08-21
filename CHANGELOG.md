@@ -2,25 +2,111 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
-## [Unreleased]
+## [1.3.6] - 2026-08-21
+
+A bug-fix release driven by two QA sessions against the live service. Several
+of these were not what they looked like, and the notes say which.
+
+### The FITS viewer destroyed itself on an HDU switch
+
+Four faults on one path. Switching to a valid image HDU answered `tabCount: 0`,
+the HDU it had just left, and `isError: false` — and every call after it said
+"no FITS open" while the page was still on screen.
+
+- A switch rebuilds the page: close the old, insert its replacement. The close
+  handler retains the tab OUT of the registry, because it cannot tell a
+  replacement from a close, so the re-registration below indexed a slot that no
+  longer existed and silently did nothing.
+- `HduInfo::index` is the 1-based CFITSIO number and `set_fits_view` passes it
+  straight to cfitsio, but `get_fits_view` published a 0-based counter instead
+  of the field the model already carried. An agent reading `hdus[1].index` and
+  passing it back selected the PRIMARY — and on a primary with no image data,
+  that is the "CFITSIO status 301" the report saw.
+- A failed switch wrote its error into a status label and reported success.
+- The reply described the pre-switch tab, as did the crosshair and centre
+  operations after it.
 
 ### run_code could never have worked
 
-Every execution failed with a doubled path —
-`/home/szautkin/szautkin/.verbinal/exec/inbox` — and every result read 404 and
-looked like "not ready yet" rather than a wrong address.
+Every execution failed on a doubled path,
+`/home/<user>/<user>/.verbinal/exec/inbox`, and every result read 404 and
+looked like "not ready yet" rather than a wrong address. The contract built
+`<username>/.verbinal/…` exactly as the reference does; the difference is that
+the reference's storage layer roots at `/home/` and ours at `/home/<username>/`.
+The username-rooted builders are gone rather than fixed — their only remaining
+caller was a mistake, and removing them means the compiler refuses the original
+line.
 
-`RunCodeContract::inbox_path` built `<username>/.verbinal/…`, matching the
-reference exactly. The reference's storage layer roots at `/home/`; ours roots
-at `/home/<username>/`, so the same string produced the username twice. The app
-created the folder tree at the correct location and then wrote one level below
-it.
+### Tools that answered without doing anything
 
-The paths are home-relative now, which is the only form our storage seam can
-take. The username-rooted builders are gone rather than fixed: they were
-correct, they were tested, and their only remaining use was being passed to a
-function that adds the username itself. Reintroducing the original line no
-longer compiles.
+- **Unknown arguments were accepted and ignored.** Every schema says
+  `additionalProperties: false` and nothing enforced it. That silence produced
+  three separate misreadings in one session: `get_job_status` with an
+  `executionId` returned the whole job list as if called with `{}`,
+  `set_fits_view` dropped a `tabIndex`, and `create_analysis_notebook` was
+  reported as ignoring a `title` it never had.
+- **`get_proposal_state` could not find a pending proposal.** It could; it never
+  saw the id — queueing answers `proposalId` and the lifecycle tools accepted
+  only `id`, so passing back the key you were just handed produced
+  `{"id": "", "state": "unknown"}`, identical to a proposal that never existed.
+- **`close_active_tab` refused silently.** It is an app-level stub that has
+  never been wired to a module. FITS tabs have `close_fits_tab` now.
+- **`list_sessions` ignored a `kind` filter** it never had.
+
+### Every generated notebook died on its first run
+
+A Rust `\n\` line continuation strips the newline AND the next line's leading
+whitespace, so a template that reads as correctly indented Python was emitted
+flush against column 0. Thirteen lines across three stubs. Generated cells are
+now compiled by the interpreter in a test, because the literal is exactly what
+looked right.
+
+### Pending proposals survive a restart
+
+An app restart destroyed the queue in silence: seven proposals awaiting human
+review vanished, and one the user had already approved was voided. The queue is
+journalled and rehydrated under its original ids. Resolved proposals are
+deliberately not restored — a tombstone stops an id being applied twice and
+expires on a TTL.
+
+### VizieR
+
+Two of four mirrors did not exist: `tap.cds.unistra.fr` and
+`tapvizier.esac.esa.int` are NXDOMAIN, and they were the first and third
+entries, so every cone search opened with two certain failures. The chain then
+stopped on a 404 — the one status that least indicates a query problem, since
+it means the path is not on that host. Only 400 and 403 are definitive now.
+The mirror list is a setting with the shipped list as its default, because
+these hostnames have moved before and a constant in the binary left nobody a
+way to route around it.
+
+`vizier_cone_search` also takes `columns`. A Gaia DR3 cone is ~230 columns per
+row and 500 rows is ~760 KB, past what an agent can hold; omitting `columns`
+still sends `SELECT TOP n *`, byte-identical to the reference.
+
+### Agents
+
+- **A slow notebook cell said "UI busy".** `run_cell` awaited the whole
+  execution inside the bridge's 30s budget, so any cell slower than that lost by
+  construction — about a window that was not blocked. It reports `running: true`
+  with whatever output has landed. Timing out the await would have cancelled the
+  cell, which is worse than the wrong error.
+- **`get_downloaded_observation` reports `localPath` and `fileExists`.** The
+  files live under a managed directory no agent could guess, and only the
+  basename was exposed — so a session went hunting through Downloads, Documents
+  and home for a file it had just fetched.
+- **Clients are told when the tool list changes**, once per burst rather than
+  once per edit.
+- **An apply that failed is no longer recorded as a rejection.** A proposal that
+  reached CANFAR and came back 400 was indistinguishable from one a policy
+  refused.
+
+### Internal
+
+One `write_atomic` instead of three. Two of them differed in a way that
+mattered: one derived its temp path with `with_extension("json.tmp")` — the
+same name for every writer — so two saves in flight could rename each other's
+half-written file into place.
 
 ## [1.3.5] - 2026-08-21
 
