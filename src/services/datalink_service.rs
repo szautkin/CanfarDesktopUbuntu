@@ -65,7 +65,19 @@ impl DataLinkService {
             .await
             .map_err(|e| ApiError::Parse(e.to_string()))?;
 
-        let mut result = parse_votable(&xml, publisher_id);
+        let (mut result, faults) = parse_votable(&xml, publisher_id);
+
+        // Every row was a fault. The service answered — 200, a well-formed
+        // VOTable — and said it could not use this id. Reporting that as a
+        // resolve with no files sent the caller to the package endpoint, which
+        // answers 200 with an EMPTY BODY for an id it cannot resolve, and a
+        // zero-byte file was written and recorded as a successful download.
+        if result.files.is_empty() && !faults.is_empty() {
+            return Err(ApiError::Parse(format!(
+                "DataLink rejected {publisher_id}: {}",
+                faults.join("; ")
+            )));
+        }
         result.download_url = Some(format!(
             "{}?ID={}",
             self.endpoints.pkg_url(),
@@ -140,15 +152,24 @@ impl DataLinkService {
 }
 
 /// Parse a VOTable XML response to extract DataLink files.
-fn parse_votable(xml: &str, publisher_id: &str) -> DataLinkResult {
+///
+/// Returns the rows AND the faults it skipped. A DataLink response is a table:
+/// some rows can carry data while others carry an `error_message`, so a fault
+/// is not automatically fatal — but a response that is ONLY faults is, and the
+/// caller could not tell the two apart when the faults were dropped silently.
+fn parse_votable(xml: &str, publisher_id: &str) -> (DataLinkResult, Vec<String>) {
     let mut files = Vec::new();
+    let mut faults: Vec<String> = Vec::new();
 
     let Ok(doc) = roxmltree::Document::parse(xml) else {
-        return DataLinkResult {
-            publisher_id: publisher_id.to_string(),
-            files,
-            download_url: None,
-        };
+        return (
+            DataLinkResult {
+                publisher_id: publisher_id.to_string(),
+                files,
+                download_url: None,
+            },
+            faults,
+        );
     };
 
     // Find FIELD elements to determine column indices
@@ -184,10 +205,13 @@ fn parse_votable(xml: &str, publisher_id: &str) -> DataLinkResult {
             .map(|n| n.text().unwrap_or("").to_string())
             .collect();
 
-        // Skip error rows
+        // An error row carries no data — record why, then skip it. Dropping
+        // these silently is how an "invalid ID" answer became an empty result
+        // that read as a successful resolve with nothing in it.
         if let Some(ei) = col_error {
             if let Some(error_msg) = tds.get(ei) {
                 if !error_msg.trim().is_empty() {
+                    faults.push(error_msg.trim().to_string());
                     continue;
                 }
             }
@@ -233,21 +257,77 @@ fn parse_votable(xml: &str, publisher_id: &str) -> DataLinkResult {
         });
     }
 
-    DataLinkResult {
-        publisher_id: publisher_id.to_string(),
-        files,
-        download_url: None,
-    }
+    (
+        DataLinkResult {
+            publisher_id: publisher_id.to_string(),
+            files,
+            download_url: None,
+        },
+        faults,
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    /// A response that is only faults yields no rows and reports why.
+    ///
+    /// This is the JWST 0-byte bug in one place. CADC mirrors JWST, so a real
+    /// publisher id carries a `mirror/` segment and the observation id as a
+    /// path step; an id assembled without them gets
+    /// `UsageFault: invalid ID`. The fault row used to be skipped in silence,
+    /// leaving an empty file list that read as "resolved, nothing here" — so
+    /// the caller fell through to the package endpoint, which answers HTTP 200
+    /// with an EMPTY BODY for an id it cannot resolve, and a zero-byte file was
+    /// written and recorded as a successful download.
+    #[test]
+    fn a_response_of_only_faults_reports_the_fault() {
+        let xml = r#"<?xml version="1.0"?>
+<VOTABLE><RESOURCE><TABLE>
+  <FIELD name="ID" datatype="char"/>
+  <FIELD name="access_url" datatype="char"/>
+  <FIELD name="semantics" datatype="char"/>
+  <FIELD name="error_message" datatype="char"/>
+  <DATA><TABLEDATA>
+    <TR><TD>ivo://cadc.nrc.ca/JWST?jw03435-PRODUCT</TD><TD></TD><TD>#this</TD><TD>UsageFault: invalid ID: ivo://cadc.nrc.ca/JWST?jw03435-PRODUCT</TD></TR>
+  </TABLEDATA></DATA>
+</TABLE></RESOURCE></VOTABLE>"#;
+
+        let (result, faults) = parse_votable(xml, "ivo://cadc.nrc.ca/JWST?jw03435-PRODUCT");
+        assert!(result.files.is_empty(), "a fault row is not a file");
+        assert_eq!(faults.len(), 1, "the fault was dropped: {faults:?}");
+        assert!(faults[0].contains("UsageFault"), "{faults:?}");
+    }
+
+    /// A fault BESIDE real rows is not fatal.
+    ///
+    /// DataLink is a table: one artifact can be unavailable while the others
+    /// are fine. Refusing the whole response over one bad row would break every
+    /// observation with a single restricted product.
+    #[test]
+    fn a_fault_beside_real_rows_does_not_discard_them() {
+        let xml = r#"<?xml version="1.0"?>
+<VOTABLE><RESOURCE><TABLE>
+  <FIELD name="ID" datatype="char"/>
+  <FIELD name="access_url" datatype="char"/>
+  <FIELD name="semantics" datatype="char"/>
+  <FIELD name="error_message" datatype="char"/>
+  <DATA><TABLEDATA>
+    <TR><TD>x</TD><TD></TD><TD>#this</TD><TD>NotFoundFault: gone</TD></TR>
+    <TR><TD>x</TD><TD>https://example.org/a_i2d.fits</TD><TD>#this</TD><TD></TD></TR>
+  </TABLEDATA></DATA>
+</TABLE></RESOURCE></VOTABLE>"#;
+
+        let (result, faults) = parse_votable(xml, "x");
+        assert_eq!(result.files.len(), 1, "the good row was discarded");
+        assert_eq!(faults.len(), 1, "the fault should still be recorded");
+    }
+
     use super::*;
 
     #[test]
     fn parse_empty_votable() {
         let xml = r#"<?xml version="1.0"?><VOTABLE><RESOURCE><TABLE></TABLE></RESOURCE></VOTABLE>"#;
-        let result = parse_votable(xml, "test:id");
+        let (result, _faults) = parse_votable(xml, "test:id");
         assert!(result.files.is_empty());
     }
 
@@ -282,7 +362,7 @@ mod tests {
         </RESOURCE>
         </VOTABLE>"#;
 
-        let result = parse_votable(xml, "ivo://test");
+        let (result, _faults) = parse_votable(xml, "ivo://test");
         assert_eq!(result.files.len(), 2);
         assert!(result.files[0].is_science_data());
         assert_eq!(result.files[0].size, Some(1048576));
@@ -306,7 +386,7 @@ mod tests {
         </RESOURCE>
         </VOTABLE>"#;
 
-        let result = parse_votable(xml, "test");
+        let (result, _faults) = parse_votable(xml, "test");
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].url, "https://ok.com/f.fits");
     }

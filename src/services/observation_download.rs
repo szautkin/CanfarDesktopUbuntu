@@ -104,6 +104,20 @@ pub async fn download_observation(
     .await
     .map_err(|e| e.to_string())?;
 
+    // Nothing came back. `caom2ops/pkg` answers HTTP 200 with an EMPTY body and
+    // no content type for a publisher id it cannot resolve — measured, and
+    // anonymously — so the status check above passes, a zero-byte file lands in
+    // the research library, and the job reports
+    // "Downloaded obs-….fits (0 bytes)" as a success. An observation with no
+    // bytes is not an observation.
+    if let Err(why) = reject_if_empty(file_size, publisher_id, &url, &resolved) {
+        // The empty file does not stay: the research library would list an
+        // observation that cannot be opened, and a re-download would find it
+        // already "there".
+        let _ = std::fs::remove_file(&dest);
+        return Err(why);
+    }
+
     // Cache the preview alongside the data, best effort. The Research page shows
     // previews from disk and never touches the network, so skipping this leaves
     // an agent-fetched observation looking like a legacy record with no image.
@@ -126,6 +140,52 @@ pub async fn download_observation(
         thumbnail_url,
         local_preview_path,
     })
+}
+
+/// Refuse a download that produced nothing.
+///
+/// Extracted so the RULE is testable without a network round trip. Left inline,
+/// deleting the condition compiled and every test still passed — the same seam
+/// that hid the artifact-selection fault one commit earlier.
+fn reject_if_empty<E: std::fmt::Display>(
+    file_size: u64,
+    publisher_id: &str,
+    url: &str,
+    resolved: &Result<DataLinkResult, E>,
+) -> Result<(), String> {
+    if file_size > 0 {
+        return Ok(());
+    }
+    Err(empty_download_message(publisher_id, url, resolved))
+}
+
+/// Why an observation came back with no bytes, and what to do about it.
+///
+/// The two causes look identical at the transfer layer — a 200 with an empty
+/// body — and are completely different problems, so the message has to name
+/// which one happened. A publisher id that DataLink rejected is the common one:
+/// CADC mirrors JWST, so the real ids carry a `mirror/` segment and the
+/// observation id as a path step, and an id assembled without them resolves to
+/// nothing while still being accepted by the package endpoint.
+fn empty_download_message<E: std::fmt::Display>(
+    publisher_id: &str,
+    url: &str,
+    resolved: &Result<DataLinkResult, E>,
+) -> String {
+    match resolved {
+        Err(e) => format!(
+            "{publisher_id} produced no data: DataLink did not resolve it ({e}), and the \
+             package endpoint answered with an empty body. Check the publisher id — a real \
+             one looks like \
+             `ivo://cadc.nrc.ca/mirror/JWST?<observationID>/<productID>`; \
+             search_observations reports the exact value."
+        ),
+        Ok(_) => format!(
+            "{publisher_id} produced no data: {url} answered with an empty body. The \
+             observation resolved, so this is the archive returning nothing for that \
+             artifact rather than a bad id."
+        ),
+    }
 }
 
 /// Which image to cache: the full preview when there is one, else the thumbnail.
@@ -353,6 +413,57 @@ mod selection_tests {
             size: None,
             description: String::new(),
         }
+    }
+
+    /// A download that produced nothing is refused, not recorded.
+    ///
+    /// `caom2ops/pkg` answers HTTP 200 with an empty body and no content type
+    /// for a publisher id it cannot resolve — measured, anonymously — so the
+    /// status check passes, and the job reported
+    /// "Downloaded obs-….fits (0 bytes)" as succeeded.
+    #[test]
+    fn a_download_of_nothing_is_not_a_download() {
+        let failed: Result<DataLinkResult, String> = Err("UsageFault: invalid ID".to_string());
+        let err = super::reject_if_empty(0, "ivo://cadc.nrc.ca/JWST?x-PRODUCT", PKG, &failed)
+            .expect_err("zero bytes must be refused");
+
+        // Actionable: what happened, and what a usable id looks like.
+        assert!(
+            err.contains("UsageFault"),
+            "the fault is not reported: {err}"
+        );
+        assert!(err.contains("empty body"), "{err}");
+        assert!(
+            err.contains("mirror/JWST"),
+            "no valid id shape shown: {err}"
+        );
+    }
+
+    /// One byte is a file. The rule is "nothing", not "small".
+    #[test]
+    fn a_download_with_bytes_is_accepted() {
+        let ok: Result<DataLinkResult, String> = Err("irrelevant".to_string());
+        assert!(super::reject_if_empty(1, "x", PKG, &ok).is_ok());
+        assert!(super::reject_if_empty(116_254_080, "x", PKG, &ok).is_ok());
+    }
+
+    /// A resolved observation that yields nothing is a different message.
+    ///
+    /// Both look identical at the transfer layer and are different problems: a
+    /// bad id is the caller's to fix, an empty artifact is the archive's.
+    #[test]
+    fn a_resolved_observation_yielding_nothing_says_so() {
+        let resolved: Result<DataLinkResult, String> = Ok(DataLinkResult {
+            publisher_id: "x".to_string(),
+            download_url: None,
+            files: vec![],
+        });
+        let err = super::reject_if_empty(0, "x", PKG, &resolved).expect_err("refused");
+        assert!(err.contains("observation resolved"), "{err}");
+        assert!(
+            !err.contains("Check the publisher id"),
+            "wrong advice: {err}"
+        );
     }
 
     /// A JWST plane as CADC returns it, captured 2026-08-21.
