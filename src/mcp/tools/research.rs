@@ -96,7 +96,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             description: "Get one observation from the user's Research library by its local id \
                 (from list_downloaded_observations) or by its CADC publisher id. Returns the \
                 stored metadata (target, collection, instrument, filter, coordinates, local \
-                filename and size)."
+                filename and size), plus `localPath` — the file's full path on this machine — and \
+                `fileExists`. Use `localPath` to read the file directly (get_fits_header, \
+                get_fits_wcs, or a compute session); use open_fits_file when you want it on \
+                screen. `localPath` is null for a bookmark that was never downloaded."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -369,7 +372,7 @@ async fn get_downloaded_observation(services: &AppServices, args: &Value) -> Too
     }
     let list = services.observation_store.load_async().await;
     match find_observation(&list, &id) {
-        Some(obs) => ToolResult::Data(observation_summary(obs)),
+        Some(obs) => ToolResult::Data(observation_detail(obs)),
         None => ToolResult::Failed(format!("no downloaded observation with id '{}'", id)),
     }
 }
@@ -1059,6 +1062,36 @@ fn observation_label(obs: &DownloadedObservation) -> String {
 /// field is read straight off the record, and none of them touches the
 /// filesystem. A `hasFits`-style existence check would cost one stat per row,
 /// which on a /arc mount is one network round trip per observation.
+/// One observation in full: the compact summary plus where its file is.
+///
+/// Split from [`observation_summary`] rather than folded into it. The list view
+/// renders every record and is deliberately free of filesystem access; this one
+/// answers about a single record a caller has already chosen, so it can afford
+/// to look.
+///
+/// `localPath` is a Verbinal-first divergence — the reference's
+/// `ObservationSummary` reduces `LocalPath` to its basename and exposes the
+/// directory nowhere, in either tool. An agent could therefore see that it had
+/// downloaded `abc.fits` and have no way to read it: it went hunting through
+/// Downloads, Documents and home. `open_fits_file` resolves an observation id
+/// and reports the path, but opening a viewer tab is a side effect nobody asked
+/// for when the intent was to read the bytes.
+///
+/// `fileExists` because the recorded path outlives the file. The managed
+/// directory gets pruned, and a path that no longer resolves is worth knowing
+/// before a compute session tries to open it.
+pub(super) fn observation_detail(obs: &DownloadedObservation) -> Value {
+    let mut detail = observation_summary(obs);
+    let path = obs.local_path.trim();
+    detail["localPath"] = if path.is_empty() {
+        Value::Null
+    } else {
+        json!(path)
+    };
+    detail["fileExists"] = json!(!path.is_empty() && std::path::Path::new(path).is_file());
+    detail
+}
+
 pub(super) fn observation_summary(obs: &DownloadedObservation) -> Value {
     let filename = if obs.local_path.is_empty() {
         String::new()
@@ -1710,6 +1743,67 @@ mod tests {
                  the documented extras only if it is free of filesystem access"
             );
         }
+    }
+
+    /// The detail view says where the file is; the list view still does not.
+    ///
+    /// Both halves matter. An agent that has downloaded an observation needs a
+    /// path it can hand to `get_fits_header` or a compute session — the
+    /// reference exposes none, in either tool, which is why a session went
+    /// hunting through Downloads, Documents and home for a file it had just
+    /// fetched. And the list must stay compact: it renders every record, and
+    /// `fileExists` is a stat per row.
+    #[test]
+    fn the_detail_view_carries_the_path_and_the_list_view_does_not() {
+        let obs = sample_observation();
+        let detail = observation_detail(&obs);
+        assert_eq!(detail["localPath"], json!(obs.local_path));
+        assert!(detail.get("fileExists").is_some());
+
+        // Everything the compact summary promises is still here.
+        let summary = observation_summary(&obs);
+        for (key, value) in summary.as_object().expect("an object") {
+            assert_eq!(detail[key], *value, "detail changed `{key}`");
+        }
+
+        // And the list view gained nothing.
+        assert!(
+            summary.get("localPath").is_none() && summary.get("fileExists").is_none(),
+            "the compact view now touches the filesystem: {summary}"
+        );
+    }
+
+    /// A bookmark has no path, and says so as null rather than "".
+    ///
+    /// An empty string is a path — one that resolves to the current directory.
+    /// Null is the absence of one, which is what a never-downloaded record has.
+    #[test]
+    fn a_bookmark_has_a_null_path_not_an_empty_one() {
+        let mut obs = sample_observation();
+        obs.local_path = String::new();
+
+        let detail = observation_detail(&obs);
+        assert_eq!(detail["localPath"], Value::Null);
+        assert_eq!(detail["fileExists"], json!(false));
+    }
+
+    /// A recorded path outlives the file it names.
+    ///
+    /// The managed directory is pruned; the record is not. Reporting the path
+    /// without saying whether it still resolves just moves the failure into
+    /// whatever tries to open it.
+    #[test]
+    fn a_path_whose_file_is_gone_reports_that_it_is_gone() {
+        let mut obs = sample_observation();
+        obs.local_path = "/nonexistent/pruned/dir/abc.fits".to_string();
+        assert_eq!(observation_detail(&obs)["fileExists"], json!(false));
+
+        // And a file that IS there reports true, so the flag means something.
+        let tmp = std::env::temp_dir().join(format!("verbinal-detail-{}.fits", std::process::id()));
+        std::fs::write(&tmp, b"SIMPLE").expect("write");
+        obs.local_path = tmp.to_string_lossy().into_owned();
+        assert_eq!(observation_detail(&obs)["fileExists"], json!(true));
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
