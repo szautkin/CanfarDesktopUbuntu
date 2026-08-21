@@ -116,10 +116,21 @@ mod tests {
         let mut adopted = 0usize;
 
         for (path, text) in crate::testing::rust_sources() {
-            if !path.to_string_lossy().contains("/ui/") {
+            let p = path.to_string_lossy();
+            if !p.contains("/ui/") {
+                continue;
+            }
+            // The shell receives the role as a parameter and passes it on; it
+            // is the thing this guard points callers at.
+            if p.ends_with("/ui/dialog.rs") {
                 continue;
             }
             let code = crate::testing::without_comments(crate::testing::code(&text));
+            // Dialogs on the shared shell pass the role to `Dialog::new`
+            // instead of calling `.default_width`, so count those too — they
+            // are the adopted ones, not the missing ones.
+            adopted += code.matches("Dialog::new(").count();
+
             for (at, _) in code.match_indices(".default_width(") {
                 let arg = &code[at + ".default_width(".len()..];
                 let arg = &arg[..arg.find(')').unwrap_or(0)];

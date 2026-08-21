@@ -31,25 +31,13 @@ pub async fn show_share_dialog(
     group_read: &[String],
     group_write: &[String],
 ) -> Option<ShareResult> {
-    let dialog = adw::Window::builder()
-        .title(crate::tr_fmt!("Share {}", node_name))
-        .default_width(crate::ui::fit::FORM)
-        .modal(true)
-        .build();
-
-    if let Some(root) = parent.root().and_downcast::<gtk::Window>() {
-        dialog.set_transient_for(Some(&root));
-    }
-
-    let toolbar_view = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    toolbar_view.add_top_bar(&header);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-    content.set_margin_top(12);
-    content.set_margin_bottom(18);
+    let shell = crate::ui::dialog::Dialog::new(
+        &crate::tr_fmt!("Share {}", node_name),
+        crate::ui::fit::FORM,
+        480,
+    );
+    let dialog = shell.window.clone();
+    let content = shell.content().clone();
 
     let group = adw::PreferencesGroup::new();
     group.set_description(Some(crate::tr_en!(
@@ -75,17 +63,11 @@ Separate multiple groups with spaces."
 
     content.append(&group);
 
-    let btn_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    btn_row.set_halign(gtk::Align::End);
     let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
     let save_btn = gtk::Button::with_label(crate::tr_en!("Save"));
     save_btn.add_css_class("suggested-action");
-    btn_row.append(&cancel_btn);
-    btn_row.append(&save_btn);
-    content.append(&btn_row);
-
-    toolbar_view.set_content(Some(&content));
-    dialog.set_content(Some(&toolbar_view));
+    shell.add_secondary_action(&cancel_btn);
+    shell.add_action(&save_btn);
 
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<ShareResult>>();
     let tx = Rc::new(RefCell::new(Some(tx)));
@@ -128,6 +110,6 @@ Separate multiple groups with spaces."
         });
     }
 
-    dialog.present();
+    shell.present(parent);
     rx.await.ok().flatten()
 }

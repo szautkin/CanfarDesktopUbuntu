@@ -12,8 +12,6 @@
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
-use libadwaita as adw;
-use libadwaita::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -28,27 +26,19 @@ const PAGES: [&str; 4] = ["enable", "client", "configure", "verify"];
 /// Fire-and-forget: the window owns itself once presented. Starting the MCP
 /// server is intentionally durable — it keeps running after the wizard closes.
 pub fn show_connect_wizard(parent: &impl IsA<gtk::Widget>, services: Arc<AppServices>) {
-    let window = adw::Window::builder()
-        .title(crate::tr_en!("Connect an AI agent"))
-        .default_width(crate::ui::fit::FORM)
-        .default_height(560)
-        .width_request(400)
-        .height_request(480)
-        .resizable(true)
-        .modal(true)
-        .build();
-
-    if let Some(root) = parent.root().and_downcast::<gtk::Window>() {
-        window.set_transient_for(Some(&root));
-    }
-
-    let toolbar_view = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    toolbar_view.add_top_bar(&header);
+    // The shared shell: content scrolls, actions do not. A wizard is the case
+    // that needs it most — four steps of different heights behind one window,
+    // and the buttons that move between them must be reachable on every one.
+    let dialog = crate::ui::dialog::Dialog::new(
+        crate::tr_en!("Connect an AI agent"),
+        crate::ui::fit::FORM,
+        560,
+    );
+    let window = dialog.window.clone();
+    window.set_width_request(400);
 
     // ── Body: a step heading plus the stack of panels. ──────────────────────
-    let body = gtk::Box::new(gtk::Orientation::Vertical, crate::ui::space::CARD);
-    crate::ui::space::edge_all(&body);
+    let body = dialog.content().clone();
 
     let header_label = gtk::Label::new(None);
     header_label.set_xalign(0.0);
@@ -206,22 +196,13 @@ picks this up the next time it launches."
     body.append(&stack);
 
     // ── Footer: Back / Next ─────────────────────────────────────────────────
-    // Pinned at the bottom of the body (below the vexpanding step stack) so the
-    // proceed button is always visible even on short / HiDPI-scaled displays.
-    let footer = crate::ui::space::action_row(crate::ui::space::CONTROL);
+    // The shell puts these in its bottom bar, outside the scroller, so they
+    // stay on screen whatever the step above them does.
     let back_btn = gtk::Button::with_label(crate::tr_en!("Back"));
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
     let next_btn = gtk::Button::with_label(crate::tr_en!("Next"));
     next_btn.add_css_class("suggested-action");
-    footer.append(&back_btn);
-    footer.append(&spacer);
-    footer.append(&next_btn);
-
-    toolbar_view.set_content(Some(&body));
-    // A bottom bar, so the window keeps it on screen whatever the body does.
-    toolbar_view.add_bottom_bar(&footer);
-    window.set_content(Some(&toolbar_view));
+    dialog.add_secondary_action(&back_btn);
+    dialog.add_action(&next_btn);
 
     // ── Navigation state + step renderer ────────────────────────────────────
     let step = Rc::new(Cell::new(0i32));
@@ -409,5 +390,5 @@ picks this up the next time it launches."
     };
     apply_step(initial);
 
-    window.present();
+    dialog.present(parent);
 }

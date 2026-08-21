@@ -103,11 +103,22 @@ mod dialog_tests {
     //! relied on a vexpanding child to hold it down. On a window taller than the
     //! display, the row went past the bottom edge and both buttons were cut in
     //! half — the screenshot that started this work.
+    //!
+    //! That fix was half of it, and this guard passed while the fault was still
+    //! visible. `add_bottom_bar` keeps the actions inside the WINDOW; nothing
+    //! kept the window inside the SCREEN. Measured in
+    //! `examples/wizard_height_probe.rs`: a hand-rolled dialog asked for 560px
+    //! and grew to 2034px to fit its content, carrying its own bottom bar below
+    //! the bottom of any ordinary display. The missing half is a scroller over
+    //! the content and a cap on the height, which is what `ui::dialog` adds.
 
     /// Dialogs that build their own action row rather than using
     /// `adw::MessageDialog`, which pads its own.
-    const HAND_BUILT: &[(&str, &str)] =
-        &[("ai_connect_wizard", include_str!("ai_connect_wizard.rs"))];
+    ///
+    /// Empty now: every one of them went through `ui::dialog::Dialog`, which
+    /// satisfies both halves by construction. Kept so the next hand-built one
+    /// has somewhere to be listed — and a reason to justify itself.
+    const HAND_BUILT: &[(&str, &str)] = &[];
 
     #[test]
     fn a_dialogs_actions_live_in_a_bottom_bar() {
@@ -129,6 +140,33 @@ mod dialog_tests {
                 code.contains("space::edge_all") || code.contains("space::inset"),
                 "{name} sets its content margins by hand, which is how three of \
                  the four get forgotten"
+            );
+        }
+    }
+
+    /// The shell does both halves, so nothing that uses it needs checking.
+    ///
+    /// This asserts the shell still does them: a bottom bar for the actions and
+    /// a scroller with a capped height over the content. Take either away and
+    /// every dialog that trusts it regresses at once.
+    #[test]
+    fn the_shared_shell_pins_its_actions_and_caps_its_height() {
+        // Without `without_comments` this matches the module's own prose: the
+        // doc comment on `new` explains what `max_content_height` is for, so
+        // deleting the CALL left the guard green. Fifth time that trap has
+        // caught something in this codebase.
+        let code =
+            crate::testing::without_comments(crate::testing::code(include_str!("dialog.rs")));
+        for needed in [
+            "add_bottom_bar",
+            "ScrolledWindow::builder",
+            "max_content_height",
+            "space::edge_all",
+        ] {
+            assert!(
+                code.contains(needed),
+                "ui::dialog no longer calls {needed}; every dialog built on it \
+                 loses that protection silently"
             );
         }
     }

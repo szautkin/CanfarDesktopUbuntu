@@ -304,6 +304,12 @@ fn join_set(set: &HashSet<String>) -> String {
     sorted.join(",")
 }
 
+impl Default for DataTrainManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

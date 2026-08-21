@@ -15,23 +15,14 @@ pub async fn show_login_dialog(
     parent: &adw::ApplicationWindow,
     services: &Arc<AppServices>,
 ) -> Option<(String, String, UserInfo)> {
-    let dialog = adw::Window::builder()
-        .title(crate::tr_en!("Login to CANFAR"))
-        .default_width(crate::ui::fit::PROMPT)
-        .default_height(380)
-        .modal(true)
-        .transient_for(parent)
-        .build();
-
-    let toolbar_view = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    toolbar_view.add_top_bar(&header);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    content.set_margin_start(24);
-    content.set_margin_end(24);
-    content.set_margin_top(16);
-    content.set_margin_bottom(24);
+    let shell = crate::ui::dialog::Dialog::new(
+        crate::tr_en!("Login to CANFAR"),
+        crate::ui::fit::PROMPT,
+        380,
+    );
+    let dialog = shell.window.clone();
+    dialog.set_transient_for(Some(parent));
+    let content = shell.content().clone();
 
     let title = gtk::Label::new(Some(crate::tr_en!("Sign in with your CADC credentials")));
     title.add_css_class("title-4");
@@ -64,19 +55,11 @@ pub async fn show_login_dialog(
     progress.set_visible(false);
     content.append(&progress);
 
-    let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    button_box.set_halign(gtk::Align::End);
-
     let cancel_btn = gtk::Button::with_label(crate::tr_en!("Cancel"));
     let login_btn = gtk::Button::with_label(crate::tr_en!("Login"));
     login_btn.add_css_class("suggested-action");
-
-    button_box.append(&cancel_btn);
-    button_box.append(&login_btn);
-    content.append(&button_box);
-
-    toolbar_view.set_content(Some(&content));
-    dialog.set_content(Some(&toolbar_view));
+    shell.add_secondary_action(&cancel_btn);
+    shell.add_action(&login_btn);
 
     let result: Rc<RefCell<Option<(String, String, UserInfo)>>> = Rc::new(RefCell::new(None));
 

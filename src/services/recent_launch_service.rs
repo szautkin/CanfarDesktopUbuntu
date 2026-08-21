@@ -63,3 +63,9 @@ impl RecentLaunchService {
         }
     }
 }
+
+impl Default for RecentLaunchService {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -253,6 +253,12 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+impl Default for NotificationService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

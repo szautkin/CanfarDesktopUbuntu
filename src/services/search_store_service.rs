@@ -148,6 +148,12 @@ impl SearchStoreService {
     }
 }
 
+impl Default for SearchStoreService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

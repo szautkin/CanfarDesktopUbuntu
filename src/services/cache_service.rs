@@ -155,6 +155,12 @@ fn sanitize_filename(input: &str) -> String {
         .to_lowercase()
 }
 
+impl Default for CacheService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

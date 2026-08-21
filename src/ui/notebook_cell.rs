@@ -799,6 +799,18 @@ fn escape_pango(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+impl Default for MarkdownCellWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for CodeCellWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod caret_tests {
     //! Clicking into a cell showed no caret; it appeared only once you typed.

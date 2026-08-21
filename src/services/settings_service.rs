@@ -33,3 +33,9 @@ impl SettingsService {
         std::fs::write(&self.config_path, json).map_err(|e| e.to_string())
     }
 }
+
+impl Default for SettingsService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
