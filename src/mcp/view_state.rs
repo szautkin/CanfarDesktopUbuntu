@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 
 /// How long a UI-marshalled tool call waits for the GTK main loop before giving
 /// up with a typed "UI busy" error (mirrors the reference's 30s budget).
-const UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A `Send` snapshot of the current UI state, pushed by the UI and read by tools.
 #[derive(Debug, Clone, Default, serde::Serialize)]

@@ -4,7 +4,38 @@
 //! [`NotebookPage`] instances.  When no notebooks are open it shows a welcome
 //! empty-state page with a list of recently-opened files.
 
+use std::cell::Cell;
+
 use crate::helpers::local_path;
+
+/// How long `run_cell` waits for a cell before answering "still running".
+///
+/// Two thirds of the bridge's own budget, DERIVED rather than written down a
+/// second time: the honest "still running" reply has to reach the caller with
+/// room to spare, or it is itself lost to the `UI busy` timeout it exists to
+/// avoid. If the bridge budget moves, this moves with it.
+const RUN_CELL_WAIT: std::time::Duration = std::time::Duration::from_millis(
+    (crate::mcp::view_state::UI_COMMAND_TIMEOUT.as_millis() as u64) * 2 / 3,
+);
+
+/// How often the waiter looks. Short enough that a fast cell still feels
+/// synchronous, long enough not to spin the main loop.
+const RUN_CELL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Wait up to [`RUN_CELL_WAIT`] for a detached cell run to finish.
+///
+/// `Some(kernel_ok)` when it finished, `None` when it is still going — the run
+/// continues either way, because the future belongs to a task of its own.
+async fn wait_for_cell(outcome: &Rc<Cell<Option<bool>>>) -> Option<bool> {
+    let ticks = RUN_CELL_WAIT.as_millis() / RUN_CELL_POLL.as_millis();
+    for _ in 0..ticks {
+        if let Some(ok) = outcome.get() {
+            return Some(ok);
+        }
+        glib::timeout_future(RUN_CELL_POLL).await;
+    }
+    outcome.get()
+}
 use crate::helpers::notebook_parser;
 use crate::helpers::python_discovery;
 use crate::models::notebook_document::{CellOutput, NotebookDocument};
@@ -854,7 +885,50 @@ impl NotebookTabHost {
                 // started, and had to guess when to poll get_cell_output. A
                 // raise is a normal result and rides in `outputs` with
                 // `isError`; a kernel that could not run it at all is an error.
-                let kernel_ok = page.run_cell_async(idx).await;
+                //
+                // Detached, though, and only WAITED on here. Awaiting it
+                // directly meant a cell doing thirty to ninety seconds of
+                // network I/O outlived the bridge's own budget, and the caller
+                // was told "UI busy" — about a window that was not busy, for a
+                // cell that was running perfectly well. Dropping the future to
+                // time it out would have cancelled the execution, which is
+                // worse than the wrong error.
+                let outcome: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+                {
+                    let page = page.clone();
+                    let outcome = outcome.clone();
+                    glib::spawn_future_local(async move {
+                        let ok = page.run_cell_async(idx).await;
+                        outcome.set(Some(ok));
+                    });
+                }
+
+                let kernel_ok = match wait_for_cell(&outcome).await {
+                    Some(ok) => ok,
+                    // Still going. Say so, rather than failing: the cell is
+                    // running, its outputs will land, and get_cell_output is
+                    // how the caller collects them.
+                    None => {
+                        let mut state = self.state_of(&page);
+                        state["ranCell"] = json!(idx);
+                        state["running"] = json!(true);
+                        // The same keys a finished run answers with, so a
+                        // caller reading `outputs` does not have to branch on
+                        // whether the cell happened to be quick. Whatever has
+                        // arrived so far rides along; the rest follows.
+                        let outputs = cell_outputs_json(&page, idx);
+                        state["isError"] = json!(outputs
+                            .iter()
+                            .any(|o| o.get("isError").and_then(|v| v.as_bool()).unwrap_or(false)));
+                        state["outputs"] = json!(outputs);
+                        state["message"] = json!(format!(
+                            "cell {idx} is still running after {}s; its outputs are not ready \
+                             yet — poll get_cell_output for this notebook and cell",
+                            RUN_CELL_WAIT.as_secs()
+                        ));
+                        return Ok(state);
+                    }
+                };
                 let mut state = self.state_of(&page);
                 let outputs = cell_outputs_json(&page, idx);
                 state["ranCell"] = json!(idx);
@@ -2316,6 +2390,51 @@ fn first_error_line(stderr: &str) -> String {
         .or_else(|| stderr.lines().map(str::trim).find(|l| !l.is_empty()))
         .unwrap_or("pip gave no reason")
         .to_string()
+}
+
+#[cfg(test)]
+mod run_cell_budget_tests {
+    use super::{RUN_CELL_POLL, RUN_CELL_WAIT};
+    use crate::mcp::view_state::UI_COMMAND_TIMEOUT;
+
+    /// The "still running" answer has to arrive before the bridge gives up.
+    ///
+    /// `run_cell` used to await the whole cell, so a thirty-to-ninety-second
+    /// network cell outlived the bridge's budget and the caller was told
+    /// "UI busy" — about a window that was not busy, for a cell running fine.
+    /// The reply is only an improvement if it beats that budget with room to
+    /// spare; a wait equal to it would be lost to the very timeout it replaces.
+    #[test]
+    fn the_wait_leaves_room_for_the_reply() {
+        assert!(
+            RUN_CELL_WAIT < UI_COMMAND_TIMEOUT,
+            "waiting {:?} cannot answer within a {:?} budget",
+            RUN_CELL_WAIT,
+            UI_COMMAND_TIMEOUT
+        );
+        // A third of the budget in hand, so a busy main loop still delivers it.
+        let margin = UI_COMMAND_TIMEOUT - RUN_CELL_WAIT;
+        assert!(
+            margin >= UI_COMMAND_TIMEOUT / 4,
+            "only {margin:?} of margin under a {UI_COMMAND_TIMEOUT:?} budget"
+        );
+    }
+
+    /// The poll divides the wait, so the loop actually reaches it.
+    ///
+    /// Integer division: a poll interval that does not divide the wait rounds
+    /// the loop DOWN, and a poll longer than the wait would round it to zero —
+    /// returning "still running" instantly for every cell, including the fast
+    /// ones that used to answer synchronously.
+    #[test]
+    fn the_poll_divides_the_wait_into_real_ticks() {
+        assert!(RUN_CELL_POLL < RUN_CELL_WAIT, "the loop would never tick");
+        let ticks = RUN_CELL_WAIT.as_millis() / RUN_CELL_POLL.as_millis();
+        assert!(
+            ticks >= 100,
+            "only {ticks} ticks — a fast cell would be called slow"
+        );
+    }
 }
 
 #[cfg(test)]
