@@ -3,6 +3,7 @@ pub mod adql_summary;
 pub mod agent_activity;
 pub mod agent_attribution;
 pub mod analysis_notebook;
+pub mod atomic_file;
 pub mod batch_jobs_helper;
 pub mod caom2_format;
 pub mod caom2_parser;

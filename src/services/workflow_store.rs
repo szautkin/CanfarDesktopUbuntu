@@ -15,7 +15,6 @@ use crate::helpers::workflow_format::{self, FILE_EXTENSION};
 use crate::models::workflow::{WorkflowInfo, WorkflowSource};
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Id prefix for read-only bundled templates (`builtin:<slug>`).
 /// One `.workflow.md` found in the user's VOSpace workflows folder.
@@ -76,10 +75,6 @@ const BUILT_INS: &[(&str, &str)] = &[
         include_str!("../../assets/workflows/proposal-due-diligence.workflow.md"),
     ),
 ];
-
-/// Monotonic counter to keep atomic-write temp filenames unique within a
-/// process (combined with the pid) even under concurrent writes to one file.
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Persistent, synchronous store of built-in + local workflows.
 pub struct WorkflowStore {
@@ -437,33 +432,17 @@ pub fn slugify(name: &str) -> String {
 /// Atomically write `text` (UTF-8, no BOM) to `path`: create the parent dir,
 /// write to a uniquely named temp sibling in the SAME directory, then rename
 /// over the target so a crash or partial write never corrupts the file.
+/// Write a workflow file atomically.
+///
+/// The shared helper dot-prefixes its temp file, which keeps a partial write
+/// out of `list_local` — that filter matches `*.workflow.md`.
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "invalid workflow path: no parent directory".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("workflow");
-    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    // Leading dot + `.tmp` suffix keeps the temp file hidden and out of
-    // `list_local` (it does not end with `.workflow.md`).
-    let tmp = parent.join(format!(".{}.{}.{}.tmp", file_name, std::process::id(), seq));
-
-    std::fs::write(&tmp, text.as_bytes()).map_err(|e| e.to_string())?;
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e.to_string())
-        }
-    }
+    crate::helpers::atomic_file::write(path, text)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     #[test]
     fn a_vospace_id_round_trips_to_the_path_it_names() {
         // The id embeds the VOSpace path so selecting an entry can fetch it

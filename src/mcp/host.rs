@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::mcp::server::ApprovalGate;
-use crate::mcp::tools::catalog::build_router;
+use crate::mcp::tools::catalog::{build_router_with, proposal_journal_path};
 use crate::mcp::tools::proposals::{InMemoryProposalStore, ProposalState};
 use crate::mcp::tools::ToolRouter;
 use crate::state::AppServices;
@@ -68,7 +68,10 @@ impl McpHost {
             }
         }
 
-        let (router, proposals) = build_router(Arc::clone(&services));
+        // Journalled: a restart used to destroy every proposal awaiting human
+        // review, including ones already approved.
+        let (router, proposals) =
+            build_router_with(Arc::clone(&services), Some(proposal_journal_path()));
         // Unsize the concrete router into the trait object the listener consumes.
         let router: Arc<dyn ToolRouter> = router;
 

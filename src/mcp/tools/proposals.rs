@@ -10,6 +10,7 @@
 use crate::mcp::agent_events::{AgentEventKind, AgentEventLog};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,7 @@ const TOMBSTONE_TTL: Duration = Duration::from_secs(300);
 const MAX_RETAINED: usize = 256;
 
 /// A queued, not-yet-applied write.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PendingProposal {
     pub id: String,
     /// Machine kind used by the applier registry (e.g. `"save_query"`).
@@ -55,7 +56,7 @@ pub struct PendingProposal {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProposalState {
     Pending,
     /// Atomically claimed by an applier and being applied right now. A proposal in
@@ -71,6 +72,18 @@ pub enum ProposalState {
 pub struct InMemoryProposalStore {
     inner: Mutex<StoreInner>,
     events: Arc<AgentEventLog>,
+    /// Where PENDING proposals are journalled, when they are.
+    ///
+    /// `None` keeps the store exactly as it was — every test builds one, and a
+    /// test that wrote to the user's data directory would both leak and read
+    /// back another test's queue. The app opts in with
+    /// [`with_journal`](Self::with_journal).
+    ///
+    /// A restart used to destroy the queue in silence: seven proposals awaiting
+    /// human review vanished, and one the user had already approved was voided
+    /// and had to be resubmitted. The work being lost is a person's decision,
+    /// which is the kind that should survive a process.
+    journal: Option<PathBuf>,
 }
 
 struct StoreInner {
@@ -97,6 +110,80 @@ impl InMemoryProposalStore {
                 seq: 0,
             }),
             events: Arc::new(AgentEventLog::new()),
+            journal: None,
+        }
+    }
+
+    /// A store whose pending queue survives a restart, journalled at `path`.
+    ///
+    /// Rehydrates immediately: anything still pending when the app last closed
+    /// is queued again, under its original id, so an agent polling
+    /// `get_proposal_state` across a restart gets the same answer it would
+    /// have got before.
+    ///
+    /// Only PENDING proposals are kept. A resolved one is a tombstone with a
+    /// TTL, and reloading tombstones from a previous run would resurrect ids
+    /// the current session has never heard of.
+    pub fn with_journal(path: PathBuf) -> Self {
+        let store = InMemoryProposalStore {
+            inner: Mutex::new(StoreInner {
+                order: Vec::new(),
+                by_id: HashMap::new(),
+                resolved_at: HashMap::new(),
+                seq: 0,
+            }),
+            events: Arc::new(AgentEventLog::new()),
+            journal: Some(path.clone()),
+        };
+        store.rehydrate(&path);
+        store
+    }
+
+    /// Load a journalled queue, tolerating a missing or unreadable file.
+    ///
+    /// A corrupt journal must not stop the app from starting: the queue is
+    /// convenience, and refusing to launch over it would turn lost proposals
+    /// into a lost application.
+    fn rehydrate(&self, path: &Path) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(saved) = serde_json::from_str::<Vec<PendingProposal>>(&text) else {
+            return;
+        };
+
+        let mut g = self.inner.lock().unwrap();
+        for p in saved
+            .into_iter()
+            .filter(|p| p.state == ProposalState::Pending)
+        {
+            // `seq` must clear every id restored, or the next enqueue reuses one
+            // and two different proposals answer to the same name.
+            if let Some(n) = p.id.rsplit('-').next().and_then(|n| n.parse::<u64>().ok()) {
+                g.seq = g.seq.max(n);
+            }
+            g.order.push(p.id.clone());
+            g.by_id.insert(p.id.clone(), p);
+        }
+    }
+
+    /// Write the pending queue out. Called with the lock held.
+    ///
+    /// Best-effort by design: a journal that cannot be written must not fail
+    /// the proposal it was recording. The user still sees the queue in this
+    /// session; only the restart-survival is lost.
+    fn persist_locked(&self, g: &StoreInner) {
+        let Some(path) = &self.journal else {
+            return;
+        };
+        let pending: Vec<&PendingProposal> = g
+            .order
+            .iter()
+            .filter_map(|id| g.by_id.get(id))
+            .filter(|p| p.state == ProposalState::Pending)
+            .collect();
+        if let Ok(json) = serde_json::to_string_pretty(&pending) {
+            let _ = crate::helpers::atomic_file::write(path, &json);
         }
     }
 
@@ -161,6 +248,7 @@ impl InMemoryProposalStore {
         };
         g.order.push(id.clone());
         g.by_id.insert(id, proposal.clone());
+        self.persist_locked(&g);
         // NOTE: the `ProposalArrived` event is emitted by the router (not here) once
         // it has stamped the origin, so the event carries the originating client.
         proposal
@@ -211,7 +299,11 @@ impl InMemoryProposalStore {
             return None;
         }
         p.state = ProposalState::Applying;
-        Some(p.clone())
+        let claimed = p.clone();
+        // No longer pending: a crash mid-apply must not re-queue it on restart
+        // and apply it twice.
+        self.persist_locked(&g);
+        Some(claimed)
     }
 
     /// Settle a claimed (`Applying`) proposal to its final state after the applier
@@ -231,6 +323,7 @@ impl InMemoryProposalStore {
             let resolved = p.clone();
             g.resolved_at.insert(id.to_string(), Instant::now());
             prune(&mut g);
+            self.persist_locked(&g);
             resolved
         };
         self.emit_for(state, &resolved);
@@ -255,6 +348,7 @@ impl InMemoryProposalStore {
             let resolved = p.clone();
             g.resolved_at.insert(id.to_string(), Instant::now());
             prune(&mut g);
+            self.persist_locked(&g);
             resolved
         };
         self.emit_for(state, &resolved);
@@ -325,6 +419,138 @@ fn prune(inner: &mut StoreInner) {
 
 #[cfg(test)]
 mod tests {
+    fn journal_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "verbinal-proposals-{}-{}-{name}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    /// A pending proposal outlives the process.
+    ///
+    /// An app restart used to destroy the queue in silence: seven proposals
+    /// awaiting human review vanished, and one the user had already approved
+    /// was voided and had to be resubmitted. What is lost there is a person's
+    /// decision, not a cache.
+    #[test]
+    fn a_pending_proposal_survives_a_restart() {
+        let path = journal_path("survives");
+
+        let first = InMemoryProposalStore::with_journal(path.clone());
+        let queued = first.enqueue("save_query", "Save M31 query", true, json!({"n": 1}));
+        drop(first);
+
+        // A new process, same journal.
+        let second = InMemoryProposalStore::with_journal(path.clone());
+        let restored = second
+            .get(&queued.id)
+            .expect("the proposal is still queued");
+        assert_eq!(restored.state, ProposalState::Pending);
+        assert_eq!(restored.kind, "save_query");
+        assert_eq!(restored.summary, "Save M31 query");
+        assert_eq!(
+            restored.payload,
+            json!({"n": 1}),
+            "the payload must survive"
+        );
+        assert_eq!(restored.created_at, queued.created_at);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A resolved proposal does NOT come back.
+    ///
+    /// Tombstones are how an id is stopped from being applied twice, and they
+    /// expire on a TTL. Restoring them from a previous run would resurrect ids
+    /// this session has never issued.
+    #[test]
+    fn a_resolved_proposal_is_not_restored() {
+        let path = journal_path("resolved");
+
+        let first = InMemoryProposalStore::with_journal(path.clone());
+        let applied = first.enqueue("save_query", "one", false, json!({}));
+        let rejected = first.enqueue("save_query", "two", false, json!({}));
+        let still_pending = first.enqueue("save_query", "three", false, json!({}));
+        first.claim(&applied.id);
+        first.settle(&applied.id, ProposalState::Applied);
+        first.resolve(&rejected.id, ProposalState::Rejected);
+        drop(first);
+
+        let second = InMemoryProposalStore::with_journal(path.clone());
+        assert!(
+            second.get(&applied.id).is_none(),
+            "an applied proposal came back"
+        );
+        assert!(
+            second.get(&rejected.id).is_none(),
+            "a rejected proposal came back"
+        );
+        assert!(
+            second.get(&still_pending.id).is_some(),
+            "the pending one was lost"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Ids issued after a restart do not collide with restored ones.
+    ///
+    /// The counter starts at zero in a fresh process. Without clearing it past
+    /// what was restored, the next enqueue reuses an id and two different
+    /// proposals answer to the same name — the second silently replacing the
+    /// first in `by_id`.
+    #[test]
+    fn a_restored_id_is_never_issued_again() {
+        let path = journal_path("ids");
+
+        let first = InMemoryProposalStore::with_journal(path.clone());
+        let a = first.enqueue("k", "a", false, json!({}));
+        let b = first.enqueue("k", "b", false, json!({}));
+        drop(first);
+
+        let second = InMemoryProposalStore::with_journal(path.clone());
+        let c = second.enqueue("k", "c", false, json!({}));
+        assert_ne!(c.id, a.id, "reissued a restored id");
+        assert_ne!(c.id, b.id, "reissued a restored id");
+        // And the two restored ones are still there beside it.
+        assert!(second.get(&a.id).is_some());
+        assert!(second.get(&b.id).is_some());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Without a journal, nothing is written and nothing is read.
+    ///
+    /// Every other test in this file builds a plain store; if that started
+    /// touching the filesystem they would read each other's queues.
+    #[test]
+    fn a_store_with_no_journal_writes_nothing() {
+        let store = InMemoryProposalStore::new();
+        store.enqueue("k", "s", false, json!({}));
+        assert_eq!(store.pending().len(), 1);
+        // Nothing to assert about a file, which is the point: there is no path
+        // for it to have written to.
+    }
+
+    /// A corrupt journal costs the queue, not the application.
+    #[test]
+    fn an_unreadable_journal_does_not_stop_startup() {
+        let path = journal_path("corrupt");
+        std::fs::write(&path, "{ this is not json").expect("write");
+
+        let store = InMemoryProposalStore::with_journal(path.clone());
+        assert!(store.pending().is_empty());
+        // And it still works from there.
+        let p = store.enqueue("k", "s", false, json!({}));
+        assert!(store.get(&p.id).is_some());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     use super::*;
     use serde_json::json;
 

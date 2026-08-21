@@ -339,14 +339,12 @@ fn load(path: &PathBuf) -> PersistState {
 /// Write `state` as pretty JSON to `path` atomically: serialize to a sibling
 /// `.tmp` file then rename over the target (same directory ⇒ same filesystem, so
 /// the rename is atomic and never leaves a half-written file).
-fn write_atomic(path: &PathBuf, state: &PersistState) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
+fn write_atomic(path: &std::path::Path, state: &PersistState) -> Result<(), String> {
     let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    // Was `path.with_extension("json.tmp")` — one temp name for every writer,
+    // so two saves in flight could rename each other's half-written file into
+    // place. The shared helper names its temp per process and per call.
+    crate::helpers::atomic_file::write(path, &json)
 }
 
 /// Truncate `s` to at most `max` characters (never splitting a UTF-8 codepoint).

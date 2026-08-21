@@ -15,9 +15,35 @@ use crate::state::AppServices;
 pub fn build_router(
     services: Arc<AppServices>,
 ) -> (Arc<McpToolRouter>, Arc<InMemoryProposalStore>) {
-    let proposals = Arc::new(InMemoryProposalStore::new());
+    build_router_with(services, None)
+}
+
+/// The same, with the proposal queue journalled to `journal` when given.
+///
+/// Persistence is the host's decision rather than the router's: every test
+/// builds one of these, and a store that wrote to the user's data directory
+/// would leak between runs and read back another test's queue. The app passes
+/// [`proposal_journal_path`]; tests pass `None`.
+pub fn build_router_with(
+    services: Arc<AppServices>,
+    journal: Option<std::path::PathBuf>,
+) -> (Arc<McpToolRouter>, Arc<InMemoryProposalStore>) {
+    let proposals = Arc::new(match journal {
+        Some(path) => InMemoryProposalStore::with_journal(path),
+        None => InMemoryProposalStore::new(),
+    });
     let router = Arc::new(McpToolRouter::new(services, Arc::clone(&proposals)));
     (router, proposals)
+}
+
+/// Where the pending-proposal queue lives between runs.
+///
+/// Beside the other stores in the app data directory, so a user clearing
+/// application data clears this too.
+pub fn proposal_journal_path() -> std::path::PathBuf {
+    directories::ProjectDirs::from("net", "canfar", "Verbinal")
+        .map(|d| d.data_dir().join("mcp_proposals.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("mcp_proposals.json"))
 }
 
 #[cfg(test)]
@@ -79,6 +105,38 @@ mod tests {
     /// One agent must never see another agent's queued proposals: lifecycle reads
     /// are scoped by the originating client (defence-in-depth against a second
     /// external client on the shared socket enumerating the first's activity).
+    /// The journal the host asks for is the journal that gets written.
+    ///
+    /// The store persisting correctly and the router being given a path are two
+    /// different claims; this is the second one. A store built with `None` —
+    /// which is every test — must write nothing at all, or tests would read
+    /// back each other's queues and the user's data directory would fill with
+    /// them.
+    #[test]
+    fn a_router_built_with_a_journal_persists_its_queue() {
+        let dir =
+            std::env::temp_dir().join(format!("verbinal-router-journal-{}", std::process::id()));
+        let path = dir.join("mcp_proposals.json");
+        let _ = std::fs::remove_file(&path);
+
+        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+        let (services, _toast_rx) = AppServices::new(rt.handle().clone());
+        let (_router, proposals) = build_router_with(Arc::clone(&services), Some(path.clone()));
+
+        let queued = proposals.enqueue("save_query", "Save M31", true, serde_json::json!({}));
+        let written = std::fs::read_to_string(&path).expect("the journal was never written");
+        assert!(
+            written.contains(&queued.id),
+            "the queued proposal is not in the journal: {written}"
+        );
+
+        // And the default construction stays ephemeral.
+        let (_r2, ephemeral) = build_router(services);
+        ephemeral.enqueue("save_query", "not journalled", true, serde_json::json!({}));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An argument the tool does not declare is refused by name.
     ///
     /// Every schema says `additionalProperties: false` and nothing enforced it,
