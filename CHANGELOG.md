@@ -2,6 +2,86 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [1.3.5] - 2026-08-21
+
+A bug-fix release, and one of the bugs was invisible from inside the app: an
+AI client could not use Verbinal at all, and every check we ran said the server
+was healthy.
+
+### An agent could not connect, and nothing said why
+
+`check_notebook_dependencies` advertised `inputSchema: {"type": "string"}`. Tool
+arguments are a named map, so the schema has to describe an object; this one was
+built from the schema for its own `notebook` PROPERTY, passed where the whole
+schema goes. Every other notebook tool wraps it correctly.
+
+The tool itself worked — it dispatched, it answered, its tests passed. Only the
+catalogue was wrong, and a client that validates tools before registering them
+rejects the entry; some reject the entire list over one bad member. That
+presents as "this server has no tools" rather than "one tool is malformed",
+which is why the connector kept reconnecting with no error logged anywhere.
+Every advertised schema is now checked: object type, `properties` a map, and
+nothing `required` that the tool never declares.
+
+### Tools that said yes and did nothing
+
+- **`open_fits_file` answered `opened: true` unconditionally.** It dispatched a
+  fire-and-forget GTK action, so a path that does not exist, an id that does not
+  resolve and a file that will not parse all reported success.
+- **`open_cube` did the same**, and `export_search_results` went further: given
+  a `vos:` destination it created a LOCAL directory named `vos:`, wrote the CSV
+  into it, and returned `"exported": true` with the path the caller recognised.
+  Six tools took a local path without checking it — including
+  `download_vospace_file`, where the remote `path` and the local `local_path`
+  sit side by side with nothing saying which is which. The remedy in the error
+  message named `upload_vospace_file`, which has never been a tool.
+- **Long applies timed out.** A 332 MB download returned "Request timed out"
+  while the transfer carried on unseen. Slow applies now run as background jobs
+  and answer immediately with a job id.
+- **One slow command starved every other.** The bridge awaited each handler
+  inline, so a ninety-second notebook cell made the FITS viewer and ADQL both
+  answer "UI busy". Commands now run concurrently on the GTK context.
+- **Clients are told when the tool list changes.** Guide tools are user-editable
+  and read live, so a name an agent cached at connect could stop existing
+  mid-session with no way to find out.
+
+### Notebooks
+
+- **A phantom `SyntaxError` headed every cell traceback.** The harness decided
+  how to run a cell by catching rather than asking, so the real error raised
+  inside an `except SyntaxError` block and Python chained the two.
+- **Missing packages can be installed** from the notebook and by an agent. On
+  Ubuntu the system Python is externally managed and `pip install --user` is
+  refused by design; the refusal was being thrown away with pip's stderr.
+  Overriding it is offered only after pip itself says so, and only on request.
+
+### Dialogs
+
+- **Content was cut off at the right edge.** One suffix label held a full
+  sentence, and a `GtkLabel` neither wraps nor ellipsizes by default — its
+  minimum width is its text, which propagates up and made the preferences
+  dialog demand 784px inside 720px.
+- **Buttons went past the bottom edge.** A dialog with no scroller grows to fit
+  its content: asked for 560px, measured 2034px, carrying its own action row
+  below the bottom of the display. There is one dialog shell now — content
+  scrolls, actions do not — and the modal widths are four named roles rather
+  than the thirteen numbers they had been.
+
+### Settings
+
+- **Every field shows an example of what belongs in it.** A configuration read
+  as complete while `run_code` stayed off, because the full image reference had
+  been typed into "Registry repository (project)" and nothing said what a
+  project looks like. A repository carrying a tag is now accepted as the
+  reference it is, and a readiness row reports what `run_code` will launch.
+
+### For agents
+
+- **The ADQL dialect is documented** where the query is written: CADC TAP is
+  ADQL 2.0 with no UDFs, `SELECT TOP n` rather than `LIMIT`,
+  `lower(col) LIKE lower(...)` rather than `ILIKE`, and geometry predicates
+  compared with `= 1`. Each rule was checked against the live service.
+
 ## [1.3.4] - 2026-08-20
 
 A bug-fix release. Everything below was found by using the app against the
