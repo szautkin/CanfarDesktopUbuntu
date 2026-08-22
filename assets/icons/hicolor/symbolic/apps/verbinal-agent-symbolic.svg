@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!--
+    The agent icon: a robot, matching CanfarDesktop, whose agent surfaces use
+    the Segoe MDL2 "Robot" glyph (E99A). This port had been using
+    applications-science-symbolic, a laboratory flask, which reads as chemistry
+    rather than as something acting on your behalf.
+
+    Symbolic conventions: a 16x16 viewBox and one flat fill, so GTK can recolour
+    it to follow the theme. The head is a single evenodd path (outer rounded
+    rect, inner rounded rect) so its middle is a hole the eyes sit inside,
+    rather than a white shape that would stay white when recoloured.
+
+    The documentation lives INSIDE the svg element on purpose. It was above it,
+    after an XML declaration, and gdk-pixbuf sniffs only the first bytes of a
+    file to identify the format: the comment pushed "<svg" out of that window
+    and every load failed with "Unrecognized image file format", while
+    IconTheme::has_icon still reported the icon as present.
+  -->
+  <g fill="#2e3436">
+    <circle cx="8" cy="1.25" r="1.15"/>
+    <rect x="7.5" y="2" width="1" height="1.8"/>
+    <path fill-rule="evenodd" d="M4.25,3.5 H11.75 A2.25,2.25 0 0,1 14,5.75 V10.25 A2.25,2.25 0 0,1 11.75,12.5 H4.25 A2.25,2.25 0 0,1 2,10.25 V5.75 A2.25,2.25 0 0,1 4.25,3.5 Z M4.25,5 A0.75,0.75 0 0,0 3.5,5.75 V10.25 A0.75,0.75 0 0,0 4.25,11 H11.75 A0.75,0.75 0 0,0 12.5,10.25 V5.75 A0.75,0.75 0 0,0 11.75,5 Z"/>
+    <circle cx="6.1" cy="7.4" r="1.05"/>
+    <circle cx="9.9" cy="7.4" r="1.05"/>
+    <rect x="6" y="9.2" width="4" height="0.9" rx="0.45"/>
+    <rect x="0.5" y="6.75" width="1.1" height="2.5" rx="0.55"/>
+    <rect x="14.4" y="6.75" width="1.1" height="2.5" rx="0.55"/>
+  </g>
+</svg>

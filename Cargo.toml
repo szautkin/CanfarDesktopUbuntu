@@ -78,6 +78,7 @@ assets = [
     ["assets/icons/hicolor/256x256/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
     ["assets/icons/hicolor/512x512/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
     ["assets/icons/hicolor/scalable/apps/net.canfar.Verbinal.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["assets/icons/hicolor/symbolic/apps/verbinal-agent-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
     ["README.md", "usr/share/doc/verbinal/", "644"],
     ["LICENSE", "usr/share/doc/verbinal/", "644"],
 ]

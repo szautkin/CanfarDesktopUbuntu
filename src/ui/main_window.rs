@@ -320,7 +320,7 @@ pub fn build_main_window(
         (
             "aiguide",
             crate::tr_en!("AI Guide"),
-            "applications-science-symbolic",
+            "verbinal-agent-symbolic",
         ),
     ];
     let nav_keys: Rc<Vec<&'static str>> = Rc::new(nav_items.iter().map(|(k, _, _)| *k).collect());
@@ -679,7 +679,7 @@ pub fn build_main_window(
         ai_guide_page.widget(),
         Some("aiguide"),
         crate::tr_en!("AI Guide"),
-        "applications-science-symbolic",
+        "verbinal-agent-symbolic",
     );
 
     let dashboard: Rc<RefCell<Option<DashboardView>>> = Rc::new(RefCell::new(None));
@@ -1952,7 +1952,7 @@ fn build_welcome_page(
     ];
     if show_ai_guide_tile {
         specs.push(TileSpec {
-            icon: "applications-science-symbolic",
+            icon: "verbinal-agent-symbolic",
             title: crate::tr_en!("AI Guide"),
             desc: crate::tr_en!("Pair an AI agent over MCP"),
             action: TileAction::Navigate {

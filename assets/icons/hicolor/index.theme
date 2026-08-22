@@ -1,7 +1,14 @@
 [Icon Theme]
 Name=hicolor
 Comment=Verbinal app icons
-Directories=16x16/apps,24x24/apps,32x32/apps,48x48/apps,64x64/apps,128x128/apps,256x256/apps,512x512/apps,scalable/apps
+Directories=symbolic/apps,16x16/apps,24x24/apps,32x32/apps,48x48/apps,64x64/apps,128x128/apps,256x256/apps,512x512/apps,scalable/apps
+
+[symbolic/apps]
+Size=16
+Type=Scalable
+MinSize=8
+MaxSize=512
+Context=Applications
 
 [16x16/apps]
 Size=16

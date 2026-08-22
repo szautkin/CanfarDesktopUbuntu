@@ -135,7 +135,7 @@ mod catalog {
         Category {
             id: "compute",
             title: "AI Compute",
-            icon: "applications-science-symbolic",
+            icon: "verbinal-agent-symbolic",
             summary: "Run agent-authored code on a warm remote session.",
         },
         Category {

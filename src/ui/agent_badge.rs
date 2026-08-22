@@ -21,7 +21,7 @@ pub fn agent_badge(attr: &AgentAttribution) -> gtk::Box {
     container.set_valign(gtk::Align::Center);
 
     let button = gtk::MenuButton::new();
-    button.set_icon_name("applications-science-symbolic");
+    button.set_icon_name("verbinal-agent-symbolic");
     button.set_valign(gtk::Align::Center);
     button.add_css_class("flat");
     button.add_css_class("circular");
@@ -50,7 +50,7 @@ fn build_popover(attr: &AgentAttribution) -> gtk::Popover {
     // Heading row: wand icon + "Created by AI agent".
     let heading_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     heading_row.set_valign(gtk::Align::Center);
-    let heading_icon = gtk::Image::from_icon_name("applications-science-symbolic");
+    let heading_icon = gtk::Image::from_icon_name("verbinal-agent-symbolic");
     heading_icon.add_css_class("accent");
     let heading_label = gtk::Label::new(Some(crate::tr_en!("Created by AI agent")));
     heading_label.add_css_class("heading");
