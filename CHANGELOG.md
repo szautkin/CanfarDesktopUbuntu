@@ -2,6 +2,113 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [1.3.7] - 2026-08-22
+
+A bug-fix release from a sixth QA session. Two entries below are corrections to
+fixes that shipped in 1.3.6 and did not hold, and one is a fault that was never
+ours; the notes say which.
+
+### Downloads
+
+- **A download that produced nothing counted as a success.** `caom2ops/pkg`
+  answers HTTP 200 with an empty body and no content type for a publisher id it
+  cannot resolve — measured anonymously — so the status check passed, a
+  zero-byte file landed in the research library, and the job reported
+  "Downloaded obs-….fits (0 bytes)" as succeeded. Zero bytes is refused now, the
+  empty file is removed, and the message distinguishes a bad id from an empty
+  artifact. CADC MIRRORS JWST, so a real publisher id is
+  `ivo://cadc.nrc.ca/mirror/JWST?<observationID>/<productID>` and the message
+  shows that shape.
+- **DataLink faults were skipped in silence.** A row carrying `error_message`
+  was dropped without a word, so a response that was entirely faults —
+  `UsageFault: invalid ID` — parsed to an empty file list and read as "resolved,
+  nothing here". A response with no rows and at least one fault is now an error
+  carrying the fault text. A fault beside real rows is still not fatal.
+- **A JWST plane downloaded its index file, not its image.** `#this` marks a
+  science product and most collections publish one; JWST publishes several, and
+  the 46 MB `_i2d.fits` is rarely first. Four of six planes sampled fetched a
+  four-kilobyte `_asn.json` instead.
+- **Every record in the library was anonymous.** ra, dec, target, instrument,
+  filter and calibration level were empty for all eight records on the test
+  machine — those fields were only ever filled by SAVING a search result, so
+  anything fetched by publisher id arrived with a file and nothing else. A
+  download now asks the archive: one indexed query on `publisherID`, 0.26s,
+  returning the columns the search grid shows. Only empty fields are written.
+
+### Health checks
+
+**Three services reported a 4xx beside a tick.** The label was not the fault —
+the probe was. It sent `GET` to the WORKING endpoints, and a bare GET on a TAP
+sync endpoint is a malformed request that a healthy service answers 400;
+`whoami` answers 401 to an anonymous caller. Both were then called healthy
+because the host had replied.
+
+Every IVOA service publishes `/availability` for this question, and all four of
+CADC's answer 200 with `<vosi:available>true`. The probe reads that document
+rather than the status line, so a service announcing planned downtime is
+reported as down with its own note. Each service also carries `requiresAuth`,
+and the summary carries `usableCount` beside `healthyCount`: a signed-out
+session can have every service healthy and none of them usable.
+
+### FITS viewer
+
+**Switching HDU destroyed the viewer.** Four faults on one path — the tab was
+unregistered and never re-registered, the published HDU numbers were off by one
+against the numbers the same tool accepts, a failed switch reported success, and
+the reply described the tab the caller had just left.
+
+**A 720x360 image showed "64x64 pixels".** The status line is viewer-wide and
+nothing refreshed it when the selection changed, so it kept describing the tab
+you left — and `get_fits_view` reported that stale text.
+
+**FITS tabs can be closed.** `close_active_tab` is an app-level stub that has
+never been wired to a module; it answered `closed: false` for every call with no
+reason, and the documented switch-then-close sequence could not work because
+switching moves the viewer's focus and not the app's.
+
+### For agents
+
+- **`describe_tap_schema`** reads the archive's own `TAP_SCHEMA`: 21 tables with
+  descriptions and column counts, or one table's columns with datatype,
+  description, unit and UCD, plus the declared joins. An agent writing ADQL had
+  two table names and one join, both from a sentence in a tool description, and
+  had to guess the rest — `caom2.Plane` alone has 78 columns. Fetched once and
+  cached; measured at 1.0s cold, 1.7µs warm.
+- **Unknown arguments are refused by name.** Every schema said
+  `additionalProperties: false` and nothing enforced it, which produced three
+  separate misdiagnoses in one QA session.
+- **`get_proposal_state` accepts either spelling of the id.** Queueing answers
+  `proposalId` while the lifecycle tools took only `id`, so passing back the key
+  you were handed produced `{"id": "", "state": "unknown"}` — the same answer as
+  for a proposal that never existed.
+- **Pending proposals survive a restart**, rehydrated under their original ids.
+- **Sessions report `cpuInUse` and `memoryInUse`.** Skaha leaves the REQUESTED
+  figures empty for notebook sessions while still reporting usage, and the
+  payload carried only the empty half.
+- **`get_downloaded_observation` reports `localPath` and `fileExists`.**
+- **A slow notebook cell says it is running** instead of "UI busy".
+
+### Interface
+
+- **The agent icon is a robot**, as it is on Windows and macOS, instead of a
+  laboratory flask.
+- **CANFAR image manifests are checked on request**, not on every sign-in. The
+  sync walked every manifest in the user's ARC space at 400ms a file, toasting
+  its way through, on the screen where they were trying to start work. It is a
+  "Check images" button now.
+- **The AI Guide sorts every tool into a real category** — twenty-seven were in
+  "Other", including every search tool — and its headings appear in French,
+  which they were translated for all along.
+
+### Not fixed, and why
+
+**VOSpace `contentType` is null** because CADC does not publish the property. A
+live, anonymously readable node carries `creator`, `date`, `ispublic`, `length`
+and `quota`, and nothing else; a container has no MIME type to report. The
+parser reads `#contenttype` and always has. No value is guessed from the
+filename, because that would put an invention in a field labelled as the
+archive's.
+
 ## [1.3.6] - 2026-08-21
 
 A bug-fix release driven by two QA sessions against the live service. Several
