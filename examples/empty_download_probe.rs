@@ -26,11 +26,42 @@ fn main() {
         // what is not.
         let good = "ivo://cadc.nrc.ca/mirror/JWST?jw03435-o002_t001_miri_f1000w/jw03435-o002_t001_miri_f1000w-PRODUCT";
         match download_observation(&services, good, None, "probe", None).await {
-            Ok(o) => println!(
-                "valid id:   OK  {} ({} bytes)",
-                o.local_path.file_name().unwrap_or_default().to_string_lossy(),
-                o.file_size
-            ),
+            Ok(o) => {
+                println!(
+                    "valid id:   OK  {} ({} bytes)",
+                    o.local_path.file_name().unwrap_or_default().to_string_lossy(),
+                    o.file_size
+                );
+                // M1: does the archive's metadata reach the record?
+                let row = verbinal::services::observation_download::metadata_row_for(&services, good)
+                    .await;
+                match row {
+                    Some(r) => {
+                        let mut rec =
+                            verbinal::services::observation_store::DownloadedObservation::default();
+                        verbinal::services::observation_download::fill_missing_metadata(&mut rec, &r);
+                        println!(
+                            "metadata:   target={:?} instrument={:?} filter={:?} cal={:?} ra={:.4} dec={:.4}",
+                            rec.target_name, rec.instrument, rec.filter, rec.cal_level,
+                            rec.ra.parse::<f64>().unwrap_or(f64::NAN),
+                            rec.dec.parse::<f64>().unwrap_or(f64::NAN)
+                        );
+                        let blank: Vec<&str> = [
+                            ("target", &rec.target_name), ("instrument", &rec.instrument),
+                            ("filter", &rec.filter), ("cal", &rec.cal_level),
+                            ("ra", &rec.ra), ("dec", &rec.dec),
+                        ].iter().filter(|(_, v)| v.trim().is_empty()).map(|(k, _)| *k).collect();
+                        if !blank.is_empty() {
+                            println!("\nFAIL: still blank: {blank:?}");
+                            std::process::exit(1);
+                        }
+                    }
+                    None => {
+                        println!("\nFAIL: no metadata row came back");
+                        std::process::exit(1);
+                    }
+                }
+            }
             Err(e) => {
                 println!("valid id:   FAILED — {e}");
                 println!("\nFAIL: the fix broke a working download");

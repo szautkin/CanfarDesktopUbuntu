@@ -386,6 +386,35 @@ impl ApiEndpoints {
     }
 
     // ---- TAP + resolver ----------------------------------------------------
+    /// VOSI availability endpoints, one per core service.
+    ///
+    /// The health probe used to GET the WORKING endpoints — `argus/sync`,
+    /// `skaha/v0/session`, `ac/whoami` — and read whatever came back. A TAP
+    /// sync endpoint needs query parameters, so a bare GET is a malformed
+    /// request and a healthy service answers 400; `whoami` answers 401 to an
+    /// anonymous caller. Both were then reported as `ok: true` on the grounds
+    /// that the host had answered, which is how three services came to show a
+    /// 400 beside a tick.
+    ///
+    /// Every IVOA service publishes `/availability` for exactly this question,
+    /// and all four of CADC's answer 200 with `<vosi:available>true`.
+    pub fn availability_urls(&self) -> Vec<(&'static str, String)> {
+        let b = self.bases.read().unwrap();
+        // `arc_nodes` is `…/arc/nodes`; availability sits beside `nodes`, not
+        // under it.
+        let arc_base = b
+            .arc_nodes
+            .rsplit_once('/')
+            .map(|(head, _)| head.to_string())
+            .unwrap_or_else(|| b.arc_nodes.clone());
+        vec![
+            ("CADC TAP (search)", format!("{}/availability", b.tap_base)),
+            ("Skaha (sessions)", format!("{}/availability", b.skaha_base)),
+            ("ARC/VOSpace (storage)", format!("{arc_base}/availability")),
+            ("CADC auth", format!("{}/availability", b.ac_base)),
+        ]
+    }
+
     pub fn tap_sync_url(&self) -> String {
         format!("{}/sync", self.bases.read().unwrap().tap_base)
     }

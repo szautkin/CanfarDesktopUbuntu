@@ -66,14 +66,21 @@ async fn probe_one(client: Client, name: String, url: String) -> ServiceProbeRes
     match outcome {
         Ok(resp) => {
             let status = resp.status().as_u16();
+            // A VOSI availability document says whether the service considers
+            // ITSELF up. A 200 carrying `<vosi:available>false</vosi:available>`
+            // is a service announcing planned downtime — reachable, answering
+            // correctly, and not to be depended on. Reading the status alone
+            // would call that healthy.
+            let body = resp.text().await.unwrap_or_default();
+            let declared_down = says_unavailable(&body);
             ServiceProbeResult {
                 name,
                 url,
                 reachable: true,
-                ok: is_healthy_status(status),
+                ok: is_healthy_status(status) && !declared_down,
                 status: Some(status),
                 latency_ms,
-                error: None,
+                error: declared_down.then(|| availability_note(&body)),
             }
         }
         Err(e) => ServiceProbeResult {
@@ -86,6 +93,35 @@ async fn probe_one(client: Client, name: String, url: String) -> ServiceProbeRes
             error: Some(short_error(&e)),
         },
     }
+}
+
+/// Whether a VOSI availability document declares the service unavailable.
+///
+/// Namespace-agnostic: CADC answers `<vosi:available>`, and the prefix is the
+/// document's to choose. Anything that is not an availability document — an
+/// empty body, HTML, JSON — reads as "not declared down", because absence of
+/// the element is not a statement that the service is broken.
+fn says_unavailable(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    let Some(at) = lower.find("available>") else {
+        return false;
+    };
+    lower[at + "available>".len()..]
+        .trim_start()
+        .starts_with("false")
+}
+
+/// The service's own note about why it is down, when it gives one.
+fn availability_note(body: &str) -> String {
+    let lower = body.to_ascii_lowercase();
+    let note = lower
+        .find("<vosi:note>")
+        .and_then(|at| {
+            let rest = &body[at + "<vosi:note>".len()..];
+            rest.find("</").map(|end| rest[..end].trim().to_string())
+        })
+        .filter(|n| !n.is_empty());
+    note.unwrap_or_else(|| "the service reports itself unavailable".to_string())
 }
 
 /// Probe all eight endpoints in parallel and return results in a stable order
@@ -113,14 +149,10 @@ pub async fn probe_all(client: &Client, endpoints: &ApiEndpoints) -> Vec<Service
 /// Probe just the four core services — the set `get_service_health` reports,
 /// mirroring the Windows `ProbeCoreAsync` (macOS-parity) target list.
 pub async fn probe_core(client: &Client, endpoints: &ApiEndpoints) -> Vec<ServiceProbeResult> {
-    let bases = endpoints.bases_snapshot();
-    let targets: Vec<(&str, String)> = vec![
-        ("CADC TAP (search)", endpoints.tap_sync_url()),
-        ("Skaha (sessions)", endpoints.sessions_url()),
-        ("ARC/VOSpace (storage)", bases.arc_nodes.clone()),
-        ("CADC auth", endpoints.whoami_url()),
-    ];
-    probe_targets(client, targets).await
+    // The VOSI availability endpoints, not the working ones. Asking `argus/sync`
+    // for its health with a bare GET is a malformed TAP request, and a healthy
+    // service answers 400.
+    probe_targets(client, endpoints.availability_urls()).await
 }
 
 /// Probe every target in parallel, preserving the caller's ordering.
@@ -187,11 +219,62 @@ mod tests {
         assert_eq!(results.len(), 4);
         assert_eq!(results[0].name, "CADC TAP (search)");
         assert_eq!(results[3].name, "CADC auth");
-        assert!(results[3].url.ends_with("/whoami"));
+        // Every core row targets the service's VOSI availability document.
+        // They used to target the WORKING endpoints, so a healthy TAP service
+        // answered 400 to a bare GET (a sync endpoint needs parameters) and
+        // `whoami` answered 401 to an anonymous caller — both then reported as
+        // `ok: true` because the host had replied.
+        for r in &results {
+            assert!(
+                r.url.ends_with("/availability"),
+                "{} probes {} — not an availability endpoint",
+                r.name,
+                r.url
+            );
+        }
         // An unreachable host is never "ok".
         for r in &results {
             assert!(r.reachable || !r.ok);
         }
+    }
+
+    /// A service that says it is down is not ok, whatever its status line.
+    #[test]
+    fn a_service_declaring_itself_unavailable_is_not_ok() {
+        let down = r#"<?xml version="1.0"?>
+<vosi:availability xmlns:vosi="http://www.ivoa.net/xml/VOSIAvailability/v1.0">
+  <vosi:available>false</vosi:available>
+  <vosi:note>Scheduled maintenance until 18:00 UTC</vosi:note>
+</vosi:availability>"#;
+        assert!(says_unavailable(down));
+        assert_eq!(
+            availability_note(down),
+            "Scheduled maintenance until 18:00 UTC"
+        );
+
+        let up = r#"<vosi:availability xmlns:vosi="http://www.ivoa.net/xml/VOSIAvailability/v1.0">
+  <vosi:available>true</vosi:available>
+</vosi:availability>"#;
+        assert!(!says_unavailable(up));
+    }
+
+    /// Anything that is not an availability document is not a claim of failure.
+    ///
+    /// Absence of the element says nothing; treating it as "down" would mark
+    /// every service unhealthy the day one of them answered with HTML.
+    #[test]
+    fn a_body_that_is_not_an_availability_document_is_not_a_failure() {
+        for body in ["", "<html><body>hello</body></html>", "{\"status\":\"ok\"}"] {
+            assert!(!says_unavailable(body), "{body:?} read as unavailable");
+        }
+    }
+
+    /// A namespace prefix is the document's to choose.
+    #[test]
+    fn the_available_element_is_matched_whatever_its_prefix() {
+        assert!(says_unavailable("<available>false</available>"));
+        assert!(says_unavailable("<vosi:available> false </vosi:available>"));
+        assert!(!says_unavailable("<a:available>true</a:available>"));
     }
 
     #[tokio::test]

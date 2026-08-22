@@ -290,6 +290,69 @@ fn select_artifact<E: std::fmt::Display>(
     }
 }
 
+/// The archive's own metadata for one plane, as the search page would show it.
+///
+/// A downloaded record carried nothing but its file: ra, dec, target,
+/// instrument, filter and calibration level were all empty for every record in
+/// the library. The fields were only ever filled by SAVING a search result, so
+/// anything fetched by publisher id — every agent download — arrived anonymous.
+///
+/// One indexed query keyed on `publisherID`, measured at 0.26s, returning the
+/// same columns the search grid uses. Failure is not fatal: the file is already
+/// on disk, and a record with a file and no metadata is better than no record.
+pub async fn metadata_row_for(
+    services: &AppServices,
+    publisher_id: &str,
+) -> Option<crate::models::search_result::SearchResultRow> {
+    // Into an ADQL string literal, so a quote would end it. Publisher ids do
+    // not contain one; a value that does is not an id we can look up.
+    if publisher_id.contains('\'') {
+        return None;
+    }
+    let adql = format!(
+        "SELECT Observation.collection, Observation.observationID, Observation.target_name, \
+         Observation.instrument_name, Plane.energy_bandpassName, Plane.calibrationLevel, \
+         Plane.time_bounds_lower, \
+         COORD1(CENTROID(Plane.position_bounds)) AS ra_deg, \
+         COORD2(CENTROID(Plane.position_bounds)) AS dec_deg \
+         FROM caom2.Plane AS Plane \
+         JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID \
+         WHERE Plane.publisherID = '{publisher_id}'"
+    );
+    let token = services.get_token().await;
+    services
+        .tap
+        .execute_query(&adql, 1, token.as_deref())
+        .await
+        .ok()
+        .and_then(|r| r.rows.into_iter().next())
+}
+
+/// Fill the metadata fields the record does not already have.
+///
+/// Only EMPTY fields, deliberately: a record saved from a search already
+/// carries what the user saw, and a re-download must not overwrite it with a
+/// second opinion. Same rule the preview URLs follow.
+pub fn fill_missing_metadata(
+    record: &mut DownloadedObservation,
+    row: &crate::models::search_result::SearchResultRow,
+) {
+    let set = |field: &mut String, value: &str| {
+        if field.trim().is_empty() && !value.trim().is_empty() {
+            *field = value.trim().to_string();
+        }
+    };
+    set(&mut record.collection, row.get("collection"));
+    set(&mut record.observation_id, row.get("observationID"));
+    set(&mut record.target_name, row.get("target_name"));
+    set(&mut record.instrument, row.get("instrument_name"));
+    set(&mut record.filter, row.get("energy_bandpassName"));
+    set(&mut record.cal_level, row.get("calibrationLevel"));
+    set(&mut record.ra, row.get("ra_deg"));
+    set(&mut record.dec, row.get("dec_deg"));
+    set(&mut record.start_date, row.get("time_bounds_lower"));
+}
+
 pub async fn download_and_register(
     services: &AppServices,
     publisher_id: &str,
@@ -319,6 +382,13 @@ pub async fn download_and_register(
             publisher_id: publisher_id.to_string(),
             ..Default::default()
         });
+    // Ask the archive what this observation IS, when the record does not
+    // already know. Everything in the library was anonymous without it.
+    if record.target_name.trim().is_empty() || record.ra.trim().is_empty() {
+        if let Some(row) = metadata_row_for(services, publisher_id).await {
+            fill_missing_metadata(&mut record, &row);
+        }
+    }
     record.local_path = outcome.local_path.display().to_string();
     record.file_size = outcome.file_size;
     record.downloaded_at = chrono::Utc::now().to_rfc3339();
@@ -400,8 +470,9 @@ mod tests {
 
 #[cfg(test)]
 mod selection_tests {
-    use super::select_artifact;
+    use super::{fill_missing_metadata, select_artifact};
     use crate::models::search_result::{DataLinkFile, DataLinkResult};
+    use crate::services::observation_store::DownloadedObservation;
 
     const PKG: &str = "https://ws.example/caom2ops/pkg?ID=x";
 
@@ -413,6 +484,85 @@ mod selection_tests {
             size: None,
             description: String::new(),
         }
+    }
+
+    fn meta_row(pairs: &[(&str, &str)]) -> crate::models::search_result::SearchResultRow {
+        crate::models::search_result::SearchResultRow {
+            values: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    /// A record fetched by publisher id is no longer anonymous.
+    ///
+    /// Every record in the library had empty ra, dec, target, instrument,
+    /// filter and calibration level: those fields were only ever filled by
+    /// SAVING a search result, so anything downloaded by id arrived with
+    /// nothing but a file.
+    #[test]
+    fn the_archives_metadata_fills_an_empty_record() {
+        let mut record = DownloadedObservation::default();
+        fill_missing_metadata(
+            &mut record,
+            &meta_row(&[
+                ("collection", "JWST"),
+                ("observationID", "jw03435-o002_t001_miri_f1000w"),
+                ("target_name", "M51-MIRI"),
+                ("instrument_name", "MIRI/IMAGE"),
+                ("energy_bandpassName", "F1000W"),
+                ("calibrationLevel", "3"),
+                ("ra_deg", "202.46080573449493"),
+                ("dec_deg", "47.19755659571684"),
+            ]),
+        );
+
+        assert_eq!(record.target_name, "M51-MIRI");
+        assert_eq!(record.instrument, "MIRI/IMAGE");
+        assert_eq!(record.filter, "F1000W");
+        assert_eq!(record.cal_level, "3");
+        assert_eq!(record.collection, "JWST");
+        assert!(record.ra.starts_with("202.46"), "{}", record.ra);
+        assert!(record.dec.starts_with("47.19"), "{}", record.dec);
+    }
+
+    /// What the user already saw is not overwritten.
+    ///
+    /// A record saved from a search carries the values shown in the grid; a
+    /// later re-download must not replace them with a second opinion. Same rule
+    /// the preview URLs follow.
+    #[test]
+    fn an_existing_value_is_left_alone() {
+        let mut record = DownloadedObservation {
+            target_name: "M51 (as saved)".to_string(),
+            instrument: "MegaCam".to_string(),
+            ..Default::default()
+        };
+        fill_missing_metadata(
+            &mut record,
+            &meta_row(&[
+                ("target_name", "M51-MIRI"),
+                ("instrument_name", "MIRI/IMAGE"),
+                ("energy_bandpassName", "F1000W"),
+            ]),
+        );
+
+        assert_eq!(record.target_name, "M51 (as saved)");
+        assert_eq!(record.instrument, "MegaCam");
+        // The gap is still filled.
+        assert_eq!(record.filter, "F1000W");
+    }
+
+    /// A column the archive left blank does not blank the record.
+    #[test]
+    fn a_blank_column_is_not_written() {
+        let mut record = DownloadedObservation {
+            filter: "r.MP9602".to_string(),
+            ..Default::default()
+        };
+        fill_missing_metadata(&mut record, &meta_row(&[("energy_bandpassName", "   ")]));
+        assert_eq!(record.filter, "r.MP9602");
     }
 
     /// A download that produced nothing is refused, not recorded.
