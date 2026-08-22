@@ -422,21 +422,10 @@ async fn list_sessions(services: &crate::state::AppServices) -> ToolResult {
         Ok(sessions) => {
             let items: Vec<Value> = sessions
                 .into_iter()
-                .map(|s| {
-                    json!({
-                        "id": s.id,
-                        "name": s.name,
-                        "type": s.session_type,
-                        "status": s.status,
-                        "image": s.image,
-                        "startedTime": s.start_time,
-                        "expiresTime": s.expiry_time,
-                        "cpuAllocated": s.requested_cpu_cores,
-                        "memoryAllocated": s.requested_ram,
-                        "gpuAllocated": s.requested_gpu_cores,
-                        "connectUrl": s.connect_url,
-                    })
-                })
+                // Rendered through the one view `get_session` uses. These were
+                // two copies of the same literal, so a field added to one was
+                // missing from the other.
+                .map(|s| super::sessions::session_json(&s))
                 .collect();
             ToolResult::Data(json!({ "count": items.len(), "sessions": items }))
         }

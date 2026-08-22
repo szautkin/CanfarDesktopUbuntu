@@ -204,6 +204,54 @@ xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" uri=\"{}\" xsi:type=\"{}
 
 #[cfg(test)]
 mod tests {
+    /// The MIME type is read when the archive publishes it.
+    ///
+    /// Reported as "contentType null on all 4 nodes". The parser was not the
+    /// cause: it reads `ivo://ivoa.net/vospace/core#contenttype` and always
+    /// has. CADC simply does not send that property — a live, anonymously
+    /// readable node on ws-uv.canfar.net carries `creator`, `date`, `ispublic`,
+    /// `length` and `quota`, and nothing else. Null there is the archive
+    /// saying nothing, not the app dropping it.
+    ///
+    /// This pins the half we control, so a future refactor cannot quietly turn
+    /// "the archive did not say" into "we stopped reading it".
+    #[test]
+    fn a_content_type_property_is_read_when_present() {
+        let xml = r#"<vos:node xmlns:vos="http://www.ivoa.net/xml/VOSpace/v2.0"
+                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                     uri="vos://cadc.nrc.ca~arc/home/alice/run.fits"
+                     xsi:type="vos:DataNode">
+              <vos:properties>
+                <vos:property uri="ivo://ivoa.net/vospace/core#length">2048</vos:property>
+                <vos:property uri="ivo://ivoa.net/vospace/core#contenttype">application/fits</vos:property>
+              </vos:properties>
+            </vos:node>"#;
+
+        let node = parse_node(xml).expect("parse");
+        assert_eq!(node.content_type.as_deref(), Some("application/fits"));
+        assert_eq!(node.size, 2048);
+    }
+
+    /// A node without the property reports nothing rather than guessing.
+    ///
+    /// The filename would suggest a type, and inventing one here would put a
+    /// value in a field labelled as the ARCHIVE's — which is a different claim
+    /// from "this file is probably FITS".
+    #[test]
+    fn a_node_without_the_property_reports_no_content_type() {
+        let xml = r#"<vos:node xmlns:vos="http://www.ivoa.net/xml/VOSpace/v2.0"
+                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                     uri="vos://cadc.nrc.ca~arc/home/alice/run.fits"
+                     xsi:type="vos:DataNode">
+              <vos:properties>
+                <vos:property uri="ivo://ivoa.net/vospace/core#length">2048</vos:property>
+              </vos:properties>
+            </vos:node>"#;
+
+        let node = parse_node(xml).expect("parse");
+        assert!(node.content_type.is_none());
+    }
+
     use super::*;
 
     #[test]

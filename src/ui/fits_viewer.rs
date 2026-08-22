@@ -830,6 +830,7 @@ impl FitsViewer {
                     v.apply_shared_view_to_active(&tab);
                     v.sync_controls_to_tab(&tab);
                     v.update_hdu_and_banner(&tab);
+                    v.show_status_for(&tab);
                 }
                 // The active index changed, so the MCP snapshot is stale.
                 v.publish_open_tabs();
@@ -1364,6 +1365,17 @@ impl FitsViewer {
     }
 
     /// Select the tab at `index`, if there is one.
+    /// Point the shared status line at `tab`.
+    ///
+    /// The line is viewer-wide, not per-tab, and nothing refreshed it when the
+    /// selection changed — so switching to a 720x360 image left "64x64 pixels"
+    /// on screen, and `get_fits_view` reported that text as the new tab's
+    /// status. It describes whichever tab is active now.
+    fn show_status_for(&self, tab: &Rc<FitsTab>) {
+        self.status_label
+            .set_text(&fits_loader::fits_summary(tab.data()));
+    }
+
     fn select_index(&self, index: usize) {
         if index < self.tab_view.n_pages() as usize {
             let page = self.tab_view.nth_page(index as i32);

@@ -856,6 +856,9 @@ fn node_to_json(path: &str, node: &crate::models::VoSpaceNode) -> Value {
         "type": type_str(&node.node_type),
         "sizeBytes": node.size,
         "sizeDisplay": node.size_display(),
+        // The archive's own `#contenttype` property, and null when it does not
+        // publish one — which CADC generally does not, and never for a folder.
+        // Null means "the archive did not say", not "unknown file".
         "contentType": node.content_type,
         "date": node.date,
         "isPublic": node.is_public,

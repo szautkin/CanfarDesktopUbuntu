@@ -188,7 +188,11 @@ pub async fn dispatch(
 // ── Reads ──────────────────────────────────────────────────────────────────────
 
 /// JSON view of a `Session`, matching the field names used by `list_sessions`.
-fn session_json(s: &crate::models::Session) -> Value {
+///
+/// `pub(crate)` so `list_sessions` renders through this too. The two had
+/// separate copies of the same object literal, which is how one gains a field
+/// and the other does not.
+pub(crate) fn session_json(s: &crate::models::Session) -> Value {
     json!({
         "id": s.id,
         "name": s.name,
@@ -200,6 +204,13 @@ fn session_json(s: &crate::models::Session) -> Value {
         "cpuAllocated": s.requested_cpu_cores,
         "memoryAllocated": s.requested_ram,
         "gpuAllocated": s.requested_gpu_cores,
+        // What the platform reports as actually in use. Skaha leaves the
+        // REQUESTED figures empty for notebook sessions — reported twice as
+        // blank cpu/memory — while still reporting usage, and the payload was
+        // only carrying the empty half.
+        "cpuInUse": s.cpu_cores_in_use,
+        "memoryInUse": s.ram_in_use,
+        "fixedResources": s.is_fixed_resources,
         "connectUrl": s.connect_url,
     })
 }
@@ -562,6 +573,61 @@ fn dedup_ids(value: Option<&Value>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Both session views render through one function.
+    ///
+    /// `list_sessions` and `get_session` each had their own copy of the same
+    /// object literal. A field added to one was absent from the other, and an
+    /// agent that read a session from the list could not find the same keys
+    /// after fetching it by id.
+    #[test]
+    fn a_session_renders_the_same_from_the_list_and_by_id() {
+        let session = crate::models::Session {
+            id: "abc".to_string(),
+            userid: "szautkin".to_string(),
+            name: "notebook-1".to_string(),
+            session_type: "notebook".to_string(),
+            status: "Running".to_string(),
+            image: "skaha/astroml:latest".to_string(),
+            // Skaha leaves these empty for notebook sessions …
+            requested_cpu_cores: String::new(),
+            requested_ram: String::new(),
+            // … while still reporting what is in use.
+            cpu_cores_in_use: "1".to_string(),
+            ram_in_use: "4G".to_string(),
+            requested_gpu_cores: String::new(),
+            start_time: "2026-08-22T09:00:00Z".to_string(),
+            expiry_time: "2026-08-23T09:00:00Z".to_string(),
+            connect_url: "https://example.org/notebook".to_string(),
+            is_fixed_resources: false,
+        };
+
+        let view = super::session_json(&session);
+
+        // The blank halves are reported as they are, not invented.
+        assert_eq!(view["cpuAllocated"], serde_json::json!(""));
+        assert_eq!(view["memoryAllocated"], serde_json::json!(""));
+        // And the half the platform DID report is now visible.
+        assert_eq!(view["cpuInUse"], serde_json::json!("1"));
+        assert_eq!(view["memoryInUse"], serde_json::json!("4G"));
+
+        // The keys an agent already relies on are all still here.
+        for key in [
+            "id",
+            "name",
+            "type",
+            "status",
+            "image",
+            "startedTime",
+            "expiresTime",
+            "cpuAllocated",
+            "memoryAllocated",
+            "gpuAllocated",
+            "connectUrl",
+        ] {
+            assert!(view.get(key).is_some(), "`{key}` disappeared from the view");
+        }
+    }
+
     use super::*;
     use std::collections::HashSet;
 
