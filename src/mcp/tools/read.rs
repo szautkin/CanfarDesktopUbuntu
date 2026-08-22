@@ -142,8 +142,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
              storage, CADC auth) for reachability + round-trip latency. Use it to tell whether a \
              service is up before you depend on it (e.g. before search_observations or \
              launch_session). Per service, `reachable` means the HOST answered (any HTTP status) \
-             while `ok` means the service answered sanely (not 404/5xx) — trust `ok`/`healthyCount` \
-             for \"can I use it\", with `statusCode` as the detail.",
+             while `ok` means the service answered sanely (not 404/5xx). `ok` does NOT mean the \
+             caller may use it: a 401 or 403 is a working service refusing an unauthenticated \
+             request, and those carry `requiresAuth`. For \"can I use this right now\" read \
+             `usableCount` and per-service `ok` together with `requiresAuth`; `statusCode` is \
+             the detail.",
             empty_schema(),
         ),
     ]
@@ -532,6 +535,14 @@ fn health_payload(results: &[crate::services::ServiceProbeResult]) -> Value {
                 "url": r.url,
                 "reachable": r.reachable,
                 "ok": r.ok,
+                // `ok` says the SERVICE is working, which is why a 401 counts:
+                // the host answered correctly, it just will not serve an
+                // anonymous caller. That is genuinely different from a 404 or a
+                // 500, and genuinely different from "you can use this now" —
+                // and a boolean called `ok` reads as the second. Reported twice
+                // in QA as misleading, so the distinction is a field rather
+                // than a footnote in the description.
+                "requiresAuth": matches!(r.status, Some(401) | Some(403)),
                 "statusCode": r.status,
                 "latencyMs": r.latency_ms,
                 "error": r.error,
@@ -543,6 +554,13 @@ fn health_payload(results: &[crate::services::ServiceProbeResult]) -> Value {
         "count": entries.len(),
         "reachableCount": results.iter().filter(|r| r.reachable).count(),
         "healthyCount": results.iter().filter(|r| r.ok).count(),
+        // How many are working AND would serve this caller. `healthyCount` on
+        // its own reads as "this many are usable", and a signed-out session can
+        // have every service healthy and none of them usable.
+        "usableCount": results
+            .iter()
+            .filter(|r| r.ok && !matches!(r.status, Some(401) | Some(403)))
+            .count(),
         "services": entries,
     })
 }
@@ -588,6 +606,43 @@ mod tests {
         assert_eq!(payload["services"][1]["statusCode"], json!(404));
         // 401 is a healthy service asking for credentials, not a broken one.
         assert_eq!(payload["services"][3]["ok"], json!(true));
+    }
+
+    /// A working service that refuses you is not a service you can use.
+    ///
+    /// Reported twice: `ok: true` on a 401 reads as "go ahead". It means the
+    /// host answered correctly and would serve a signed-in caller — true, and
+    /// not what a boolean called `ok` conveys. A signed-out session can have
+    /// every service healthy and none of them usable.
+    #[test]
+    fn a_401_is_healthy_but_not_usable() {
+        let results = [
+            probe("TAP", true, true, Some(200)),
+            probe("Auth", true, true, Some(401)),
+            probe("Storage", true, true, Some(403)),
+            probe("Skaha", true, false, Some(503)),
+        ];
+        let payload = health_payload(&results);
+
+        // Unchanged, and deliberately: this matches the reference, where a 401
+        // counts as a healthy service.
+        assert_eq!(payload["healthyCount"], json!(3));
+
+        // New, and the answer to "can I use this right now".
+        assert_eq!(payload["usableCount"], json!(1), "401/403 are not usable");
+        assert_eq!(payload["services"][0]["requiresAuth"], json!(false));
+        assert_eq!(payload["services"][1]["requiresAuth"], json!(true));
+        assert_eq!(payload["services"][2]["requiresAuth"], json!(true));
+        // A 503 is not an auth problem; it is simply down.
+        assert_eq!(payload["services"][3]["requiresAuth"], json!(false));
+    }
+
+    /// Signed in, everything usable.
+    #[test]
+    fn a_service_that_answers_normally_is_usable() {
+        let payload = health_payload(&[probe("TAP", true, true, Some(200))]);
+        assert_eq!(payload["usableCount"], json!(1));
+        assert_eq!(payload["services"][0]["requiresAuth"], json!(false));
     }
 
     #[test]
