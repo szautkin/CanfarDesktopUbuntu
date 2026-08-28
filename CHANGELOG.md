@@ -2,6 +2,122 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [1.4.0] - 2026-08-27
+
+A notebook release. The subsystem could not show what a cell produced, and two
+of the files it offered to open were destroyed by saving them. Both are fixed,
+along with the agent-facing side: a figure can now be fetched as an image, a
+cell can be run with a deadline, and a reply says what it contains.
+
+Minor rather than patch: it adds a tool, a file format, a setting and several
+renderers. Nothing existing changes shape.
+
+### Notebook output
+
+- **Only two of the four MIME types were ever drawn.** `OutputData` has
+  modelled `text/html` and `image/jpeg` since the parser was written, and the
+  renderer asked "is there a PNG?", then "is there text?", and stopped. An
+  `astropy.table.Table` — the output an astronomer looks at most — arrived as
+  its `repr()` with the HTML sitting unread in the same bundle. The choice is
+  now one function with an exhaustive match, so a MIME type that is modelled
+  and not rendered does not compile.
+- **The harness asked one question of every object.** "Are you a matplotlib
+  Figure?" — so a PIL image came back as `<PIL.Image.Image ...>`. It asks the
+  object now, through `_repr_html_`, `_repr_png_`, `_repr_jpeg_`, `_repr_svg_`,
+  `_repr_markdown_`, `_repr_latex_` and `_repr_json_`, and a method that raises
+  costs the object only that one representation.
+- **Images rendered as blank cells even once the data arrived.** A
+  `GtkPicture` with `can_shrink` reports a MINIMUM height of zero, and the
+  notebook packs cells into a `GtkListBox`, which allocates rows their minimum;
+  every figure was built correctly, handed real pixels, and drawn in one pixel
+  of height. Labels survived because a label's minimum is its text. Output
+  images state their size now, derived from the texture — which also stops a
+  140x90 thumbnail being upscaled and blurred across a fixed 400px.
+- `image/svg+xml`, `text/markdown`, `application/json` and `text/latex` are
+  rendered (LaTeX as its source; there is no LaTeX renderer yet). Each
+  previously fell through to `text/plain`, which for an object without a
+  `__repr__` is a memory address.
+- **`display()` works, with or without IPython.** With the library installed,
+  its `display()` is routed through the harness: publishing display data is the
+  job of the kernel around it, and outside one the library prints a repr to
+  stdout. Without it, `from IPython.display import HTML, Image, Markdown` still
+  works — built on demand, so a notebook that never mentions IPython never sees
+  it. An earlier version registered the stand-in at startup and broke every
+  matplotlib cell, because `pyplot` reads that module to decide whether it is
+  in a notebook.
+- **`plt.show()` warned that it could not show anything**, and the figure then
+  appeared anyway at the end of the cell. It renders on the spot now, as
+  `%matplotlib inline` does.
+
+### Notebook execution
+
+- **A cell mixing a magic with Python failed outright.** `%pip --version`
+  followed by `print(...)` was a syntax error in which neither half ran.
+  Segments now execute in source order, keeping their line numbers.
+- **Tracebacks showed the harness's internals.** The frame stripper tested
+  `"__file__" in dir()` from inside a function, where `dir()` lists locals and
+  `__file__` is a module global — always false, so nothing was ever stripped.
+  A traceback starts at the user's own line; frames BELOW it, inside numpy or
+  the stdlib, are kept, because that is the user's stack.
+
+### Files
+
+- **Saving a `.py` or `.md` replaced it with nbformat JSON.** The Open dialog
+  offers both, so the way to lose a file was to use a feature. Each format is
+  written back as itself, byte for byte when nothing changed.
+- **A `.py` or `.md` opened as ONE cell** holding the whole file. They are
+  split on the `# %%` markers jupytext, VS Code, Spyder and PyCharm share, and
+  on fenced python blocks. A script with no markers is still one cell.
+- `.txt` and `.log` open as notes you can add a code cell under. `.html`,
+  `.pdf` and other export formats are refused by name with the reason —
+  converting a notebook to HTML is one way — instead of being reported as
+  invalid notebook JSON.
+- **The only limit on reading a file was a cap on the number of CELLS**,
+  reached long after the bytes are in memory. There is a size limit now,
+  default 64 MB, adjustable in the notebook settings.
+
+### Agents
+
+- **`get_cell_image`** returns a cell's figure as real MCP image content. An
+  agent could see `hasImage: true` and `<Figure size 640x480>` and had no way
+  to reach the pixels. `get_cell_output` still does not carry them: inlining
+  base64 into every read spends a caller's context on data most calls never
+  wanted.
+- **`run_cell` takes a `timeout`.** It was unbounded, so a cell that looped
+  held the call open until the client gave up, and the only escape was
+  `interrupt_kernel`. On expiry the reply says `timedOut` and `running`; the
+  cell is not cancelled.
+- **`run_all_cells` waited for nothing.** It returned the instant the sweep was
+  spawned, so a caller reading outputs immediately saw none, with nothing in the
+  reply to say why. It waits, like `run_cell`.
+- **Replies carry `structuredContent`** as well as the JSON text they always
+  had, so a client no longer parses a document out of a string field.
+- **`get_cell_output` reports `richTypes`** — every MIME an output carries —
+  and reads answer `cellType` as well as `type`, which is the name the write
+  tools take.
+- **`open_notebook` reported success for files it could not open**, answering
+  with whatever tab happened to be open. It propagates the failure now.
+- `list_notebooks` entries carry `kind` and `exists`. A `.md` in that list was
+  never a stray file — this editor opens Markdown as a notebook.
+
+### Interface
+
+- **Kernel status was one English sentence doing three jobs**: the text on
+  screen, the colour of the dot (found by searching it for the word "idle"),
+  and the `state` field over MCP (found by searching it again). Two consumers
+  read it by substring, so it could not be translated — except for the one place
+  that set the first label through the translator, which is why a French desktop
+  showed "Noyau : non démarré" and then switched to English. The state is a
+  value now: a stable keyword for machines, English for the API, translated for
+  the window.
+- **A markdown cell rendered nothing if any line confused the converter.** Four
+  independent replace passes paired the underscore in `snake_case` with the one
+  in `proposal_id` — across a code span — and Pango refuses malformed markup
+  outright, so one line blanked a 12 KB document. Inline markdown is one
+  left-to-right pass now: code spans are literal, `_` is emphasis only at a word
+  boundary, and a cell whose markup is ever rejected shows its source rather
+  than nothing.
+
 ## [1.3.7] - 2026-08-22
 
 A bug-fix release from a sixth QA session. Two entries below are corrections to
