@@ -567,6 +567,46 @@ mod tests {
         );
     }
 
+    /// A shape whose extent is in a different unit is still visible.
+    ///
+    /// A sky extent is in DEGREES and an image extent is in pixels. Treating
+    /// both as pixels drew a sky circle 0.005 device pixels across — nothing on
+    /// screen, no error, and every mark placed through the UI (which prefers
+    /// sky anchors when there is WCS) silently did not appear.
+    ///
+    /// The renderer cannot know the conversion; it asks the surface, per
+    /// anchor. This checks it USES the answer rather than assuming one scale.
+    #[test]
+    fn the_surface_is_asked_for_a_scale_per_anchor() {
+        struct PerUnit;
+        impl AnnotationSurface for PerUnit {
+            fn project(&self, _: &Anchor) -> Option<(f64, f64)> {
+                Some((100.0, 100.0))
+            }
+            fn units_to_pixels(&self, anchor: &Anchor) -> f64 {
+                match anchor {
+                    // A degree is many pixels; a pixel is one.
+                    Anchor::Sky { .. } => 3600.0,
+                    _ => 1.0,
+                }
+            }
+        }
+        let surface = PerUnit;
+        // A tiny sky extent must come out a usable size on screen.
+        let sky = Anchor::Sky {
+            ra_deg: 195.0,
+            dec_deg: -40.0,
+        };
+        let drawn = 0.005 * surface.units_to_pixels(&sky);
+        assert!(
+            drawn > 4.0,
+            "a 0.005-degree circle drew {drawn} pixels across — invisible"
+        );
+        // And an image-pixel extent is not multiplied by the same factor.
+        let pixels = Anchor::ImagePixel { x: 1.0, y: 1.0 };
+        assert_eq!(surface.units_to_pixels(&pixels), 1.0);
+    }
+
     /// A label is legible over a bright background.
     ///
     /// The probe caught this: pale ink on the bright part of the test image was

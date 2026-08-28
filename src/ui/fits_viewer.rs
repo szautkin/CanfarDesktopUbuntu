@@ -1093,9 +1093,12 @@ impl FitsViewer {
                     .to_string();
 
                 let mut mark = Annotation::new(kind, anchor, text, Author::Agent);
-                if let Some(r) = num("radius") {
-                    mark = mark.with_extent(Extent::square(r));
-                }
+                mark = match num("radius") {
+                    Some(r) => mark.with_extent(Extent::square(r)),
+                    // No radius given: a size that is visible on THIS image,
+                    // whatever its pixel scale.
+                    None => mark.with_extent(canvas.default_extent_for(&anchor)),
+                };
                 mark.validate()?;
 
                 let file = Self::annotation_target(&tab);
@@ -2011,7 +2014,8 @@ impl FitsViewer {
             self.ask_for_text(kind, anchor);
             return;
         }
-        let mark = Annotation::new(kind, anchor, "", Author::User);
+        let mark = Annotation::new(kind, anchor, "", Author::User)
+            .with_extent(tab.canvas().default_extent_for(&anchor));
         self.add_mark(mark);
     }
 
@@ -2069,7 +2073,11 @@ impl FitsViewer {
                     return;
                 }
                 if let Some(v) = viewer.upgrade() {
-                    v.add_mark(Annotation::new(kind, anchor, text, Author::User));
+                    let mut mark = Annotation::new(kind, anchor, text, Author::User);
+                    if let Some(tab) = v.current_tab() {
+                        mark = mark.with_extent(tab.canvas().default_extent_for(&anchor));
+                    }
+                    v.add_mark(mark);
                 }
                 popover.popdown();
             }

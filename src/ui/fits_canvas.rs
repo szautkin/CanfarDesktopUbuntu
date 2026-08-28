@@ -724,7 +724,7 @@ impl FitsCanvas {
         let anns = self.annotations.borrow();
         for a in anns.iter().rev() {
             let (cx, cy) = self.project_anchor(&a.anchor)?;
-            let scale = self.annotation_scale();
+            let scale = self.annotation_scale(&a.anchor);
             let (hw, hh) = a
                 .extent
                 .map(|e| (e.half_width * scale, e.half_height * scale))
@@ -737,6 +737,30 @@ impl FitsCanvas {
             }
         }
         None
+    }
+
+    /// A sensible size for a new mark, in the anchor's own units.
+    ///
+    /// The default has to mean the same thing on every image, and an ANGLE does
+    /// not: 0.005° is a comfortable ring on a JWST frame at 0.03″/px and a
+    /// fifth of one pixel on IRAS at 90″/px, where it drew nothing. So the
+    /// default is stated in image pixels — what "about this big" means to
+    /// someone looking at the image — and converted into whatever unit the
+    /// anchor uses.
+    pub fn default_extent_for(
+        &self,
+        anchor: &crate::models::annotation::Anchor,
+    ) -> crate::models::annotation::Extent {
+        const IMAGE_PIXELS: f64 = 14.0;
+        let view = self.transform.borrow().scale.max(f64::EPSILON);
+        // Image pixels per unit of the anchor's space.
+        let per_unit = self.annotation_scale(anchor) / view;
+        let half = if per_unit.is_finite() && per_unit > 0.0 {
+            IMAGE_PIXELS / per_unit
+        } else {
+            IMAGE_PIXELS
+        };
+        crate::models::annotation::Extent::square(half)
     }
 
     /// An anchor's position on this canvas, or `None` when it is not on it.
@@ -756,9 +780,32 @@ impl FitsCanvas {
         sx.is_finite().then_some((sx, sy))
     }
 
-    /// Device pixels per image pixel, for sizing a shape.
-    fn annotation_scale(&self) -> f64 {
-        self.transform.borrow().scale
+    /// Device pixels per unit of `anchor`'s own space.
+    ///
+    /// Not one number: an image-pixel extent is in pixels and a sky extent is
+    /// in DEGREES, and treating both as pixels drew a sky circle 0.005 device
+    /// pixels across — invisible, and with no error, so a mark placed through
+    /// the UI (which prefers sky anchors when there is WCS) appeared to do
+    /// nothing at all.
+    fn annotation_scale(&self, anchor: &crate::models::annotation::Anchor) -> f64 {
+        use crate::models::annotation::Anchor;
+        let view = self.transform.borrow().scale;
+        match anchor {
+            Anchor::ImagePixel { .. } => view,
+            Anchor::Sky { .. } => {
+                // Degrees → image pixels → device pixels.
+                let arcsec_per_px = self
+                    .wcs
+                    .as_ref()
+                    .map(|w| w.pixel_scale_arcsec())
+                    .filter(|s| s.is_finite() && *s > 0.0)
+                    .unwrap_or(1.0);
+                let px_per_degree = 3600.0 / arcsec_per_px;
+                view * px_per_degree
+            }
+            // A cube voxel is not a length on this canvas.
+            Anchor::Data { .. } => view,
+        }
     }
 
     /// The working area as PNG bytes, at `(width, height)`.
@@ -1155,7 +1202,7 @@ impl crate::helpers::annotation_render::AnnotationSurface for FitsCanvas {
         self.project_anchor(anchor)
     }
 
-    fn units_to_pixels(&self, _anchor: &crate::models::annotation::Anchor) -> f64 {
-        self.annotation_scale()
+    fn units_to_pixels(&self, anchor: &crate::models::annotation::Anchor) -> f64 {
+        self.annotation_scale(anchor)
     }
 }
