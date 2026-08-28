@@ -277,17 +277,13 @@ pub async fn dispatch(
     }
     // Tool name == bridge op; the host matches these verbatim.
     let result = match view_state::viewer_command("cube", name, args.clone()).await {
-        Ok(v) => {
-            // A figure export returns { imageBase64: ".." } → surface as an image.
-            match v.get("imageBase64").and_then(|b| b.as_str()) {
-                Some(b64) => ToolResult::Image {
-                    data_base64: b64.to_string(),
-                    mime: "image/png".into(),
-                    caption: None,
-                },
-                None => ToolResult::Data(v),
-            }
-        }
+        // A reply carrying `imageBase64` becomes an image; anything else is
+        // data. One reader for every family — this arm used to announce
+        // `image/png` for whatever bytes it was handed.
+        Ok(v) => crate::mcp::agent_image::promote(
+            v,
+            crate::mcp::agent_image::ImageLimits::from_settings(),
+        ),
         Err(e) => ToolResult::Failed(e),
     };
     Some(result)

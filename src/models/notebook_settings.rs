@@ -14,6 +14,18 @@ use serde::{Deserialize, Serialize};
 /// Default for [`NotebookSettings::max_open_file_mb`].
 pub const DEFAULT_MAX_OPEN_FILE_MB: u32 = 64;
 
+/// Default for [`NotebookSettings::agent_image_max_dimension`].
+///
+/// About what a vision model resolves. Large enough that a FITS field is
+/// readable, small enough that a capture is not most of a caller's context.
+pub const DEFAULT_AGENT_IMAGE_MAX_DIMENSION: u32 = 1024;
+
+/// Default for [`NotebookSettings::agent_image_max_bytes_mb`].
+///
+/// The budget `get_preview_image` has used since it was written; it is now the
+/// budget for every image source rather than for one of them.
+pub const DEFAULT_AGENT_IMAGE_MAX_BYTES_MB: u32 = 16;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotebookSettings {
@@ -44,6 +56,14 @@ pub struct NotebookSettings {
     /// A setting rather than a fixed number because the right answer depends on
     /// the machine, and someone on a workstation should be able to raise it.
     pub max_open_file_mb: u32,
+    /// Longest edge, in pixels, of an image handed to an AI agent.
+    ///
+    /// A capture of a viewer's working area is sent to a model that reads it at
+    /// a few hundred pixels; a 4000px render costs roughly sixteen times the
+    /// context for no more understanding. Scaled down, never up.
+    pub agent_image_max_dimension: u32,
+    /// Largest agent image, in MB, after scaling.
+    pub agent_image_max_bytes_mb: u32,
 }
 
 impl Default for NotebookSettings {
@@ -62,6 +82,8 @@ impl Default for NotebookSettings {
             // fixtures is a few hundred KB — and far below the size at which
             // reading a file stalls the UI.
             max_open_file_mb: DEFAULT_MAX_OPEN_FILE_MB,
+            agent_image_max_dimension: DEFAULT_AGENT_IMAGE_MAX_DIMENSION,
+            agent_image_max_bytes_mb: DEFAULT_AGENT_IMAGE_MAX_BYTES_MB,
         }
     }
 }
@@ -83,6 +105,10 @@ impl NotebookSettings {
         // preference anyone holds; the ceiling stops a hand-edited value from
         // meaning "read whatever you find" on a machine that cannot.
         self.max_open_file_mb = self.max_open_file_mb.clamp(1, 4096);
+        // A zero dimension would scale every capture to nothing, and a zero
+        // budget would refuse every one of them — neither is a preference.
+        self.agent_image_max_dimension = self.agent_image_max_dimension.clamp(64, 8192);
+        self.agent_image_max_bytes_mb = self.agent_image_max_bytes_mb.clamp(1, 256);
         // Normalise an all-whitespace python path to None.
         if let Some(p) = &self.python_path {
             if p.trim().is_empty() {
@@ -156,6 +182,8 @@ mod tests {
             execution_timeout_secs: 0,
             show_toolbar: false,
             max_open_file_mb: 256,
+            agent_image_max_dimension: 1024,
+            agent_image_max_bytes_mb: 16,
         };
         let json = serde_json::to_string_pretty(&s).expect("serialise");
         let back: NotebookSettings = serde_json::from_str(&json).expect("deserialise");

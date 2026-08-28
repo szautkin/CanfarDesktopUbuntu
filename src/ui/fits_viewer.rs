@@ -948,6 +948,53 @@ impl FitsViewer {
                     .ok_or_else(|| "no FITS open".to_string())?;
                 Ok(self.fits_view_state(&tab))
             }
+
+            // The working area as an image — what the user is looking at, not
+            // a re-render of the file. The view state travels with it under
+            // `view`, because an agent that will be asked to point at something
+            // needs the frame the app shares, and pixels alone cannot carry it.
+            "get_fits_image" => {
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let canvas = tab.canvas();
+                let (view_w, view_h) = canvas.view_size();
+                if view_w <= 0 || view_h <= 0 {
+                    return Err("the FITS view has not been drawn yet; \
+                                open the viewer tab and try again"
+                        .to_string());
+                }
+                // Scaled to the agent-image budget, never up: a model reads a
+                // capture at a few hundred pixels and pays for every one.
+                let limits = crate::mcp::agent_image::ImageLimits::from_settings();
+                let (w, h) =
+                    crate::mcp::agent_image::fit_within(view_w, view_h, limits.max_dimension);
+                let png = canvas.capture_png(w, h)?;
+                let image_base64 = {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(&png)
+                };
+                Ok(json!({
+                    "imageBase64": image_base64,
+                    "imageMime": "image/png",
+                    "width": w,
+                    "height": h,
+                    // The transform an annotation would be expressed through:
+                    // this raster is `scale` times the on-screen view, and the
+                    // view itself is described by `view`.
+                    "viewWidth": view_w,
+                    "viewHeight": view_h,
+                    "scale": if view_w > 0 { f64::from(w) / f64::from(view_w) } else { 1.0 },
+                    "view": self.fits_view_state(&tab),
+                    "caption": format!(
+                        "FITS working area — {}",
+                        self.fits_view_state(&tab)
+                            .get("fileName")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("active tab")
+                    ),
+                }))
+            }
             // Closing a FITS tab. `close_active_tab` is app-level and was never
             // wired for the viewer, so it answered `closed: false` with no
             // reason for every attempt — and `switch_fits_tab` focuses the

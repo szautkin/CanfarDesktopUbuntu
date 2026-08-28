@@ -362,25 +362,10 @@ pub async fn dispatch(
     };
 
     match view_state::viewer_command("notebook", op, args.clone()).await {
-        Ok(v) => {
-            if let Some(b64) = v.get("imageBase64").and_then(|x| x.as_str()) {
-                Some(ToolResult::Image {
-                    data_base64: b64.to_string(),
-                    // The type the host actually found, not an assumption. A
-                    // PIL image with `_repr_jpeg_` and no PNG is a JPEG, and
-                    // labelling it PNG hands the client bytes that do not match
-                    // what it was told they are.
-                    mime: v
-                        .get("imageMime")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("image/png")
-                        .to_string(),
-                    caption: None,
-                })
-            } else {
-                Some(ToolResult::Data(v))
-            }
-        }
+        Ok(v) => Some(crate::mcp::agent_image::promote(
+            v,
+            crate::mcp::agent_image::ImageLimits::from_settings(),
+        )),
         Err(e) => Some(ToolResult::Failed(e)),
     }
 }

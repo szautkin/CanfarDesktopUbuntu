@@ -318,6 +318,15 @@ mod tests {
          that opens FITS tabs needs a way to close them.",
     ),
     (
+        "get_fits_image",
+        "The reference shows the FITS viewer to a person and has no way to show it to anything \
+         else. Twelve tools steer that viewer — pan, zoom, colormap, cut levels, crosshair — and \
+         an agent using them was working blind, with `get_fits_view` reporting the NUMBERS of a \
+         picture it could not see. This returns the working area itself, drawn by the same \
+         function that draws it on screen, and is the step an agent has to have before it can \
+         mark a region on that image and draw a person's attention to it.",
+    ),
+    (
         "get_cell_image",
         "Neither app can hand a cell's rendered figure to a caller that is not a GUI. The \
          reference holds the live figure object and paints it into its own window; over a tool \

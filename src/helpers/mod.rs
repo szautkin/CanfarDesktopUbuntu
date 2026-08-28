@@ -40,6 +40,7 @@ pub mod notebook_logger;
 pub mod notebook_parser;
 pub mod notebook_undo;
 pub mod pdf_writer;
+pub mod png;
 pub mod python_discovery;
 pub mod range_parser;
 pub mod registry_credential_test;

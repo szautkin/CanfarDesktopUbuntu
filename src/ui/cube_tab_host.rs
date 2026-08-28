@@ -675,7 +675,7 @@ impl CubeTabHost {
                 let rgba = v.render_figure(width, height, transparent).ok_or_else(|| {
                     "cube figure could not be rendered (GL unavailable)".to_string()
                 })?;
-                let png = encode_png_bytes(width, height, &rgba)?;
+                let png = crate::helpers::png::encode_rgba(width, height, &rgba)?;
                 let image_base64 = base64::engine::general_purpose::STANDARD.encode(&png);
                 Ok(json!({
                     "width": width,
@@ -894,56 +894,6 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
             .map(|(x, y)| serde_json::json!({ "x": x, "y": y }))
             .collect::<Vec<_>>(),
     })
-}
-
-/// PNG-encode a straight-alpha RGBA8 buffer (`width*height*4`, top-down) to bytes
-/// via cairo — the in-memory sibling of [`crate::helpers::pdf_writer::write_png`].
-/// cairo's `ARgb32` surface is premultiplied BGRA in native-endian order, so we
-/// premultiply + channel-swap while packing.
-fn encode_png_bytes(width: i32, height: i32, rgba: &[u8]) -> Result<Vec<u8>, String> {
-    use cairo::{Format, ImageSurface};
-    if width <= 0 || height <= 0 {
-        return Err(format!("invalid image dimensions {width}x{height}"));
-    }
-    let (w, h) = (width as usize, height as usize);
-    let need = w
-        .checked_mul(h)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or_else(|| "image dimensions overflow".to_string())?;
-    if rgba.len() < need {
-        return Err(format!("rgba buffer too small: {} < {}", rgba.len(), need));
-    }
-    let stride = Format::ARgb32
-        .stride_for_width(width as u32)
-        .map_err(|e| format!("cairo stride error: {e}"))? as usize;
-    let mut data = vec![0u8; stride * h];
-    for y in 0..h {
-        let row_src = y * w * 4;
-        let row_dst = y * stride;
-        for x in 0..w {
-            let s = row_src + x * 4;
-            let d = row_dst + x * 4;
-            let (r, g, b, a) = (rgba[s], rgba[s + 1], rgba[s + 2], rgba[s + 3]);
-            let pm = |c: u8| ((c as u16 * a as u16 + 127) / 255) as u8;
-            let (pr, pg, pb) = if a == 255 {
-                (r, g, b)
-            } else {
-                (pm(r), pm(g), pm(b))
-            };
-            // Little-endian ARgb32 (0xAARRGGBB) => bytes B, G, R, A.
-            data[d] = pb;
-            data[d + 1] = pg;
-            data[d + 2] = pr;
-            data[d + 3] = a;
-        }
-    }
-    let surface = ImageSurface::create_for_data(data, Format::ARgb32, width, height, stride as i32)
-        .map_err(|e| format!("cairo surface error: {e}"))?;
-    let mut buf: Vec<u8> = Vec::new();
-    surface
-        .write_to_png(&mut buf)
-        .map_err(|e| format!("PNG encode failed: {e}"))?;
-    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------

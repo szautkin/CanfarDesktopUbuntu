@@ -171,6 +171,27 @@ fn choose_hover_pixel(
 
 type OnCrosshairPlacedCallback = Rc<RefCell<Option<Box<dyn Fn(Option<(f64, f64)>)>>>>;
 
+/// Whether a capture of `width` x `height` can be drawn at all.
+///
+/// Split out of [`FitsCanvas::capture_png`] because everything else in this
+/// file needs a realized widget to test, and a rule only an example probe can
+/// reach is a rule `cargo test` never checks. Cairo would refuse these sizes
+/// too, with a message about surfaces rather than about the request.
+fn validate_capture_size(width: i32, height: i32) -> Result<(), String> {
+    if width <= 0 || height <= 0 {
+        return Err(format!("invalid capture size {width}x{height}"));
+    }
+    // Cairo's ARgb32 stride is 4 bytes per pixel; a request past this would try
+    // to allocate more memory than the process can address.
+    const MAX_PIXELS: i64 = 64 * 1024 * 1024;
+    if i64::from(width) * i64::from(height) > MAX_PIXELS {
+        return Err(format!(
+            "capture of {width}x{height} is too large to render; ask for a smaller region"
+        ));
+    }
+    Ok(())
+}
+
 pub struct FitsCanvas {
     widget: gtk::Box,
     drawing_area: gtk::DrawingArea,
@@ -471,146 +492,194 @@ impl FitsCanvas {
 
     // ── Drawing ──────────────────────────────────────────────────────────────
 
-    fn setup_draw(&self) {
-        let pixel_data = self.pixel_data.clone();
-        let transform = self.transform.clone();
-        let rotation = self.rotation.clone();
+    /// Draw the working area — everything the user sees — into `cr`.
+    ///
+    /// This was the body of the `set_draw_func` closure, and moving it out is
+    /// what lets an agent be shown the same picture. The screen path and the
+    /// capture path call THIS, so a change to how the viewer looks is a change
+    /// to what the agent sees, by construction. A second renderer written for
+    /// the agent's benefit would start correct and drift, and the only witness
+    /// would be an agent describing a picture nobody else had looked at.
+    ///
+    /// Knows nothing about its destination: a widget's context or an
+    /// `ImageSurface` are the same to it.
+    pub fn draw_working_area(&self, cr: &cairo::Context, widget_w: i32, widget_h: i32) {
+        let pixel_data = &self.pixel_data;
+        let transform = &self.transform;
+        let rotation = &self.rotation;
         let w = self.img_width;
         let h = self.img_height;
-        let shared = self.shared.clone();
-        let local_hover = self.local_hover.clone();
-        let crosshair_placed = self.crosshair_placed.clone();
-        let blink_overlay = self.blink_overlay.clone();
-        let blink_opacity = self.blink_opacity.clone();
-        let wcs = self.wcs.clone();
+        let shared = &self.shared;
+        let local_hover = &self.local_hover;
+        let crosshair_placed = &self.crosshair_placed;
+        let blink_overlay = &self.blink_overlay;
+        let blink_opacity = &self.blink_opacity;
+        let wcs = &self.wcs;
 
-        self.drawing_area
-            .set_draw_func(move |_area, cr, widget_w, widget_h| {
-                // Black background
-                cr.set_source_rgb(0.1, 0.1, 0.1);
-                let _ = cr.paint();
+        // Black background
+        cr.set_source_rgb(0.1, 0.1, 0.1);
+        let _ = cr.paint();
 
-                let data = pixel_data.borrow();
-                if data.is_empty() || w == 0 || h == 0 {
-                    return;
-                }
+        let data = pixel_data.borrow();
+        if data.is_empty() || w == 0 || h == 0 {
+            return;
+        }
 
-                let t = transform.borrow();
-                let rot = *rotation.borrow();
+        let t = transform.borrow();
+        let rot = *rotation.borrow();
 
-                if let Some(surface) = rgba_to_surface(&data, w, h) {
+        if let Some(surface) = rgba_to_surface(&data, w, h) {
+            cr.save().ok();
+            // Apply rotation around the center of the image (north-up)
+            if rot.abs() > 1e-6 {
+                let cx = t.offset_x + (w as f64 / 2.0) * t.scale;
+                let cy = t.offset_y + (h as f64 / 2.0) * t.scale;
+                cr.translate(cx, cy);
+                cr.rotate(rot);
+                cr.translate(-cx, -cy);
+            }
+            cr.translate(t.offset_x, t.offset_y);
+            cr.scale(t.scale, t.scale);
+            cr.set_source_surface(&surface, 0.0, 0.0).ok();
+            // Use nearest-neighbor for pixel-sharp rendering
+            let pattern = cr.source();
+            pattern.set_filter(cairo::Filter::Nearest);
+            cr.paint().ok();
+            cr.restore().ok();
+        }
+
+        // ── Cross-fade blink overlay (a second tab's image over this one) ──
+        if let Some(ov) = blink_overlay.borrow().as_ref() {
+            let alpha = blink_opacity.get().clamp(0.0, 1.0);
+            if alpha > 0.0 {
+                if let Some(osurf) = rgba_to_surface(&ov.rgba, ov.width, ov.height) {
                     cr.save().ok();
-                    // Apply rotation around the center of the image (north-up)
-                    if rot.abs() > 1e-6 {
-                        let cx = t.offset_x + (w as f64 / 2.0) * t.scale;
-                        let cy = t.offset_y + (h as f64 / 2.0) * t.scale;
-                        cr.translate(cx, cy);
-                        cr.rotate(rot);
-                        cr.translate(-cx, -cy);
-                    }
-                    cr.translate(t.offset_x, t.offset_y);
-                    cr.scale(t.scale, t.scale);
-                    cr.set_source_surface(&surface, 0.0, 0.0).ok();
-                    // Use nearest-neighbor for pixel-sharp rendering
+                    // Pin the overlay's reference pixel to its screen anchor,
+                    // rotated + scaled about that anchor to match this image.
+                    cr.translate(ov.anchor_x, ov.anchor_y);
+                    cr.rotate(ov.rot);
+                    cr.scale(ov.scale, ov.scale);
+                    cr.translate(-ov.ref_px, -ov.ref_py);
+                    cr.set_source_surface(&osurf, 0.0, 0.0).ok();
                     let pattern = cr.source();
                     pattern.set_filter(cairo::Filter::Nearest);
-                    cr.paint().ok();
+                    cr.paint_with_alpha(alpha).ok();
                     cr.restore().ok();
                 }
+            }
+        }
 
-                // ── Cross-fade blink overlay (a second tab's image over this one) ──
-                if let Some(ov) = blink_overlay.borrow().as_ref() {
-                    let alpha = blink_opacity.get().clamp(0.0, 1.0);
-                    if alpha > 0.0 {
-                        if let Some(osurf) = rgba_to_surface(&ov.rgba, ov.width, ov.height) {
-                            cr.save().ok();
-                            // Pin the overlay's reference pixel to its screen anchor,
-                            // rotated + scaled about that anchor to match this image.
-                            cr.translate(ov.anchor_x, ov.anchor_y);
-                            cr.rotate(ov.rot);
-                            cr.scale(ov.scale, ov.scale);
-                            cr.translate(-ov.ref_px, -ov.ref_py);
-                            cr.set_source_surface(&osurf, 0.0, 0.0).ok();
-                            let pattern = cr.source();
-                            pattern.set_filter(cairo::Filter::Nearest);
-                            cr.paint_with_alpha(alpha).ok();
-                            cr.restore().ok();
-                        }
-                    }
-                }
+        // Resolve the hover pixel: sky-linked (via this canvas's own WCS)
+        // when linking is on, else this canvas's own local hover.
+        let (linked, hover_sky) = {
+            let s = shared.borrow();
+            (s.linked, s.hover)
+        };
+        let mapped_hover = match (linked, hover_sky, wcs.as_ref()) {
+            (true, Some((ra, dec)), Some(w_ref)) => w_ref.world_to_pixel(ra, dec),
+            _ => None,
+        };
+        let hover_pixel =
+            choose_hover_pixel(linked, wcs.is_some(), mapped_hover, *local_hover.borrow())
+                .filter(|&(cx, cy)| on_image(cx, cy, w, h));
 
-                // Resolve the hover pixel: sky-linked (via this canvas's own WCS)
-                // when linking is on, else this canvas's own local hover.
-                let (linked, hover_sky) = {
-                    let s = shared.borrow();
-                    (s.linked, s.hover)
-                };
-                let mapped_hover = match (linked, hover_sky, wcs.as_ref()) {
-                    (true, Some((ra, dec)), Some(w_ref)) => w_ref.world_to_pixel(ra, dec),
-                    _ => None,
-                };
-                let hover_pixel =
-                    choose_hover_pixel(linked, wcs.is_some(), mapped_hover, *local_hover.borrow())
-                        .filter(|&(cx, cy)| on_image(cx, cy, w, h));
+        // Draw hover crosshair (green dashed) — locked to its image pixel
+        // through the same rotation as the image.
+        if let Some((cx, cy)) = hover_pixel {
+            let (sx, sy) = image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
 
-                // Draw hover crosshair (green dashed) — locked to its image pixel
-                // through the same rotation as the image.
-                if let Some((cx, cy)) = hover_pixel {
-                    let (sx, sy) =
-                        image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
+            cr.set_source_rgba(0.0, 1.0, 0.0, 0.7);
+            cr.set_line_width(1.0);
+            cr.set_dash(&[4.0, 4.0], 0.0);
 
-                    cr.set_source_rgba(0.0, 1.0, 0.0, 0.7);
-                    cr.set_line_width(1.0);
-                    cr.set_dash(&[4.0, 4.0], 0.0);
+            cr.move_to(sx, 0.0);
+            cr.line_to(sx, widget_h as f64);
+            cr.stroke().ok();
 
-                    cr.move_to(sx, 0.0);
-                    cr.line_to(sx, widget_h as f64);
-                    cr.stroke().ok();
+            cr.move_to(0.0, sy);
+            cr.line_to(widget_w as f64, sy);
+            cr.stroke().ok();
 
-                    cr.move_to(0.0, sy);
-                    cr.line_to(widget_w as f64, sy);
-                    cr.stroke().ok();
+            cr.set_dash(&[], 0.0);
+        }
 
-                    cr.set_dash(&[], 0.0);
-                }
+        // Draw placed crosshair (solid red) with optional RA/Dec label.
+        // Hidden when it falls outside the image (e.g. an off-image Go To).
+        if let Some((cx, cy)) =
+            (*crosshair_placed.borrow()).filter(|&(cx, cy)| on_image(cx, cy, w, h))
+        {
+            let (sx, sy) = image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
 
-                // Draw placed crosshair (solid red) with optional RA/Dec label.
-                // Hidden when it falls outside the image (e.g. an off-image Go To).
-                if let Some((cx, cy)) =
-                    (*crosshair_placed.borrow()).filter(|&(cx, cy)| on_image(cx, cy, w, h))
-                {
-                    let (sx, sy) =
-                        image_to_screen(cx, cy, t.scale, t.offset_x, t.offset_y, rot, w, h);
+            cr.set_source_rgba(1.0, 0.15, 0.15, 0.9);
+            cr.set_line_width(1.5);
 
-                    cr.set_source_rgba(1.0, 0.15, 0.15, 0.9);
-                    cr.set_line_width(1.5);
+            cr.move_to(sx, 0.0);
+            cr.line_to(sx, widget_h as f64);
+            cr.stroke().ok();
 
-                    cr.move_to(sx, 0.0);
-                    cr.line_to(sx, widget_h as f64);
-                    cr.stroke().ok();
+            cr.move_to(0.0, sy);
+            cr.line_to(widget_w as f64, sy);
+            cr.stroke().ok();
 
-                    cr.move_to(0.0, sy);
-                    cr.line_to(widget_w as f64, sy);
-                    cr.stroke().ok();
+            // Label with sky coordinates if WCS available
+            if let Some(ref w_ref) = wcs {
+                let (ra, dec) = w_ref.pixel_to_sky(cx, cy);
+                let (ra_str, dec_str) = WcsInfo::format_coords(ra, dec);
+                let text = format!("RA {}  Dec {}", ra_str, dec_str);
 
-                    // Label with sky coordinates if WCS available
-                    if let Some(ref w_ref) = wcs {
-                        let (ra, dec) = w_ref.pixel_to_sky(cx, cy);
-                        let (ra_str, dec_str) = WcsInfo::format_coords(ra, dec);
-                        let text = format!("RA {}  Dec {}", ra_str, dec_str);
+                // The same renderer the cube's slice view uses, so the
+                // two viewers' readouts cannot drift apart in look or in
+                // edge behaviour.
+                crate::ui::coord_chip::draw(
+                    cr,
+                    sx,
+                    sy,
+                    std::slice::from_ref(&text),
+                    widget_w as f64,
+                    widget_h as f64,
+                );
+            }
+        }
+    }
 
-                        // The same renderer the cube's slice view uses, so the
-                        // two viewers' readouts cannot drift apart in look or in
-                        // edge behaviour.
-                        crate::ui::coord_chip::draw(
-                            cr,
-                            sx,
-                            sy,
-                            std::slice::from_ref(&text),
-                            widget_w as f64,
-                            widget_h as f64,
-                        );
-                    }
+    /// The working area as PNG bytes, at `(width, height)`.
+    ///
+    /// Runs [`draw_working_area`](Self::draw_working_area) — the same code the
+    /// screen runs — into an off-screen surface. Nothing about the view is
+    /// re-derived here, which is the point: pan, zoom, rotation, colormap,
+    /// stretch, the crosshair and a blink overlay all appear because they are
+    /// drawn by the function that draws them on screen.
+    ///
+    /// A size of zero or less is refused rather than allocated.
+    pub fn capture_png(&self, width: i32, height: i32) -> Result<Vec<u8>, String> {
+        validate_capture_size(width, height)?;
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)
+            .map_err(|e| format!("cairo surface error: {e}"))?;
+        {
+            let cr =
+                cairo::Context::new(&surface).map_err(|e| format!("cairo context error: {e}"))?;
+            self.draw_working_area(&cr, width, height);
+        }
+        let mut png: Vec<u8> = Vec::new();
+        surface
+            .write_to_png(&mut png)
+            .map_err(|e| format!("PNG encode failed: {e}"))?;
+        Ok(png)
+    }
+
+    /// The on-screen size of the drawing area, for a capture that matches it.
+    pub fn view_size(&self) -> (i32, i32) {
+        (self.drawing_area.width(), self.drawing_area.height())
+    }
+
+    fn setup_draw(self: &Rc<Self>) {
+        let canvas = Rc::downgrade(self);
+        self.drawing_area
+            .set_draw_func(move |_area, cr, widget_w, widget_h| {
+                // Weak, so the closure the widget owns does not keep the canvas
+                // alive after the tab holding it is closed.
+                if let Some(canvas) = canvas.upgrade() {
+                    canvas.draw_working_area(cr, widget_w, widget_h);
                 }
             });
     }
@@ -833,5 +902,33 @@ mod tests {
             choose_hover_pixel(true, false, Some((3.0, 4.0)), Some((9.0, 9.0))),
             Some((9.0, 9.0))
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_size_tests {
+    //! The capture-size rule, checked without a display.
+    use super::validate_capture_size;
+
+    #[test]
+    fn a_drawable_size_is_accepted() {
+        assert!(validate_capture_size(400, 300).is_ok());
+        assert!(validate_capture_size(1, 1).is_ok());
+    }
+
+    #[test]
+    fn an_impossible_size_is_refused_rather_than_allocated() {
+        for (w, h) in [(0, 300), (400, 0), (-1, 300), (400, -1), (0, 0)] {
+            let err = validate_capture_size(w, h).expect_err(&format!("{w}x{h} should be refused"));
+            assert!(err.contains("invalid capture size"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_enormous_size_is_refused_before_the_allocation() {
+        // A caller asking for a gigapixel capture gets an answer, not a
+        // process that tries to allocate 4 GB and is killed.
+        let err = validate_capture_size(100_000, 100_000).expect_err("should refuse");
+        assert!(err.contains("too large"), "{err}");
     }
 }

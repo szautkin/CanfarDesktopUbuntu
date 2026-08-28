@@ -11,6 +11,7 @@
 //! (the tool abstractions + proposal pipeline).
 
 pub mod agent_events;
+pub mod agent_image;
 pub mod audit;
 pub mod budget;
 pub mod client_approval;

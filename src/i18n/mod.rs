@@ -85,6 +85,11 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Loading images…",                             "Chargement des images…"),
     ("Discovering…",                                "Découverte en cours…"),
     ("Largest file to open (MB)",                   "Taille maximale du fichier à ouvrir (Mo)"),
+    ("AI agent images",                             "Images pour l'agent IA"),
+    ("Captures of a viewer's working area sent to an AI agent. A model reads an image at a few hundred pixels; a larger capture costs the agent context without telling it more.",
+     "Captures de la zone de travail d'une visionneuse envoyées à un agent IA. Un modèle lit une image à quelques centaines de pixels ; une capture plus grande coûte du contexte à l'agent sans lui en apprendre davantage."),
+    ("Largest agent image (pixels)",                "Taille maximale de l'image de l'agent (pixels)"),
+    ("Largest agent image (MB)",                    "Taille maximale de l'image de l'agent (Mo)"),
     ("Kernel: not started",                         "Noyau : non démarré"),
     // The rest of the kernel states. Only "not started" was ever translated,
     // because the others were English literals doing double duty as machine

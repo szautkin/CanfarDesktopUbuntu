@@ -244,6 +244,7 @@ mod catalog {
             | "open_fits_file"
             | "set_fits_view"
             | "get_fits_view"
+            | "get_fits_image"
             | "probe_fits_pixel"
             | "fits_goto_coordinate"
             | "list_fits_bookmarks"

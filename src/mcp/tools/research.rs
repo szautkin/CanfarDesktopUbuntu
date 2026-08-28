@@ -353,12 +353,14 @@ async fn get_preview_image(services: &AppServices, args: &Value) -> ToolResult {
     }
     match crate::mcp::preview::fetch_observation_preview(services, &pid, MAX_PREVIEW_BYTES).await {
         Ok((bytes, mime)) => {
-            use base64::Engine as _;
-            let data_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            ToolResult::Image {
-                data_base64,
-                mime,
-                caption: Some(format!("Preview of {pid}")),
+            // Through the shared builder: the type now follows the bytes rather
+            // than the DataLink row's claim, and the size budget that only this
+            // tool had is the one every image source uses.
+            match crate::mcp::agent_image::AgentImage::from_bytes(bytes, &mime) {
+                Ok(image) => image
+                    .with_caption(format!("Preview of {pid}"))
+                    .into_tool_result(crate::mcp::agent_image::ImageLimits::from_settings()),
+                Err(e) => ToolResult::Failed(format!("preview fetch failed: {e}")),
             }
         }
         Err(e) => ToolResult::Failed(format!("preview fetch failed: {e}")),

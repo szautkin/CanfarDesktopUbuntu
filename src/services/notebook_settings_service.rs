@@ -96,6 +96,8 @@ mod tests {
             execution_timeout_secs: 120,
             show_toolbar: false,
             max_open_file_mb: 128,
+            agent_image_max_dimension: 1024,
+            agent_image_max_bytes_mb: 16,
         };
         svc.save(&settings).expect("save");
         let back = svc.load();

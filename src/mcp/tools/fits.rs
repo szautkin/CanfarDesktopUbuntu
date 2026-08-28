@@ -45,6 +45,20 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "get_fits_image".into(),
+            description: "SEE the FITS viewer's working area — the active tab exactly as the user \
+                          is looking at it, with its pan, zoom, rotation, colormap, stretch, cut \
+                          levels, crosshair and any blink overlay. Returns the picture as image \
+                          content, plus the view it was captured from and the scale between that \
+                          view and the returned raster, so a position in the image can be turned \
+                          back into image or sky coordinates. Use get_fits_view for the numbers \
+                          alone; use this to look. Errors if no FITS is open."
+                .into(),
+            input_schema: empty.clone(),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "set_fits_view".into(),
             description: "Steer the 2D FITS viewer's ACTIVE tab — every control the UI exposes. \
                           Display: stretch, colormap, black/white cut levels (minCut/maxCut in physical pixel \
@@ -247,6 +261,7 @@ pub async fn dispatch(
     match name {
         // Live ops — the op name equals the tool name; forward to the open viewer.
         "get_fits_view"
+        | "get_fits_image"
         | "set_fits_view"
         | "probe_fits_pixel"
         | "fits_goto_coordinate"
@@ -266,17 +281,13 @@ pub async fn dispatch(
 }
 
 /// Map a JSON result into a `ToolResult`, promoting an `imageBase64` payload to
-/// a PNG image (per the family contract; unused by the current FITS ops).
+/// an image.
 fn to_tool_result(r: Result<Value, String>) -> ToolResult {
     match r {
-        Ok(v) => match v.get("imageBase64").and_then(|x| x.as_str()) {
-            Some(b64) => ToolResult::Image {
-                data_base64: b64.to_string(),
-                mime: "image/png".into(),
-                caption: None,
-            },
-            None => ToolResult::Data(v),
-        },
+        Ok(v) => crate::mcp::agent_image::promote(
+            v,
+            crate::mcp::agent_image::ImageLimits::from_settings(),
+        ),
         Err(e) => ToolResult::Failed(e),
     }
 }

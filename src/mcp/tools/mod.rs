@@ -370,6 +370,15 @@ pub enum ToolResult {
         data_base64: String,
         mime: String,
         caption: Option<String>,
+        /// What the picture is OF, as data: the view it was captured from and
+        /// the transform between it and the raster.
+        ///
+        /// An agent that can see a viewer will be asked to draw on it — to ring
+        /// a source, to point at an artefact. It can only express "here" in a
+        /// frame the app shares, so a capture that arrives as pixels alone
+        /// makes that impossible without capturing it again. The picture is for
+        /// the eye; this is for the arithmetic.
+        payload: Option<serde_json::Value>,
     },
     /// The call failed; `reason` is a human-readable message (maps to isError).
     Failed(String),

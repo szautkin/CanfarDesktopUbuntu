@@ -473,6 +473,7 @@ fn map_tool_result(result: ToolResult) -> Value {
             data_base64,
             mime,
             caption,
+            payload,
         } => {
             let mut content = vec![json!({
                 "type": "image",
@@ -484,7 +485,14 @@ fn map_tool_result(result: ToolResult) -> Value {
                     content.push(json!({ "type": "text", "text": c }));
                 }
             }
-            json!({ "content": content, "isError": false })
+            let envelope = json!({ "content": content, "isError": false });
+            match payload {
+                // The coordinates travel as structured data beside the pixels,
+                // so a caller can turn what it SEES into something it can ask
+                // for. A caption cannot carry a transform.
+                Some(p) => with_structured(envelope, &p),
+                None => envelope,
+            }
         }
     }
 }
@@ -540,6 +548,7 @@ mod result_envelope_tests {
             data_base64: "iVBORw0=".to_string(),
             mime: "image/jpeg".to_string(),
             caption: None,
+            payload: None,
         });
         assert_eq!(envelope["content"][0]["type"], "image");
         assert_eq!(envelope["content"][0]["data"], "iVBORw0=");

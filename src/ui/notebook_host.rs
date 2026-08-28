@@ -2136,6 +2136,46 @@ impl NotebookTabHost {
         max_file_row.set_title(crate::tr_en!("Largest file to open (MB)"));
         exec_group.add(&max_file_row);
 
+        // ── Agent images ────────────────────────────────────────────────────
+        let agent_group = adw::PreferencesGroup::new();
+        agent_group.set_title(crate::tr_en!("AI agent images"));
+        agent_group.set_description(Some(crate::tr_en!(
+            "Captures of a viewer's working area sent to an AI agent. A model reads an \
+             image at a few hundred pixels; a larger capture costs the agent context \
+             without telling it more."
+        )));
+
+        let agent_dim_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.agent_image_max_dimension as f64,
+                64.0,
+                8192.0,
+                64.0,
+                256.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        agent_dim_row.set_title(crate::tr_en!("Largest agent image (pixels)"));
+        agent_group.add(&agent_dim_row);
+
+        let agent_bytes_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.agent_image_max_bytes_mb as f64,
+                1.0,
+                256.0,
+                1.0,
+                8.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        agent_bytes_row.set_title(crate::tr_en!("Largest agent image (MB)"));
+        agent_group.add(&agent_bytes_row);
+        content.append(&agent_group);
+
         let py_row = adw::EntryRow::new();
         py_row.set_title(crate::tr_en!("Python path (blank = auto-detect)"));
         py_row.set_text(cur.python_path.as_deref().unwrap_or(""));
@@ -2219,6 +2259,8 @@ impl NotebookTabHost {
             let py_row = py_row.clone();
             let toolbar_row = toolbar_row.clone();
             let max_file_row = max_file_row.clone();
+            let agent_dim_row = agent_dim_row.clone();
+            let agent_bytes_row = agent_bytes_row.clone();
             move || {
                 let py = py_row.text().trim().to_string();
                 let new = NotebookSettings {
@@ -2231,6 +2273,8 @@ impl NotebookTabHost {
                     execution_timeout_secs: timeout_row.value().round() as u32,
                     show_toolbar: toolbar_row.is_active(),
                     max_open_file_mb: max_file_row.value().round() as u32,
+                    agent_image_max_dimension: agent_dim_row.value().round() as u32,
+                    agent_image_max_bytes_mb: agent_bytes_row.value().round() as u32,
                 };
                 h.update_settings(new);
             }
@@ -2255,6 +2299,14 @@ impl NotebookTabHost {
         {
             let p = persist.clone();
             max_file_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            agent_dim_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            agent_bytes_row.connect_value_notify(move |_| p());
         }
         {
             let p = persist.clone();
