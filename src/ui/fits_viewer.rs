@@ -78,6 +78,11 @@ pub struct FitsViewer {
     /// 0-based index of the tab to blink the active tab against.
     blink_target: Rc<Cell<usize>>,
     coords_panel: Rc<FitsCoordsPanel>,
+    annotations_panel: Rc<crate::ui::annotations_panel::AnnotationsPanel>,
+    /// On while the next click places a mark.
+    draw_mode: gtk::ToggleButton,
+    /// Which shape that click makes.
+    draw_kind: gtk::DropDown,
     // Toolbar widgets (for tab-switch sync)
     stretch_combo: gtk::DropDown,
     colormap_combo: gtk::DropDown,
@@ -264,6 +269,27 @@ impl FitsViewer {
             &north_up_btn,
         ));
 
+        // ── DRAW ────────────────────────────────────────────────────────────
+        column.append(&viewer_shell::section_header(crate::tr_en!("DRAW")));
+
+        let draw_mode = gtk::ToggleButton::new();
+        draw_mode.set_icon_name("document-edit-symbolic");
+        draw_mode.set_tooltip_text(Some(crate::tr_en!(
+            "Draw a mark on the image. Click where you mean; press Escape to stop."
+        )));
+        let kind_items = gtk::StringList::new(&[
+            crate::tr_en!("Circle"),
+            crate::tr_en!("Box"),
+            crate::tr_en!("Callout"),
+            crate::tr_en!("Text"),
+        ]);
+        let draw_kind = gtk::DropDown::new(Some(kind_items), gtk::Expression::NONE);
+        draw_kind.set_selected(0);
+        let draw_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        draw_box.append(&draw_mode);
+        draw_box.append(&draw_kind);
+        column.append(&viewer_shell::labeled(crate::tr_en!("Mark"), &draw_box));
+
         // ── CROSSHAIR ───────────────────────────────────────────────────────
         column.append(&viewer_shell::section_header(crate::tr_en!("CROSSHAIR")));
 
@@ -316,6 +342,12 @@ impl FitsViewer {
         let coords_expander = gtk::Expander::new(Some(crate::tr_en!("Saved coordinates")));
         coords_expander.set_child(Some(coords_panel.widget()));
         column.append(&coords_expander);
+
+        // ── ANNOTATIONS ─────────────────────────────────────────────────────
+        let annotations_panel = crate::ui::annotations_panel::AnnotationsPanel::new();
+        let annotations_expander = gtk::Expander::new(Some(crate::tr_en!("Marks")));
+        annotations_expander.set_child(Some(annotations_panel.widget()));
+        column.append(&annotations_expander);
 
         // ── COMPARE ─────────────────────────────────────────────────────────
         // Everything that acts across tabs, together.
@@ -516,6 +548,9 @@ impl FitsViewer {
             blink_interval_ms: Rc::new(Cell::new(1500)),
             blink_target: Rc::new(Cell::new(1)),
             coords_panel,
+            annotations_panel,
+            draw_mode,
+            draw_kind,
             search_here_btn,
             stretch_combo,
             colormap_combo,
@@ -784,6 +819,59 @@ impl FitsViewer {
                 }
             });
         }
+        // ── Drawing marks ───────────────────────────────────────────────────
+        {
+            let v = viewer.clone();
+            viewer.draw_mode.connect_toggled(move |btn| {
+                v.set_draw_mode(btn.is_active());
+            });
+        }
+        {
+            // Escape leaves draw mode — the way out of every mode in this app.
+            let v = viewer.clone();
+            let keys = gtk::EventControllerKey::new();
+            keys.connect_key_pressed(move |_, key, _, _| {
+                if key == gtk::gdk::Key::Escape && v.draw_mode.is_active() {
+                    v.draw_mode.set_active(false);
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk::glib::Propagation::Proceed
+            });
+            viewer.widget.add_controller(keys);
+        }
+        {
+            let v = viewer.clone();
+            viewer.annotations_panel.set_on_select(move |id| {
+                if let Some(tab) = v.current_tab() {
+                    tab.canvas().set_selected_annotation(Some(id.to_string()));
+                    v.refresh_annotations_panel();
+                }
+            });
+        }
+        {
+            let v = viewer.clone();
+            viewer.annotations_panel.set_on_delete(move |id| {
+                if let Some(tab) = v.current_tab() {
+                    let canvas = tab.canvas();
+                    let mut all = canvas.annotations();
+                    all.retain(|a| a.id != id);
+                    canvas.set_annotations(all);
+                    v.persist_annotations(&tab);
+                    v.refresh_annotations_panel();
+                }
+            });
+        }
+        {
+            let v = viewer.clone();
+            viewer.annotations_panel.set_on_clear(move |_| {
+                if let Some(tab) = v.current_tab() {
+                    tab.canvas().set_annotations(Vec::new());
+                    v.persist_annotations(&tab);
+                    v.refresh_annotations_panel();
+                }
+            });
+        }
+
         // Extension selector: switch the displayed image HDU.
         {
             let v = viewer.clone();
@@ -843,6 +931,7 @@ impl FitsViewer {
                     v.sync_controls_to_tab(&tab);
                     v.update_hdu_and_banner(&tab);
                     v.show_status_for(&tab);
+                    v.refresh_annotations_panel();
                 }
                 // The active index changed, so the MCP snapshot is stale.
                 v.publish_open_tabs();
@@ -1008,12 +1097,7 @@ impl FitsViewer {
                 }
                 mark.validate()?;
 
-                let file = self
-                    .fits_view_state(&tab)
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+                let file = Self::annotation_target(&tab);
                 let mut current = canvas.annotations();
                 current.push(mark.clone());
                 canvas.set_annotations(current.clone());
@@ -1046,12 +1130,7 @@ impl FitsViewer {
                 let removed = current.len() < before;
                 if removed {
                     canvas.set_annotations(current.clone());
-                    let file = self
-                        .fits_view_state(&tab)
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+                    let file = Self::annotation_target(&tab);
                     let _ = crate::helpers::annotation_store::save_for(&file, &current);
                 }
                 Ok(json!({ "removed": removed, "viewer": "fits", "remaining": current.len() }))
@@ -1064,12 +1143,7 @@ impl FitsViewer {
                 let canvas = tab.canvas();
                 let removed = canvas.annotations().len();
                 canvas.set_annotations(Vec::new());
-                let file = self
-                    .fits_view_state(&tab)
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+                let file = Self::annotation_target(&tab);
                 let _ = crate::helpers::annotation_store::save_for(&file, &[]);
                 Ok(json!({ "cleared": removed, "viewer": "fits" }))
             }
@@ -1713,6 +1787,15 @@ impl FitsViewer {
     /// (mirrors the Windows `PlaceCrosshair` / `CenterOnImagePixel` behaviour so
     /// go-to and right-click targets stay on-screen).
     fn wire_tab_callbacks(&self, tab: &Rc<FitsTab>) {
+        // Marks come back with the image they were drawn on.
+        let file = Self::annotation_target(tab);
+        if !file.is_empty() {
+            let saved = crate::helpers::annotation_store::load_for(&file);
+            if !saved.is_empty() {
+                tab.canvas().set_annotations(saved);
+            }
+        }
+
         let coords_panel = self.coords_panel.clone();
         let search_here_btn = self.search_here_btn.clone();
         let wcs = tab.data().wcs.clone();
@@ -1844,6 +1927,179 @@ impl FitsViewer {
         *self.suppress_sync.borrow_mut() = false;
 
         self.hdu_bar.set_visible(true);
+    }
+
+    // ── Annotations ─────────────────────────────────────────────────────────
+
+    /// What a tab's marks are filed under.
+    ///
+    /// `tab.source_file()`, and not the view-state JSON: five call sites read
+    /// `get("path")` from that payload, the field is called `sourcePath`, and
+    /// every one of them silently got an empty string — so every file's marks
+    /// went into one bucket keyed `""`, and none came back when a file was
+    /// reopened. One function now, and it asks the tab directly rather than
+    /// going through a serialized copy of what the tab already knows.
+    fn annotation_target(tab: &Rc<FitsTab>) -> String {
+        tab.source_file().to_string()
+    }
+
+    /// Arm or disarm click-to-place on the active tab.
+    fn set_draw_mode(self: &Rc<Self>, on: bool) {
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        if !on {
+            canvas.clear_on_left_click();
+            return;
+        }
+        let kind = self.selected_draw_kind();
+        let viewer = Rc::downgrade(self);
+        canvas.set_on_left_click(move |img_x, img_y| {
+            let Some(v) = viewer.upgrade() else { return };
+            v.place_mark(kind, img_x, img_y);
+        });
+    }
+
+    fn selected_draw_kind(&self) -> crate::models::annotation::AnnotationKind {
+        use crate::models::annotation::AnnotationKind::*;
+        match self.draw_kind.selected() {
+            1 => Rect,
+            2 => Callout,
+            3 => Text,
+            _ => Circle,
+        }
+    }
+
+    /// Add a mark where the user clicked.
+    ///
+    /// A callout or a text needs words, so those open a small entry first; a
+    /// bare shape lands immediately. Anchored to the sky when the image has
+    /// WCS, so the mark survives reopening the file.
+    fn place_mark(
+        self: &Rc<Self>,
+        kind: crate::models::annotation::AnnotationKind,
+        img_x: f64,
+        img_y: f64,
+    ) {
+        use crate::models::annotation::{Anchor, Annotation, Author};
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let anchor = tab
+            .data()
+            .wcs
+            .as_ref()
+            .filter(|w| w.is_valid())
+            .map(|w| {
+                let (ra, dec) = w.pixel_to_sky(img_x, img_y);
+                Anchor::Sky {
+                    ra_deg: ra,
+                    dec_deg: dec,
+                }
+            })
+            .filter(|a| a.is_valid())
+            .unwrap_or(Anchor::ImagePixel { x: img_x, y: img_y });
+
+        let needs_text = matches!(
+            kind,
+            crate::models::annotation::AnnotationKind::Callout
+                | crate::models::annotation::AnnotationKind::Text
+        );
+        if needs_text {
+            self.ask_for_text(kind, anchor);
+            return;
+        }
+        let mark = Annotation::new(kind, anchor, "", Author::User);
+        self.add_mark(mark);
+    }
+
+    /// Store a validated mark and show it.
+    fn add_mark(&self, mark: crate::models::annotation::Annotation) {
+        if mark.validate().is_err() {
+            return;
+        }
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        let mut all = canvas.annotations();
+        all.push(mark);
+        canvas.set_annotations(all);
+        self.persist_annotations(&tab);
+        self.refresh_annotations_panel();
+    }
+
+    /// A one-line entry for a label, anchored at the sidebar.
+    ///
+    /// A popover collects the text; the mark itself is drawn with cairo. A
+    /// label laid out as a widget would show on screen and be missing from
+    /// every capture an agent takes.
+    fn ask_for_text(
+        self: &Rc<Self>,
+        kind: crate::models::annotation::AnnotationKind,
+        anchor: crate::models::annotation::Anchor,
+    ) {
+        use crate::models::annotation::{Annotation, Author};
+        let popover = gtk::Popover::new();
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row.set_margin_top(8);
+        row.set_margin_bottom(8);
+        row.set_margin_start(8);
+        row.set_margin_end(8);
+        let entry = gtk::Entry::new();
+        entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
+        entry.set_activates_default(true);
+        entry.set_width_chars(24);
+        row.append(&entry);
+        let ok = gtk::Button::with_label(crate::tr_en!("Add"));
+        ok.add_css_class("suggested-action");
+        row.append(&ok);
+        popover.set_child(Some(&row));
+        popover.set_parent(&self.draw_mode);
+
+        let viewer = Rc::downgrade(self);
+        let commit = {
+            let entry = entry.clone();
+            let popover = popover.clone();
+            move || {
+                let text = entry.text().to_string();
+                if text.trim().is_empty() {
+                    return;
+                }
+                if let Some(v) = viewer.upgrade() {
+                    v.add_mark(Annotation::new(kind, anchor, text, Author::User));
+                }
+                popover.popdown();
+            }
+        };
+        {
+            let commit = commit.clone();
+            ok.connect_clicked(move |_| commit());
+        }
+        entry.connect_activate(move |_| commit());
+        popover.popup();
+        entry.grab_focus();
+    }
+
+    /// Save the active tab's marks under its file.
+    fn persist_annotations(&self, tab: &Rc<FitsTab>) {
+        let file = Self::annotation_target(tab);
+        let _ = crate::helpers::annotation_store::save_for(&file, &tab.canvas().annotations());
+    }
+
+    /// Redraw the list from the active tab.
+    fn refresh_annotations_panel(&self) {
+        match self.current_tab() {
+            Some(tab) => {
+                let canvas = tab.canvas();
+                self.annotations_panel.set_annotations(
+                    &canvas.annotations(),
+                    canvas.selected_annotation().as_deref(),
+                );
+            }
+            None => self.annotations_panel.set_annotations(&[], None),
+        }
     }
 
     /// Reload a different image HDU of the active tab's file, replacing the

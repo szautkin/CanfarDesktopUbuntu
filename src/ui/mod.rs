@@ -2,6 +2,7 @@ pub mod agent_badge;
 pub mod agent_proposals_dialog;
 pub mod ai_connect_wizard;
 pub mod ai_guide_page;
+pub mod annotations_panel;
 pub mod batch_jobs_dialog;
 pub mod batch_jobs_view;
 pub mod canfar_images;

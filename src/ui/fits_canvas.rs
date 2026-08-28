@@ -207,6 +207,9 @@ pub struct FitsCanvas {
     local_hover: Rc<RefCell<Option<(f64, f64)>>>,
     /// A right-clicked persistent crosshair position (in image-space).
     crosshair_placed: Rc<RefCell<Option<(f64, f64)>>>,
+    /// Installed by the viewer while draw mode is on.
+    #[allow(clippy::type_complexity)]
+    on_left_click: RefCell<Option<Box<dyn Fn(f64, f64)>>>,
     /// Marks drawn on this image, by the user or an agent.
     annotations: Rc<RefCell<Vec<crate::models::annotation::Annotation>>>,
     /// The selected mark's id, highlighted on the canvas and in the panel.
@@ -260,6 +263,7 @@ impl FitsCanvas {
             shared,
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
+            on_left_click: RefCell::new(None),
             annotations: Rc::new(RefCell::new(Vec::new())),
             selected_annotation: Rc::new(RefCell::new(None)),
             rotation: Rc::new(RefCell::new(0.0)),
@@ -273,6 +277,7 @@ impl FitsCanvas {
         canvas.setup_scroll_zoom();
         canvas.setup_drag_pan();
         canvas.setup_motion_tracking();
+        canvas.setup_left_click();
         canvas.setup_right_click_crosshair();
 
         canvas
@@ -916,6 +921,64 @@ impl FitsCanvas {
         });
 
         self.drawing_area.add_controller(motion);
+    }
+
+    /// Call `f` with the IMAGE pixel of a left click, when one is installed.
+    ///
+    /// Image coordinates rather than screen, because that is what an annotation
+    /// is anchored in — converting at the edge means the viewer never handles a
+    /// screen coordinate it might forget to transform.
+    pub fn set_on_left_click(&self, f: impl Fn(f64, f64) + 'static) {
+        *self.on_left_click.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Remove the left-click hook, restoring plain panning behaviour.
+    pub fn clear_on_left_click(&self) {
+        *self.on_left_click.borrow_mut() = None;
+    }
+
+    fn setup_left_click(self: &Rc<Self>) {
+        let click = gtk::GestureClick::new();
+        click.set_button(1);
+        let canvas = Rc::downgrade(self);
+        click.connect_pressed(move |_, _n, x, y| {
+            let Some(canvas) = canvas.upgrade() else {
+                return;
+            };
+            // Nothing installed means nothing to do — panning and selection are
+            // unaffected, which is why this is a hook and not a mode the canvas
+            // knows about.
+            let has_handler = canvas.on_left_click.borrow().is_some();
+            if !has_handler {
+                return;
+            }
+            let (img_x, img_y) = {
+                let t = canvas.transform.borrow();
+                let rot = *canvas.rotation.borrow();
+                screen_to_image(
+                    x,
+                    y,
+                    t.scale,
+                    t.offset_x,
+                    t.offset_y,
+                    rot,
+                    canvas.img_width,
+                    canvas.img_height,
+                )
+            };
+            if !on_image(img_x, img_y, canvas.img_width, canvas.img_height) {
+                return;
+            }
+            // The borrow is released before the callback runs: it may reach
+            // back into the canvas to add a mark, and holding a RefCell across
+            // a callback is how that becomes a panic.
+            let handler = canvas.on_left_click.borrow_mut().take();
+            if let Some(f) = handler {
+                f(img_x, img_y);
+                *canvas.on_left_click.borrow_mut() = Some(f);
+            }
+        });
+        self.drawing_area.add_controller(click);
     }
 
     fn setup_right_click_crosshair(&self) {
