@@ -54,6 +54,9 @@ pub struct CubeViewer {
     /// be a SECOND channel, decoupled from the slice view's, so the marker in
     /// the volume stayed where it was seeded however far you scrubbed.
     current_channel: Cell<usize>,
+    /// Marks drawn on this cube, by the user or an agent.
+    annotations: RefCell<Vec<crate::models::annotation::Annotation>>,
+    selected_annotation: RefCell<Option<String>>,
     // Handles the overlay / colorbar methods read back.
     window_lo: gtk::Scale,
     window_hi: gtk::Scale,
@@ -175,6 +178,8 @@ impl CubeViewer {
             volume_section: ctl.volume_section.clone(),
             overlay_area,
             current_channel: Cell::new(vol.nz / 2),
+            annotations: RefCell::new(Vec::new()),
+            selected_annotation: RefCell::new(None),
             window_lo: ctl.window_lo.clone(),
             window_hi: ctl.window_hi.clone(),
             colormap: ctl.colormap.clone(),
@@ -513,6 +518,88 @@ impl CubeViewer {
         }
     }
 
+    // ── Annotations ─────────────────────────────────────────────────────────
+
+    pub fn set_annotations(&self, annotations: Vec<crate::models::annotation::Annotation>) {
+        *self.annotations.borrow_mut() = annotations;
+        self.overlay_area.queue_draw();
+    }
+
+    pub fn annotations(&self) -> Vec<crate::models::annotation::Annotation> {
+        self.annotations.borrow().clone()
+    }
+
+    pub fn set_selected_annotation(&self, id: Option<String>) {
+        *self.selected_annotation.borrow_mut() = id;
+        self.overlay_area.queue_draw();
+    }
+
+    pub fn selected_annotation(&self) -> Option<String> {
+        self.selected_annotation.borrow().clone()
+    }
+
+    /// The voxel a click lands on, using the slice plane for depth.
+    ///
+    /// A click on a volume is a RAY: every voxel along it projects to the same
+    /// pixel, and nothing here can tell which was meant. The slice plane
+    /// answers it — it is already drawn in the volume as the cyan quad, and the
+    /// scrubber that moves it is right there, so the user places on a surface
+    /// they can see. Someone wanting another depth scrubs to it first, which is
+    /// a gesture they already use.
+    ///
+    /// An agent never meets this: `annotate_cube` takes an explicit voxel.
+    pub fn voxel_at_screen(&self, sx: f64, sy: f64, w: i32, h: i32) -> Option<(f64, f64, f64)> {
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let z = self.current_channel.get() as f64;
+        let dims = (self.vol.nx, self.vol.ny, self.vol.nz);
+        let vp = self.gl.view_proj(w, h);
+        let spectral = self.gl.spectral_scale();
+        // Search the plane for the voxel that projects nearest the click. The
+        // plane is a quad under an arbitrary rotation, so there is no closed
+        // form worth writing; a coarse pass then a fine one around the winner
+        // is exact enough for placing a mark and costs nothing at click rates.
+        let mut best: Option<(f64, f64, f64)> = None;
+        let mut best_d2 = f64::MAX;
+        let consider = |x: f64, y: f64, best: &mut Option<(f64, f64, f64)>, best_d2: &mut f64| {
+            if let Some((px, py)) = crate::helpers::cube_axes::project_voxel(
+                &vp,
+                dims,
+                spectral,
+                (x, y, z),
+                (w as f32, h as f32),
+            ) {
+                let d2 = (px as f64 - sx).powi(2) + (py as f64 - sy).powi(2);
+                if d2 < *best_d2 {
+                    *best_d2 = d2;
+                    *best = Some((x, y, z));
+                }
+            }
+        };
+        let (nx, ny) = (self.vol.nx.max(1), self.vol.ny.max(1));
+        let coarse = 24usize;
+        for i in 0..=coarse {
+            for j in 0..=coarse {
+                let x = (nx - 1) as f64 * i as f64 / coarse as f64;
+                let y = (ny - 1) as f64 * j as f64 / coarse as f64;
+                consider(x, y, &mut best, &mut best_d2);
+            }
+        }
+        let (cx, cy, _) = best?;
+        let step_x = (nx - 1) as f64 / coarse as f64;
+        let step_y = (ny - 1) as f64 / coarse as f64;
+        for i in -6i32..=6 {
+            for j in -6i32..=6 {
+                let x = (cx + step_x * i as f64 / 6.0).clamp(0.0, (nx - 1) as f64);
+                let y = (cy + step_y * j as f64 / 6.0).clamp(0.0, (ny - 1) as f64);
+                consider(x, y, &mut best, &mut best_d2);
+            }
+        }
+        // A click far from the plane is not a placement.
+        (best_d2.sqrt() <= 40.0).then_some(best?)
+    }
+
     /// The on-screen size of the working area, for a capture that matches it.
     pub fn working_area_size(&self) -> (i32, i32) {
         (self.overlay_area.width(), self.overlay_area.height())
@@ -838,6 +925,32 @@ impl CubeViewer {
                 cr.move_to(cx, cy);
                 cr.show_text(text).ok();
             }
+        }
+
+        // Marks over the axes, inside the same function a capture replays, so
+        // the user's screen and an agent's picture cannot show different sets.
+        let surface = self.annotation_surface(w, h);
+        crate::helpers::annotation_render::draw(
+            &self.annotations.borrow(),
+            &surface,
+            self.selected_annotation.borrow().as_deref(),
+            cr,
+            w as f64,
+            h as f64,
+        );
+    }
+
+    /// The projection annotations use, for a given panel size.
+    ///
+    /// A small struct rather than an `impl` on `CubeViewer` because the surface
+    /// needs the panel size, which the viewer only learns when it is asked to
+    /// draw. Same trait, so the renderer is unchanged.
+    fn annotation_surface(&self, w: i32, h: i32) -> CubeAnnotationSurface {
+        CubeAnnotationSurface {
+            view_proj: self.gl.view_proj(w, h),
+            dims: (self.vol.nx, self.vol.ny, self.vol.nz),
+            spectral_scale: self.gl.spectral_scale(),
+            panel: (w as f32, h as f32),
         }
     }
 
@@ -1636,5 +1749,73 @@ mod working_area_tests {
             "the overlay is skipped on some condition other than the 2D slice \
              being visible, which would silently drop it in volume mode:\n{body}"
         );
+    }
+}
+
+/// The cube's volume as a place to draw marks.
+///
+/// Holds the frame's projection rather than borrowing the viewer, because the
+/// panel size is only known at draw time. The near-plane cull comes from
+/// `project_voxel` and is honoured rather than clamped: a mark behind the
+/// camera that is clamped onto the canvas looks placed, and is pointing at
+/// nothing.
+struct CubeAnnotationSurface {
+    view_proj: crate::helpers::cube_math::Mat4,
+    dims: (usize, usize, usize),
+    spectral_scale: f32,
+    panel: (f32, f32),
+}
+
+impl crate::helpers::annotation_render::AnnotationSurface for CubeAnnotationSurface {
+    fn project(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
+        use crate::models::annotation::Anchor;
+        let voxel = match *anchor {
+            Anchor::Data { x, y, z } => (x, y, z),
+            // A FITS image pixel or a sky position means nothing in a cube's
+            // voxel space; skipped rather than guessed at.
+            _ => return None,
+        };
+        crate::helpers::cube_axes::project_voxel(
+            &self.view_proj,
+            self.dims,
+            self.spectral_scale,
+            voxel,
+            self.panel,
+        )
+        .map(|(x, y)| (x as f64, y as f64))
+    }
+
+    fn units_to_pixels(&self, anchor: &crate::models::annotation::Anchor) -> f64 {
+        use crate::models::annotation::Anchor;
+        let Anchor::Data { x, y, z } = *anchor else {
+            return 1.0;
+        };
+        // Measured, not derived: project the voxel and one a step along X, and
+        // take the distance. Perspective makes the answer depend on where in
+        // the cube the mark is, so a single global scale would size a mark at
+        // the back the same as one at the front.
+        let here = crate::helpers::cube_axes::project_voxel(
+            &self.view_proj,
+            self.dims,
+            self.spectral_scale,
+            (x, y, z),
+            self.panel,
+        );
+        let along = crate::helpers::cube_axes::project_voxel(
+            &self.view_proj,
+            self.dims,
+            self.spectral_scale,
+            (x + 1.0, y, z),
+            self.panel,
+        );
+        match (here, along) {
+            (Some(a), Some(b)) => {
+                let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt() as f64;
+                // A voxel seen edge-on projects to almost nothing; a shape of
+                // zero size is invisible, so keep a floor.
+                d.max(0.25)
+            }
+            _ => 1.0,
+        }
     }
 }

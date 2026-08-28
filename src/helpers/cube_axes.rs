@@ -102,11 +102,7 @@ pub fn build(req: &AxesRequest) -> AxesOverlay {
 
     // Box (model) scale: spatial aspect from nx/ny, spectral axis from the caller's
     // spectral_scale — identical to CubeAxesOverlay's `sx/sy/sz` and the GL model.
-    let m = nx.max(ny) as f32;
-    let m = if m <= 0.0 { 1.0 } else { m };
-    let sx = nx as f32 / m;
-    let sy = ny as f32 / m;
-    let sz = spectral_scale;
+    let [sx, sy, sz] = box_scale(req.dims, spectral_scale);
 
     let proj = |bx: f32, by: f32, bz: f32| {
         project(view_proj, [bx * sx, by * sy, bz * sz], panel_w, panel_h)
@@ -201,6 +197,57 @@ pub fn build(req: &AxesRequest) -> AxesOverlay {
     );
 
     out
+}
+
+/// The model scale of the box for a cube of `dims`.
+///
+/// Spatial aspect from `nx`/`ny`, spectral from the caller. Shared by the axes
+/// box and by anything else that needs to put a point in the same space — the
+/// alternative is two copies of this arithmetic that agree until one is
+/// changed, and a mark that no longer sits where its voxel is.
+pub fn box_scale(dims: (usize, usize, usize), spectral_scale: f32) -> [f32; 3] {
+    let (nx, ny, _) = dims;
+    let m = nx.max(ny) as f32;
+    let m = if m <= 0.0 { 1.0 } else { m };
+    [nx as f32 / m, ny as f32 / m, spectral_scale]
+}
+
+/// A voxel's position in unscaled box space, each axis in `-0.5..=0.5`.
+///
+/// The same convention the slice-plane marker uses (`-0.5 + index/(n-1)`), and
+/// deliberately so: an annotation at channel 40 must land on the plane the
+/// viewer draws for channel 40.
+pub fn voxel_to_box(voxel: (f64, f64, f64), dims: (usize, usize, usize)) -> [f32; 3] {
+    let axis = |v: f64, n: usize| -> f32 {
+        if n <= 1 {
+            return 0.0;
+        }
+        (-0.5 + (v / (n - 1) as f64)).clamp(-0.5, 0.5) as f32
+    };
+    let (nx, ny, nz) = dims;
+    [axis(voxel.0, nx), axis(voxel.1, ny), axis(voxel.2, nz)]
+}
+
+/// Where a voxel falls on the panel, or `None` when it is behind the near plane.
+///
+/// The projection annotations use. It goes through the same `project` as the
+/// box and the captions, so a mark cannot drift away from the wireframe it is
+/// drawn against.
+pub fn project_voxel(
+    view_proj: &Mat4,
+    dims: (usize, usize, usize),
+    spectral_scale: f32,
+    voxel: (f64, f64, f64),
+    panel: (f32, f32),
+) -> Option<(f32, f32)> {
+    let b = voxel_to_box(voxel, dims);
+    let s = box_scale(dims, spectral_scale);
+    project(
+        view_proj,
+        [b[0] * s[0], b[1] * s[1], b[2] * s[2]],
+        panel.0,
+        panel.1,
+    )
 }
 
 /// Project a model-space point (already box-scaled) through the column-major
@@ -507,5 +554,95 @@ mod tests {
         assert_eq!(spectral_axis_name("FDEP"), "FARADAY DEPTH");
         assert_eq!(spectral_axis_name(""), "SPECTRAL");
         assert_eq!(spectral_axis_name("STOKES"), "STOKES");
+    }
+}
+
+#[cfg(test)]
+mod voxel_projection_tests {
+    use super::*;
+
+    fn dims() -> (usize, usize, usize) {
+        (64, 64, 24)
+    }
+
+    /// A voxel maps into the box the same way the slice marker does.
+    ///
+    /// This is the guard that matters. The slice-plane quad puts channel `c` at
+    /// model `z = -0.5 + c/(nz-1)`; if an annotation used any other convention
+    /// it would sit near the right plane and not on it, which looks like a
+    /// rendering imprecision rather than a wrong formula.
+    #[test]
+    fn a_voxel_lands_on_the_plane_the_viewer_draws_for_its_channel() {
+        let (_, _, nz) = dims();
+        for channel in [0usize, 7, 12, nz - 1] {
+            let expected_z = -0.5 + channel as f32 / (nz - 1) as f32;
+            let b = voxel_to_box((32.0, 32.0, channel as f64), dims());
+            assert!(
+                (b[2] - expected_z).abs() < 1e-6,
+                "channel {channel} mapped to z {} not {expected_z}",
+                b[2]
+            );
+        }
+    }
+
+    /// The centre voxel is the centre of the box.
+    #[test]
+    fn the_middle_voxel_is_the_middle_of_the_box() {
+        let (nx, ny, nz) = dims();
+        let b = voxel_to_box(
+            (
+                (nx - 1) as f64 / 2.0,
+                (ny - 1) as f64 / 2.0,
+                (nz - 1) as f64 / 2.0,
+            ),
+            dims(),
+        );
+        for c in b {
+            assert!(c.abs() < 1e-6, "centre voxel mapped to {b:?}");
+        }
+    }
+
+    /// Corners map to corners.
+    #[test]
+    fn the_first_and_last_voxels_are_the_box_corners() {
+        let (nx, ny, nz) = dims();
+        let low = voxel_to_box((0.0, 0.0, 0.0), dims());
+        let high = voxel_to_box(((nx - 1) as f64, (ny - 1) as f64, (nz - 1) as f64), dims());
+        assert_eq!(low, [-0.5, -0.5, -0.5]);
+        assert_eq!(high, [0.5, 0.5, 0.5]);
+    }
+
+    /// A voxel outside the cube is clamped to it, not projected into space.
+    #[test]
+    fn an_out_of_range_voxel_is_clamped_to_the_box() {
+        let b = voxel_to_box((-40.0, 900.0, 900.0), dims());
+        for c in b {
+            assert!((-0.5..=0.5).contains(&c), "{b:?} escaped the box");
+        }
+    }
+
+    /// A degenerate axis does not divide by zero.
+    #[test]
+    fn a_single_channel_cube_does_not_divide_by_zero() {
+        let b = voxel_to_box((0.0, 0.0, 0.0), (64, 64, 1));
+        assert!(b.iter().all(|c| c.is_finite()), "{b:?}");
+        assert_eq!(b[2], 0.0, "a one-channel cube has no depth to place on");
+    }
+
+    /// The scale used for annotations is the scale the box is drawn with.
+    #[test]
+    fn the_shared_scale_matches_the_boxs_own() {
+        let s = box_scale((80, 40, 10), 0.7);
+        assert!(
+            (s[0] - 1.0).abs() < 1e-6,
+            "the long axis should be 1.0: {s:?}"
+        );
+        assert!((s[1] - 0.5).abs() < 1e-6, "{s:?}");
+        assert!(
+            (s[2] - 0.7).abs() < 1e-6,
+            "the spectral scale is the caller's: {s:?}"
+        );
+        // A degenerate cube must not produce a NaN scale.
+        assert!(box_scale((0, 0, 0), 1.0).iter().all(|c| c.is_finite()));
     }
 }
