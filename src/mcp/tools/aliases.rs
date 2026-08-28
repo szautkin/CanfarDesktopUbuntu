@@ -326,6 +326,14 @@ mod tests {
          them. It does not shrink `tools/list`; it makes the 147 navigable.",
     ),
     (
+        "man",
+        "One tool in full — its whole description, every argument, its area and the tools beside \
+         it. The reference has no such page: an agent unsure of a tool's arguments can only \
+         re-read the whole catalogue, and after an error it does not understand it has nowhere to \
+         look. It is also what would make shorter descriptions in `tools/list` survivable, since \
+         the detail has somewhere to live.",
+    ),
+    (
         "search_tools",
         "The other half of the map, for the common case: a model that knows what it wants to do \
          and not which of the seventeen areas owns it. Neither app has anything to answer \

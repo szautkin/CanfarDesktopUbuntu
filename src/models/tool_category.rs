@@ -212,7 +212,7 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "get_platform_load" | "get_job_status"
         // The map of the other 145. Foundational because an agent that does not
         // know where to start, starts here.
-        | "list_apps" | "search_tools" => "foundational",
+        | "list_apps" | "search_tools" | "man" => "foundational",
         // The search UI: the form, the ADQL editor, the results grid and
         // recent/saved history. Twenty-seven tools were landing in "Other"
         // because this match is a hand-kept list and whole families were

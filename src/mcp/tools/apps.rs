@@ -47,6 +47,25 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "man".into(),
+            description: "Everything about ONE tool: what it does in full, every argument with \
+                          its type and meaning, which area it belongs to, and the other tools in \
+                          that area. Pass `tool` with a tool name. Use it before calling anything \
+                          whose arguments you are unsure of, and after an error you do not \
+                          understand."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "tool": {"type": "string", "description": "The tool name to look up."}
+                },
+                "required": ["tool"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "search_tools".into(),
             description: "Find tools by what they DO, across every area — use when you know what \
                           you want but not which app owns it (\"draw a region\", \"spectrum\", \
@@ -169,6 +188,73 @@ fn unknown_app_message(app: &str) -> String {
         "no app called {app:?}. The app ids are: {}. Call list_apps for what each one does.",
         ids.join(", ")
     )
+}
+
+/// One tool in full: its own entry, its app, and its siblings.
+///
+/// The page an agent reads when a name is not enough — before a call it is
+/// unsure of, or after an error it does not understand. Siblings are listed
+/// because the tool someone needs is very often the one NEXT to the one they
+/// looked up.
+pub fn man(tool: &str, manifest: Vec<ToolDescriptor>) -> Result<Value, String> {
+    let wanted = tool.trim();
+    let found = manifest
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(wanted))
+        .ok_or_else(|| unknown_tool_message(wanted, &manifest))?;
+
+    let app = taxonomy::category_id_for_tool(&found.name);
+    let category = taxonomy::by_id(app);
+    let siblings: Vec<&str> = manifest
+        .iter()
+        .filter(|d| d.name != found.name && taxonomy::category_id_for_tool(&d.name) == app)
+        .map(|d| d.name.as_str())
+        .collect();
+
+    Ok(json!({
+        "name": found.name,
+        "description": found.description,
+        "inputSchema": found.input_schema,
+        "app": app,
+        "appTitle": category.map(|c| c.title),
+        "appDescription": category.map(|c| c.summary),
+        "alsoInThisApp": siblings,
+    }))
+}
+
+/// Why that tool name did not match, with the nearest ones that do.
+///
+/// A name an agent got slightly wrong is the common case, so the answer is the
+/// candidates rather than a refusal — `search_tools` exists for the rest.
+fn unknown_tool_message(tool: &str, manifest: &[ToolDescriptor]) -> String {
+    // Rank by how many word-parts a name shares, not by one "best" part. The
+    // first version took the LONGEST part, so `get_fits_picture` was looked up
+    // by "picture" — which matches nothing — and the answer offered no
+    // candidates at all, when `get_fits_image` was sitting right there.
+    let lower = tool.to_lowercase();
+    let parts: Vec<&str> = lower.split('_').filter(|p| p.len() > 2).collect();
+    let mut scored: Vec<(usize, &str)> = manifest
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.to_lowercase();
+            let shared = parts.iter().filter(|p| name.contains(**p)).count();
+            (shared > 0).then_some((shared, d.name.as_str()))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    let near: Vec<&str> = scored.into_iter().take(6).map(|(_, n)| n).collect();
+    if near.is_empty() {
+        format!(
+            "no tool called {tool:?}. Call search_tools with what you are trying to do, \
+             or list_apps for the areas."
+        )
+    } else {
+        format!(
+            "no tool called {tool:?}. Did you mean: {}? Otherwise call search_tools with \
+             what you are trying to do.",
+            near.join(", ")
+        )
+    }
 }
 
 /// Tools whose name or description matches `query`, best first.
@@ -294,6 +380,22 @@ fn score_tool(d: &ToolDescriptor, terms: &[String], require_all: bool) -> u32 {
 pub fn dispatch(name: &str, args: &Value, manifest: Vec<ToolDescriptor>) -> Option<ToolResult> {
     match name {
         "list_apps" => Some(ToolResult::Data(list_apps(manifest))),
+        "man" => {
+            let tool = super::arg(args, "tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if tool.is_empty() {
+                return Some(ToolResult::Failed(
+                    "tool is required — the name of the tool to look up".to_string(),
+                ));
+            }
+            Some(match man(&tool, manifest) {
+                Ok(v) => ToolResult::Data(v),
+                Err(e) => ToolResult::Failed(e),
+            })
+        }
         "describe_app" => super::arg(args, "app")
             .and_then(|v| v.as_str())
             .map(str::trim)
@@ -643,6 +745,75 @@ mod tests {
     fn describe_app_without_an_app_falls_through_to_the_overview() {
         assert!(dispatch("describe_app", &json!({}), manifest()).is_none());
         assert!(dispatch("describe_app", &json!({"app": "fits"}), manifest()).is_some());
+    }
+
+    #[test]
+    fn man_returns_one_tool_in_full_with_its_neighbours() {
+        let page = man("get_fits_image", manifest()).expect("get_fits_image");
+        assert_eq!(page["name"], "get_fits_image");
+        // The full description and the real schema — this is the page an agent
+        // reads INSTEAD of carrying every tool's prose in context.
+        assert!(!page["description"].as_str().unwrap_or("").is_empty());
+        assert!(page["inputSchema"].is_object());
+        assert_eq!(page["app"], "fits");
+        assert!(!page["appTitle"].as_str().unwrap_or("").is_empty());
+        // Siblings, because the tool someone needs is often the next one along.
+        let siblings = page["alsoInThisApp"].as_array().unwrap();
+        assert!(
+            siblings.iter().any(|s| s == "set_fits_view"),
+            "{siblings:?}"
+        );
+        assert!(
+            !siblings.iter().any(|s| s == "get_fits_image"),
+            "a tool is listed as its own neighbour"
+        );
+    }
+
+    #[test]
+    fn man_is_case_insensitive() {
+        assert!(man("GET_FITS_IMAGE", manifest()).is_ok());
+    }
+
+    /// A near-miss gets the candidates, not a refusal.
+    ///
+    /// Measured against the live app: `get_fits_picture` first answered with no
+    /// candidates at all, because the lookup used the LONGEST word-part —
+    /// "picture", which matches nothing — while `get_fits_image` sat one word
+    /// away. Ranking by shared parts finds it.
+    #[test]
+    fn an_unknown_tool_offers_the_nearest_names() {
+        let err = man("get_fits_picture", manifest()).expect_err("no such tool");
+        assert!(err.contains("get_fits_picture"), "{err}");
+        assert!(
+            err.contains("get_fits_image"),
+            "the obvious candidate was not offered: {err}"
+        );
+    }
+
+    /// The best candidate comes first.
+    #[test]
+    fn candidates_are_ranked_by_how_much_they_share() {
+        let err = man("cube_spectrum_probe", manifest()).expect_err("no such tool");
+        let at_probe = err.find("probe_cube_spectrum").unwrap_or(usize::MAX);
+        let at_other = err.find("run_cell").unwrap_or(usize::MAX);
+        assert!(
+            at_probe < at_other,
+            "the tool sharing two words did not come first: {err}"
+        );
+    }
+
+    #[test]
+    fn a_name_with_nothing_like_it_is_sent_to_search() {
+        let err = man("zzzz", manifest()).expect_err("no such tool");
+        assert!(err.contains("search_tools"), "{err}");
+    }
+
+    #[test]
+    fn man_without_a_tool_name_says_what_it_needs() {
+        match dispatch("man", &json!({"tool": "  "}), manifest()).expect("dispatched") {
+            ToolResult::Failed(m) => assert!(m.contains("tool is required"), "{m}"),
+            _ => panic!("an empty name should be refused"),
+        }
     }
 
     #[test]
