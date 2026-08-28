@@ -18,6 +18,7 @@ pub mod session;
 pub mod session_context;
 pub mod session_launch_params;
 pub mod storage_quota;
+pub mod tool_category;
 pub mod user_info;
 pub mod volume_data;
 pub mod vospace_node;

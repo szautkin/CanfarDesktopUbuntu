@@ -492,6 +492,16 @@ impl ToolRouter for McpToolRouter {
 
                 // Reads first (side-effect-free), then writes (proposal-enqueuing).
                 // Each catalog returns `None` when it doesn't own the name.
+                // Before `read`, which owns `describe_app` and answers the
+                // no-argument overview. With an `app` the catalog answers it
+                // instead, and only this scope has the advertised manifest to
+                // answer it FROM. Ordered the other way, `read` replied with the
+                // overview and the argument was silently ignored.
+                if let Some(result) =
+                    super::apps::dispatch(resolved, &args, self.external_manifest())
+                {
+                    return result;
+                }
                 if let Some(result) = read::dispatch(resolved, &self.services, &args).await {
                     return result;
                 }

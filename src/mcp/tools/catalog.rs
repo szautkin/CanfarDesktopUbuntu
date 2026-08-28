@@ -716,6 +716,7 @@ mod advertised_argument_tests {
         include_str!("../../ui/search_page/mcp.rs"),
         include_str!("../../ui/search_page/mod.rs"),
         include_str!("../../ui/workflows_page.rs"),
+        include_str!("apps.rs"),
         include_str!("viewstate.rs"),
         include_str!("read.rs"),
         include_str!("write.rs"),

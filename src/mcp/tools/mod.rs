@@ -12,6 +12,7 @@ use std::pin::Pin;
 pub mod ai_compute;
 pub mod aiguide_ext;
 pub mod aliases;
+pub mod apps;
 pub mod caom2_vizier;
 pub mod catalog;
 pub mod cube;
@@ -230,6 +231,7 @@ pub async fn apply_any(
 /// All service-backed family descriptors (chained into the router's manifest).
 pub fn family_descriptors() -> Vec<ToolDescriptor> {
     let mut v = Vec::new();
+    v.extend(apps::descriptors());
     v.extend(vospace::descriptors());
     v.extend(research::descriptors());
     v.extend(sessions::descriptors());

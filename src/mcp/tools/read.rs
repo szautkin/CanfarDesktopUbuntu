@@ -42,9 +42,20 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
     vec![
         read_tool(
             "describe_app",
-            "Describe the Verbinal / CanfarDesktop app: what it is and what data it can expose \
-             over MCP.",
-            empty_schema(),
+            "The tools for ONE area of the app, with their full arguments — the working set for a \
+             task. Pass `app` (an id from list_apps, e.g. \"fits\", \"cube\", \"notebook\", \
+             \"storage\") to get just that area instead of reading all 147 tools. Without `app` \
+             it describes what Verbinal is and how many areas it has.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "app": {
+                        "type": "string",
+                        "description": "App id from list_apps. Omit for the overview."
+                    }
+                },
+                "additionalProperties": false
+            }),
         ),
         read_tool(
             "get_auth_state",
@@ -160,7 +171,7 @@ pub async fn dispatch(
     args: &Value,
 ) -> Option<ToolResult> {
     let result = match name {
-        "describe_app" => describe_app(),
+        "describe_app" => describe_app(args),
         "get_auth_state" => get_auth_state(services).await,
         "search_observations" => search_observations(services, args).await,
         "resolve_target" => resolve_target(services, args).await,
@@ -208,7 +219,13 @@ fn arg_u64(args: &Value, key: &str) -> Option<u64> {
 /// after those shipped). A structured list an agent might reasonably branch on
 /// is worse than prose when nothing keeps it honest — `tools/list` is the
 /// authoritative answer to "what can this app do", and it cannot drift.
-fn describe_app() -> ToolResult {
+/// What the app is.
+///
+/// Unchanged, and now pointing at `list_apps`: an agent that asks what this
+/// program is should be told how to find its 147 tools without reading all of
+/// them. The `app` argument is answered by the router, which is where the
+/// advertised manifest lives — see `tools::apps`.
+fn describe_app(_args: &Value) -> ToolResult {
     ToolResult::Data(json!({
         "name": "Verbinal (CanfarDesktop)",
         "version": crate::mcp::constants::SERVER_VERSION,
@@ -216,7 +233,10 @@ fn describe_app() -> ToolResult {
                     Exposes observation search (ADQL + CAOM2), Skaha sessions, downloaded research \
                     observations + notes, VOSpace/ARC storage, FITS headers/WCS, a spectral-cube \
                     viewer, container image discovery, research workflows, and a native Jupyter \
-                    notebook engine."
+                    notebook engine.",
+        "appCount": crate::models::tool_category::all().count(),
+        "next": "call list_apps for the areas and what each does, then describe_app \
+                 with one of their ids for just that area's tools"
     }))
 }
 

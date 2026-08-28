@@ -318,6 +318,20 @@ mod tests {
          that opens FITS tabs needs a way to close them.",
     ),
     (
+        "list_apps",
+        "The reference has 147 tools and no map of them. `tools/list` is 96 KB — about 24 000 \
+         tokens, measured — and an agent reads all of it before it starts, then chooses worse for \
+         having more to choose between. This is the ~17 areas and what each is for, small enough \
+         to keep in context, with `describe_app` to fetch one area's tools when a task needs \
+         them. It does not shrink `tools/list`; it makes the 147 navigable.",
+    ),
+    (
+        "search_tools",
+        "The other half of the map, for the common case: a model that knows what it wants to do \
+         and not which of the seventeen areas owns it. Neither app has anything to answer \
+         \"which tool draws a region?\" with, so the alternative is reading every description.",
+    ),
+    (
         "get_cube_image",
         "The reference exports a cube figure and has no way to show one to an agent. \
          `export_cube_figure` returns the volume render ALONE — the wireframe box, the WCS axis \
