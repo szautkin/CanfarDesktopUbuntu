@@ -415,12 +415,35 @@ async fn handle_tools_call(
 
 /// Map a [`ToolResult`] to the `tools/call` result envelope
 /// (`{ "content": [...], "isError": bool }`). Mirrors `MapToolResult`.
+///
+/// Structured results are sent BOTH ways: as `structuredContent`, which a
+/// client can read field by field, and as the JSON text that has always been in
+/// `content`. Text alone meant every caller had to parse a JSON document out of
+/// a string field before it could reach `outputs` or `isError` — a second parse
+/// for data that was structured to begin with. Text alone is also all an older
+/// client understands, so it stays: the MCP specification asks servers that
+/// send `structuredContent` to keep serialising it into `content` for exactly
+/// that reason.
 fn map_tool_result(result: ToolResult) -> Value {
+    /// Add `structuredContent` when the payload is an object.
+    ///
+    /// Only objects: the specification types the field as one, and a bare array
+    /// or number there would be a shape no client is required to accept.
+    fn with_structured(mut envelope: Value, payload: &Value) -> Value {
+        if payload.is_object() {
+            envelope["structuredContent"] = payload.clone();
+        }
+        envelope
+    }
+
     match result {
-        ToolResult::Data(v) => json!({
-            "content": [ { "type": "text", "text": v.to_string() } ],
-            "isError": false,
-        }),
+        ToolResult::Data(v) => with_structured(
+            json!({
+                "content": [ { "type": "text", "text": v.to_string() } ],
+                "isError": false,
+            }),
+            &v,
+        ),
         ToolResult::Text(s) => json!({
             "content": [ { "type": "text", "text": s } ],
             "isError": false,
@@ -438,10 +461,13 @@ fn map_tool_result(result: ToolResult) -> Value {
                 "summary": p.summary,
                 "state": "pending",
             });
-            json!({
-                "content": [ { "type": "text", "text": envelope.to_string() } ],
-                "isError": false,
-            })
+            with_structured(
+                json!({
+                    "content": [ { "type": "text", "text": envelope.to_string() } ],
+                    "isError": false,
+                }),
+                &envelope,
+            )
         }
         ToolResult::Image {
             data_base64,
@@ -460,6 +486,67 @@ fn map_tool_result(result: ToolResult) -> Value {
             }
             json!({ "content": content, "isError": false })
         }
+    }
+}
+
+#[cfg(test)]
+mod result_envelope_tests {
+    use super::*;
+    use crate::mcp::tools::ToolResult;
+
+    /// A structured result travels as data AND as text.
+    ///
+    /// `get_cell_output` answered with `content[0].text` holding a JSON
+    /// document, so every caller parsed a string to reach fields the server
+    /// already had as values.
+    #[test]
+    fn a_data_result_carries_structured_content() {
+        let payload = serde_json::json!({"outputCount": 2, "hasImage": true});
+        let envelope = map_tool_result(ToolResult::Data(payload.clone()));
+
+        assert_eq!(
+            envelope["structuredContent"], payload,
+            "a client cannot read the fields without a second parse"
+        );
+        // And the text form stays, because it is all an older client reads.
+        let text = envelope["content"][0]["text"].as_str().expect("text form");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text).unwrap(),
+            payload,
+            "the text form must still be the same document"
+        );
+        assert_eq!(envelope["isError"], false);
+    }
+
+    /// A failure keeps its shape: a message, and the error flag.
+    #[test]
+    fn a_failure_is_not_dressed_up_as_structured_data() {
+        let envelope = map_tool_result(ToolResult::Failed("no such cell".to_string()));
+        assert_eq!(envelope["isError"], true);
+        assert_eq!(envelope["content"][0]["text"], "no such cell");
+        assert!(
+            envelope.get("structuredContent").is_none(),
+            "a plain message is not a structured document"
+        );
+    }
+
+    /// An image is image content, with the type the caller was told.
+    ///
+    /// `get_cell_image` exists so an agent can SEE a figure; base64 inside a
+    /// text field would not be an image to any client.
+    #[test]
+    fn an_image_result_is_image_content() {
+        let envelope = map_tool_result(ToolResult::Image {
+            data_base64: "iVBORw0=".to_string(),
+            mime: "image/jpeg".to_string(),
+            caption: None,
+        });
+        assert_eq!(envelope["content"][0]["type"], "image");
+        assert_eq!(envelope["content"][0]["data"], "iVBORw0=");
+        assert_eq!(
+            envelope["content"][0]["mimeType"], "image/jpeg",
+            "a JPEG announced as PNG hands the client bytes that do not match"
+        );
     }
 }
 

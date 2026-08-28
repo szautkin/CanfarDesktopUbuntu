@@ -88,6 +88,40 @@ pub fn without_line_comments(code: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+/// Python source with its `#` comments AND its docstrings removed.
+///
+/// Stripping `#` lines is not enough for Python: most of the explanation in a
+/// module lives in triple-quoted docstrings, which are expressions rather than
+/// comments. A guard on the kernel harness asserting that a defective call is
+/// ABSENT found it in the docstring describing why it was removed — the same
+/// trap [`without_comments`] exists for, one syntax further along.
+///
+/// Both quote styles are handled, and an unterminated opener is treated as
+/// running to the end of the file: a guard that sees too little fails loudly,
+/// one that sees prose passes silently.
+pub fn python_code(source: &str) -> String {
+    const QUOTES: [&str; 2] = ["\"\"\"", "'''"];
+    let stripped = without_line_comments(source, "#");
+    let mut out = String::with_capacity(stripped.len());
+    let mut rest = stripped.as_str();
+    loop {
+        let next = QUOTES
+            .iter()
+            .filter_map(|q| rest.find(q).map(|at| (at, *q)))
+            .min_by_key(|(at, _)| *at);
+        let Some((at, quote)) = next else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at]);
+        let after = &rest[at + quote.len()..];
+        match after.find(quote) {
+            Some(end) => rest = &after[end + quote.len()..],
+            None => return out,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::code;
@@ -100,6 +134,37 @@ mod tests {
             !code(file).contains("fn pretend()"),
             "a guard must not be able to find itself"
         );
+    }
+
+    /// A docstring explaining a removed call must not look like the call.
+    #[test]
+    fn a_python_docstring_is_not_part_of_the_code() {
+        let file = concat!(
+            "def f():\n",
+            "    \"\"\"This used to compile(code, \"eval\").\"\"\"\n",
+            "    return ast.parse(code)\n"
+        );
+        let code = super::python_code(file);
+        assert!(
+            !code.contains("compile(code"),
+            "a guard could find the very call the docstring says was removed: {code}"
+        );
+        assert!(
+            code.contains("ast.parse(code)"),
+            "real code was lost: {code}"
+        );
+    }
+
+    #[test]
+    fn both_docstring_styles_are_removed() {
+        let code = super::python_code("a = 1\n'''gone'''\nb = 2\n");
+        assert!(!code.contains("gone"), "{code}");
+        assert!(code.contains("a = 1") && code.contains("b = 2"), "{code}");
+
+        // An unterminated opener swallows the rest of the file. A guard that
+        // sees too little fails loudly; one that sees prose passes silently.
+        let code = super::python_code("a = 1\n\"\"\"unterminated\nb = 2\n");
+        assert!(!code.contains("unterminated"), "{code}");
     }
 
     #[test]

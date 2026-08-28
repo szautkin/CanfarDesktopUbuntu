@@ -50,9 +50,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         desc(
             "list_notebooks",
-            "List recently-opened notebooks from the user's history (most-recent first): each \
-             one's file path and display name. These are on-disk notebooks (not necessarily open); \
-             pass a path to open_notebook to open one.",
+            "Recently opened notebooks, from the on-disk history — independent of which tabs are \
+             open (use list_open_notebooks for those). Each entry carries `kind`: \
+             \"notebook\" (.ipynb), \"python\" (.py) or \"markdown\" (.md), because this editor \
+             opens all three as notebooks; and `exists`, since a recents list outlives its files.",
             json!({"type":"object","properties":{},"additionalProperties":false}),
             VerbClass::Read,
         ),
@@ -66,10 +67,28 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         desc(
             "get_cell_output",
-            "Read the outputs of a code cell (by 0-based index): each output's type, text, and \
-             error/image/html flags (binary image data is flagged, not returned).",
+            "Read the outputs of a code cell (by 0-based index): each output's type, text, \
+             error/image/html flags, and `richTypes` — every MIME type that output carries \
+             (text/html, image/png, text/markdown, image/svg+xml, text/latex, \
+             application/json...). Binary image data is flagged in `richTypes`, never returned. \
+             `richTypes` is present on every output and empty where there is nothing rich.",
             json!({"type":"object","properties":{
                 "cell":{"type":"integer","minimum":0,"description":"0-based cell index"},
+                "notebook":sel
+            },"required":["cell"],"additionalProperties":false}),
+            VerbClass::Read,
+        ),
+        desc(
+            "get_cell_image",
+            "Fetch a cell's rendered image as real image content (a matplotlib figure, a PIL \
+             image, any output whose `richTypes` include image/png or image/jpeg). \
+             `get_cell_output` deliberately describes images without carrying them, so a caller \
+             does not spend its context on pixels it did not ask for; this is how to ask. Use \
+             `output` to pick among several images in one cell (0-based, default the first).",
+            json!({"type":"object","properties":{
+                "cell":{"type":"integer","minimum":0,"description":"0-based cell index"},
+                "output":{"type":"integer","minimum":0,
+                          "description":"0-based index among that cell's IMAGE outputs"},
                 "notebook":sel
             },"required":["cell"],"additionalProperties":false}),
             VerbClass::Read,
@@ -168,18 +187,30 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         desc(
             "run_cell",
-            "Execute the code cell at a 0-based index (starts the kernel if needed). Returns the \
-             updated notebook state; read the cell's outputs with get_cell_output.",
+            "Execute the code cell at a 0-based index (starts the kernel if needed). Waits for \
+             the cell and returns its outputs. A cell still running when `timeout` expires does \
+             NOT stop — the reply carries `timedOut: true` and `running: true`, and you poll \
+             get_cell_output or call interrupt_kernel.",
             json!({"type":"object","properties":{
                 "index":{"type":"integer","minimum":0},
+                "timeout":{"type":"number","exclusiveMinimum":0,
+                           "description":"seconds to wait before returning while it keeps running (capped by the transport budget; the reply states waitedSeconds)"},
                 "notebook":sel
             },"required":["index"],"additionalProperties":false}),
             VerbClass::Write,
         ),
         desc(
             "run_all_cells",
-            "Execute every code cell in order (starts the kernel if needed).",
-            json!({"type":"object","properties":{"notebook":sel},"additionalProperties":false}),
+            "Run every code cell in order, stopping at the first kernel failure. Waits for the \
+             sweep like run_cell does: `running: false` means every output is final. If it is \
+             still going when `timeout` expires the reply carries `timedOut: true` and \
+             `running: true` — poll get_kernel_state until idle, then read get_cell_output. \
+             `cellsWithErrors` lists the 0-based cells that raised.",
+            json!({"type":"object","properties":{
+                "timeout":{"type":"number","exclusiveMinimum":0,
+                           "description":"seconds to wait before returning while it keeps running (capped by the transport budget; the reply states waitedSeconds)"},
+                "notebook":sel
+            },"additionalProperties":false}),
             VerbClass::Write,
         ),
         desc(
@@ -274,9 +305,23 @@ pub async fn dispatch(
         let recents = crate::services::notebook_store::NotebookStore::new().load();
         let notebooks: Vec<Value> = recents
             .iter()
-            .map(
-                |r| json!({ "path": r.path, "name": r.name, "openedAt": r.opened_at.to_rfc3339() }),
-            )
+            .map(|r| {
+                let path = std::path::Path::new(&r.path);
+                json!({
+                    "path": r.path,
+                    "name": r.name,
+                    "openedAt": r.opened_at.to_rfc3339(),
+                    // What the entry IS. A `.md` in this list looked like a
+                    // stray file, and the instinct was to filter it out — but
+                    // the notebook editor really does open Markdown and Python
+                    // as notebooks, so hiding them would hide something the app
+                    // can do. Naming the kind is the honest answer.
+                    "kind": crate::helpers::notebook_formats::NotebookFormat::for_path(path).kind(),
+                    // A recents list outlives the files in it. Saying so beats
+                    // a caller discovering it through a failed open.
+                    "exists": path.exists(),
+                })
+            })
             .collect();
         return Some(ToolResult::Data(json!({
             "count": notebooks.len(),
@@ -289,6 +334,7 @@ pub async fn dispatch(
         "list_open_notebooks"
         | "get_notebook"
         | "get_cell_output"
+        | "get_cell_image"
         | "get_kernel_state"
         | "add_cell"
         | "edit_cell"
@@ -320,7 +366,15 @@ pub async fn dispatch(
             if let Some(b64) = v.get("imageBase64").and_then(|x| x.as_str()) {
                 Some(ToolResult::Image {
                     data_base64: b64.to_string(),
-                    mime: "image/png".to_string(),
+                    // The type the host actually found, not an assumption. A
+                    // PIL image with `_repr_jpeg_` and no PNG is a JPEG, and
+                    // labelling it PNG hands the client bytes that do not match
+                    // what it was told they are.
+                    mime: v
+                        .get("imageMime")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("image/png")
+                        .to_string(),
                     caption: None,
                 })
             } else {

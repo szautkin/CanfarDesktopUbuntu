@@ -11,6 +11,9 @@
 use serde::{Deserialize, Serialize};
 
 /// User-configurable notebook editor / execution preferences.
+/// Default for [`NotebookSettings::max_open_file_mb`].
+pub const DEFAULT_MAX_OPEN_FILE_MB: u32 = 64;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotebookSettings {
@@ -30,6 +33,17 @@ pub struct NotebookSettings {
     pub execution_timeout_secs: u32,
     /// Whether the notebook toolbar is shown.
     pub show_toolbar: bool,
+    /// Largest file, in MB, the notebook will open.
+    ///
+    /// The loader reads a file into memory whole before it can look at it, and
+    /// the only limit was on the number of CELLS — which a `.txt` or `.py`
+    /// reaches only after the bytes are already in RAM. In an astronomy folder
+    /// the file most likely to be enormous is exactly the kind now openable: a
+    /// `.txt` source catalogue dump beside the notes it belongs to.
+    ///
+    /// A setting rather than a fixed number because the right answer depends on
+    /// the machine, and someone on a workstation should be able to raise it.
+    pub max_open_file_mb: u32,
 }
 
 impl Default for NotebookSettings {
@@ -44,6 +58,10 @@ impl Default for NotebookSettings {
             autosave_interval_secs: 30,
             execution_timeout_secs: 60,
             show_toolbar: true,
+            // Comfortably above any real notebook — the largest in this repo's
+            // fixtures is a few hundred KB — and far below the size at which
+            // reading a file stalls the UI.
+            max_open_file_mb: DEFAULT_MAX_OPEN_FILE_MB,
         }
     }
 }
@@ -61,6 +79,10 @@ impl NotebookSettings {
         if self.execution_timeout_secs != 0 {
             self.execution_timeout_secs = self.execution_timeout_secs.clamp(5, 3600);
         }
+        // A zero would make every file too big to open, which is not a
+        // preference anyone holds; the ceiling stops a hand-edited value from
+        // meaning "read whatever you find" on a machine that cannot.
+        self.max_open_file_mb = self.max_open_file_mb.clamp(1, 4096);
         // Normalise an all-whitespace python path to None.
         if let Some(p) = &self.python_path {
             if p.trim().is_empty() {
@@ -92,6 +114,36 @@ mod tests {
         assert_eq!(s.python_path, None);
     }
 
+    /// The open-size limit is clamped, in both directions.
+    ///
+    /// Zero would make every file too large to open — not a preference anyone
+    /// holds — and an unbounded value from a hand-edited file would mean "read
+    /// whatever you find" on a machine that cannot.
+    #[test]
+    fn the_open_size_limit_cannot_be_set_to_something_useless() {
+        let s = NotebookSettings {
+            max_open_file_mb: 0,
+            ..Default::default()
+        }
+        .sanitized();
+        assert!(s.max_open_file_mb >= 1, "zero blocks every file");
+
+        let s = NotebookSettings {
+            max_open_file_mb: u32::MAX,
+            ..Default::default()
+        }
+        .sanitized();
+        assert!(s.max_open_file_mb <= 4096, "no ceiling at all");
+
+        // A sensible value is left alone.
+        let s = NotebookSettings {
+            max_open_file_mb: 128,
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(s.max_open_file_mb, 128);
+    }
+
     #[test]
     fn serde_round_trip_preserves_all_fields() {
         let s = NotebookSettings {
@@ -103,6 +155,7 @@ mod tests {
             autosave_interval_secs: 60,
             execution_timeout_secs: 0,
             show_toolbar: false,
+            max_open_file_mb: 256,
         };
         let json = serde_json::to_string_pretty(&s).expect("serialise");
         let back: NotebookSettings = serde_json::from_str(&json).expect("deserialise");

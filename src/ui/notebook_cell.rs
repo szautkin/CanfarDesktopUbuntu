@@ -4,12 +4,26 @@
 //! rendering) and [`MarkdownCellWidget`] (with preview/edit toggle), wrapped
 //! in the [`CellWidget`] enum.
 
-use crate::models::notebook_document::{CellOutput, OutputData};
+use crate::helpers::simple_html::{self, escape_pango, HtmlBlock};
+use crate::models::notebook_document::{CellOutput, OutputData, Representation};
 use base64::Engine;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use std::rc::Rc;
+
+/// Width an output image is asked to occupy, in px.
+///
+/// A request rather than a cap: pictures shrink below it, and a figure narrower
+/// than this is not stretched.
+const OUTPUT_IMAGE_WIDTH: i32 = 400;
+
+/// Gaps between the cells of a rendered HTML table, in px.
+///
+/// Columns get the wider gap: rows are already separated by the line height,
+/// while adjacent columns would otherwise run into each other.
+const HTML_TABLE_ROW_SPACING: u32 = 2;
+const HTML_TABLE_COLUMN_SPACING: u32 = 16;
 
 // ---------------------------------------------------------------------------
 // Keyword / syntax sets for lightweight Python highlighting
@@ -260,30 +274,99 @@ impl CodeCellWidget {
         self.output_box.set_visible(true);
     }
 
-    /// Render a single MIME-bundle output (image → picture, else plain text).
+    /// Render a single MIME-bundle output as its richest representation.
+    ///
+    /// [`OutputData::richest`] makes the choice; this only builds the widget
+    /// for it. A representation that turns out to be undisplayable — corrupt
+    /// image bytes, HTML that reduces to nothing — falls back to `text/plain`
+    /// rather than leaving the cell blank, because the bundle always carries it
+    /// and a wrong-looking output beats a missing one.
     fn render_output_data(&self, data: &OutputData) {
-        // Prefer image/png
-        if let Some(png_b64) = &data.image_png {
-            if let Some(picture) = decode_png_picture(png_b64) {
-                picture.set_halign(gtk::Align::Start);
-                picture.set_can_shrink(true);
-                picture.set_size_request(400, -1);
-                self.output_box.append(&picture);
-                return;
+        // Exhaustive on purpose: a MIME type added to `richest` must be given
+        // somewhere to go here, and the compiler is what enforces it. The two
+        // that shipped modelled-but-unrendered got there through a chain of
+        // `if let`s that simply ran out.
+        let rendered = match data.richest() {
+            Some(Representation::Image(b64)) => self.append_image(b64),
+            Some(Representation::Svg(svg)) => self.append_svg(&svg),
+            Some(Representation::Html(html)) => self.append_html(&html),
+            Some(Representation::Markdown(md)) => {
+                self.output_box
+                    .append(&html_markup_label(&markdown_to_pango(&md)));
+                true
+            }
+            // Both are shown as their source, in monospace. There is no LaTeX
+            // renderer yet (see B5 in dev_info/13), and pretty-printed JSON is
+            // already the readable form. Both beat what `text/plain` falls back
+            // to for these objects, which is `<__main__.X object at 0x…>`.
+            Some(Representation::Latex(source)) | Some(Representation::Json(source)) => {
+                self.append_text(&source);
+                true
+            }
+            Some(Representation::Text(text)) => {
+                self.append_text(&text);
+                true
+            }
+            None => true,
+        };
+        if !rendered {
+            if let Some(text) = data.plain_text() {
+                self.append_text(&text);
             }
         }
+    }
 
-        // Fallback: text/plain
-        if let Some(text) = data.plain_text() {
-            let label = gtk::Label::new(Some(&text));
-            label.set_halign(gtk::Align::Start);
-            label.set_selectable(true);
-            label.set_wrap(true);
-            label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-            label.add_css_class("monospace");
-            label.add_css_class("caption");
-            self.output_box.append(&label);
+    /// Append a decoded image; `false` if the bytes were not an image.
+    fn append_image(&self, b64: &str) -> bool {
+        let Some(texture) = decode_image_texture(b64) else {
+            return false;
+        };
+        self.output_box.append(&output_picture(&texture));
+        true
+    }
+
+    /// Append an SVG picture; `false` if it could not be rasterised.
+    ///
+    /// SVG support comes from librsvg being present as a loader, which is a
+    /// separate package and not guaranteed on every desktop. A `false` here
+    /// sends the caller to `text/plain`, so a machine without it degrades to
+    /// text rather than to a blank output.
+    fn append_svg(&self, svg: &str) -> bool {
+        let bytes = glib::Bytes::from(svg.as_bytes());
+        let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) else {
+            return false;
+        };
+        self.output_box.append(&output_picture(&texture));
+        true
+    }
+
+    /// Append rendered HTML; `false` if it held nothing renderable.
+    fn append_html(&self, html: &str) -> bool {
+        let blocks = simple_html::to_blocks(html);
+        if blocks.is_empty() {
+            return false;
         }
+        for block in blocks {
+            match block {
+                HtmlBlock::Markup(markup) => self.output_box.append(&html_markup_label(&markup)),
+                HtmlBlock::Table { headers, rows } => {
+                    self.output_box.append(&html_table(&headers, &rows));
+                }
+            }
+        }
+        true
+    }
+
+    /// Append one run of plain output text.
+    fn append_text(&self, text: &str) {
+        let label = gtk::Label::new(Some(text));
+        label.set_halign(gtk::Align::Start);
+        label.set_selectable(true);
+        label.set_wrap(true);
+        label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        label.add_css_class("monospace");
+        label.add_css_class("caption");
+        self.output_box.append(&label);
     }
 
     /// Highlight or un-highlight the active-cell frame.
@@ -344,6 +427,19 @@ impl MarkdownCellWidget {
 
         let stack = gtk::Stack::new();
         stack.set_transition_type(gtk::StackTransitionType::None);
+        // Size to the page being SHOWN, not to the tallest page.
+        //
+        // A `GtkStack` is homogeneous by default: it asks every child for its
+        // size and requests the largest, so the hidden edit-mode `TextView`
+        // — which holds the whole document and whose minimum height is its
+        // content — set the height of a cell that was displaying a rendered
+        // preview. Opening a 227-line markdown file filled the console with
+        //
+        //     GtkOverlay exceeds AdwApplicationWindow height:
+        //     requested 875 px, 800 px available
+        //
+        // once per frame, because the invisible editor was asking for room the
+        // window did not have.
 
         // ── edit mode ───────────────────────────────────────────────────────
         let text_view = gtk::TextView::new();
@@ -412,7 +508,23 @@ impl MarkdownCellWidget {
     /// Replace the source text and re-render the preview.
     pub fn set_source(&self, text: &str) {
         self.text_view.buffer().set_text(text);
-        self.preview_label.set_markup(&markdown_to_pango(text));
+        self.render_preview(text);
+    }
+
+    /// Show `source` as rendered markdown, or as itself if that is impossible.
+    ///
+    /// Pango refuses malformed markup outright and a `Label` given it renders
+    /// NOTHING — so a single bad line blanked an entire 12 KB document, and the
+    /// only sign was a warning on the console. The converter that caused it is
+    /// fixed, but a markdown cell showing its source is a formatting problem
+    /// while a markdown cell showing nothing is a lost document, and only one
+    /// of those is worth risking on the next edge case.
+    fn render_preview(&self, source: &str) {
+        let markup = markdown_to_pango(source);
+        self.preview_label.set_markup(&markup);
+        if self.preview_label.text().is_empty() && !source.trim().is_empty() {
+            self.preview_label.set_text(source);
+        }
     }
 
     /// Read current source text from the buffer.
@@ -432,7 +544,7 @@ impl MarkdownCellWidget {
     /// Commit edits and switch to preview mode.
     pub fn enter_preview_mode(&self) {
         let text = self.get_source();
-        self.preview_label.set_markup(&markdown_to_pango(&text));
+        self.render_preview(&text);
         self.edit_mode.set(false);
         self.stack.set_visible_child_name("preview");
     }
@@ -681,20 +793,138 @@ fn highlight_numbers(buffer: &gtk::TextBuffer, full_text: &str, line: &str, line
 }
 
 // ---------------------------------------------------------------------------
+// HTML output rendering
+// ---------------------------------------------------------------------------
+
+/// A label for one run of non-table HTML.
+///
+/// The markup comes from [`simple_html`], which escapes the content it wraps.
+/// Pango aborts its parse on malformed markup and leaves the label EMPTY, so a
+/// rejected string falls back to showing itself — an output that reads oddly is
+/// recoverable, one that silently vanishes is not.
+fn html_markup_label(markup: &str) -> gtk::Label {
+    let label = gtk::Label::new(None);
+    label.set_halign(gtk::Align::Start);
+    label.set_xalign(0.0);
+    label.set_selectable(true);
+    label.set_wrap(true);
+    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    label.add_css_class("caption");
+    label.set_markup(markup);
+    if label.text().is_empty() && !markup.is_empty() {
+        label.set_text(markup);
+    }
+    label
+}
+
+/// A grid for one HTML table.
+///
+/// Wrapped in a horizontal `ScrolledWindow`: a table is as wide as its columns
+/// need, and a wide one used to force the whole notebook to scroll sideways.
+fn html_table(headers: &[String], rows: &[Vec<String>]) -> gtk::Widget {
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(HTML_TABLE_ROW_SPACING);
+    grid.set_column_spacing(HTML_TABLE_COLUMN_SPACING);
+    grid.set_halign(gtk::Align::Start);
+    grid.add_css_class("notebook-html-table");
+
+    let mut row_index = 0;
+    if !headers.is_empty() {
+        for (column, text) in headers.iter().enumerate() {
+            let cell = html_table_cell(text);
+            cell.add_css_class("heading");
+            grid.attach(&cell, column as i32, row_index, 1, 1);
+        }
+        row_index += 1;
+    }
+    for row in rows {
+        for (column, text) in row.iter().enumerate() {
+            grid.attach(&html_table_cell(text), column as i32, row_index, 1, 1);
+        }
+        row_index += 1;
+    }
+
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_child(Some(&grid));
+    scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    scroller.set_halign(gtk::Align::Fill);
+    // Without this the scroller asks for zero height and the table is invisible.
+    scroller.set_propagate_natural_height(true);
+    scroller.upcast()
+}
+
+/// One table cell.
+fn html_table_cell(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_halign(gtk::Align::Start);
+    label.set_xalign(0.0);
+    label.set_selectable(true);
+    label.add_css_class("monospace");
+    label.add_css_class("caption");
+    label
+}
+
+// ---------------------------------------------------------------------------
 // Image decoding helper
 // ---------------------------------------------------------------------------
 
-/// Decode a base64-encoded PNG string and produce a `gtk::Picture`.
+/// Decode a base64-encoded image into a texture.
+///
+/// Format-agnostic on purpose: `Texture::from_bytes` sniffs PNG, JPEG and the
+/// rest from the bytes themselves, so `image/jpeg` — modelled since the parser
+/// was written and never rendered — needs nothing here beyond being asked for.
 ///
 /// Returns `None` if decoding or texture creation fails.
-fn decode_png_picture(b64: &str) -> Option<gtk::Picture> {
+fn decode_image_texture(b64: &str) -> Option<gtk::gdk::Texture> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .ok()?;
     let gbytes = glib::Bytes::from(&bytes);
-    let texture = gtk::gdk::Texture::from_bytes(&gbytes).ok()?;
-    let picture = gtk::Picture::for_paintable(&texture);
-    Some(picture)
+    gtk::gdk::Texture::from_bytes(&gbytes).ok()
+}
+
+/// A `Picture` for an output image, sized so a container cannot collapse it.
+///
+/// The size request is the whole point. A `GtkPicture` with `can_shrink` set
+/// reports a MINIMUM height of zero — it will happily be drawn in no space at
+/// all — and the notebook packs cells into a `GtkListBox`, which allocates its
+/// rows their minimum. Every image output was therefore built correctly,
+/// handed real texture data, and then given a height of one or two pixels: a
+/// blank cell where a figure should be. Labels survived the same treatment
+/// because a label's minimum height is its text.
+///
+/// So the height is stated rather than left to be negotiated. Deriving it from
+/// the texture also stops small images being upscaled to fill a fixed width,
+/// which is what a notebook does elsewhere and what the reference does: a
+/// 140x90 thumbnail now renders at 140x90 instead of blurred across 400px.
+fn output_picture(texture: &gtk::gdk::Texture) -> gtk::Picture {
+    let picture = gtk::Picture::for_paintable(texture);
+    picture.set_halign(gtk::Align::Start);
+    // Still allowed to shrink, so a narrow window scales the image down rather
+    // than forcing the notebook to scroll sideways. The request below is what
+    // keeps "can shrink" from meaning "can vanish".
+    picture.set_can_shrink(true);
+    let (width, height) = output_image_size(texture.width(), texture.height());
+    picture.set_size_request(width, height);
+    picture
+}
+
+/// The on-screen size for an image of `width` x `height`.
+///
+/// Downscale to fit [`OUTPUT_IMAGE_WIDTH`], never upscale, and keep the aspect
+/// ratio. Split out because it is the arithmetic worth testing, and testing it
+/// needs no display.
+fn output_image_size(width: i32, height: i32) -> (i32, i32) {
+    if width <= 0 || height <= 0 {
+        // A texture with no size cannot be scaled to one. Fall back to the
+        // nominal width and let GTK do what it can.
+        return (OUTPUT_IMAGE_WIDTH, -1);
+    }
+    if width <= OUTPUT_IMAGE_WIDTH {
+        return (width, height);
+    }
+    let scaled = (f64::from(height) * f64::from(OUTPUT_IMAGE_WIDTH) / f64::from(width)).round();
+    (OUTPUT_IMAGE_WIDTH, (scaled as i32).max(1))
 }
 
 // ---------------------------------------------------------------------------
@@ -753,50 +983,140 @@ pub fn markdown_to_pango(md: &str) -> String {
 }
 
 /// Apply inline Markdown (bold / italic / code) to a single line.
+///
+/// ONE left-to-right pass, because four independent passes could not stay out
+/// of each other's way. `**`, `*`, `_` and `` ` `` were each replaced across the
+/// whole line in turn, so a line of snake_case identifiers inside code spans —
+///
+/// ```text
+/// - Column names are snake_case CAOM paths (`proposal_id`, `target_name`,
+/// ```
+///
+/// paired the underscore in `snake_case` with the one in `proposal_id`, opening
+/// an italic span that closed INSIDE a later `<tt>`:
+///
+/// ```text
+/// - Column names are snake<i>case CAOM paths (<tt>proposal</i>id</tt>, …
+/// ```
+///
+/// Pango refuses malformed markup outright and a `Label` given it renders
+/// NOTHING, so one such line blanked the entire cell. A 12 KB manual displayed
+/// as an empty box.
+///
+/// Two rules from CommonMark fix it by construction, and both are what a reader
+/// already expects:
+///
+///  * A code span is literal. No emphasis is looked for inside one, so an
+///    identifier in backticks cannot open anything.
+///  * `_` is emphasis only at a word boundary. `proposal_id` is a name, not
+///    italic text — this is exactly why CommonMark treats intraword `_`
+///    differently from `*`.
+///
+/// Anything unterminated stays literal, so the output is always balanced.
 fn apply_inline_markdown(line: &str) -> String {
-    let escaped = escape_pango(line);
+    let mut out = String::new();
+    let mut rest = line;
+    let mut previous: Option<char> = None;
 
-    // Order matters: apply bold before italic so **b** beats *i*.
-    let s = apply_span(&escaped, "**", "**", "<b>", "</b>");
-    let s = apply_span(&s, "*", "*", "<i>", "</i>");
-    let s = apply_span(&s, "_", "_", "<i>", "</i>");
-    apply_span(&s, "`", "`", "<tt>", "</tt>")
+    while !rest.is_empty() {
+        // Code first: its contents are text, whatever they contain.
+        if let Some(after) = rest.strip_prefix('`') {
+            if let Some(end) = after.find('`') {
+                out.push_str("<tt>");
+                out.push_str(&escape_pango(&after[..end]));
+                out.push_str("</tt>");
+                rest = &after[end + 1..];
+                previous = Some('`');
+                continue;
+            }
+        }
+        if let Some(after) = rest.strip_prefix("**") {
+            if let Some(end) = after.find("**").filter(|e| is_emphasis(&after[..*e])) {
+                out.push_str("<b>");
+                out.push_str(&apply_inline_markdown(&after[..end]));
+                out.push_str("</b>");
+                rest = &after[end + 2..];
+                previous = Some('*');
+                continue;
+            }
+        }
+        if let Some(after) = rest.strip_prefix('*') {
+            if let Some(end) = after.find('*').filter(|e| is_emphasis(&after[..*e])) {
+                out.push_str("<i>");
+                out.push_str(&apply_inline_markdown(&after[..end]));
+                out.push_str("</i>");
+                rest = &after[end + 1..];
+                previous = Some('*');
+                continue;
+            }
+        }
+        if let Some(after) = rest.strip_prefix('_') {
+            if underscore_is_emphasis(previous, after) {
+                if let Some(end) = closing_underscore(after).filter(|e| is_emphasis(&after[..*e])) {
+                    out.push_str("<i>");
+                    out.push_str(&apply_inline_markdown(&after[..end]));
+                    out.push_str("</i>");
+                    rest = &after[end + 1..];
+                    previous = Some('_');
+                    continue;
+                }
+            }
+        }
+
+        let ch = rest.chars().next().expect("rest is non-empty");
+        out.push_str(&escape_pango(&ch.to_string()));
+        rest = &rest[ch.len_utf8()..];
+        previous = Some(ch);
+    }
+    out
 }
 
-/// Replace `open_delim … close_delim` with `open_tag … close_tag` in `s`.
-fn apply_span(
-    s: &str,
-    open_delim: &str,
-    close_delim: &str,
-    open_tag: &str,
-    close_tag: &str,
-) -> String {
-    let mut result = String::new();
-    let mut rest = s;
-    while let Some(start) = rest.find(open_delim) {
-        result.push_str(&rest[..start]);
-        let after_open = &rest[start + open_delim.len()..];
-        if let Some(end) = after_open.find(close_delim) {
-            result.push_str(open_tag);
-            result.push_str(&after_open[..end]);
-            result.push_str(close_tag);
-            rest = &after_open[end + close_delim.len()..];
-        } else {
-            // No closing delimiter — emit literally and stop.
-            result.push_str(open_delim);
-            rest = after_open;
+/// Whether `content` between two delimiters is really emphasis.
+///
+/// Empty or space-padded content is not. `a ** b` has no closing `**`, so it
+/// falls to the single-`*` rule, which without this matched the very next `*`
+/// and produced an empty `<i></i>` — swallowing the stars a reader typed. The
+/// same rule is why `2 * 3 * 4` stays arithmetic rather than becoming italic.
+fn is_emphasis(content: &str) -> bool {
+    !content.is_empty()
+        && !content.starts_with(char::is_whitespace)
+        && !content.ends_with(char::is_whitespace)
+}
+
+/// Whether an `_` at this position opens emphasis rather than being part of a word.
+///
+/// `proposal_id` and `energy_bandpassName` are identifiers, and a scientist's
+/// notes are full of them. CommonMark draws the line at word boundaries for
+/// exactly this reason: `_` is a word character in code, `*` is not.
+fn underscore_is_emphasis(previous: Option<char>, after: &str) -> bool {
+    let preceded_by_word = previous.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let followed_by_space = after.chars().next().is_none_or(char::is_whitespace);
+    !preceded_by_word && !followed_by_space
+}
+
+/// The closing `_` of an emphasis span, if the line has one.
+///
+/// It must also sit at a word boundary, or `_a_b_c` would close on the `_`
+/// inside a name and leave the rest mismatched.
+fn closing_underscore(after: &str) -> Option<usize> {
+    let bytes = after.as_bytes();
+    for (i, ch) in after.char_indices() {
+        if ch != '_' {
+            continue;
+        }
+        let follows_word = i > 0
+            && after[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let next_is_word = bytes
+            .get(i + 1)
+            .is_some_and(|b| (*b as char).is_alphanumeric() || *b == b'_');
+        if follows_word && !next_is_word {
+            return Some(i);
         }
     }
-    result.push_str(rest);
-    result
-}
-
-/// Escape characters that are special in Pango markup (XML).
-fn escape_pango(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    None
 }
 
 impl Default for MarkdownCellWidget {
@@ -830,6 +1150,215 @@ mod caret_tests {
             !code.contains("set_cursor_visible("),
             "the caret is being toggled by hand again; GTK ties it to focus, and \
              a second opinion about that leaves a clicked-in cell with no cursor"
+        );
+    }
+}
+
+#[cfg(test)]
+mod output_layout_tests {
+    //! Sizing for image outputs.
+    //!
+    //! Guards a bug that reached a user: every image output rendered as a
+    //! blank cell while text in the same cell rendered fine. See
+    //! `examples/notebook_layout_probe.rs` for the half of it that needs a
+    //! display — this file covers the arithmetic, which does not.
+    use super::*;
+
+    /// An output image gets a real height, so a container cannot collapse it.
+    ///
+    /// This is the arithmetic behind a bug that reached a user: every image
+    /// output rendered as a blank cell. `GtkPicture` with `can_shrink` reports
+    /// a minimum height of ZERO, and the notebook packs cells into a
+    /// `GtkListBox`, which allocates rows their minimum — so the picture was
+    /// built, handed real pixels, and drawn in one pixel of height.
+    #[test]
+    fn an_output_image_is_never_asked_to_be_zero_high() {
+        // The reported case: a 140x90 PIL image, and a 640x480 figure.
+        for (w, h) in [(140, 90), (640, 480), (1, 1), (4000, 30)] {
+            let (rw, rh) = output_image_size(w, h);
+            assert!(
+                rh > 0,
+                "{w}x{h} asked for a height of {rh}; the row will collapse"
+            );
+            assert!(rw > 0, "{w}x{h} asked for a width of {rw}");
+        }
+    }
+
+    #[test]
+    fn a_small_image_is_shown_at_its_own_size_not_stretched() {
+        // The old code requested a fixed 400px width for everything, so a
+        // thumbnail was blown up and blurred. Jupyter shows it at its own size.
+        assert_eq!(output_image_size(140, 90), (140, 90));
+        assert_eq!(
+            output_image_size(OUTPUT_IMAGE_WIDTH, 100),
+            (OUTPUT_IMAGE_WIDTH, 100)
+        );
+    }
+
+    #[test]
+    fn a_large_image_is_scaled_down_keeping_its_shape() {
+        // 640x480 is the matplotlib default.
+        let (w, h) = output_image_size(640, 480);
+        assert_eq!(w, OUTPUT_IMAGE_WIDTH);
+        assert_eq!(
+            h, 300,
+            "4:3 scaled to {OUTPUT_IMAGE_WIDTH} wide should be 300 high"
+        );
+
+        // An extreme aspect ratio still gets at least one pixel rather than
+        // rounding down to the collapse this whole test exists to prevent.
+        let (_, h) = output_image_size(40_000, 30);
+        assert!(h >= 1, "height rounded away to {h}");
+    }
+
+    #[test]
+    fn a_texture_with_no_size_does_not_divide_by_zero() {
+        assert_eq!(output_image_size(0, 0), (OUTPUT_IMAGE_WIDTH, -1));
+        assert_eq!(output_image_size(-1, 10), (OUTPUT_IMAGE_WIDTH, -1));
+    }
+}
+
+#[cfg(test)]
+mod markdown_markup_tests {
+    //! The markup a markdown cell renders must be markup Pango accepts.
+    //!
+    //! Pango refuses malformed markup outright and a `Label` given it renders
+    //! NOTHING. So a converter bug is not a formatting bug here — it is a blank
+    //! cell, and the only sign is a warning on a console nobody is reading.
+    use super::*;
+
+    /// Every line must produce balanced markup.
+    ///
+    /// Checked by counting tags rather than by parsing, so the test needs no
+    /// display and runs in CI. `examples/markdown_parse_probe.rs` does the real
+    /// Pango parse over a whole file.
+    fn well_formed(markup: &str) -> bool {
+        let mut stack: Vec<&str> = Vec::new();
+        let mut rest = markup;
+        while let Some(at) = rest.find('<') {
+            let Some(close) = rest[at..].find('>') else {
+                return false;
+            };
+            let tag = &rest[at + 1..at + close];
+            if let Some(name) = tag.strip_prefix('/') {
+                if stack.pop() != Some(name) {
+                    return false;
+                }
+            } else if !tag.ends_with('/') {
+                let name = tag.split_whitespace().next().unwrap_or(tag);
+                stack.push(match name {
+                    "b" => "b",
+                    "i" => "i",
+                    "tt" => "tt",
+                    "span" => "span",
+                    other => other,
+                });
+            }
+            rest = &rest[at + close + 1..];
+        }
+        stack.is_empty()
+    }
+
+    /// The line that blanked a 12 KB manual.
+    ///
+    /// Four independent replace passes paired the `_` in `snake_case` with the
+    /// one in `proposal_id`, opening an italic span that closed inside a later
+    /// `<tt>`. Pango rejected the document and the cell rendered empty.
+    #[test]
+    fn snake_case_identifiers_in_code_spans_do_not_break_the_markup() {
+        let line = "- Column names are snake_case CAOM paths (`proposal_id`, `target_name`,";
+        let markup = apply_inline_markdown(line);
+        assert!(well_formed(&markup), "unbalanced: {markup}");
+        assert!(
+            !markup.contains("<i>"),
+            "an identifier was italicised: {markup}"
+        );
+        assert!(markup.contains("<tt>proposal_id</tt>"), "{markup}");
+
+        let line = "`energy_bandpassName`). When unsure: `describe_tap_schema {\"table\":\"x\"}`.";
+        let markup = apply_inline_markdown(line);
+        assert!(well_formed(&markup), "unbalanced: {markup}");
+        assert!(markup.contains("<tt>energy_bandpassName</tt>"), "{markup}");
+
+        // An identifier OUTSIDE a code span must not open emphasis either.
+        // This case isolates the opening rule: the closing `_` here sits at a
+        // word end, so it would be accepted — only the check on the OPENER
+        // keeps `my_var_` from becoming `my<i>var</i>`.
+        let markup = apply_inline_markdown("use my_var_ here");
+        assert!(
+            !markup.contains("<i>"),
+            "an identifier opened emphasis: {markup}"
+        );
+        assert!(well_formed(&markup));
+    }
+
+    /// A code span is literal: nothing inside it is formatting.
+    #[test]
+    fn a_code_span_is_not_searched_for_emphasis() {
+        let markup = apply_inline_markdown("`a *b* c`");
+        assert_eq!(markup, "<tt>a *b* c</tt>");
+        // ...and its content is still escaped.
+        let markup = apply_inline_markdown("`a < b & c`");
+        assert!(
+            markup.contains("&lt;") && markup.contains("&amp;"),
+            "{markup}"
+        );
+        assert!(well_formed(&markup));
+    }
+
+    /// The formatting that should work, still works.
+    #[test]
+    fn bold_italic_and_code_still_render() {
+        assert_eq!(apply_inline_markdown("**b**"), "<b>b</b>");
+        assert_eq!(apply_inline_markdown("*i*"), "<i>i</i>");
+        assert_eq!(apply_inline_markdown("_i_"), "<i>i</i>");
+        assert_eq!(apply_inline_markdown("`c`"), "<tt>c</tt>");
+        // Bold beats italic on the same run.
+        assert_eq!(
+            apply_inline_markdown("**b** and *i*"),
+            "<b>b</b> and <i>i</i>"
+        );
+    }
+
+    /// An unterminated delimiter is text, not an open tag.
+    #[test]
+    fn an_unclosed_delimiter_stays_literal() {
+        for line in ["a * b", "a ** b", "a ` b", "a _ b", "*", "`", "__"] {
+            let markup = apply_inline_markdown(line);
+            assert!(well_formed(&markup), "{line:?} -> {markup}");
+            assert!(
+                !markup.contains('<'),
+                "{line:?} produced a tag from an unclosed delimiter: {markup}"
+            );
+        }
+    }
+
+    /// Content that looks like markup is escaped, not obeyed.
+    #[test]
+    fn content_cannot_smuggle_in_markup() {
+        let markup = apply_inline_markdown("<span foreground='red'>x</span> & y");
+        assert!(!markup.contains("<span"), "{markup}");
+        assert!(markup.contains("&lt;span"), "{markup}");
+        assert!(markup.contains("&amp;"), "{markup}");
+        assert!(well_formed(&markup));
+    }
+
+    /// Whole documents, including the shapes that appear in real notes.
+    #[test]
+    fn a_document_of_awkward_lines_stays_well_formed() {
+        let doc = "# Heading\n\
+                   Some `snake_case_name` and a *word* and **bold**.\n\
+                   - `a_b`, `c_d`, `e_f`\n\
+                   Mixed `code with *stars*` and _real emphasis_.\n\
+                   An unmatched ` backtick and an unmatched * star.\n\
+                   file_name_with_many_underscores.txt\n\
+                   <not a tag> & an ampersand\n";
+        let markup = markdown_to_pango(doc);
+        assert!(well_formed(&markup), "unbalanced markup:\n{markup}");
+        assert!(markup.contains("<tt>snake_case_name</tt>"), "{markup}");
+        assert!(
+            markup.contains("file_name_with_many_underscores.txt"),
+            "a filename was mangled: {markup}"
         );
     }
 }

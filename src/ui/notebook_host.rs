@@ -26,15 +26,54 @@ const RUN_CELL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 ///
 /// `Some(kernel_ok)` when it finished, `None` when it is still going — the run
 /// continues either way, because the future belongs to a task of its own.
-async fn wait_for_cell(outcome: &Rc<Cell<Option<bool>>>) -> Option<bool> {
-    let ticks = RUN_CELL_WAIT.as_millis() / RUN_CELL_POLL.as_millis();
+async fn wait_for_cell(outcome: &Rc<Cell<Option<bool>>>, budget: Duration) -> Option<bool> {
+    poll_until(budget, || outcome.get()).await
+}
+
+/// Poll `ready` every [`RUN_CELL_POLL`] until it answers, or `budget` runs out.
+///
+/// Shared by the two things that wait — a single cell and a Run-All sweep —
+/// which had the same loop written twice. Two copies of a timing loop is two
+/// places to fix when the poll interval or the budget arithmetic changes, and
+/// the odds of both being changed together are not good.
+async fn poll_until<T>(budget: Duration, ready: impl Fn() -> Option<T>) -> Option<T> {
+    let ticks = (budget.as_millis() / RUN_CELL_POLL.as_millis()).max(1);
     for _ in 0..ticks {
-        if let Some(ok) = outcome.get() {
-            return Some(ok);
+        if let Some(value) = ready() {
+            return Some(value);
         }
         glib::timeout_future(RUN_CELL_POLL).await;
     }
-    outcome.get()
+    ready()
+}
+
+/// Wait up to `budget` for a Run-All sweep to finish; `true` if it did.
+async fn wait_for_run_all(page: &Rc<NotebookPage>, budget: Duration) -> bool {
+    poll_until(budget, || (!page.run_all_running()).then_some(()))
+        .await
+        .is_some()
+}
+
+/// How long to wait for a cell, given the caller's `timeout` argument.
+///
+/// A caller driving a notebook by hand needs a way to stop waiting on a cell
+/// that loops: without one, the only exit was the client's own timeout, and the
+/// only remedy `interrupt_kernel`.
+///
+/// Clamped at both ends, and the reasons differ. Below `RUN_CELL_POLL` the wait
+/// cannot be measured at all. Above [`RUN_CELL_WAIT`] the answer would be lost
+/// anyway — that ceiling is derived from the bridge's own budget, so a longer
+/// wait would be cut off by the transport and reported as `UI busy`, which
+/// tells the caller nothing about their cell. Asking for more than the
+/// transport allows is answered with the honest maximum rather than refused.
+fn cell_wait_budget(requested_secs: Option<f64>) -> Duration {
+    let Some(secs) = requested_secs else {
+        return RUN_CELL_WAIT;
+    };
+    if !secs.is_finite() || secs <= 0.0 {
+        return RUN_CELL_POLL;
+    }
+    Duration::from_secs_f64(secs).clamp(RUN_CELL_POLL, RUN_CELL_WAIT)
 }
 use crate::helpers::notebook_parser;
 use crate::helpers::python_discovery;
@@ -53,6 +92,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // NotebookTabHost
@@ -585,8 +625,7 @@ impl NotebookTabHost {
             let h = host.clone();
             host.tab_view.connect_switch_page(move |_, _, _| {
                 if let Some(page) = h.current_page() {
-                    let label = page.current_kernel_status_label();
-                    h.update_kernel_dot_from_label(&label);
+                    h.update_kernel_dot(page.current_kernel_status().keyword());
                 } else {
                     h.update_kernel_dot("dead");
                 }
@@ -641,7 +680,7 @@ impl NotebookTabHost {
                             "isActive": active == Some(i as u32),
                             "isDirty": p.is_modified(),
                             "cellCount": p.cell_count(),
-                            "kernelState": kernel_keyword(&p.current_kernel_status_label()),
+                            "kernelState": p.current_kernel_status().keyword(),
                         })
                     })
                     .collect();
@@ -652,6 +691,67 @@ impl NotebookTabHost {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 let id = self.page_id(&page);
                 Ok(notebook_state_json(&page, &id))
+            }
+
+            // The pixels, on request. `get_cell_output` describes an image and
+            // never carries it: inlining base64 into every read would spend a
+            // caller's context on data most calls do not want, and a client
+            // that cannot display an image gains nothing from receiving one.
+            // A client that CAN — an agent with vision — needs a way to ask,
+            // and this is it.
+            "get_cell_image" => {
+                let page = self.resolve_page(args).ok_or_else(no_notebook)?;
+                let idx = arg_index(args, "cell")
+                    .or_else(|| arg_index(args, "index"))
+                    .ok_or_else(|| "cell (index) is required".to_string())?;
+                let doc = page.snapshot_document();
+                let cell = doc
+                    .cells
+                    .get(idx)
+                    .ok_or_else(|| format!("cell index {idx} out of range"))?;
+
+                // Which image, when a cell drew several. Defaults to the first,
+                // which is the only one most cells have.
+                let wanted = arg_index(args, "output");
+                let mut found = None;
+                let mut seen = 0usize;
+                for (position, out) in cell.outputs.iter().enumerate() {
+                    let data = match out {
+                        CellOutput::ExecuteResult { data, .. }
+                        | CellOutput::DisplayData { data, .. } => data,
+                        _ => continue,
+                    };
+                    let Some((b64, mime)) = data.image_bytes() else {
+                        continue;
+                    };
+                    if wanted.is_none_or(|w| w == seen) {
+                        found = Some((position, b64.to_string(), mime));
+                        break;
+                    }
+                    seen += 1;
+                }
+
+                let (position, b64, mime) = found.ok_or_else(|| {
+                    format!(
+                        "cell {idx} has no image output{}. `get_cell_output` reports \
+                         `richTypes` for every output — an image is one whose list \
+                         contains image/png or image/jpeg.",
+                        match wanted {
+                            Some(w) => format!(" at image index {w}"),
+                            None => String::new(),
+                        }
+                    )
+                })?;
+
+                Ok(json!({
+                    "index": idx,
+                    "outputIndex": position,
+                    // `imageBase64` is the key the notebook tool dispatch turns
+                    // into a real MCP image content block, rather than text
+                    // that happens to contain base64.
+                    "imageBase64": b64,
+                    "imageMime": mime,
+                }))
             }
 
             "get_cell_output" => {
@@ -669,6 +769,7 @@ impl NotebookTabHost {
                 Ok(json!({
                     "index": idx,
                     "type": cell.cell_type,
+                    "cellType": cell.cell_type,
                     "executionCount": cell.execution_count,
                     "outputCount": outputs.len(),
                     "outputs": outputs,
@@ -762,7 +863,7 @@ impl NotebookTabHost {
 
             "get_kernel_state" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
-                let label = page.current_kernel_status_label();
+                let status = page.current_kernel_status();
                 let doc = page.snapshot_document();
                 let kernel_name = doc
                     .metadata
@@ -771,8 +872,12 @@ impl NotebookTabHost {
                     .map(|k| k.name.clone())
                     .unwrap_or_else(|| "python3".to_string());
                 Ok(json!({
-                    "state": kernel_keyword(&label),
-                    "statusText": label,
+                    "state": status.keyword(),
+                    // English, deliberately. `get_kernel_state` is read by
+                    // programs, and a reply whose language followed the
+                    // operator's desktop is a reply nothing can rely on. The
+                    // window shows the translated line; the API does not.
+                    "statusText": status.api_text(),
                     "kernelName": kernel_name,
                 }))
             }
@@ -903,7 +1008,10 @@ impl NotebookTabHost {
                     });
                 }
 
-                let kernel_ok = match wait_for_cell(&outcome).await {
+                let budget = cell_wait_budget(
+                    crate::mcp::tools::arg(args, "timeout").and_then(|v| v.as_f64()),
+                );
+                let kernel_ok = match wait_for_cell(&outcome, budget).await {
                     Some(ok) => ok,
                     // Still going. Say so, rather than failing: the cell is
                     // running, its outputs will land, and get_cell_output is
@@ -921,10 +1029,17 @@ impl NotebookTabHost {
                             .iter()
                             .any(|o| o.get("isError").and_then(|v| v.as_bool()).unwrap_or(false)));
                         state["outputs"] = json!(outputs);
+                        // `timedOut` so a caller can branch without parsing
+                        // prose, and the budget actually used so a caller that
+                        // asked for more than the transport allows can see it
+                        // was capped rather than ignored.
+                        state["timedOut"] = json!(true);
+                        state["waitedSeconds"] = json!(budget.as_secs_f64());
                         state["message"] = json!(format!(
-                            "cell {idx} is still running after {}s; its outputs are not ready \
-                             yet — poll get_cell_output for this notebook and cell",
-                            RUN_CELL_WAIT.as_secs()
+                            "cell {idx} is still running after {:.3}s and the kernel is busy; \
+                             its outputs are not ready yet — poll get_cell_output for this \
+                             notebook and cell, or interrupt_kernel to stop it",
+                            budget.as_secs_f64()
                         ));
                         return Ok(state);
                     }
@@ -951,11 +1066,21 @@ impl NotebookTabHost {
             "run_all_cells" => {
                 let page = self.resolve_page(args).ok_or_else(no_notebook)?;
                 page.run_all();
+
+                // Waited on, exactly as `run_cell` is. This used to return the
+                // instant the sweep was SPAWNED, so a caller reading outputs
+                // straight afterwards saw `outputCount: 0` and a busy kernel —
+                // and nothing in the reply said the run had not finished, so
+                // the only way to use it correctly was to already know.
+                let budget = cell_wait_budget(
+                    crate::mcp::tools::arg(args, "timeout").and_then(|v| v.as_f64()),
+                );
+                let finished = wait_for_run_all(&page, budget).await;
+
                 let mut state = self.state_of(&page);
                 // Which cells raised, so a caller does not have to walk every
-                // cell asking. `run_all` is still fire-and-forget — it drives
-                // the same per-cell awaitable and stops at the first kernel
-                // failure — so this reports what has landed so far.
+                // cell asking. Reports what has landed so far, which is all of
+                // it once `running` is false.
                 let failed: Vec<usize> = (0..page.cell_count())
                     .filter(|i| {
                         cell_outputs_json(&page, *i)
@@ -964,6 +1089,17 @@ impl NotebookTabHost {
                     })
                     .collect();
                 state["cellsWithErrors"] = json!(failed);
+                state["running"] = json!(!finished);
+                if !finished {
+                    state["timedOut"] = json!(true);
+                    state["waitedSeconds"] = json!(budget.as_secs_f64());
+                    state["message"] = json!(format!(
+                        "run_all_cells is still running after {:.3}s; outputs are incomplete \
+                         — poll get_kernel_state until it reports idle, then read the cells \
+                         with get_cell_output",
+                        budget.as_secs_f64()
+                    ));
+                }
                 Ok(state)
             }
 
@@ -1025,7 +1161,10 @@ impl NotebookTabHost {
                 // for. The remedy flips with it — the file has to be fetched
                 // here before it can be opened here.
                 local_path::reject_remote(path, local_path::FETCH_IT_FIRST)?;
-                self.load_from_path(&PathBuf::from(path));
+                // Propagated, not swallowed. `current_page()` answers with
+                // whatever tab is open, so ignoring this reported the WRONG
+                // notebook as a success for any file that would not load.
+                self.load_from_path(&PathBuf::from(path))?;
                 let page = self
                     .current_page()
                     .ok_or_else(|| "failed to open notebook".to_string())?;
@@ -1109,12 +1248,12 @@ impl NotebookTabHost {
 
         let filter = gtk::FileFilter::new();
         filter.set_name(Some(crate::tr_en!("Notebooks")));
-        filter.add_pattern("*.ipynb");
-        filter.add_pattern("*.py");
-        // Markdown too, as the reference does (`NotebookFileMode.Markdown`).
-        // `load_markdown_as_notebook` has always been able to read one; the
-        // filter simply never offered it, so the file was unselectable.
-        filter.add_pattern("*.md");
+        // From the format list, not a copy of it. These were separate, which is
+        // how Markdown came to be readable by `load_markdown_as_notebook` while
+        // the chooser did not offer it — the file existed and was unselectable.
+        for pattern in crate::helpers::notebook_formats::NotebookFormat::open_patterns() {
+            filter.add_pattern(pattern);
+        }
 
         let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
@@ -1136,7 +1275,7 @@ impl NotebookTabHost {
 
         if let Ok(file) = dialog.open_future(root.as_ref()).await {
             if let Some(path) = file.path() {
-                self.load_from_path(&path);
+                let _ = self.load_from_path(&path);
             }
         }
     }
@@ -1144,11 +1283,37 @@ impl NotebookTabHost {
     /// Load a notebook from the given path and open it in a new tab.
     ///
     /// Supports `.ipynb`, `.py` and `.md` files.
-    pub fn load_from_path(self: &Rc<Self>, path: &Path) {
-        let load_result = match path.extension().and_then(|e| e.to_str()) {
-            Some("py") => notebook_parser::load_python_as_notebook(path),
-            Some("md") | Some("markdown") => notebook_parser::load_markdown_as_notebook(path),
-            _ => notebook_parser::load_notebook(path),
+    /// Open `path` in a new tab.
+    ///
+    /// Returns the error rather than only showing it. This used to return
+    /// nothing at all: a file that would not parse raised a toast and returned,
+    /// and the MCP `open_notebook` op then called `current_page()` — which
+    /// answers with whatever tab was ALREADY open — and reported that tab's
+    /// state as a success. Asking it to open a `.txt` came back `isError: false`
+    /// describing a completely different notebook.
+    pub fn load_from_path(self: &Rc<Self>, path: &Path) -> Result<(), String> {
+        let format = crate::helpers::notebook_formats::NotebookFormat::for_path(path);
+        let load_result = match format {
+            crate::helpers::notebook_formats::NotebookFormat::PercentPython => {
+                notebook_parser::load_python_as_notebook(path)
+            }
+            crate::helpers::notebook_formats::NotebookFormat::Markdown => {
+                notebook_parser::load_markdown_as_notebook(path)
+            }
+            crate::helpers::notebook_formats::NotebookFormat::PlainText => {
+                notebook_parser::load_text_as_notebook(path)
+            }
+            // Refused by name, so the message can say what the file is. Falling
+            // through to the notebook reader answered "invalid notebook JSON in
+            // report.html", which describes the parser's disappointment rather
+            // than the user's problem.
+            crate::helpers::notebook_formats::NotebookFormat::Unsupported => Err(
+                crate::helpers::notebook_formats::NotebookFormat::refusal(path)
+                    .unwrap_or_else(|| format!("cannot open {}", path.display())),
+            ),
+            crate::helpers::notebook_formats::NotebookFormat::Ipynb => {
+                notebook_parser::load_notebook(path)
+            }
         };
 
         let doc = match load_result {
@@ -1156,7 +1321,7 @@ impl NotebookTabHost {
             Err(e) => {
                 self.toast_overlay
                     .add_toast(adw::Toast::new(&crate::tr_fmt!("Failed to load: {}", e)));
-                return;
+                return Err(e);
             }
         };
 
@@ -1182,6 +1347,7 @@ impl NotebookTabHost {
 
         self.add_tab(page, &name);
         self.check_dependencies(&doc, python_path);
+        Ok(())
     }
 
     /// Ask the interpreter which of the notebook's imports are missing, and
@@ -1774,22 +1940,6 @@ impl NotebookTabHost {
         }
     }
 
-    /// Update the kernel dot from a full status label (e.g. "Kernel: idle").
-    fn update_kernel_dot_from_label(&self, label: &str) {
-        let kw = if label.contains("idle") {
-            "idle"
-        } else if label.contains("busy") {
-            "busy"
-        } else if label.contains("starting") || label.contains("restarting") {
-            "starting"
-        } else if label.contains("failed") || label.contains("error") {
-            "error"
-        } else {
-            "dead"
-        };
-        self.update_kernel_dot(kw);
-    }
-
     /// Populate the recent-notebooks list inside the empty state widget.
     fn populate_recent_list(self: &Rc<Self>, empty_page: &gtk::Box) {
         let recent = self.store.load();
@@ -1849,7 +1999,9 @@ impl NotebookTabHost {
                 let idx = row.index() as usize;
                 let path = h.recent_paths.borrow().get(idx).cloned();
                 if let Some(path_str) = path {
-                    h.load_from_path(&PathBuf::from(path_str));
+                    // The toast inside is the report for a click; a recents
+                    // entry whose file has moved is a normal thing to meet.
+                    let _ = h.load_from_path(&PathBuf::from(path_str));
                 }
             });
         }
@@ -1966,6 +2118,24 @@ impl NotebookTabHost {
         timeout_row.set_title(crate::tr_en!("Execution timeout (seconds, 0 = never)"));
         exec_group.add(&timeout_row);
 
+        // A file is read into memory whole before anything can look at it, and
+        // the notebook now opens `.txt` — which in an astronomy folder is as
+        // likely to be a source catalogue as a page of notes.
+        let max_file_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.max_open_file_mb as f64,
+                1.0,
+                4096.0,
+                1.0,
+                16.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        max_file_row.set_title(crate::tr_en!("Largest file to open (MB)"));
+        exec_group.add(&max_file_row);
+
         let py_row = adw::EntryRow::new();
         py_row.set_title(crate::tr_en!("Python path (blank = auto-detect)"));
         py_row.set_text(cur.python_path.as_deref().unwrap_or(""));
@@ -2048,6 +2218,7 @@ impl NotebookTabHost {
             let timeout_row = timeout_row.clone();
             let py_row = py_row.clone();
             let toolbar_row = toolbar_row.clone();
+            let max_file_row = max_file_row.clone();
             move || {
                 let py = py_row.text().trim().to_string();
                 let new = NotebookSettings {
@@ -2059,6 +2230,7 @@ impl NotebookTabHost {
                     autosave_interval_secs: interval_row.value().round() as u32,
                     execution_timeout_secs: timeout_row.value().round() as u32,
                     show_toolbar: toolbar_row.is_active(),
+                    max_open_file_mb: max_file_row.value().round() as u32,
                 };
                 h.update_settings(new);
             }
@@ -2079,6 +2251,10 @@ impl NotebookTabHost {
         {
             let p = persist.clone();
             timeout_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            max_file_row.connect_value_notify(move |_| p());
         }
         {
             let p = persist.clone();
@@ -2207,21 +2383,6 @@ fn cell_type_arg(v: Option<&serde_json::Value>) -> Result<String, String> {
     }
 }
 
-/// Map a kernel status label ("Kernel: idle") to a short state keyword.
-fn kernel_keyword(label: &str) -> &'static str {
-    if label.contains("idle") {
-        "idle"
-    } else if label.contains("busy") {
-        "busy"
-    } else if label.contains("starting") || label.contains("restarting") {
-        "starting"
-    } else if label.contains("failed") || label.contains("error") {
-        "error"
-    } else {
-        "dead"
-    }
-}
-
 /// Cap `s` to at most `max` chars, returning the (possibly truncated) text and a
 /// flag indicating whether truncation occurred.
 fn cap(s: &str, max: usize) -> (String, bool) {
@@ -2235,9 +2396,10 @@ fn cap(s: &str, max: usize) -> (String, bool) {
 /// Character cap applied to cell sources and output text for transport.
 const TEXT_CAP: usize = 10_000;
 
-/// Serialise a single code-cell output into the transport JSON shape (binary
-/// image data is flagged via `has_image`, never inlined here).
 /// One cell's outputs, as `get_cell_output` reports them.
+///
+/// Binary image data is described, never inlined: a base64 PNG in a tool result
+/// costs a caller its context window for something it cannot look at anyway.
 ///
 /// Shared so `run_cell` answers in exactly the shape a caller would get by
 /// polling afterwards — two renderings of the same thing would eventually
@@ -2258,7 +2420,7 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
             json!({
                 "outputType": "stream", "name": name, "text": t, "textTruncated": tr,
                 "isError": false, "errorName": "", "traceback": "", "tracebackTruncated": false,
-                "hasImage": false, "hasHtml": false,
+                "hasImage": false, "hasHtml": false, "richTypes": [],
             })
         }
         CellOutput::ExecuteResult {
@@ -2272,6 +2434,7 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
                 "text": t, "textTruncated": tr, "isError": false, "errorName": "",
                 "traceback": "", "tracebackTruncated": false,
                 "hasImage": data.has_image(), "hasHtml": data.text_html.is_some(),
+                "richTypes": data.mime_types(),
             })
         }
         CellOutput::DisplayData { data, .. } => {
@@ -2280,6 +2443,7 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
                 "outputType": "display_data", "text": t, "textTruncated": tr,
                 "isError": false, "errorName": "", "traceback": "", "tracebackTruncated": false,
                 "hasImage": data.has_image(), "hasHtml": data.text_html.is_some(),
+                "richTypes": data.mime_types(),
             })
         }
         CellOutput::Error {
@@ -2292,7 +2456,9 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
             json!({
                 "outputType": "error", "text": t, "textTruncated": tr,
                 "isError": true, "errorName": ename, "traceback": tb, "tracebackTruncated": tbtr,
-                "hasImage": false, "hasHtml": false,
+                // Present and empty on every arm, so a caller reading
+                // `richTypes` never has to first ask what kind of output it is.
+                "hasImage": false, "hasHtml": false, "richTypes": [],
             })
         }
     }
@@ -2302,7 +2468,7 @@ fn cell_output_json(out: &CellOutput) -> serde_json::Value {
 fn notebook_state_json(page: &Rc<NotebookPage>, id: &str) -> serde_json::Value {
     use serde_json::json;
     let doc = page.snapshot_document();
-    let label = page.current_kernel_status_label();
+    let status = page.current_kernel_status();
     let file_path = page
         .file_path
         .borrow()
@@ -2316,7 +2482,13 @@ fn notebook_state_json(page: &Rc<NotebookPage>, id: &str) -> serde_json::Value {
             let (src, trunc) = cap(&cell.source.joined(), TEXT_CAP);
             json!({
                 "index": i,
+                // Both spellings on purpose. `add_cell` and `change_cell_type`
+                // take `cellType`, and this read answered `type` — one concept
+                // under two names, so a caller had to know both to round-trip a
+                // cell. `cellType` is the name the schemas advertise; `type`
+                // stays because something is already reading it.
                 "type": cell.cell_type,
+                "cellType": cell.cell_type,
                 "source": src,
                 "sourceTruncated": trunc,
                 "executionCount": cell.execution_count,
@@ -2330,8 +2502,12 @@ fn notebook_state_json(page: &Rc<NotebookPage>, id: &str) -> serde_json::Value {
         "title": page.title(),
         "filePath": file_path,
         "isDirty": page.is_modified(),
-        "kernelState": kernel_keyword(&label),
-        "kernelStatusText": label,
+        "kernelState": status.keyword(),
+        // English, like `get_kernel_state`. This is the field QA saw answer
+        // "Noyau : non démarré" from create_notebook and "Kernel: idle" from
+        // get_kernel_state in the same session — the initial label was the one
+        // place that went through the translator, and every later one did not.
+        "kernelStatusText": status.api_text(),
         "selectedIndex": page.active_cell_index(),
         "cellCount": doc.cells.len(),
         "cells": cells,
@@ -2390,6 +2566,53 @@ fn first_error_line(stderr: &str) -> String {
         .or_else(|| stderr.lines().map(str::trim).find(|l| !l.is_empty()))
         .unwrap_or("pip gave no reason")
         .to_string()
+}
+
+#[cfg(test)]
+mod open_failure_tests {
+    //! Opening a file that cannot be read must FAIL.
+    //!
+    //! `load_from_path` returned nothing, so the MCP `open_notebook` op ran
+    //! `current_page()` — which answers with whatever tab is already open — and
+    //! reported that tab's state as a success. Asking it to open a `.txt` came
+    //! back `isError: false` with a completely different notebook's cells, and
+    //! an agent had no way to tell.
+    //!
+    //! The widget half needs a display, so what is checked here is the seam
+    //! that made the lie possible: the loader reports failures, and the op
+    //! propagates them rather than dropping them.
+
+    /// `load_from_path` hands back an error instead of swallowing it.
+    #[test]
+    fn the_loader_reports_failure_to_its_caller() {
+        let source = crate::testing::code(include_str!("notebook_host.rs"));
+        let signature = source
+            .find("pub fn load_from_path")
+            .map(|at| &source[at..at + 120])
+            .expect("load_from_path");
+        assert!(
+            signature.contains("Result<"),
+            "load_from_path returns nothing again, so a failed open cannot be \
+             distinguished from a successful one: {signature}"
+        );
+    }
+
+    /// `open_notebook` propagates it rather than reporting the wrong notebook.
+    #[test]
+    fn the_open_op_does_not_report_the_previous_notebook_as_a_success() {
+        let source = crate::testing::without_comments(crate::testing::code(include_str!(
+            "notebook_host.rs"
+        )));
+        let at = source
+            .find(r#""open_notebook" =>"#)
+            .expect("the open_notebook arm");
+        let arm = &source[at..at + 600];
+        assert!(
+            arm.contains("self.load_from_path(&PathBuf::from(path))?"),
+            "the load result is dropped, so `current_page()` answers with \
+             whatever tab happened to be open: {arm}"
+        );
+    }
 }
 
 #[cfg(test)]

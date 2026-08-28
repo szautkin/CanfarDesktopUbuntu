@@ -318,6 +318,16 @@ mod tests {
          that opens FITS tabs needs a way to close them.",
     ),
     (
+        "get_cell_image",
+        "Neither app can hand a cell's rendered figure to a caller that is not a GUI. The \
+         reference holds the live figure object and paints it into its own window; over a tool \
+         boundary there is nothing but a description — `hasImage: true` and \
+         `<Figure size 640x480>`. An agent with vision could be looking at the plot it just \
+         asked for and instead gets a sentence about one. The bytes are kept OUT of \
+         `get_cell_output` on purpose, since inlining base64 into every read would spend a \
+         caller's context on pixels it did not ask for; this is the explicit way to ask.",
+    ),
+    (
         "check_notebook_dependencies",
         "The reference has the scanner (Helpers/Notebook/DependencyScanner.cs) but only behind its \
          notebook UI. An agent asked to run a notebook could not find out what it would need \

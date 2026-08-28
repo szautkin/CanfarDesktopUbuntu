@@ -1,6 +1,9 @@
 # 13 — Notebook alignment: Jupyter, and the Windows app
 
-Status: plan. Nothing here is implemented yet.
+Status: **A3, B1, A1 and the `image/jpeg` half of B3 are implemented.** The
+rest is still plan. See "What has been done" below for what changed and how it
+was checked; the tier descriptions are left as written so the remaining items
+still read as they were assessed.
 
 The prompt was "the Windows app can show images inside the notebook, ours
 cannot". That turned out to be half right in an interesting way, so this starts
@@ -38,6 +41,114 @@ The real difference the prompt is pointing at is more likely `text/html`: an
 `astropy.table.Table` or a `pandas.DataFrame` renders as a formatted table on
 Windows and as its `repr()` here. For an astronomy notebook that is the output
 people look at most.
+
+## What has been done
+
+Implemented, with the verification for each:
+
+**A3 — a cell mixing a magic with Python.** `_split_cell` now splits a cell into
+magic and code segments and runs them **in source order**, so both halves run
+and their output arrives in the order it was written. The first attempt hoisted
+every magic to the front, which fixed the syntax error and introduced a subtler
+one — `print('first')` then `!echo second` printed `second` first. Code segments
+are blank-padded rather than closed up so tracebacks keep their line numbers.
+
+**B1 — the `_repr_*_` protocol.** `_mime_bundle` asks an object how it wants to
+be shown (`_repr_html_`, `_repr_png_`, `_repr_jpeg_`, `_repr_svg_`,
+`_repr_markdown_`, `_repr_latex_`, `_repr_json_`), always includes `text/plain`,
+and ignores a method that raises. Measured before and after, on the same cells
+as the table above:
+
+| cell | was | now |
+| --- | --- | --- |
+| `Image.new('RGB',(32,32),'red')` | `text/plain` | `image/png`, `image/jpeg`, `text/plain` |
+| `Table({'a':[1,2]})` | `text/plain` | **`text/html`**, `text/plain` |
+
+**B2 — `display()` and `IPython.display`.** `display()` is injected into the
+user's namespace, so it works with no IPython at all. It emits immediately while
+`print` output is captured until the cell ends, so it drains the capture buffer
+first — otherwise `print`/`display`/`print` arrived back-to-front.
+
+`from IPython.display import HTML, Image, Markdown, Latex, SVG, JSON,
+clear_output` now works in both directions:
+
+- **IPython absent** — a stand-in is built on demand by a `sys.meta_path`
+  finder. On demand is the whole point: the first version registered it at
+  startup, and libraries read the presence of `IPython` in `sys.modules` as
+  "we are in a notebook". matplotlib called `get_ipython()` on it and every
+  figure cell died with `module 'IPython' has no attribute 'get_ipython'`. It is
+  now created only when a cell actually writes the import, and when it is, it
+  answers `get_ipython()` truthfully with `None`.
+- **IPython installed** — its `display()` publishes to a running kernel, and
+  none is; outside one it prints a repr, which is the text the user was
+  unhappy with to begin with. A second finder patches it at import time so it
+  publishes here instead. Its own `HTML`/`Image` classes are untouched: they
+  already carry the `_repr_*_` methods `_mime_bundle` reads.
+
+`Image(url=...)` is refused rather than fetched — a cell that reaches the
+network should say so, especially on someone else's cluster.
+
+**A1 — `text/html` is rendered.** `helpers::simple_html` turns HTML into tables
+and Pango markup with no GTK in it, so the parsing is tested without a display;
+`notebook_cell` builds a `GtkGrid` per table and a label per markup run.
+`OutputData::richest` now picks the representation, replacing a fixed
+"is there a PNG? is there text?" that left `text/html` and `image/jpeg` parsed
+and ignored. It prefers images over HTML, which is deliberately the opposite of
+nbconvert — nbconvert renders into a browser, and ours would show plotly's
+interactive HTML as empty divs while dropping the static image that works.
+
+**B3, in part — `image/jpeg`.** The decoder sniffs the format from the bytes, so
+this needed only to be asked for.
+
+### Defects found while doing it
+
+Not in the original plan; found by driving the harness rather than reading it.
+
+- **`_strip_harness_frames` had never stripped a single frame.** It asked
+  `"__file__" in dir()` from inside a function, where `dir()` lists locals and
+  `__file__` is a module global — always false, so the path was the literal
+  `"<harness>"` and no frame ever matched. Every notebook traceback has been
+  showing the harness's internals above the user's own line.
+- **A SyntaxError carried stdlib frames** (`ast.py`, line 52, in parse) that no
+  harness-filename check could ever have caught. Both are now one rule: a
+  traceback starts at the first `<cell>` frame. Frames *below* it are kept — a
+  failure inside numpy is the user's stack.
+- **Python 3.11+ emits two continuation lines per frame** (source and `^^^^`
+  carets); the filter skipped a fixed one, leaving orphaned carets.
+- **A bare `<` in HTML ate everything up to the next `>`.** `3 < 4 && 5 > 2`
+  rendered as `3  2`. A `<` only opens a tag when a name follows it.
+
+### How it is guarded now
+
+- `tests/kernel_harness.rs` — nine integration tests driving the real python
+  script over the real protocol. Nothing in `cargo test` reached the harness
+  before, which is how the two defects above shipped. Library-dependent cases
+  skip loudly when the library is absent.
+- `helpers::simple_html` unit tests, against captured `astropy` and `pandas`
+  output rather than invented markup.
+- `OutputData::richest` unit tests for each representation.
+- `examples/notebook_output_probe.rs` — builds a real `CodeCellWidget`, feeds it
+  captured bundles, and walks the widget tree; then runs the REAL harness and
+  renders what it actually emits. Model-level tests would not have caught the
+  original bug, because the model was right the whole time and the call site
+  never asked.
+- `testing::python_code` strips Python docstrings as well as `#` comments, after
+  a harness guard found the defective call inside the docstring explaining why
+  it had been removed.
+
+Every guard above was mutation-tested: the code was broken deliberately and the
+test confirmed to fail. That caught two things reading could not have:
+
+- One survivor was traced to a mutation that is a **no-op** — `want_value`
+  per-segment versus on the last segment produces identical output, because
+  each code segment reassigns the result — and the test comment now says so
+  rather than claiming a guard it does not have.
+- Three survivors shared one cause: both tests that require IPython to be
+  ABSENT were **skipping silently**. Their check used
+  `importlib.util.find_spec`, which walks `sys.meta_path` — where the harness
+  had just installed its own IPython stand-in. The test asked "is IPython
+  installed?" and got back the harness's own answer. It now uses `PathFinder`,
+  which searches `sys.path` only.
 
 ## Tier A — where the Windows app is ahead
 
@@ -125,14 +236,14 @@ noted so it is a decision rather than an oversight.
 
 Grouped by what each buys, cheapest first within each group.
 
-1. **A3** — mixed magic/Python cells. A defect, small, self-contained.
-2. **B1 + A1 together** — the display protocol in the harness, and an HTML
-   renderer for what it produces. This is the "images and tables work now"
-   change, and the two halves are not useful apart.
-3. **B2** — `display()` / `IPython.display` shim.
-4. **A2** — markdown headings, lists, code blocks, rules.
-5. **B3** — the remaining MIME types, starting with `image/jpeg`, which is
-   already modelled and one line from working.
+1. ~~**A3** — mixed magic/Python cells.~~ Done.
+2. ~~**B1 + A1 together**~~ Done. The two halves were not useful apart, and
+   were built and verified together.
+3. ~~**B2** — `display()` and the `IPython.display` shim.~~ Done.
+4. **A2** — markdown headings, lists, code blocks, rules. Now the largest
+   remaining gap against the reference.
+5. **B3** — the remaining MIME types: `image/svg+xml`, `text/markdown`,
+   `text/latex`, `application/json`. ~~`image/jpeg`~~ done.
 6. **B4** — markdown attachments.
 7. **A4** — ANSI, and **B7** — output truncation. Both are small hardening.
 8. **B5** — LaTeX. Bigger; worth its own discussion.

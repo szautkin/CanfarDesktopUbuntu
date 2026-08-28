@@ -84,7 +84,20 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Filter packages…",                            "Filtrer les paquets…"),
     ("Loading images…",                             "Chargement des images…"),
     ("Discovering…",                                "Découverte en cours…"),
+    ("Largest file to open (MB)",                   "Taille maximale du fichier à ouvrir (Mo)"),
     ("Kernel: not started",                         "Noyau : non démarré"),
+    // The rest of the kernel states. Only "not started" was ever translated,
+    // because the others were English literals doing double duty as machine
+    // keywords; `models::kernel_status` separated the two, so they can be
+    // written for a reader now.
+    ("Kernel: starting…",                           "Noyau : démarrage…"),
+    ("Kernel: restarting…",                         "Noyau : redémarrage…"),
+    ("Kernel: idle",                                "Noyau : inactif"),
+    ("Kernel: busy",                                "Noyau : occupé"),
+    ("Kernel: busy — cell running over {}s (press I,I to Interrupt)",
+     "Noyau : occupé — cellule en cours depuis plus de {} s (appuyez sur I,I pour interrompre)"),
+    ("Kernel: error — {}",                          "Noyau : erreur — {}"),
+    ("Kernel: failed — {}",                         "Noyau : échec — {}"),
     ("Failed to load platform data",                "Échec du chargement des données de la plateforme"),
     ("Export Figure",                                "Exporter la figure"),
     ("Find image by package",                        "Trouver une image par paquet"),
@@ -1057,6 +1070,21 @@ static CURRENT: RwLock<Lang> = RwLock::new(Lang::En);
 /// Set the active UI language. Call once at startup after loading settings.
 pub fn set_lang(lang: Lang) {
     *CURRENT.write().unwrap() = lang;
+}
+
+/// Serialises tests that switch the active language.
+///
+/// [`CURRENT`] is process-wide and the test harness runs tests on many threads,
+/// so two tests flipping the language would each observe the other's. Holding
+/// this for the duration of a switch makes that impossible instead of unlikely.
+///
+/// The guard is poison-tolerant: a test that panics mid-switch has already
+/// failed, and turning that into a cascade of unrelated failures in every other
+/// locale test would hide the one that actually broke.
+#[cfg(test)]
+pub fn testing_lang_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The active UI language.

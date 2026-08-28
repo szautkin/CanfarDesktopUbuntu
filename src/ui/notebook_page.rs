@@ -13,6 +13,7 @@
 
 use crate::helpers::notebook_parser;
 use crate::helpers::notebook_undo::UndoRedoStack;
+use crate::models::kernel_status::KernelStatus;
 use crate::models::notebook_document::{CellOutput, CellSource, NotebookCell, NotebookDocument};
 use crate::services::kernel_service::{KernelState, LocalKernelService};
 use crate::services::notebook_settings_service::NotebookSettingsService;
@@ -100,6 +101,8 @@ pub struct NotebookPage {
     /// Re-entrancy guard so a second Run-All can't interleave with the first
     /// (mirrors the reference `_runAllInProgress`).
     run_all_in_progress: Cell<bool>,
+    /// The kernel's state, as a value rather than as the sentence on screen.
+    kernel_status_value: RefCell<KernelStatus>,
     /// App services (needed to bridge tokio → glib).
     services: Arc<AppServices>,
 }
@@ -189,6 +192,7 @@ impl NotebookPage {
             editor_word_wrap: Cell::new(editor.word_wrap),
             exec_timeout_secs: Cell::new(editor.execution_timeout_secs),
             run_all_in_progress: Cell::new(false),
+            kernel_status_value: RefCell::new(KernelStatus::NotStarted),
             services,
         });
 
@@ -277,7 +281,7 @@ impl NotebookPage {
             }
         }
 
-        self.update_kernel_status_label("Kernel: busy");
+        self.set_kernel_status(KernelStatus::Busy);
 
         // ── Soft execution-timeout warning ────────────────────────────────
         // A configurable, NON-FATAL warning: if the cell is still running
@@ -292,9 +296,9 @@ impl NotebookPage {
             glib::spawn_future_local(async move {
                 glib::timeout_future(std::time::Duration::from_secs(timeout_secs as u64)).await;
                 if !done.get() {
-                    page.update_kernel_status_label(&format!(
-                        "Kernel: busy — cell running over {timeout_secs}s (press I,I to Interrupt)"
-                    ));
+                    page.set_kernel_status(KernelStatus::BusySlow {
+                        seconds: timeout_secs as u64,
+                    });
                 }
             });
         }
@@ -373,7 +377,7 @@ impl NotebookPage {
                 }
 
                 page.mark_modified();
-                page.update_kernel_status_label("Kernel: idle");
+                page.set_kernel_status(KernelStatus::Idle);
                 true
             }
             Err(e) => {
@@ -389,7 +393,7 @@ impl NotebookPage {
                         code.set_outputs(&[error_output]);
                     }
                 }
-                page.update_kernel_status_label(&format!("Kernel: error — {e}"));
+                page.set_kernel_status(KernelStatus::Error(e.clone()));
                 false
             }
         }
@@ -397,6 +401,16 @@ impl NotebookPage {
 
     /// Execute all code cells in order.
     ///
+    /// Whether a Run-All sweep is still going.
+    ///
+    /// Exposed so the MCP layer can wait for one the way it waits for a single
+    /// cell. `run_all_cells` returned the instant it had SPAWNED the sweep, so
+    /// a caller that read the outputs straight afterwards got the previous
+    /// run's — or none — with nothing in the reply to say why.
+    pub fn run_all_running(&self) -> bool {
+        self.run_all_in_progress.get()
+    }
+
     /// Runs cells sequentially, **awaiting** each cell's execution before
     /// starting the next, and stops early if the kernel dies. Guarded so a
     /// second Run-All can't overlap the first. Mirrors the reference
@@ -531,7 +545,15 @@ impl NotebookPage {
             .file_path
             .borrow()
             .clone()
-            .ok_or_else(|| "No file path set".to_string())?;
+            // The remedy, not just the diagnosis. An untitled notebook has
+            // nowhere to be written, and "No file path set" left a caller to
+            // guess that `save_notebook` even takes a `path` — the one thing
+            // that would have got them unstuck.
+            .ok_or_else(|| {
+                "this notebook has never been saved, so there is no file to write to; \
+                 call save_notebook again with a `path` (a .ipynb file) to choose one"
+                    .to_string()
+            })?;
 
         notebook_parser::save_notebook(&self.document.borrow(), &path)?;
         *self.modified.borrow_mut() = false;
@@ -552,7 +574,7 @@ impl NotebookPage {
     pub fn restart_kernel(self: &Rc<Self>) {
         let page = self.clone();
         glib::spawn_future_local(async move {
-            page.update_kernel_status_label("Kernel: restarting…");
+            page.set_kernel_status(KernelStatus::Restarting);
             let kernel = page.kernel.clone();
             let result = page
                 .services
@@ -562,8 +584,8 @@ impl NotebookPage {
                 })
                 .await;
             match result {
-                Ok(()) => page.update_kernel_status_label("Kernel: idle"),
-                Err(e) => page.update_kernel_status_label(&format!("Kernel: error — {}", e)),
+                Ok(()) => page.set_kernel_status(KernelStatus::Idle),
+                Err(e) => page.set_kernel_status(KernelStatus::Error(e.to_string())),
             }
         });
     }
@@ -750,27 +772,18 @@ impl NotebookPage {
     }
 
     /// Update the kernel status label text and notify observers.
-    fn update_kernel_status_label(&self, text: &str) {
-        self.kernel_status.set_label(text);
-
-        // Derive a short state keyword for observers
-        let state_kw = if text.contains("idle") {
-            "idle"
-        } else if text.contains("busy") {
-            "busy"
-        } else if text.contains("starting") || text.contains("restarting") {
-            "starting"
-        } else if text.contains("failed") || text.contains("error") {
-            "error"
-        } else if text.contains("not started") || text.contains("dead") {
-            "dead"
-        } else {
-            "unknown"
-        };
-
+    /// Record the kernel's state, and show it.
+    ///
+    /// The state is stored as a value; the label and the observer keyword are
+    /// derived from it. Both used to be recovered by searching the label for
+    /// English words, which is why the label could not be translated: doing so
+    /// silently reclassified every kernel as "unknown".
+    fn set_kernel_status(&self, status: KernelStatus) {
+        self.kernel_status.set_label(&status.label());
         if let Some(cb) = self.on_state_changed.borrow().as_ref() {
-            cb(state_kw);
+            cb(status.keyword());
         }
+        *self.kernel_status_value.borrow_mut() = status;
     }
 
     /// Register a callback to be invoked whenever the kernel state changes.
@@ -778,7 +791,16 @@ impl NotebookPage {
         *self.on_state_changed.borrow_mut() = Some(cb);
     }
 
-    /// Return the current kernel status label text.
+    /// The kernel's current state.
+    ///
+    /// Returned as the value, not as the sentence on screen: callers need the
+    /// stable keyword and the English API text, and deriving those by reading
+    /// back a translated label is how the locale bug happened.
+    pub fn current_kernel_status(&self) -> KernelStatus {
+        self.kernel_status_value.borrow().clone()
+    }
+
+    /// Return the current kernel status label text, as shown to the user.
     pub fn current_kernel_status_label(&self) -> String {
         self.kernel_status.label().to_string()
     }
@@ -820,7 +842,7 @@ impl NotebookPage {
 
     /// Start the Python kernel subprocess.
     async fn start_kernel(self: &Rc<Self>) {
-        self.update_kernel_status_label("Kernel: starting…");
+        self.set_kernel_status(KernelStatus::Starting);
 
         let kernel = self.kernel.clone();
         let result = self
@@ -832,8 +854,8 @@ impl NotebookPage {
             .await;
 
         match result {
-            Ok(()) => self.update_kernel_status_label("Kernel: idle"),
-            Err(e) => self.update_kernel_status_label(&format!("Kernel: failed — {}", e)),
+            Ok(()) => self.set_kernel_status(KernelStatus::Idle),
+            Err(e) => self.set_kernel_status(KernelStatus::Failed(e.to_string())),
         }
     }
 

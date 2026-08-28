@@ -31,12 +31,8 @@ impl NotebookDocument {
                 extra: HashMap::new(),
             },
             cells: vec![NotebookCell {
-                cell_type: "code".to_string(),
-                source: CellSource::Single(String::new()),
-                outputs: Vec::new(),
-                execution_count: None,
                 id: Some(cell_id),
-                metadata: serde_json::Map::new(),
+                ..NotebookCell::new("code")
             }],
         }
     }
@@ -124,6 +120,31 @@ pub struct NotebookCell {
     pub id: Option<String>,
     #[serde(default)]
     pub metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+impl NotebookCell {
+    /// A new empty cell of `cell_type`, carrying a fresh id.
+    ///
+    /// The id is not optional in practice: nbformat 4.5 requires one on every
+    /// cell, and a document written without them is a document other tools may
+    /// refuse. Building a cell by hand meant remembering that; this does not.
+    pub fn new(cell_type: &str) -> Self {
+        NotebookCell {
+            cell_type: cell_type.to_string(),
+            source: CellSource::Single(String::new()),
+            outputs: Vec::new(),
+            execution_count: None,
+            id: Some(NotebookDocument::generate_cell_id()),
+            metadata: serde_json::Map::new(),
+        }
+    }
+
+    /// The same, with `source` already set.
+    pub fn with_source(cell_type: &str, source: impl Into<String>) -> Self {
+        let mut cell = Self::new(cell_type);
+        cell.source = CellSource::Single(source.into());
+        cell
+    }
 }
 
 impl Serialize for NotebookCell {
@@ -272,6 +293,157 @@ impl OutputData {
     pub fn has_image(&self) -> bool {
         self.image_png.is_some() || self.image_jpeg.is_some()
     }
+
+    /// Every MIME type this output carries, sorted.
+    ///
+    /// `has_image` and `has_html` answer two yes/no questions, which is all the
+    /// renderer needed when it could only draw those two. A caller that wants
+    /// to know whether a cell produced markdown, SVG, LaTeX or JSON — an agent
+    /// checking its own work, or a test asserting a non-image rich repr — had
+    /// no way to ask. This lists what is actually there.
+    ///
+    /// Sorted so a caller comparing two outputs, or a test asserting on the
+    /// list, does not depend on `HashMap` iteration order.
+    pub fn mime_types(&self) -> Vec<String> {
+        let mut types: Vec<String> = self
+            .extra
+            .keys()
+            .cloned()
+            .chain(self.text_plain.iter().map(|_| "text/plain".to_string()))
+            .chain(self.text_html.iter().map(|_| "text/html".to_string()))
+            .chain(self.image_png.iter().map(|_| "image/png".to_string()))
+            .chain(self.image_jpeg.iter().map(|_| "image/jpeg".to_string()))
+            .collect();
+        types.sort_unstable();
+        types.dedup();
+        types
+    }
+
+    /// The image this output carries, as `(base64 bytes, MIME type)`.
+    ///
+    /// Separate from [`richest`](Self::richest) because the two answer
+    /// different questions. `richest` picks what a HUMAN should look at, and
+    /// deliberately keeps image bytes out of anything that crosses the tool
+    /// boundary — a base64 PNG inlined into every `get_cell_output` would cost
+    /// an agent its context window on every call, mostly for outputs it never
+    /// wanted to look at.
+    ///
+    /// This is the other half: asked for explicitly, one output at a time, so a
+    /// client that CAN see pictures can fetch the pixels and one that cannot
+    /// never pays for them.
+    ///
+    /// PNG before JPEG, matching `richest`, so the picture an agent retrieves
+    /// is the picture the notebook drew.
+    pub fn image_bytes(&self) -> Option<(&str, &'static str)> {
+        if let Some(b64) = &self.image_png {
+            return Some((b64, "image/png"));
+        }
+        self.image_jpeg.as_deref().map(|b64| (b64, "image/jpeg"))
+    }
+
+    /// The richest representation this output carries, or `None` if it carries
+    /// nothing renderable.
+    ///
+    /// A display bundle holds the SAME value several ways and the front end
+    /// picks one — that is the whole point of the MIME bundle. Ours used to ask
+    /// two questions in a fixed order (is there a PNG? is there text?) with the
+    /// other two representations parsed and then ignored, so an
+    /// `astropy.table.Table` arrived as its `repr()` even though the HTML was
+    /// sitting right there in the same bundle.
+    ///
+    /// Kept out of the widget so the choice can be tested without a display,
+    /// and so there is exactly one place that knows the order.
+    pub fn richest(&self) -> Option<Representation<'_>> {
+        // Images first, which is where this departs from nbconvert's order —
+        // it puts `text/html` ahead of `image/png`. nbconvert emits into a
+        // browser; we render HTML with a deliberately small renderer that has
+        // no JavaScript and no CSS. When a library offers both (plotly, and
+        // anything wrapping a figure) the HTML is the interactive version we
+        // cannot run, and the image is the one we can actually show.
+        if let Some(b64) = &self.image_png {
+            return Some(Representation::Image(b64));
+        }
+        if let Some(b64) = &self.image_jpeg {
+            return Some(Representation::Image(b64));
+        }
+        // SVG is a picture too, and `Texture::from_bytes` reads it directly.
+        if let Some(svg) = self.extra_text("image/svg+xml") {
+            return Some(Representation::Svg(svg));
+        }
+        if let Some(html) = &self.text_html {
+            let html = html.joined();
+            if !html.trim().is_empty() {
+                return Some(Representation::Html(html));
+            }
+        }
+        if let Some(md) = self.extra_text("text/markdown") {
+            return Some(Representation::Markdown(md));
+        }
+        if let Some(latex) = self.extra_text("text/latex") {
+            return Some(Representation::Latex(latex));
+        }
+        if let Some(json) = self.extra.get("application/json") {
+            // Pretty-printed here rather than in the widget: the widget shows
+            // text, and how a JSON document reads is a property of the
+            // document. `to_string` on a failure keeps the content either way.
+            let text = serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string());
+            if !text.trim().is_empty() {
+                return Some(Representation::Json(text));
+            }
+        }
+        let text = self.plain_text()?;
+        // An empty `text/plain` is not worth an empty label. It is what a bare
+        // `display()` of something with no representations leaves behind.
+        (!text.is_empty()).then_some(Representation::Text(text))
+    }
+}
+
+impl OutputData {
+    /// A text representation from the un-modelled part of the bundle.
+    ///
+    /// nbformat allows any text value to arrive either as a string or as a list
+    /// of lines — the modelled fields go through [`CellSource`] for exactly
+    /// that reason, and the flattened `extra` map has to do it by hand.
+    /// Whitespace-only content is treated as absent, so it never displaces a
+    /// representation that would actually show something.
+    fn extra_text(&self, mime: &str) -> Option<String> {
+        let value = self.extra.get(mime)?;
+        let text = match value {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(lines) => lines
+                .iter()
+                .filter_map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .concat(),
+            _ => return None,
+        };
+        (!text.trim().is_empty()).then_some(text)
+    }
+}
+
+/// The one representation of an output that gets rendered.
+///
+/// `Image` covers PNG and JPEG together: the decoder sniffs the format from the
+/// bytes, so telling them apart would only give the caller a distinction it has
+/// no use for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Representation<'a> {
+    /// Base64-encoded image bytes, in whatever format the bundle carried.
+    Image(&'a str),
+    /// SVG source. Text, not base64 — that is how nbformat carries it.
+    Svg(String),
+    /// HTML source, to be rendered by
+    /// [`simple_html`](crate::helpers::simple_html).
+    Html(String),
+    /// Markdown source, for the same renderer markdown CELLS use.
+    Markdown(String),
+    /// LaTeX source. There is no renderer for it yet, so the widget shows the
+    /// source — which is at least the thing the author wrote, and readable.
+    Latex(String),
+    /// A JSON document, already pretty-printed.
+    Json(String),
+    /// Plain text: the representation every bundle is required to have.
+    Text(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +466,205 @@ mod tests {
     fn cell_source_lines_joined() {
         let src = CellSource::Lines(vec!["hello\n".to_string(), "world".to_string()]);
         assert_eq!(src.joined(), "hello\nworld");
+    }
+
+    // --- Which representation gets rendered ---
+
+    fn bundle(json: &str) -> OutputData {
+        serde_json::from_str(json).expect("bundle parses")
+    }
+
+    /// Every captured MIME is reported, not just the two the renderer knew.
+    #[test]
+    fn mime_types_lists_everything_in_the_bundle() {
+        // `r##"…"##`: the markdown value contains `"#`, which would close a
+        // single-hash raw string in the middle of the JSON.
+        let data = bundle(
+            r##"{"text/html": "<b>x</b>", "text/plain": "x",
+                 "image/png": "iVBOR", "text/markdown": "# h",
+                 "image/svg+xml": "<svg/>", "application/json": {"a": 1}}"##,
+        );
+        assert_eq!(
+            data.mime_types(),
+            [
+                "application/json",
+                "image/png",
+                "image/svg+xml",
+                "text/html",
+                "text/markdown",
+                "text/plain",
+            ]
+        );
+        // The yes/no questions still agree with the list.
+        assert!(data.has_image());
+        assert!(data.mime_types().contains(&"text/html".to_string()));
+    }
+
+    #[test]
+    fn an_empty_bundle_lists_nothing() {
+        assert!(bundle("{}").mime_types().is_empty());
+    }
+
+    /// An agent that can see pictures must be able to fetch the pixels.
+    #[test]
+    fn image_bytes_returns_the_data_and_its_type() {
+        let data = bundle(r#"{"image/png": "iVBORw0=", "text/plain": "<Figure>"}"#);
+        assert_eq!(data.image_bytes(), Some(("iVBORw0=", "image/png")));
+
+        // A JPEG-only bundle — a PIL image with `_repr_jpeg_` and no PNG.
+        let data = bundle(r#"{"image/jpeg": "/9j/AAA=", "text/plain": "<Image>"}"#);
+        assert_eq!(data.image_bytes(), Some(("/9j/AAA=", "image/jpeg")));
+
+        // When both are offered, PNG — the same one `richest` draws, so what an
+        // agent fetches is what the notebook showed.
+        let data = bundle(r#"{"image/png": "PNG", "image/jpeg": "JPEG"}"#);
+        assert_eq!(data.image_bytes(), Some(("PNG", "image/png")));
+    }
+
+    #[test]
+    fn an_output_with_no_image_has_no_bytes() {
+        assert_eq!(bundle(r#"{"text/plain": "42"}"#).image_bytes(), None);
+        // SVG is a picture, but it is text and needs no base64 round trip; it
+        // travels in `richTypes` and is not what this accessor is for.
+        assert_eq!(bundle(r#"{"image/svg+xml": "<svg/>"}"#).image_bytes(), None);
+    }
+
+    /// An astropy Table: HTML and text in one bundle. The HTML is the point.
+    #[test]
+    fn html_beats_plain_text() {
+        let data = bundle(
+            r#"{"text/html": "<table><tr><td>1</td></tr></table>",
+                "text/plain": "<Table length=1>"}"#,
+        );
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Html(
+                "<table><tr><td>1</td></tr></table>".to_string()
+            ))
+        );
+    }
+
+    /// A PIL image via `_repr_jpeg_` with no PNG alongside it.
+    ///
+    /// `image/jpeg` was modelled from the start and never rendered — the
+    /// renderer asked about PNG, then gave up and printed the text. This is
+    /// that gap.
+    #[test]
+    fn a_jpeg_only_bundle_still_renders_as_an_image() {
+        let data = bundle(r#"{"image/jpeg": "/9j/AAA=", "text/plain": "<PIL.Image>"}"#);
+        assert_eq!(data.richest(), Some(Representation::Image("/9j/AAA=")));
+    }
+
+    /// A matplotlib figure: PNG and text.
+    #[test]
+    fn an_image_beats_plain_text() {
+        let data = bundle(r#"{"image/png": "iVBORw0=", "text/plain": "<Figure>"}"#);
+        assert_eq!(data.richest(), Some(Representation::Image("iVBORw0=")));
+    }
+
+    /// When a bundle offers both, the one this app can actually draw wins.
+    ///
+    /// Deliberately the opposite of nbconvert, which puts `text/html` first
+    /// because it renders into a browser. Ours would show plotly's interactive
+    /// HTML as a stack of empty divs and drop the static image that works.
+    #[test]
+    fn an_image_beats_html_here() {
+        let data = bundle(r#"{"image/png": "iVBORw0=", "text/html": "<div id=plot></div>"}"#);
+        assert_eq!(data.richest(), Some(Representation::Image("iVBORw0=")));
+    }
+
+    /// SVG is a picture, and ranks with the other pictures.
+    #[test]
+    fn svg_is_treated_as_an_image_not_as_text() {
+        let data = bundle(r#"{"image/svg+xml": "<svg/>", "text/plain": "<S object>"}"#);
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Svg("<svg/>".to_string()))
+        );
+    }
+
+    /// The MIME types that used to fall through to an object address.
+    ///
+    /// Each of these was captured by the harness, ignored by the renderer, and
+    /// shown as whatever `text/plain` happened to be — for an object with no
+    /// `__repr__` that is `<__main__.M object at 0x7f…>`, a memory address.
+    #[test]
+    fn markdown_latex_and_json_all_have_a_representation() {
+        let data = bundle(r##"{"text/markdown": "# h", "text/plain": "<M object>"}"##);
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Markdown("# h".to_string()))
+        );
+
+        // `\\alpha` in the JSON source is the two characters a LaTeX author
+        // types: a backslash and a word.
+        let data = bundle(r#"{"text/latex": "$\\alpha$", "text/plain": "<L object>"}"#);
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Latex(r"$\alpha$".to_string()))
+        );
+
+        // JSON arrives as a document and is pretty-printed, not re-serialised
+        // to one line.
+        let data = bundle(r#"{"application/json": {"a": 1}, "text/plain": "<J object>"}"#);
+        let Some(Representation::Json(text)) = data.richest() else {
+            panic!("expected json, got {:?}", data.richest());
+        };
+        assert!(text.contains('\n'), "not pretty-printed: {text}");
+        assert!(text.contains(r#""a": 1"#), "{text}");
+    }
+
+    /// nbformat lets any text value arrive as a list of lines.
+    #[test]
+    fn a_line_list_in_the_unmodelled_part_is_joined() {
+        // Raw string: `\n` here is the two characters JSON needs to see in
+        // order to decode a newline.
+        let data = bundle(r##"{"text/markdown": ["# head\n", "body"]}"##);
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Markdown("# head\nbody".to_string()))
+        );
+    }
+
+    /// A rich key holding only whitespace must not displace real content.
+    #[test]
+    fn an_empty_rich_value_does_not_hide_the_text() {
+        let data = bundle(r#"{"text/markdown": "   ", "text/plain": "the real thing"}"#);
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Text("the real thing".to_string()))
+        );
+    }
+
+    /// Plain text is what is left, and it is always allowed to be the answer.
+    #[test]
+    fn plain_text_is_used_when_it_is_all_there_is() {
+        let data = bundle(r#"{"text/plain": "42"}"#);
+        assert_eq!(data.richest(), Some(Representation::Text("42".to_string())));
+    }
+
+    /// Nothing renderable renders nothing, rather than an empty label.
+    #[test]
+    fn an_empty_bundle_has_no_representation() {
+        assert_eq!(bundle("{}").richest(), None);
+        assert_eq!(bundle(r#"{"text/plain": ""}"#).richest(), None);
+        // An HTML key holding only whitespace is not a reason to skip the text
+        // that sits beside it.
+        let data = bundle(r#"{"text/html": "  \n ", "text/plain": "fallback"}"#);
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Text("fallback".to_string()))
+        );
+    }
+
+    /// A bundle whose text arrived as a line list, as nbformat allows.
+    #[test]
+    fn a_line_list_representation_is_joined() {
+        let data = bundle(r#"{"text/plain": ["line one\n", "line two"]}"#);
+        assert_eq!(
+            data.richest(),
+            Some(Representation::Text("line one\nline two".to_string()))
+        );
     }
 
     // --- Serialisation round-trip ---

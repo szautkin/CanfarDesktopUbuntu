@@ -95,6 +95,7 @@ mod tests {
             autosave_interval_secs: 60,
             execution_timeout_secs: 120,
             show_toolbar: false,
+            max_open_file_mb: 128,
         };
         svc.save(&settings).expect("save");
         let back = svc.load();

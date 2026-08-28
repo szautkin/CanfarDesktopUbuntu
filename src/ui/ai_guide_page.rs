@@ -261,6 +261,7 @@ mod catalog {
             | "list_open_notebooks"
             | "get_notebook"
             | "get_cell_output"
+            | "get_cell_image"
             | "get_kernel_state"
             | "open_notebook"
             | "create_notebook"
@@ -1637,5 +1638,50 @@ mod tests {
         assert_eq!(tool_count_text(1), "1 tool");
         assert_eq!(tool_count_text(0), "0 tools");
         assert_eq!(tool_count_text(7), "7 tools");
+    }
+}
+
+#[cfg(test)]
+mod guide_descriptor_tests {
+    //! The guide shows the descriptors the MCP server advertises, live.
+    //!
+    //! It does NOT keep its own copy of the text — which is the only reason a
+    //! tool description written once is correct in both places. This pins that,
+    //! because a second copy is exactly the drift that has bitten this file
+    //! before.
+    use super::*;
+
+    #[test]
+    fn a_new_tool_and_its_description_reach_the_guide() {
+        let live = all_live_descriptors();
+        let image = live
+            .iter()
+            .find(|d| d.name == "get_cell_image")
+            .expect("get_cell_image is not in the guide's tool list");
+        assert!(
+            image.description.contains("image content"),
+            "the guide is showing stale text: {}",
+            image.description
+        );
+
+        // And a description edited in the descriptor shows through unchanged.
+        let cell_output = live
+            .iter()
+            .find(|d| d.name == "get_cell_output")
+            .expect("get_cell_output missing");
+        assert!(
+            cell_output.description.contains("richTypes"),
+            "the guide does not mention richTypes: {}",
+            cell_output.description
+        );
+        let run_cell = live
+            .iter()
+            .find(|d| d.name == "run_cell")
+            .expect("run_cell missing");
+        assert!(
+            run_cell.description.contains("timeout"),
+            "the guide does not mention the timeout: {}",
+            run_cell.description
+        );
     }
 }

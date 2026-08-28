@@ -168,3 +168,19 @@ label.warning { color: @warning_color; }
     border: 1px solid alpha(@error_color, 0.4);
     font-size: 0.8em;
 }
+
+/* A table from an output's `text/html` — an astropy Table, a pandas DataFrame.
+   The striping is what makes a wide table readable across a row, which is the
+   whole reason to render the HTML instead of its `repr()`. Row colours come
+   from the theme, so this follows light and dark without a second rule. */
+.notebook-html-table {
+    padding: 6px 8px;
+    border: 1px solid alpha(@borders, 0.6);
+    border-radius: 6px;
+    background-color: alpha(@card_bg_color, 0.6);
+}
+
+.notebook-html-table > label.heading {
+    padding-bottom: 4px;
+    border-bottom: 1px solid alpha(@borders, 0.8);
+}

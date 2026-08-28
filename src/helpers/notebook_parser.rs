@@ -1,4 +1,4 @@
-use crate::models::notebook_document::{CellSource, NotebookCell, NotebookDocument};
+use crate::models::notebook_document::{NotebookCell, NotebookDocument};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::path::Path;
@@ -238,9 +238,58 @@ fn is_stdlib(module: &str) -> bool {
 ///
 /// The function enforces a maximum of 10 000 cells and assigns fresh cell IDs
 /// to any cells that are missing one (as required by nbformat 4.5+).
+/// Read a file the notebook is about to open, refusing one that is too large.
+///
+/// `read_to_string` pulls the whole file into memory before anything can look
+/// at it. The only limit was on the number of CELLS, which a `.txt` or a `.py`
+/// reaches long after the bytes are already in RAM — and in an astronomy folder
+/// the file most likely to be enormous is exactly the kind now openable: a
+/// source catalogue saved as `.txt` beside the notes it belongs to. Asking the
+/// filesystem for the size first costs one `stat`.
+///
+/// The ceiling is [`NotebookSettings::max_open_file_mb`], so a workstation can
+/// raise it.
+pub fn read_within_limit(path: &Path) -> Result<String, String> {
+    let limit_mb = crate::services::notebook_settings_service::NotebookSettingsService::new()
+        .load()
+        .max_open_file_mb;
+    read_within(path, limit_mb)
+}
+
+/// The same, with the limit passed in.
+///
+/// Split from the setting lookup so the decision can be tested. Reading the
+/// user's settings file is I/O against a global, and a rule that can only be
+/// exercised by writing that file is a rule nobody exercises — this one shipped
+/// with no test at all.
+fn read_within(path: &Path, limit_mb: u32) -> Result<String, String> {
+    if let Ok(meta) = std::fs::metadata(path) {
+        if let Some(refusal) = too_large(path, meta.len(), limit_mb) {
+            return Err(refusal);
+        }
+    }
+    std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))
+}
+
+/// Why `size` is too large to open, or `None` if it is not.
+///
+/// The message names the setting, because the remedy is a setting and a user
+/// told only "too large" has nowhere to go.
+fn too_large(path: &Path, size: u64, limit_mb: u32) -> Option<String> {
+    let limit = u64::from(limit_mb) * 1024 * 1024;
+    (size > limit).then(|| {
+        format!(
+            "{} is {:.1} MB, over the {} MB limit for opening a notebook. Raise \
+             \"Largest file to open\" in the notebook settings if this is really a notebook.",
+            path.display(),
+            size as f64 / (1024.0 * 1024.0),
+            limit_mb
+        )
+    })
+}
+
 pub fn load_notebook(path: &Path) -> Result<NotebookDocument, String> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let contents = read_within_limit(path)?;
 
     let mut doc: NotebookDocument = serde_json::from_str(&contents)
         .map_err(|e| format!("invalid notebook JSON in {}: {}", path.display(), e))?;
@@ -284,6 +333,47 @@ pub fn with_ipynb_extension(path: std::path::PathBuf) -> std::path::PathBuf {
 }
 
 pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> {
+    // Write the file back in the format it IS.
+    //
+    // This wrote nbformat JSON to whatever path it was given. Open
+    // `analysis.py`, press Ctrl+S, and the script was replaced by a JSON
+    // document — the same for a `.md`, which could be a document someone opened
+    // only to read. The app has offered `*.py` and `*.md` in its Open dialog
+    // the whole time, so the way to lose a file was to use a feature.
+    match crate::helpers::notebook_formats::NotebookFormat::for_path(path) {
+        crate::helpers::notebook_formats::NotebookFormat::PercentPython => {
+            return write_atomically(
+                path,
+                &crate::helpers::notebook_formats::to_percent(doc),
+                "py",
+            );
+        }
+        crate::helpers::notebook_formats::NotebookFormat::Markdown => {
+            return write_atomically(
+                path,
+                &crate::helpers::notebook_formats::to_markdown(doc),
+                "md",
+            );
+        }
+        crate::helpers::notebook_formats::NotebookFormat::PlainText => {
+            return write_atomically(
+                path,
+                &crate::helpers::notebook_formats::to_plain_text(doc),
+                "txt",
+            );
+        }
+        // Never reached through the UI, which refuses to open these — but a
+        // path can arrive from an MCP caller, and writing nbformat JSON over
+        // someone's PDF is the failure this whole match exists to prevent.
+        crate::helpers::notebook_formats::NotebookFormat::Unsupported => {
+            return Err(
+                crate::helpers::notebook_formats::NotebookFormat::refusal(path)
+                    .unwrap_or_else(|| format!("cannot save to {}", path.display())),
+            );
+        }
+        crate::helpers::notebook_formats::NotebookFormat::Ipynb => {}
+    }
+
     // Stamp the kernel this app actually runs, unless the notebook already
     // names one. A notebook with no kernelspec opens in Jupyter as "select a
     // kernel" — true, but every notebook we write is a Python 3 notebook, and
@@ -319,9 +409,21 @@ pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> 
     // extra dependency.
     let json = reindent_json(&json);
 
-    // Atomic write: write to <path>.tmp, then rename.
-    let tmp_path = path.with_extension("ipynb.tmp");
-    std::fs::write(&tmp_path, &json)
+    write_atomically(path, &json, "ipynb")
+}
+
+/// Write `contents` to `path` via a temporary file and a rename.
+///
+/// The rename is what makes it atomic: a reader either sees the old file or the
+/// new one, never a half-written one. `extension` names the temporary so two
+/// formats saving the same stem cannot collide.
+fn write_atomically(path: &Path, contents: &str, extension: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create directory {}: {}", parent.display(), e))?;
+    }
+    let tmp_path = path.with_extension(format!("{extension}.tmp"));
+    std::fs::write(&tmp_path, contents)
         .map_err(|e| format!("cannot write {}: {}", tmp_path.display(), e))?;
     std::fs::rename(&tmp_path, path).map_err(|e| {
         format!(
@@ -331,7 +433,6 @@ pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> 
             e
         )
     })?;
-
     Ok(())
 }
 
@@ -340,22 +441,34 @@ pub fn save_notebook(doc: &NotebookDocument, path: &Path) -> Result<(), String> 
 /// This lets the UI open `.py` files in the notebook viewer without requiring
 /// a real Jupyter kernel to be running.
 pub fn load_python_as_notebook(path: &Path) -> Result<NotebookDocument, String> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let source = read_within_limit(path)?;
 
+    // Split on `# %%`, the marker jupytext, VS Code, Spyder and PyCharm all
+    // write. The whole file used to become ONE cell, so a script was a single
+    // block that could only be run end to end — and its own cell structure,
+    // sitting there in the comments, was ignored.
     let mut nb = NotebookDocument::create_empty();
-    nb.cells[0].source = CellSource::Single(source);
+    nb.cells = crate::helpers::notebook_formats::split_percent(&source);
     Ok(nb)
 }
 
 /// Wrap a `.md` Markdown file as a notebook with a single markdown cell.
 pub fn load_markdown_as_notebook(path: &Path) -> Result<NotebookDocument, String> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let source = read_within_limit(path)?;
 
+    // Fenced Python blocks become runnable cells and the prose around them
+    // becomes markdown cells, so a written-up analysis can be executed where it
+    // is read. The whole document used to arrive as one markdown cell.
     let mut nb = NotebookDocument::create_empty();
-    nb.cells[0].cell_type = "markdown".to_string();
-    nb.cells[0].source = CellSource::Single(source);
+    nb.cells = crate::helpers::notebook_formats::split_markdown(&source);
+    Ok(nb)
+}
+
+/// Read a `.txt` as a notebook: one markdown cell holding the text.
+pub fn load_text_as_notebook(path: &Path) -> Result<NotebookDocument, String> {
+    let source = read_within_limit(path)?;
+    let mut nb = NotebookDocument::create_empty();
+    nb.cells = crate::helpers::notebook_formats::split_plain_text(&source);
     Ok(nb)
 }
 
@@ -430,7 +543,7 @@ fn reindent_json(json: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::notebook_document::{CellOutput, OutputData};
+    use crate::models::notebook_document::{CellOutput, CellSource, OutputData};
     use std::path::PathBuf;
 
     /// Write `content` to a uniquely-named temp file with the given `suffix`
@@ -520,6 +633,152 @@ mod tests {
         let back = load_notebook(&path).expect("reload");
         assert_eq!(back.nbformat, 4);
         assert_eq!(back.cells.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file is saved in the format it IS, not always as nbformat JSON.
+    ///
+    /// This wrote JSON to whatever path it was handed. The Open dialog offers
+    /// `*.py` and `*.md`, so opening a script and pressing Ctrl+S replaced it
+    /// with a JSON document — the way to destroy a file was to use a feature.
+    #[test]
+    fn saving_does_not_turn_a_script_into_json() {
+        let source = "# %% [markdown]\n# Notes\n\n# %%\nimport numpy as np\n";
+        let path = write_temp(source, ".py");
+        let doc = load_python_as_notebook(&path).expect("load");
+        assert_eq!(doc.cells.len(), 2, "the `# %%` markers were not read");
+
+        save_notebook(&doc, &path).expect("save");
+        let written = std::fs::read_to_string(&path).expect("re-read");
+        assert!(
+            !written.trim_start().starts_with('{'),
+            "the script was replaced by JSON: {written}"
+        );
+        assert!(written.contains("import numpy as np"), "{written}");
+        assert!(
+            written.contains("# %%"),
+            "cell markers were lost: {written}"
+        );
+        // And it still loads as the same notebook.
+        assert_eq!(
+            load_python_as_notebook(&path).expect("reload").cells.len(),
+            2
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn saving_does_not_turn_a_markdown_document_into_json() {
+        let source = "# Title\n\nProse.\n\n```python\nimport numpy\n```\n";
+        let path = write_temp(source, ".md");
+        let doc = load_markdown_as_notebook(&path).expect("load");
+        assert_eq!(doc.cells.len(), 2, "the fenced block was not read as code");
+
+        save_notebook(&doc, &path).expect("save");
+        let written = std::fs::read_to_string(&path).expect("re-read");
+        assert!(
+            !written.trim_start().starts_with('{'),
+            "the document was replaced by JSON: {written}"
+        );
+        assert!(written.contains("# Title"), "{written}");
+        assert!(
+            written.contains("```python"),
+            "the code fence was lost: {written}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file over the limit is refused, and the message names the remedy.
+    #[test]
+    fn a_file_over_the_limit_is_refused_by_name_and_size() {
+        let path = std::path::Path::new("/tmp/catalogue.txt");
+        // 64 MB limit, 100 MB file.
+        let refusal = too_large(path, 100 * 1024 * 1024, 64).expect("should refuse");
+        assert!(refusal.contains("catalogue.txt"), "{refusal}");
+        assert!(refusal.contains("100.0 MB"), "{refusal}");
+        assert!(refusal.contains("64 MB"), "{refusal}");
+        // The remedy is a setting; saying only "too large" leaves nowhere to go.
+        assert!(refusal.contains("Largest file to open"), "{refusal}");
+    }
+
+    #[test]
+    fn a_file_within_the_limit_is_not_refused() {
+        let path = std::path::Path::new("/tmp/notes.txt");
+        assert!(too_large(path, 1024, 64).is_none());
+        // Exactly at the limit is allowed — the rule is "over", not "at".
+        assert!(too_large(path, 64 * 1024 * 1024, 64).is_none());
+        assert!(too_large(path, 64 * 1024 * 1024 + 1, 64).is_some());
+    }
+
+    /// The limit is applied to a real read, not only computed.
+    #[test]
+    fn the_limit_is_actually_enforced_when_reading() {
+        let path = write_temp(&"x".repeat(3 * 1024 * 1024), ".txt");
+        // 1 MB limit against a 3 MB file.
+        assert!(
+            read_within(&path, 1).is_err(),
+            "a 3 MB file passed a 1 MB limit"
+        );
+        // ...and the same file is fine under a larger one.
+        assert!(read_within(&path, 8).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A `.txt` is written back as text, not as JSON.
+    #[test]
+    fn saving_does_not_turn_notes_into_json() {
+        let source = "Observing notes\n\nTarget M31, seeing 0.8\n";
+        let path = write_temp(source, ".txt");
+        let doc = load_text_as_notebook(&path).expect("load");
+        assert_eq!(doc.cells.len(), 1);
+
+        save_notebook(&doc, &path).expect("save");
+        let written = std::fs::read_to_string(&path).expect("re-read");
+        assert!(
+            !written.trim_start().starts_with('{'),
+            "the notes were replaced by JSON: {written}"
+        );
+        assert_eq!(written, source, "an unchanged file should be unchanged");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Saving to a format we refuse to OPEN must not overwrite the file.
+    ///
+    /// The UI cannot reach this — it will not open a `.pdf` — but a path can
+    /// arrive from an MCP caller, and writing nbformat JSON over someone's
+    /// paper is precisely the failure the format dispatch exists to prevent.
+    /// The arm was written and never exercised, which is how the original
+    /// version of this bug shipped.
+    #[test]
+    fn saving_refuses_to_overwrite_a_document_it_cannot_open() {
+        let original = "%PDF-1.7 not really, but not a notebook either\n";
+        let path = write_temp(original, ".pdf");
+        let doc = NotebookDocument::create_empty();
+
+        let err = save_notebook(&doc, &path).expect_err("saving to a .pdf must fail");
+        assert!(
+            err.contains(".pdf") || err.contains("not a notebook"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("re-read"),
+            original,
+            "the file was modified despite the refusal"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An `.ipynb` is still nbformat JSON — the change must not go the other way.
+    #[test]
+    fn a_notebook_is_still_saved_as_json() {
+        let path = write_temp("", ".ipynb");
+        let doc = NotebookDocument::create_empty();
+        save_notebook(&doc, &path).expect("save");
+        let written = std::fs::read_to_string(&path).expect("re-read");
+        assert!(
+            written.trim_start().starts_with('{'),
+            "an .ipynb stopped being JSON: {written}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

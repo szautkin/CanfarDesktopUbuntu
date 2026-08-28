@@ -528,15 +528,22 @@ mod tests {
     /// value, so `x = f()` then `x` showed nothing.
     #[test]
     fn the_harness_does_not_guess_the_compile_mode_by_catching_syntax_errors() {
-        let harness = crate::testing::without_line_comments(KERNEL_HARNESS, "#");
+        // `python_code`, not `without_line_comments`: the explanation of this
+        // very defect now lives in a docstring, and a `#`-only strip left the
+        // guard reading its own prose and failing.
+        let harness = crate::testing::python_code(KERNEL_HARNESS);
         assert!(
             harness.contains("ast.parse(code"),
             "the harness no longer asks ast how to run the cell"
         );
+        // Any whole-cell `compile(code, …)`, in any mode, rather than the one
+        // literal the defect happened to be written as. That literal named the
+        // filename inline; once it became a constant the guard could no longer
+        // have matched a returning defect at all.
         assert!(
-            !harness.contains(r#"compile(code, "<cell>", "eval")"#),
-            "eval-first is back, and with it a phantom SyntaxError on every \
-             traceback"
+            !harness.contains("compile(code"),
+            "the whole cell is being compiled again, and eval-first brings a \
+             phantom SyntaxError to every traceback"
         );
         assert!(
             !harness.contains("except SyntaxError:"),

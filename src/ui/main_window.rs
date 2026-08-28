@@ -913,7 +913,7 @@ pub fn build_main_window(
             gtk::gio::SimpleAction::new("open-notebook-file", Some(glib::VariantTy::STRING));
         open_notebook_action.connect_activate(move |_, param| {
             if let Some(path_str) = param.and_then(|v| v.str()) {
-                notebook_host.load_from_path(&std::path::PathBuf::from(path_str));
+                let _ = notebook_host.load_from_path(&std::path::PathBuf::from(path_str));
                 navigate("notebook");
             }
         });
@@ -957,7 +957,7 @@ pub fn build_main_window(
                 navigate("fits");
             }
             FileType::Notebook => {
-                notebook_host.load_from_path(&path);
+                let _ = notebook_host.load_from_path(&path);
                 navigate("notebook");
             }
             FileType::Other => {}
