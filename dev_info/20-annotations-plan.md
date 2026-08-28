@@ -111,6 +111,63 @@ The rules worth writing down, because each is a way it can look wrong:
 - Text is drawn at a fixed size in SCREEN space: it is a label, not part of the
   image.
 
+### The volume view, which is not the flat case with a third number
+
+Anchoring to voxels and projecting with `cube_axes::project` gets an annotation
+onto the rotating volume. Four things beyond that decide whether it feels right,
+and one of them the first draft of this plan skipped entirely.
+
+**Picking a depth from a 2D click.** This is the gap. A click on the volume is a
+RAY, not a point — every voxel along it projects to the same pixel, and nothing
+in the viewer picks between them today (`cube_volume_gl` ray-marches on the GPU;
+there is no CPU pick). Three ways to choose:
+
+| | |
+| --- | --- |
+| The slice plane's channel | The plane is already drawn in the volume as the cyan quad, and the scrubber that moves it is right there. The user places on a surface they can SEE. |
+| Peak intensity along the ray | Clever, and surprising: the mark lands somewhere the user did not click, at a depth they cannot predict. |
+| The volume's centre | Predictable and almost never what was meant. |
+
+Take the slice plane — `CubeViewer::current_channel()` is already public — and
+say so in the UI: while the draw mode is on, the plane marker is emphasised, so
+it reads as "you are drawing on this plane". A user who wants another depth
+scrubs to it first, which is the same gesture they already use.
+
+An **agent is unaffected**: `annotate_cube` takes an explicit `{x, y, z}`, so
+the ambiguity is the mouse's problem alone.
+
+**Extent is in data units; text is not.** A circle marking a region of a cube is
+a sphere, and a sphere seen from off-axis is an ellipse — so shapes project and
+may render as ellipses, which is correct rather than a bug to fix. Strokes and
+text stay screen-space: a hairline stays a hairline and a label stays readable
+at any camera distance. Two different rules in one renderer, and the reason each
+one is what it is belongs in the code.
+
+**A callout's anchor is 3D; its label is 2D.** The leader starts at the projected
+anchor and the rule sits at a screen-space offset from it, or the text would
+shear and shrink as the camera moved. The offset is stored with the annotation,
+so a label the user dragged clear of the volume stays clear of it — until the
+camera rotates far enough that it overlaps again, which is a limitation to state
+rather than solve.
+
+**Depth, honestly.** The volume is semi-transparent, so there is no true
+occlusion to respect — an annotation "inside" the data has no well-defined
+in-front or behind. Annotations therefore draw with the axes overlay, over
+everything. Two rules keep that from being confusing:
+
+- An anchor behind the near plane must VANISH. `project` already returns `None`
+  there, and the renderer must honour it — an unchecked projection puts the mark
+  at a mirrored position on the far side of the canvas, which looks like a
+  placed annotation and is not.
+- A depth cue earns its place: annotations further from the camera drawn
+  slightly dimmer. Cheap, and it is what makes several marks in one volume
+  legible as being at different depths.
+
+**Scrubbing does not hide them.** An annotation placed at channel 40 stays
+visible when the user moves to channel 12: it is a mark in a 3D space, not a
+property of a channel. (The 2D slice view is the opposite case, and is why that
+mode is still deferred below.)
+
 ### The model, and where it lives
 
 `models::annotation` — shared by both viewers, the MCP tools, and the panel.
@@ -189,9 +246,13 @@ so a failure is visibly a geometry failure.
 4. **FITS: draw + hit-test.** `draw_working_area` gains one call. Verified with
    the existing capture probe: an annotated view differs from a clean one, and
    two captures of the same annotated view are identical.
-5. **Cube: the same**, through `cube_axes::project`. Culling is the new risk —
-   an annotation behind the camera must not draw at a mirrored position, which
-   is exactly what an unchecked projection does.
+5. **Cube volume: draw, project, pick.** Through `cube_axes::project`, with the
+   slice plane as the depth for a click and data-unit extents. Two new risks
+   here and neither exists in the flat case: an annotation behind the camera
+   drawing at a mirrored position, and a shape whose extent was treated as
+   screen pixels — which looks right at one camera distance and at no other.
+   The rotation invariant is the test that matters: rotate the camera and every
+   mark must stay on its voxel.
 6. **MCP tools**, with the category, the alias entry and the French.
 7. **UI: toolbar and panel.**
 8. **The captures**: nothing to do, and that is the point — annotations appear in
@@ -224,6 +285,9 @@ so a failure is visibly a geometry failure.
   area does.
 - **Sharing.** Annotations are local, beside the bookmarks. Putting them in a
   research bundle is a later question.
-- **Cube annotations in 2D slice mode.** The volume and the slice are different
-  spaces; the plan anchors to voxels, and what a voxel annotation should do when
-  the user switches to the slice needs deciding before step 5.
+- **Cube annotations in 2D slice mode.** The VOLUME view is covered above; the
+  slice is the open question. A voxel mark is visible from every camera angle,
+  but a slice shows one channel — so a mark at channel 40 seen while scrubbed to
+  channel 12 is either wrong to draw, or should be drawn faintly as "nearby".
+  Worth deciding before step 5 rather than discovering during it; the volume
+  work does not depend on the answer.
