@@ -207,9 +207,10 @@ pub struct FitsCanvas {
     local_hover: Rc<RefCell<Option<(f64, f64)>>>,
     /// A right-clicked persistent crosshair position (in image-space).
     crosshair_placed: Rc<RefCell<Option<(f64, f64)>>>,
-    /// Installed by the viewer while draw mode is on.
+    /// Installed by the viewer while draw mode is on. Shared with the pan
+    /// gesture, which stands down while it is set.
     #[allow(clippy::type_complexity)]
-    on_left_click: RefCell<Option<Box<dyn Fn(f64, f64)>>>,
+    on_left_click: Rc<RefCell<Option<Box<dyn Fn(f64, f64)>>>>,
     /// Marks drawn on this image, by the user or an agent.
     annotations: Rc<RefCell<Vec<crate::models::annotation::Annotation>>>,
     /// The selected mark's id, highlighted on the canvas and in the panel.
@@ -263,7 +264,7 @@ impl FitsCanvas {
             shared,
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
-            on_left_click: RefCell::new(None),
+            on_left_click: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
             selected_annotation: Rc::new(RefCell::new(None)),
             rotation: Rc::new(RefCell::new(0.0)),
@@ -843,22 +844,41 @@ impl FitsCanvas {
         self.drawing_area.add_controller(scroll_controller);
     }
 
-    fn setup_drag_pan(&self) {
+    fn setup_drag_pan(self: &Rc<Self>) {
         let drag = gtk::GestureDrag::new();
         drag.set_button(1); // Left mouse button
         let transform = self.transform.clone();
         let drawing_area = self.drawing_area.clone();
         let start_offset = Rc::new(RefCell::new((0.0, 0.0)));
+        // Draw mode owns the left button while it is on. Both gestures took
+        // button 1, and the drag claimed the sequence first — so a click meant
+        // to place a mark panned the image instead, and nothing was ever
+        // placed.
+        let drawing = self.on_left_click.clone();
 
         let so = start_offset.clone();
         let t = transform.clone();
-        drag.connect_drag_begin(move |_, _x, _y| {
+        let d = drawing.clone();
+        drag.connect_drag_begin(move |gesture, _x, _y| {
+            let shifted = gesture
+                .current_event_state()
+                .contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            if d.borrow().is_some() && !shifted {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
             let t = t.borrow();
             *so.borrow_mut() = (t.offset_x, t.offset_y);
         });
 
         let so = start_offset;
-        drag.connect_drag_update(move |_, dx, dy| {
+        drag.connect_drag_update(move |gesture, dx, dy| {
+            let shifted = gesture
+                .current_event_state()
+                .contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            if drawing.borrow().is_some() && !shifted {
+                return;
+            }
             let start = so.borrow();
             let mut t = transform.borrow_mut();
             t.offset_x = start.0 + dx;
@@ -930,18 +950,24 @@ impl FitsCanvas {
     /// screen coordinate it might forget to transform.
     pub fn set_on_left_click(&self, f: impl Fn(f64, f64) + 'static) {
         *self.on_left_click.borrow_mut() = Some(Box::new(f));
+        // Say so. A mode that changes what a click does and looks identical is
+        // a mode people fight with.
+        self.drawing_area.set_cursor_from_name(Some("crosshair"));
     }
 
     /// Remove the left-click hook, restoring plain panning behaviour.
     pub fn clear_on_left_click(&self) {
         *self.on_left_click.borrow_mut() = None;
+        self.drawing_area.set_cursor_from_name(Some("default"));
     }
 
     fn setup_left_click(self: &Rc<Self>) {
         let click = gtk::GestureClick::new();
         click.set_button(1);
+        // Ahead of the pan gesture, which also wants button 1.
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
         let canvas = Rc::downgrade(self);
-        click.connect_pressed(move |_, _n, x, y| {
+        click.connect_pressed(move |gesture, _n, x, y| {
             let Some(canvas) = canvas.upgrade() else {
                 return;
             };
@@ -950,6 +976,15 @@ impl FitsCanvas {
             // knows about.
             let has_handler = canvas.on_left_click.borrow().is_some();
             if !has_handler {
+                return;
+            }
+            // Shift means "move the image, not the marks" — you need to
+            // reposition while drawing, and leaving the mode to do it and
+            // coming back is the kind of thing that makes a mode annoying.
+            if gesture
+                .current_event_state()
+                .contains(gtk::gdk::ModifierType::SHIFT_MASK)
+            {
                 return;
             }
             let (img_x, img_y) = {
@@ -969,6 +1004,8 @@ impl FitsCanvas {
             if !on_image(img_x, img_y, canvas.img_width, canvas.img_height) {
                 return;
             }
+            // Ours: stops the pan gesture picking the same press up.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             // The borrow is released before the callback runs: it may reach
             // back into the canvas to add a mark, and holding a RefCell across
             // a callback is how that becomes a panic.

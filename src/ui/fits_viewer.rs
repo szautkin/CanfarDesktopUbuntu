@@ -275,7 +275,8 @@ impl FitsViewer {
         let draw_mode = gtk::ToggleButton::new();
         draw_mode.set_icon_name("document-edit-symbolic");
         draw_mode.set_tooltip_text(Some(crate::tr_en!(
-            "Draw a mark on the image. Click where you mean; press Escape to stop."
+            "Draw a mark on the image. Click where you mean, Shift-drag to move the image, \
+             Escape to stop."
         )));
         let kind_items = gtk::StringList::new(&[
             crate::tr_en!("Circle"),
