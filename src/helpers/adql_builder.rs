@@ -19,6 +19,12 @@ use crate::models::search_result::SearchFormState;
 /// builder changes.
 pub const DIALECT_NOTE: &str = "\n\nDialect: CADC TAP (argus), ADQL 2.0 — no UDFs. \
      Tables are caom2.Observation and caom2.Plane, joined on Plane.obsID = Observation.obsID. \
+     DO NOT GUESS COLUMN NAMES — call describe_tap_schema first: caom2 and ivoa.ObsCore spell \
+     the same ideas differently (ObsCore's obs_collection / obs_id / calib_level are caom2's \
+     collection / observationID / calibrationLevel), and calibrationLevel, productID and \
+     dataRelease are on caom2.Plane, so reaching them from caom2.Observation needs the JOIN. \
+     Text values take SINGLE quotes: 'JWST'. Double quotes mean an identifier, so \
+     `LIKE \"%JWST%\"` is read as a column name and rejected as not existing. \
      Row cap is `SELECT TOP n` — LIMIT is rejected. \
      Case-insensitive text is `lower(col) LIKE lower('%x%')` — ILIKE is rejected. \
      Geometry and time predicates return a value, so they must be compared: \

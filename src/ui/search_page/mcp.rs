@@ -488,7 +488,12 @@ impl SearchPage {
     /// agent could see that something went wrong and never what.
     fn run_result_or_error(&self) -> Result<Value, String> {
         if let Some(why) = self.last_search_error.borrow().clone() {
-            return Err(why);
+            // TAP names the column it could not find and stops there, so a
+            // caller learns what is wrong and nothing about what is right —
+            // and guesses again. This adds the next step: which table to ask
+            // about, or that the "column" is a string literal in the wrong
+            // quotes.
+            return Err(crate::helpers::adql_error::explain(&why, &self.adql_text()));
         }
         Ok(self.run_result())
     }
