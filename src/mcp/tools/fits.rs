@@ -145,6 +145,52 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "annotate_fits".into(),
+            description: "DRAW on the FITS viewer, to show a person where you mean. A rect or \
+                          circle around a subject, a callout (a shape with a leader line to a \
+                          label set clear of it), or text alone. Place it with `ra`/`dec` in \
+                          degrees where the image has WCS — that anchor survives reopening the \
+                          file and lands correctly on another image of the same field — or with \
+                          image pixel `x`/`y`. Marks appear on the user's screen and in \
+                          get_fits_image, and are labelled as yours. Read the view first: \
+                          get_fits_image shows what they are looking at, and its `view` gives \
+                          the coordinates to aim at."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "kind": {
+                        "type":"string", "enum": ["rect","circle","callout","text"],
+                        "description": "Default circle; callout and text need `text`."
+                    },
+                    "ra": {"type":"number","description":"Degrees. With `dec`, anchors to the sky."},
+                    "dec": {"type":"number","description":"Degrees."},
+                    "x": {"type":"number","description":"Image pixel, when there is no WCS."},
+                    "y": {"type":"number","description":"Image pixel."},
+                    "text": {"type":"string","description":"The label. Required for callout and text."},
+                    "radius": {
+                        "type":"number",
+                        "description":"Half-size, in the units of the anchor you used — image \
+                                       pixels, or DEGREES for a sky anchor."
+                    }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "list_fits_annotations".into(),
+            description: "Every mark on the active FITS tab — id, kind, text, where it is \
+                          anchored, and whether a person or an agent drew it. Use it to find an \
+                          id for remove_annotation, or to see what is already marked before \
+                          adding more."
+                .into(),
+            input_schema: empty.clone(),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "save_fits_bookmark".into(),
             description: "Save (or update, by name) a FITS sky-coordinate bookmark. Provide ra/dec in degrees, or \
                           omit them to capture the active tab's current crosshair position. Returns the saved \
@@ -266,6 +312,8 @@ pub async fn dispatch(
         | "probe_fits_pixel"
         | "fits_goto_coordinate"
         | "list_fits_bookmarks"
+        | "annotate_fits"
+        | "list_fits_annotations"
         | "save_fits_bookmark"
         | "delete_fits_bookmark"
         | "switch_fits_tab"

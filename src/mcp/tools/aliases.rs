@@ -340,6 +340,17 @@ mod tests {
          \"which tool draws a region?\" with, so the alternative is reading every description.",
     ),
     (
+        "annotate_cube",
+        "Pointing, in three dimensions. A mark is anchored to a VOXEL, so it rotates with the cube \
+         and stays on the feature it describes from any angle — which is the only way a mark on a \
+         volume can be useful. The reference has nothing like it, and an agent describing a \
+         feature in a 3D cube in prose is asking a person to find it twice.",
+    ),
+    (
+        "list_cube_annotations",
+        "What is already marked on the cube, and by whom.",
+    ),
+    (
         "get_cube_image",
         "The reference exports a cube figure and has no way to show one to an agent. \
          `export_cube_figure` returns the volume render ALONE — the wireframe box, the WCS axis \
@@ -347,6 +358,30 @@ mod tests {
          so an agent handed that export got the data without the frame of reference the user \
          reads it by, and nothing said so. This composites the two the way the widgets are \
          stacked, and is the step before an agent can mark a feature in a cube for a person.",
+    ),
+    (
+        "remove_annotation",
+        "One tool for both viewers: an id identifies a mark uniquely, and a caller should not have \
+         to know — and often would not know — which viewer is holding it.",
+    ),
+    (
+        "clear_annotations",
+        "Deletes a viewer's marks including the USER's, which nothing undoes, so it is a separate \
+         tool from remove_annotation rather than a flag on it.",
+    ),
+    (
+        "annotate_fits",
+        "The reference has no way for an agent to point at anything. It can describe a source in \
+         prose and the person has to find it themselves, which for a crowded field is most of the \
+         work. This draws on the image they are already looking at — a ring, a box, a labelled \
+         callout — and the mark is attributed to the agent rather than appearing as if the user \
+         had made it. It is the other half of get_fits_image: seeing a viewer is only useful if \
+         you can point back at it.",
+    ),
+    (
+        "list_fits_annotations",
+        "What is already marked, and by whom. Without it an agent cannot find the id of a mark to \
+         remove, and cannot tell its own marks from the user's before adding more.",
     ),
     (
         "get_fits_image",

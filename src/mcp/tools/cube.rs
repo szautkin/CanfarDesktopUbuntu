@@ -26,6 +26,8 @@ const TOOLS: &[&str] = &[
     "probe_cube_spectrum",
     "export_cube_figure",
     "get_cube_image",
+    "annotate_cube",
+    "list_cube_annotations",
     "set_cube_transfer",
     "show_cube_spectrum",
     "get_cube_channel_profile",
@@ -154,6 +156,49 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 },
                 "required": ["x", "y"],
                 "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "annotate_cube".into(),
+            description: "DRAW on the cube's 3D volume, to show a person where you mean. A ring \
+                          or box around a feature, a callout with a label, or text. Anchored to a \
+                          VOXEL — `x`/`y` in pixels and `z` as the channel — so the mark is \
+                          pinned to the data and rotates with the cube. Marks appear on the \
+                          user's screen and in get_cube_image, and are labelled as yours. Read \
+                          get_cube_image first to see the view, and probe_cube_spectrum or \
+                          get_cube_view to find the voxel worth marking."
+                .into(),
+            input_schema: serde_json::json!({
+                "type":"object",
+                "properties": {
+                    "kind": {
+                        "type":"string", "enum": ["rect","circle","callout","text"],
+                        "description": "Default circle; callout and text need `text`."
+                    },
+                    "x": {"type":"number","description":"Voxel X (pixel along the first axis)."},
+                    "y": {"type":"number","description":"Voxel Y."},
+                    "z": {
+                        "type":"number",
+                        "description":"Channel. Omit for the channel the viewer is showing."
+                    },
+                    "text": {"type":"string","description":"The label. Required for callout and text."},
+                    "radius": {"type":"number","description":"Half-size in voxels."}
+                },
+                "required": ["x","y"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "list_cube_annotations".into(),
+            description: "Every mark on the active cube — id, kind, text, the voxel it is \
+                          anchored to, and whether a person or an agent drew it."
+                .into(),
+            input_schema: serde_json::json!({
+                "type":"object","properties":{},"additionalProperties":false
             }),
             verb: VerbClass::Read,
             agent_safe: true,

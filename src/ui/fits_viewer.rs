@@ -949,6 +949,142 @@ impl FitsViewer {
                 Ok(self.fits_view_state(&tab))
             }
 
+            // ── Annotations ─────────────────────────────────────────────
+            "annotate_fits" => {
+                use crate::models::annotation::{
+                    Anchor, Annotation, AnnotationKind, Author, Extent,
+                };
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let canvas = tab.canvas();
+
+                let num = |k: &str| crate::mcp::tools::arg(args, k).and_then(|v| v.as_f64());
+                let kind = crate::mcp::tools::arg(args, "kind")
+                    .and_then(|v| v.as_str())
+                    .map(|k| {
+                        AnnotationKind::parse(k).ok_or_else(|| {
+                            format!("'{k}' is not a kind — use rect, circle, callout or text")
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(AnnotationKind::Circle);
+
+                // Sky when given and usable; image pixels otherwise. Saying
+                // which was used matters: an agent that meant sky and got
+                // pixels would be pointing somewhere else entirely.
+                let anchor = match (num("ra"), num("dec"), num("x"), num("y")) {
+                    (Some(ra), Some(dec), _, _) => Anchor::Sky {
+                        ra_deg: ra,
+                        dec_deg: dec,
+                    },
+                    (_, _, Some(x), Some(y)) => Anchor::ImagePixel { x, y },
+                    _ => {
+                        return Err("give ra and dec (degrees), or x and y (image pixels), \
+                                    for where to draw"
+                            .to_string())
+                    }
+                };
+                let text = crate::mcp::tools::arg(args, "text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let mut mark = Annotation::new(kind, anchor, text, Author::Agent);
+                if let Some(r) = num("radius") {
+                    mark = mark.with_extent(Extent::square(r));
+                }
+                mark.validate()?;
+
+                let file = self
+                    .fits_view_state(&tab)
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let mut current = canvas.annotations();
+                current.push(mark.clone());
+                canvas.set_annotations(current.clone());
+                // Persist, but a viewer that cannot write must still show the
+                // mark it just drew.
+                let saved = crate::helpers::annotation_store::save_for(&file, &current).is_ok();
+
+                Ok(json!({
+                    "id": mark.id,
+                    "kind": mark.kind.as_str(),
+                    "anchoredIn": mark.anchor.space(),
+                    "text": mark.text,
+                    "total": current.len(),
+                    "persisted": saved,
+                }))
+            }
+
+            "remove_annotation" => {
+                let id = crate::mcp::tools::arg(args, "id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let canvas = tab.canvas();
+                let mut current = canvas.annotations();
+                let before = current.len();
+                current.retain(|a| a.id != id);
+                let removed = current.len() < before;
+                if removed {
+                    canvas.set_annotations(current.clone());
+                    let file = self
+                        .fits_view_state(&tab)
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let _ = crate::helpers::annotation_store::save_for(&file, &current);
+                }
+                Ok(json!({ "removed": removed, "viewer": "fits", "remaining": current.len() }))
+            }
+
+            "clear_annotations" => {
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let canvas = tab.canvas();
+                let removed = canvas.annotations().len();
+                canvas.set_annotations(Vec::new());
+                let file = self
+                    .fits_view_state(&tab)
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = crate::helpers::annotation_store::save_for(&file, &[]);
+                Ok(json!({ "cleared": removed, "viewer": "fits" }))
+            }
+
+            "list_fits_annotations" => {
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let items: Vec<serde_json::Value> = tab
+                    .canvas()
+                    .annotations()
+                    .iter()
+                    .map(|a| {
+                        json!({
+                            "id": a.id,
+                            "kind": a.kind.as_str(),
+                            "text": a.text,
+                            "anchoredIn": a.anchor.space(),
+                            "anchor": a.anchor,
+                            "author": a.author.as_str(),
+                            "createdAt": a.created_at,
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "count": items.len(), "annotations": items }))
+            }
+
             // The working area as an image — what the user is looking at, not
             // a re-render of the file. The view state travels with it under
             // `view`, because an agent that will be asked to point at something

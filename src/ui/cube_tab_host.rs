@@ -251,6 +251,124 @@ impl CubeTabHost {
                 Ok(view_json(&v))
             }
 
+            // ── Annotations ─────────────────────────────────────────────
+            "annotate_cube" => {
+                use crate::models::annotation::{
+                    Anchor, Annotation, AnnotationKind, Author, Extent,
+                };
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let num = |k: &str| crate::mcp::tools::arg(args, k).and_then(|x| x.as_f64());
+                let (x, y) = match (num("x"), num("y")) {
+                    (Some(x), Some(y)) => (x, y),
+                    _ => {
+                        return Err("give x and y (voxel coordinates) for where to draw".to_string())
+                    }
+                };
+                // No channel given means the one on screen — the plane the user
+                // is looking at, which is what "here" means to them.
+                let z = num("z").unwrap_or_else(|| v.current_channel() as f64);
+                let kind = crate::mcp::tools::arg(args, "kind")
+                    .and_then(|k| k.as_str())
+                    .map(|k| {
+                        AnnotationKind::parse(k).ok_or_else(|| {
+                            format!("'{k}' is not a kind — use rect, circle, callout or text")
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(AnnotationKind::Circle);
+                let text = crate::mcp::tools::arg(args, "text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let mut mark = Annotation::new(kind, Anchor::Data { x, y, z }, text, Author::Agent);
+                if let Some(r) = num("radius") {
+                    mark = mark.with_extent(Extent::square(r));
+                }
+                mark.validate()?;
+
+                let target = view_json(&v)
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let mut current = v.annotations();
+                current.push(mark.clone());
+                v.set_annotations(current.clone());
+                let saved = crate::helpers::annotation_store::save_for(&target, &current).is_ok();
+
+                Ok(json!({
+                    "id": mark.id,
+                    "kind": mark.kind.as_str(),
+                    "voxel": {"x": x, "y": y, "z": z},
+                    "text": mark.text,
+                    "total": current.len(),
+                    "persisted": saved,
+                }))
+            }
+
+            "remove_annotation" => {
+                let id = crate::mcp::tools::arg(args, "id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let mut current = v.annotations();
+                let before = current.len();
+                current.retain(|a| a.id != id);
+                let removed = current.len() < before;
+                if removed {
+                    v.set_annotations(current.clone());
+                    let target = view_json(&v)
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let _ = crate::helpers::annotation_store::save_for(&target, &current);
+                }
+                Ok(json!({ "removed": removed, "viewer": "cube", "remaining": current.len() }))
+            }
+
+            "clear_annotations" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let removed = v.annotations().len();
+                v.set_annotations(Vec::new());
+                let target = view_json(&v)
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = crate::helpers::annotation_store::save_for(&target, &[]);
+                Ok(json!({ "cleared": removed, "viewer": "cube" }))
+            }
+
+            "list_cube_annotations" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let items: Vec<serde_json::Value> = v
+                    .annotations()
+                    .iter()
+                    .map(|a| {
+                        json!({
+                            "id": a.id,
+                            "kind": a.kind.as_str(),
+                            "text": a.text,
+                            "anchor": a.anchor,
+                            "author": a.author.as_str(),
+                            "createdAt": a.created_at,
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "count": items.len(), "annotations": items }))
+            }
+
             // SEE the working area — the volume WITH the axes overlay the user
             // reads it by, or the 2D slice when that is the visible mode.
             // `export_cube_figure` is an export and returns the render alone.

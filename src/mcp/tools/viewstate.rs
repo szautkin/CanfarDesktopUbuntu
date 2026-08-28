@@ -182,6 +182,39 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "remove_annotation".into(),
+            description: "Delete one mark, by id, from whichever viewer holds it. Ids come from \
+                          list_fits_annotations or list_cube_annotations. Removing a mark a \
+                          PERSON drew is a real deletion of their work — check the `author` \
+                          before you do."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {"id": {"type":"string","description":"The annotation id."}},
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "clear_annotations".into(),
+            description: "Delete EVERY mark on a viewer — the user's as well as yours. Pass \
+                          `viewer` as \"fits\" or \"cube\". There is no undo, so prefer \
+                          remove_annotation for your own marks."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "viewer": {"type":"string","enum":["fits","cube"]}
+                },
+                "required": ["viewer"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "get_job_status".into(),
             description: "Report a background job started by a long-running tool call — a large \
                           download, an export. Pass the `jobId` that call returned. Answers \
@@ -267,6 +300,66 @@ pub async fn dispatch(
             let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("");
             let ok = view_state::navigate_to(view).await;
             Some(ToolResult::Data(json!({ "navigated": ok, "view": view })))
+        }
+        // One pair for both viewers rather than four tools. An id identifies a
+        // mark uniquely, so the caller should not have to know which viewer is
+        // holding it — and would often not.
+        "remove_annotation" => {
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if id.is_empty() {
+                return Some(ToolResult::Failed(
+                    "id is required — get one from list_fits_annotations or \
+                     list_cube_annotations"
+                        .to_string(),
+                ));
+            }
+            for viewer in ["fits", "cube"] {
+                if let Ok(v) = crate::mcp::view_state::viewer_command(
+                    viewer,
+                    "remove_annotation",
+                    json!({ "id": id }),
+                )
+                .await
+                {
+                    if v.get("removed").and_then(|r| r.as_bool()) == Some(true) {
+                        return Some(ToolResult::Data(v));
+                    }
+                }
+            }
+            Some(ToolResult::Failed(format!(
+                "no annotation '{id}' in either viewer — it may already be gone; \
+                 list_fits_annotations or list_cube_annotations show what is there"
+            )))
+        }
+        "clear_annotations" => {
+            let viewer = args
+                .get("viewer")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            if !matches!(viewer.as_str(), "fits" | "cube") {
+                return Some(ToolResult::Failed(
+                    "viewer must be \"fits\" or \"cube\"".to_string(),
+                ));
+            }
+            Some(
+                match crate::mcp::view_state::viewer_command(
+                    &viewer,
+                    "clear_annotations",
+                    json!({}),
+                )
+                .await
+                {
+                    Ok(v) => ToolResult::Data(v),
+                    Err(e) => ToolResult::Failed(e),
+                },
+            )
         }
         "get_job_status" => {
             let id = args

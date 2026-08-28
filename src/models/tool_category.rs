@@ -241,7 +241,9 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "set_cube_transfer"
         | "show_cube_spectrum"
         | "get_cube_channel_profile"
-        | "get_cube_image" => "cube",
+        | "get_cube_image"
+        | "annotate_cube"
+        | "list_cube_annotations" => "cube",
         // Notebook dependencies.
         "check_notebook_dependencies" | "install_notebook_dependencies" => "notebook",
         // Search & Archive
@@ -275,6 +277,8 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "set_fits_view"
         | "get_fits_view"
         | "get_fits_image"
+        | "annotate_fits"
+        | "list_fits_annotations"
         | "probe_fits_pixel"
         | "fits_goto_coordinate"
         | "list_fits_bookmarks"
@@ -359,8 +363,16 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         // Workflows
         "list_workflows" | "get_workflow" | "save_workflow" | "update_workflow"
         | "set_workflow_step" | "use_workflow" | "delete_workflow" => "workflows",
-        // View & Navigation
-        "set_search_focus" | "navigate_to" | "close_active_tab" | "list_open_tabs" => {
+        // View & Navigation. The annotation lifecycle tools live here rather
+        // than under a viewer because they work on either one — an id
+        // identifies a mark, and the caller need not know which viewer holds
+        // it.
+        "set_search_focus"
+        | "navigate_to"
+        | "close_active_tab"
+        | "list_open_tabs"
+        | "remove_annotation"
+        | "clear_annotations" => {
             "navigation"
         }
         // Agent Control
