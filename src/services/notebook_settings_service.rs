@@ -99,6 +99,7 @@ mod tests {
             agent_image_max_dimension: 1024,
             agent_image_max_bytes_mb: 16,
             agent_result_max_kb: 64,
+            mcp_slim_tool_list: false,
         };
         svc.save(&settings).expect("save");
         let back = svc.load();

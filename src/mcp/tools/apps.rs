@@ -71,6 +71,35 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
     ]
 }
 
+/// The whole tool set as a grouped map: each app, what it is for, and the names
+/// it owns.
+///
+/// This is what an agent needs BEFORE it has read anything — not 149 schemas,
+/// but the shape of them. A client must call `tools/list` and receives whatever
+/// is advertised; nothing in the protocol lets a server say "read this
+/// instead". The one channel that reaches the model first is `instructions`,
+/// and this is sized to fit there: names and one line per app, no schemas.
+///
+/// Names matter more than they look. A tool that is NOT advertised is still
+/// callable — the router's gate refuses only tools that are known and not
+/// agent-safe — so an agent that reads a name here can use it immediately, and
+/// ask `describe_app` for its arguments when it needs them.
+pub fn tool_map(manifest: Vec<ToolDescriptor>) -> String {
+    let grouped = taxonomy::group_by_category(manifest, |d| d.name.clone());
+    let mut out = String::new();
+    for (cat, tools) in grouped {
+        let names: Vec<&str> = tools.iter().map(|d| d.name.as_str()).collect();
+        out.push_str(&format!(
+            "\n{} ({}) — {}\n  {}\n",
+            cat.id,
+            cat.title,
+            cat.summary,
+            names.join(", ")
+        ));
+    }
+    out
+}
+
 /// The apps, with a count of the tools in each.
 ///
 /// `manifest` is the tool set as ADVERTISED — the router's, complete with the

@@ -33,6 +33,15 @@ pub const DEFAULT_AGENT_IMAGE_MAX_BYTES_MB: u32 = 16;
 /// search at 622 KB against this.
 pub const DEFAULT_AGENT_RESULT_MAX_KB: u32 = 64;
 
+/// Default for [`NotebookSettings::mcp_slim_tool_list`].
+///
+/// On. Measured: the full list is ~24 450 tokens before an agent has read the
+/// task; the slim list plus the map in `instructions` is ~2 290, and every tool
+/// stays callable by name. A client that drops `instructions` still receives
+/// `list_apps`, `describe_app` and `search_tools`, so the discovery path
+/// survives even there.
+pub const DEFAULT_MCP_SLIM_TOOL_LIST: bool = true;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotebookSettings {
@@ -71,6 +80,18 @@ pub struct NotebookSettings {
     pub agent_image_max_dimension: u32,
     /// Largest agent image, in MB, after scaling.
     pub agent_image_max_bytes_mb: u32,
+    /// Advertise a SLIM `tools/list`: the catalog and foundational tools only.
+    ///
+    /// A client must call `tools/list` and put the result in context — that is
+    /// the protocol, and no server can opt out. All 149 schemas measured 96 KB,
+    /// about 24 000 tokens, spent before the agent has read the task.
+    ///
+    /// When this is on, `tools/list` carries the tools an agent needs without
+    /// being told about, and `initialize`'s `instructions` carry the map: every
+    /// app, what it is for, and the names it owns. Nothing becomes unreachable
+    /// — an unadvertised agent-safe tool is still callable by name, and
+    /// `describe_app` returns its arguments on demand.
+    pub mcp_slim_tool_list: bool,
     /// Largest tool RESULT handed to an agent, in KB.
     ///
     /// A row cap is not a size cap: a `SELECT *` over `caom2.Observation` is
@@ -99,6 +120,7 @@ impl Default for NotebookSettings {
             agent_image_max_dimension: DEFAULT_AGENT_IMAGE_MAX_DIMENSION,
             agent_image_max_bytes_mb: DEFAULT_AGENT_IMAGE_MAX_BYTES_MB,
             agent_result_max_kb: DEFAULT_AGENT_RESULT_MAX_KB,
+            mcp_slim_tool_list: DEFAULT_MCP_SLIM_TOOL_LIST,
         }
     }
 }
@@ -203,6 +225,7 @@ mod tests {
             agent_image_max_dimension: 1024,
             agent_image_max_bytes_mb: 16,
             agent_result_max_kb: 64,
+            mcp_slim_tool_list: false,
         };
         let json = serde_json::to_string_pretty(&s).expect("serialise");
         let back: NotebookSettings = serde_json::from_str(&json).expect("deserialise");

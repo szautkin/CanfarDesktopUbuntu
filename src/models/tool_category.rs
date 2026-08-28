@@ -151,6 +151,23 @@ pub fn all() -> impl Iterator<Item = &'static Category> {
     NAMED.iter().chain(std::iter::once(&OTHER))
 }
 
+/// Categories always advertised, even when the tool list is slimmed.
+///
+/// `foundational` is where an agent starts — identity, auth, health, and the
+/// catalog that finds everything else.
+///
+/// `control` is not optional either, and that is less obvious: it holds the
+/// proposal lifecycle. An agent whose write enqueues a proposal needs
+/// `list_pending_proposals` and `apply_proposal` to finish what it began, and a
+/// slim list that dropped them left it holding a job it could not complete. A
+/// test caught that; reasoning about it had not.
+pub const ALWAYS_ADVERTISED: &[&str] = &["foundational", "control"];
+
+/// Whether `tool` stays in `tools/list` when the list is slimmed.
+pub fn is_always_advertised(tool: &str) -> bool {
+    ALWAYS_ADVERTISED.contains(&category_id_for_tool(tool))
+}
+
 /// The category with `id`, if it is one.
 pub fn by_id(id: &str) -> Option<&'static Category> {
     all().find(|c| c.id.eq_ignore_ascii_case(id))
@@ -359,5 +376,76 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "update_guide_tool"
         | "delete_guide_tool" => "guide",
         _ => OTHER.id,
+    }
+}
+
+#[cfg(test)]
+mod always_advertised_tests {
+    use super::*;
+
+    /// An agent must be able to finish an approval flow it started.
+    ///
+    /// A slim `tools/list` first kept only `foundational`, which dropped the
+    /// proposal lifecycle: a write would enqueue a proposal and the agent had
+    /// no advertised way to list or apply it. The end-to-end handshake test
+    /// caught it. These pin the rule so the next narrowing cannot lose them
+    /// again.
+    #[test]
+    fn the_proposal_lifecycle_survives_a_slim_list() {
+        // The agent's half of the lifecycle. Applying is the USER's action, in
+        // the window — an agent proposes and waits, so there is no
+        // `apply_proposal` to advertise.
+        for tool in [
+            "list_pending_proposals",
+            "get_proposal_state",
+            "withdraw_proposal",
+        ] {
+            assert!(
+                is_always_advertised(tool),
+                "{tool} would be dropped from a slim tools/list, so an agent whose \
+                 write enqueued a proposal could not see or withdraw it"
+            );
+        }
+    }
+
+    /// The way in survives too.
+    #[test]
+    fn the_catalog_and_the_basics_survive_a_slim_list() {
+        for tool in [
+            "list_apps",
+            "describe_app",
+            "search_tools",
+            "get_auth_state",
+            "get_current_view",
+        ] {
+            assert!(is_always_advertised(tool), "{tool} is how an agent starts");
+        }
+    }
+
+    /// Ordinary tools are the ones a slim list leaves out.
+    ///
+    /// If this ever passes for everything, the slim list has stopped being
+    /// slim and the setting is doing nothing.
+    #[test]
+    fn ordinary_tools_are_not_always_advertised() {
+        for tool in [
+            "get_fits_image",
+            "run_cell",
+            "upload_to_vospace",
+            "open_cube",
+        ] {
+            assert!(
+                !is_always_advertised(tool),
+                "{tool} is advertised even when slim — nothing is being saved"
+            );
+        }
+    }
+
+    /// Every always-advertised id is a real category.
+    #[test]
+    fn the_always_advertised_ids_exist() {
+        for id in ALWAYS_ADVERTISED {
+            assert!(by_id(id).is_some(), "{id} is not a category");
+        }
     }
 }

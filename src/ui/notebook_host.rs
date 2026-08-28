@@ -2193,6 +2193,16 @@ impl NotebookTabHost {
              reply says how many were left out."
         ));
         agent_group.add(&agent_result_row);
+
+        let slim_row = adw::SwitchRow::new();
+        slim_row.set_title(crate::tr_en!("Show agents a short tool list"));
+        slim_row.set_subtitle(crate::tr_en!(
+            "Advertise the catalog and foundational tools instead of all of them, and send \
+             the rest as a grouped map. Every tool stays callable; agents that ask for a \
+             tool by name are unaffected."
+        ));
+        slim_row.set_active(cur.mcp_slim_tool_list);
+        agent_group.add(&slim_row);
         content.append(&agent_group);
 
         let py_row = adw::EntryRow::new();
@@ -2281,6 +2291,7 @@ impl NotebookTabHost {
             let agent_dim_row = agent_dim_row.clone();
             let agent_bytes_row = agent_bytes_row.clone();
             let agent_result_row = agent_result_row.clone();
+            let slim_row = slim_row.clone();
             move || {
                 let py = py_row.text().trim().to_string();
                 let new = NotebookSettings {
@@ -2296,6 +2307,7 @@ impl NotebookTabHost {
                     agent_image_max_dimension: agent_dim_row.value().round() as u32,
                     agent_image_max_bytes_mb: agent_bytes_row.value().round() as u32,
                     agent_result_max_kb: agent_result_row.value().round() as u32,
+                    mcp_slim_tool_list: slim_row.is_active(),
                 };
                 h.update_settings(new);
             }
@@ -2332,6 +2344,10 @@ impl NotebookTabHost {
         {
             let p = persist.clone();
             agent_result_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            slim_row.connect_active_notify(move |_| p());
         }
         {
             let p = persist.clone();

@@ -250,7 +250,7 @@ async fn dispatch(
     state: &Arc<ConnState>,
 ) -> Value {
     match req.method.as_str() {
-        "initialize" => handle_initialize(req, gate, state).await,
+        "initialize" => handle_initialize(req, gate, state, router).await,
         "ping" => jsonrpc::success(&req.id, json!({})),
         "logging/setLevel" => jsonrpc::success(&req.id, json!({})),
         "tools/list" => match require_initialized(req, state) {
@@ -298,6 +298,7 @@ async fn handle_initialize(
     req: &JsonRpcRequest,
     gate: &Arc<dyn ApprovalGate>,
     state: &Arc<ConnState>,
+    router: &Arc<dyn ToolRouter>,
 ) -> Value {
     let params = match &req.params {
         Some(p) => p,
@@ -359,7 +360,7 @@ async fn handle_initialize(
             // and no server can opt out — so an agent receives all ~149 schemas
             // whatever we do. What it does NOT arrive with is any idea which of
             // them matter, and this is the only channel for saying so.
-            "instructions": server_instructions(),
+            "instructions": server_instructions(router),
         }),
     )
 }
@@ -371,8 +372,23 @@ async fn handle_initialize(
 /// The counts are read from the catalog rather than written down, because a
 /// number in prose is a number that goes stale — this file would still promise
 /// "147 tools" three releases from now.
-fn server_instructions() -> String {
+fn server_instructions(router: &Arc<dyn ToolRouter>) -> String {
     let apps = crate::models::tool_category::all().count();
+    // When the advertised list is slim, the map goes here instead — every app,
+    // what it is for, and the names it owns. A name is enough to CALL a tool;
+    // `describe_app` supplies the arguments when they are needed.
+    let map = if crate::services::notebook_settings_service::NotebookSettingsService::new()
+        .load()
+        .mcp_slim_tool_list
+    {
+        format!(
+            "\n\nThe tools, by area. Any of these can be called by name; use \
+             describe_app for one area's arguments.\n{}",
+            crate::mcp::tools::apps::tool_map(router.external_manifest())
+        )
+    } else {
+        String::new()
+    };
     format!(
         "Verbinal is a desktop client for CADC/CANFAR: archive search, FITS and \
          spectral-cube viewers, a notebook, VOSpace storage, and compute sessions.\n\n\
@@ -384,14 +400,22 @@ fn server_instructions() -> String {
          know the job but not the area.\n\n\
          The viewers are shared with a person who is looking at them: `get_fits_image` \
          and `get_cube_image` return what is on screen right now, so you can see what \
-         they see before changing it."
+         they see before changing it.{map}"
     )
 }
 
 fn handle_tools_list(req: &JsonRpcRequest, router: &Arc<dyn ToolRouter>) -> Value {
+    // Slim mode narrows what is ADVERTISED, never what exists: the manifest
+    // above is unchanged, `initialize` sent the full map by name, and the call
+    // gate refuses only tools that are known and not agent-safe — so every tool
+    // left out of this list is still callable by anything that knows its name.
+    let slim = crate::services::notebook_settings_service::NotebookSettingsService::new()
+        .load()
+        .mcp_slim_tool_list;
     let tools: Vec<Value> = router
         .external_manifest()
         .into_iter()
+        .filter(|d| !slim || crate::models::tool_category::is_always_advertised(&d.name))
         .map(|d| {
             json!({
                 "name": d.name,
