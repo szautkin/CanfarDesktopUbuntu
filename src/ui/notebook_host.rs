@@ -2198,8 +2198,9 @@ impl NotebookTabHost {
         slim_row.set_title(crate::tr_en!("Show agents a short tool list"));
         slim_row.set_subtitle(crate::tr_en!(
             "Advertise the catalog and foundational tools instead of all of them, and send \
-             the rest as a grouped map. Every tool stays callable; agents that ask for a \
-             tool by name are unaffected."
+             the rest as a grouped map. Saves about 22000 tokens — but most MCP clients \
+             only bind the tools they are shown, so the rest become unreachable. Leave off \
+             unless your client can call a tool by name."
         ));
         slim_row.set_active(cur.mcp_slim_tool_list);
         agent_group.add(&slim_row);

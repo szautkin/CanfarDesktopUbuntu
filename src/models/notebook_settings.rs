@@ -35,12 +35,24 @@ pub const DEFAULT_AGENT_RESULT_MAX_KB: u32 = 64;
 
 /// Default for [`NotebookSettings::mcp_slim_tool_list`].
 ///
-/// On. Measured: the full list is ~24 450 tokens before an agent has read the
-/// task; the slim list plus the map in `instructions` is ~2 290, and every tool
-/// stays callable by name. A client that drops `instructions` still receives
-/// `list_apps`, `describe_app` and `search_tools`, so the discovery path
-/// survives even there.
-pub const DEFAULT_MCP_SLIM_TOOL_LIST: bool = true;
+/// **Off, and it must stay off unless the client is known to allow it.**
+///
+/// The saving is real — the full list is ~24 450 tokens before an agent has
+/// read the task, against ~2 665 — and it was shipped on, and it broke a QA
+/// run: "only these 12 are bound", with `search_observations`, `run_code` and
+/// `upload_to_vospace` unreachable.
+///
+/// The reasoning behind shipping it on was wrong in one specific way. An
+/// unadvertised tool IS still callable — verified over the socket, where the
+/// server answers `get_fits_view` perfectly well. But a client BINDS the tools
+/// in `tools/list` and exposes those to the model, so a tool missing from that
+/// list is one the model can never emit a call for. The server accepting it is
+/// irrelevant when nothing ever asks. Testing the server proved the wrong half.
+///
+/// So this is opt-in, for a client that can call a tool by name without having
+/// been handed its schema. For every ordinary MCP client — Claude Desktop,
+/// Claude Code, opencode — the full list is what makes the tools exist.
+pub const DEFAULT_MCP_SLIM_TOOL_LIST: bool = false;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -277,5 +289,46 @@ mod tests {
         }
         .sanitized();
         assert_eq!(s.execution_timeout_secs, 0);
+    }
+}
+
+#[cfg(test)]
+mod slim_tool_list_default_tests {
+    use super::*;
+
+    /// Every tool is advertised unless the user asks otherwise.
+    ///
+    /// This shipped ON once and broke a QA run: the client bound the twelve
+    /// tools it was shown and `search_observations`, `run_code` and
+    /// `upload_to_vospace` became unreachable — three of the four verbs the
+    /// task needed. The server would have answered all of them; nothing ever
+    /// asked, because a client exposes to the model what `tools/list` gave it.
+    ///
+    /// The saving was real and the default was still wrong. Anyone tempted to
+    /// flip it back should first check that the CLIENT can call a tool it was
+    /// not handed.
+    #[test]
+    fn the_full_tool_list_is_the_default() {
+        // Asserted through `default()`, not the constant: a test on the const
+        // alone is a constant expression, and it is the SETTINGS an install
+        // actually gets.
+        assert!(
+            !NotebookSettings::default().mcp_slim_tool_list,
+            "a slim tools/list makes every unadvertised tool unreachable from any \
+             client that binds only what it is shown, which is all of them"
+        );
+        // ...and after sanitizing, which is what the service applies on load.
+        assert!(!NotebookSettings::default().sanitized().mcp_slim_tool_list);
+    }
+
+    /// A settings file written before the option existed gets the full list.
+    #[test]
+    fn settings_that_predate_the_option_are_not_slimmed() {
+        let older: NotebookSettings =
+            serde_json::from_str(r#"{"font_size": 13}"#).expect("older settings still load");
+        assert!(
+            !older.mcp_slim_tool_list,
+            "an existing install silently lost its tools on upgrade"
+        );
     }
 }
