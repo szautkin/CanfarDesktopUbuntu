@@ -504,7 +504,26 @@ async fn list_storage(services: &crate::state::AppServices, args: &Value) -> Too
                     })
                 })
                 .collect();
-            ToolResult::Data(json!({ "path": path, "count": items.len(), "nodes": items }))
+            // A home directory is mostly tooling: QA's root listing was 162
+            // nodes of which `.astropy`, `.conda` and `.ollama` were the three
+            // largest, burying the project directory the caller came for.
+            use crate::mcp::result_budget::{fit_rows, json_size, trim_note, ResultBudget};
+            let trimmed = fit_rows(items, ResultBudget::from_settings(), json_size);
+            let mut out = json!({
+                "path": path,
+                "count": trimmed.kept.len(),
+                "totalNodes": trimmed.total,
+                "nodes": trimmed.kept,
+            });
+            if trimmed.over_budget {
+                out["note"] = json!(trim_note(
+                    trimmed.kept.len(),
+                    trimmed.total,
+                    "nodes",
+                    "List a subdirectory to see the rest.",
+                ));
+            }
+            ToolResult::Data(out)
         }
         Err(e) => ToolResult::Failed(format!("could not list storage '{path}': {e}")),
     }

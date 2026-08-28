@@ -96,8 +96,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             description: "Get one observation from the user's Research library by its local id \
                 (from list_downloaded_observations) or by its CADC publisher id. Returns the \
                 stored metadata (target, collection, instrument, filter, coordinates, local \
-                filename and size), plus `localPath` — the file's full path on this machine — and \
-                `fileExists`. Use `localPath` to read the file directly (get_fits_header, \
+                filename and size), plus `localPath` — the file's full path on THIS machine, the \
+                one running Verbinal — and `fileExists`. `localPath` is NOT visible from a CANFAR \
+                session: code you send with run_code or a headless job runs on a remote host where \
+                that path does not exist, and opening it there fails with FileNotFoundError. To \
+                use a downloaded file remotely, upload it to VOSpace first (upload_file_to_vospace) \
+                and read it from /arc. Use `localPath` to read the file directly (get_fits_header, \
                 get_fits_wcs, or a compute session); use open_fits_file when you want it on \
                 screen. `localPath` is null for a bookmark that was never downloaded."
                 .to_string(),
