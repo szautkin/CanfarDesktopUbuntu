@@ -1,9 +1,10 @@
 # 17 — Letting an agent see the WORKING AREA of the cube and FITS viewers
 
-Status: **steps 1–4 implemented** (shared PNG encoder, the `agent_image` seam,
-the four drifted copies deleted, and `get_fits_image`). Step 5 — the cube
-viewer's composited working area — is next. The rest of this document is the
-plan as written; "Order of work" marks what is done.
+Status: **steps 1–5 implemented** (shared PNG encoder, the `agent_image` seam,
+the four drifted copies deleted, `get_fits_image`, and `get_cube_image`). Step 6
+— captions and view state on the two tools that already returned images — is
+next. The rest of this document is the plan as written; "Order of work" marks
+what is done.
 
 The tools also exist to enable the step after: an agent DRAWING on these images
 to point a person at part of one. That is why a capture returns the transform
@@ -161,10 +162,17 @@ working tool start refusing what it fetches now.
    byte-identical, a capture after `set_fits_view zoomPercent=400` differs, and
    the geometry was checked by eye against a synthetic ramp — no flip, no crop,
    correct quadrant.
-5. **`get_cube_image`** — the working area, composited: GL volume + axes overlay
-   + colorbar, at the current scale factor. `export_cube_figure` stays as it is
-   (it is an export, and the reference owns the name); the new tool is what
-   "show me the cube" means.
+5. ~~**`get_cube_image`**~~ Done, and the prediction held. Captured live from a
+   synthetic cube, the export is a bare purple blob; the working area has the
+   wireframe box, the WCS captions (`RA`, `DEC`, `FREQUENCY Hz`), the coordinate
+   ticks and the cyan slice-plane marker. An agent handed the export had nothing
+   to orient by, and nothing said so. `export_cube_figure` is unchanged — it is
+   an export, and the reference owns the name.
+
+   A viewer whose tab is not on screen has no allocation. Rather than refuse —
+   which would mean an agent could only look at what the user was already
+   looking at — a stated default size stands in, and `viewportOnScreen: false`
+   says the aspect ratio did not come from the screen.
 6. **Captions and view state** on all four sources, including the two that
    already return images.
 

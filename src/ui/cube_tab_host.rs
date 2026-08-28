@@ -250,6 +250,36 @@ impl CubeTabHost {
                     .ok_or_else(|| "no cube open".to_string())?;
                 Ok(view_json(&v))
             }
+
+            // SEE the working area — the volume WITH the axes overlay the user
+            // reads it by, or the 2D slice when that is the visible mode.
+            // `export_cube_figure` is an export and returns the render alone.
+            "get_cube_image" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let (view_w, view_h) = v.working_area_size();
+                let limits = crate::mcp::agent_image::ImageLimits::from_settings();
+                let (w, h, on_screen) =
+                    crate::mcp::agent_image::capture_size(view_w, view_h, limits);
+                let png = v.capture_working_area_png(w, h)?;
+                let image_base64 = {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(&png)
+                };
+                Ok(json!({
+                    "imageBase64": image_base64,
+                    "imageMime": "image/png",
+                    "width": w,
+                    "height": h,
+                    "viewWidth": view_w,
+                    "viewHeight": view_h,
+                    "viewportOnScreen": on_screen,
+                    "scale": if view_w > 0 { f64::from(w) / f64::from(view_w) } else { 1.0 },
+                    "view": view_json(&v),
+                    "caption": "Cube working area",
+                }))
+            }
             // Mutate any subset of the active cube's view parameters. Mirrors the
             // reachable half of Windows `ApplyCubeView`: the GL-only volume controls
             // (camera + reset, quality steps, spectral stretch, MIP/render-mode,

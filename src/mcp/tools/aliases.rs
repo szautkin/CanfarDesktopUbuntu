@@ -318,6 +318,15 @@ mod tests {
          that opens FITS tabs needs a way to close them.",
     ),
     (
+        "get_cube_image",
+        "The reference exports a cube figure and has no way to show one to an agent. \
+         `export_cube_figure` returns the volume render ALONE — the wireframe box, the WCS axis \
+         captions and the slice-plane marker are a separate overlay widget drawn on top of it — \
+         so an agent handed that export got the data without the frame of reference the user \
+         reads it by, and nothing said so. This composites the two the way the widgets are \
+         stacked, and is the step before an agent can mark a feature in a cube for a person.",
+    ),
+    (
         "get_fits_image",
         "The reference shows the FITS viewer to a person and has no way to show it to anything \
          else. Twelve tools steer that viewer — pan, zoom, colormap, cut levels, crosshair — and \

@@ -513,6 +513,68 @@ impl CubeViewer {
         }
     }
 
+    /// The on-screen size of the working area, for a capture that matches it.
+    pub fn working_area_size(&self) -> (i32, i32) {
+        (self.overlay_area.width(), self.overlay_area.height())
+    }
+
+    /// Whether the 3D volume is the visible mode.
+    ///
+    /// The axes overlay belongs to the volume; the 2D slice draws its own.
+    fn showing_volume(&self) -> bool {
+        self.stack
+            .visible_child_name()
+            .is_none_or(|n| n == "volume")
+    }
+
+    /// The WORKING AREA as PNG bytes: what the user is looking at.
+    ///
+    /// `render_figure` — and so `export_cube_figure` — returns the volume or the
+    /// slice ALONE. On screen the volume sits under a transparent overlay
+    /// carrying the wireframe box, the WCS axis captions and the slice-plane
+    /// marker, so an agent handed the export was given the data without the
+    /// frame of reference the user reads it by, and nothing said so.
+    ///
+    /// Here the two are composited the way the widgets are stacked: the render
+    /// underneath, the same overlay drawing on top, both at the same size so
+    /// the projection they derive from it agrees.
+    pub fn capture_working_area_png(&self, w: i32, h: i32) -> Result<Vec<u8>, String> {
+        if w <= 0 || h <= 0 {
+            return Err(format!("invalid capture size {w}x{h}"));
+        }
+        // Opaque: a transparent export is for compositing into a document, but
+        // an agent looking at a picture wants the background it sees.
+        let rgba = self
+            .render_figure(w, h, false)
+            .ok_or_else(|| "cube could not be rendered (GL unavailable)".to_string())?;
+
+        let png = crate::helpers::png::encode_rgba(w, h, &rgba)?;
+        if !self.showing_volume() {
+            // The 2D slice has no separate overlay layer to add.
+            return Ok(png);
+        }
+
+        // Re-read the render as a surface, then draw the overlay over it.
+        let mut cursor = std::io::Cursor::new(png);
+        let base = cairo::ImageSurface::create_from_png(&mut cursor)
+            .map_err(|e| format!("cairo could not read the render back: {e}"))?;
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h)
+            .map_err(|e| format!("cairo surface error: {e}"))?;
+        {
+            let cr =
+                cairo::Context::new(&surface).map_err(|e| format!("cairo context error: {e}"))?;
+            cr.set_source_surface(&base, 0.0, 0.0)
+                .map_err(|e| format!("cairo source error: {e}"))?;
+            cr.paint().map_err(|e| format!("cairo paint error: {e}"))?;
+            self.draw_axes_overlay(&cr, w, h);
+        }
+        let mut out: Vec<u8> = Vec::new();
+        surface
+            .write_to_png(&mut out)
+            .map_err(|e| format!("PNG encode failed: {e}"))?;
+        Ok(out)
+    }
+
     /// One channel for the whole viewer: the scrubber moves the 2D plane and the
     /// volume's slice-plane marker together.
     fn wire_channel(self: &Rc<Self>) {
@@ -703,70 +765,86 @@ impl CubeViewer {
 
     /// Draw the projected box edges, WCS axis captions, and slice-plane marker on
     /// the transparent overlay, and track the camera so it stays aligned.
+    /// Draw the axes overlay — the wireframe box, WCS captions and slice-plane
+    /// marker — into `cr` at `w` x `h`.
+    ///
+    /// Extracted from the `set_draw_func` closure so a capture for an agent can
+    /// run the SAME drawing over the same volume render. `export_cube_figure`
+    /// returns `render_figure` alone, which is the volume stripped of the axes
+    /// the user is reading it by — not wrong so much as not the picture on
+    /// screen.
+    ///
+    /// The projection is derived from `w` and `h`, so the overlay aligns with
+    /// the volume only when both are rendered at the same size. That is the
+    /// shape of the HiDPI bug these two layers already had once.
+    pub fn draw_axes_overlay(&self, cr: &cairo::Context, w: i32, h: i32) {
+        if w < 1 || h < 1 {
+            return;
+        }
+        let vp = self.gl.view_proj(w, h);
+        let overlay = cube_axes::build(&cube_axes::AxesRequest {
+            dims: (self.vol.nx, self.vol.ny, self.vol.nz),
+            wcs: &self.wcs,
+            view_proj: &vp,
+            panel: (w as f32, h as f32),
+            slice_z: self.current_channel.get(),
+            spectral_scale: self.gl.spectral_scale(),
+        });
+
+        // Slice-plane marker (behind the edges): translucent cyan fill + edge.
+        if self.slice_toggle.is_active() && overlay.slice_quad.len() == 4 {
+            let q = &overlay.slice_quad;
+            cr.move_to(q[0].0 as f64, q[0].1 as f64);
+            for p in &q[1..] {
+                cr.line_to(p.0 as f64, p.1 as f64);
+            }
+            cr.close_path();
+            cr.set_source_rgba(0.34, 0.78, 1.0, 0.16);
+            cr.fill_preserve().ok();
+            cr.set_source_rgba(0.34, 0.78, 1.0, 0.70);
+            cr.set_line_width(1.5);
+            cr.stroke().ok();
+        }
+
+        // Box wireframe: thin faint cool-blue lines.
+        cr.set_source_rgba(0.62, 0.77, 0.91, 0.40);
+        cr.set_line_width(1.0);
+        for (a, b) in &overlay.edges {
+            cr.move_to(a.0 as f64, a.1 as f64);
+            cr.line_to(b.0 as f64, b.1 as f64);
+        }
+        cr.stroke().ok();
+
+        // WCS axis captions: small monospaced text, centered on their points,
+        // drawn with a 1px shadow for legibility over the volume.
+        if self.captions_toggle.is_active() {
+            cr.select_font_face(
+                "monospace",
+                gtk4::cairo::FontSlant::Normal,
+                gtk4::cairo::FontWeight::Normal,
+            );
+            cr.set_font_size(11.0);
+            for (x, y, text) in &overlay.captions {
+                let (mut cx, cy) = (*x as f64, *y as f64);
+                if let Ok(ext) = cr.text_extents(text) {
+                    cx -= ext.width() / 2.0;
+                }
+                let cx = cx.clamp(2.0, (w as f64 - 2.0).max(2.0));
+                let cy = cy.clamp(11.0, (h as f64 - 2.0).max(11.0));
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.70);
+                cr.move_to(cx + 1.0, cy + 1.0);
+                cr.show_text(text).ok();
+                cr.set_source_rgba(0.90, 0.95, 1.0, 0.96);
+                cr.move_to(cx, cy);
+                cr.show_text(text).ok();
+            }
+        }
+    }
+
     fn setup_overlay(self: &Rc<Self>) {
         let this = self.clone();
         self.overlay_area.set_draw_func(move |_area, cr, w, h| {
-            if w < 1 || h < 1 {
-                return;
-            }
-            let vp = this.gl.view_proj(w, h);
-            let overlay = cube_axes::build(&cube_axes::AxesRequest {
-                dims: (this.vol.nx, this.vol.ny, this.vol.nz),
-                wcs: &this.wcs,
-                view_proj: &vp,
-                panel: (w as f32, h as f32),
-                slice_z: this.current_channel.get(),
-                spectral_scale: this.gl.spectral_scale(),
-            });
-
-            // Slice-plane marker (behind the edges): translucent cyan fill + edge.
-            if this.slice_toggle.is_active() && overlay.slice_quad.len() == 4 {
-                let q = &overlay.slice_quad;
-                cr.move_to(q[0].0 as f64, q[0].1 as f64);
-                for p in &q[1..] {
-                    cr.line_to(p.0 as f64, p.1 as f64);
-                }
-                cr.close_path();
-                cr.set_source_rgba(0.34, 0.78, 1.0, 0.16);
-                cr.fill_preserve().ok();
-                cr.set_source_rgba(0.34, 0.78, 1.0, 0.70);
-                cr.set_line_width(1.5);
-                cr.stroke().ok();
-            }
-
-            // Box wireframe: thin faint cool-blue lines.
-            cr.set_source_rgba(0.62, 0.77, 0.91, 0.40);
-            cr.set_line_width(1.0);
-            for (a, b) in &overlay.edges {
-                cr.move_to(a.0 as f64, a.1 as f64);
-                cr.line_to(b.0 as f64, b.1 as f64);
-            }
-            cr.stroke().ok();
-
-            // WCS axis captions: small monospaced text, centered on their points,
-            // drawn with a 1px shadow for legibility over the volume.
-            if this.captions_toggle.is_active() {
-                cr.select_font_face(
-                    "monospace",
-                    gtk4::cairo::FontSlant::Normal,
-                    gtk4::cairo::FontWeight::Normal,
-                );
-                cr.set_font_size(11.0);
-                for (x, y, text) in &overlay.captions {
-                    let (mut cx, cy) = (*x as f64, *y as f64);
-                    if let Ok(ext) = cr.text_extents(text) {
-                        cx -= ext.width() / 2.0;
-                    }
-                    let cx = cx.clamp(2.0, (w as f64 - 2.0).max(2.0));
-                    let cy = cy.clamp(11.0, (h as f64 - 2.0).max(11.0));
-                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.70);
-                    cr.move_to(cx + 1.0, cy + 1.0);
-                    cr.show_text(text).ok();
-                    cr.set_source_rgba(0.90, 0.95, 1.0, 0.96);
-                    cr.move_to(cx, cy);
-                    cr.show_text(text).ok();
-                }
-            }
+            this.draw_axes_overlay(cr, w, h);
         });
 
         // Track the camera: any orbit/zoom/auto-orbit move repaints the overlay.
@@ -1502,6 +1580,61 @@ mod channel_wiring_tests {
         assert!(
             setter.contains("slice.set_channel_from(ch)"),
             "an agent's channel change should move the on-screen scrubber"
+        );
+    }
+}
+
+#[cfg(test)]
+mod working_area_tests {
+    //! The capture must composite, and must refuse what it cannot draw.
+    //!
+    //! The composite itself needs GL and a realized widget, so it is verified by
+    //! `dev_info/17` — probe, then eye. What CAN be checked here is the thing
+    //! that would silently undo it: a capture that returns the render alone.
+    //! That is not a hypothetical. `export_cube_figure` does exactly that, and
+    //! shipped for months looking like a cube export while omitting the
+    //! wireframe box, the WCS axis captions and the slice-plane marker.
+
+    /// The working-area capture draws the overlay; the export does not.
+    #[test]
+    fn the_capture_composites_the_overlay_rather_than_returning_the_render() {
+        let source =
+            crate::testing::without_comments(crate::testing::code(include_str!("cube_viewer.rs")));
+        let at = source
+            .find("pub fn capture_working_area_png")
+            .expect("capture_working_area_png");
+        // Scope to the function, and scope it on CODE. The first version
+        // looked for the next `///` doc comment — which `without_comments` had
+        // already removed, so the search failed, the body became the whole
+        // file, and `setup_overlay`'s own call to `draw_axes_overlay` satisfied
+        // the assertion with the composite deleted. Mutation testing caught it;
+        // reading it did not.
+        let end = source[at + 1..]
+            .find("\n    fn ")
+            .into_iter()
+            .chain(source[at + 1..].find("\n    pub fn "))
+            .min()
+            .map(|e| at + 1 + e)
+            .unwrap_or(source.len());
+        let body = &source[at..end];
+
+        assert!(
+            body.contains("draw_axes_overlay"),
+            "the capture no longer draws the overlay, so an agent is shown the \
+             volume without the axes the user reads it by:\n{body}"
+        );
+        assert!(
+            body.contains("render_figure"),
+            "the capture no longer renders the volume:\n{body}"
+        );
+        // The overlay is skipped ONLY for the 2D slice, which draws its own.
+        // A source scan cannot see reachability — an early return of `if true`
+        // leaves the call in the text while never running it — so the condition
+        // is pinned rather than merely the presence of the call.
+        assert!(
+            body.contains("if !self.showing_volume()"),
+            "the overlay is skipped on some condition other than the 2D slice \
+             being visible, which would silently drop it in volume mode:\n{body}"
         );
     }
 }

@@ -25,6 +25,7 @@ const TOOLS: &[&str] = &[
     "set_cube_view",
     "probe_cube_spectrum",
     "export_cube_figure",
+    "get_cube_image",
     "set_cube_transfer",
     "show_cube_spectrum",
     "get_cube_channel_profile",
@@ -153,6 +154,24 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 },
                 "required": ["x", "y"],
                 "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "get_cube_image".into(),
+            description: "SEE the cube viewer's working area — the active cube exactly as the \
+                          user is looking at it: the 3D volume WITH its wireframe box, WCS axis \
+                          captions and slice-plane marker, or the 2D slice when that is the \
+                          visible mode. Returns the picture as image content plus the view it \
+                          was captured from and the scale between that view and the raster, so a \
+                          position in the image can be turned back into cube coordinates. \
+                          export_cube_figure is a figure EXPORT and returns the render without \
+                          the overlay; use this to look at what is on screen. Errors if no cube \
+                          is open, or if GL is unavailable."
+                .into(),
+            input_schema: serde_json::json!({
+                "type":"object","properties":{},"additionalProperties":false
             }),
             verb: VerbClass::Read,
             agent_safe: true,

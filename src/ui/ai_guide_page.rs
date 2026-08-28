@@ -211,7 +211,8 @@ mod catalog {
             | "list_recent_cubes"
             | "set_cube_transfer"
             | "show_cube_spectrum"
-            | "get_cube_channel_profile" => "cube",
+            | "get_cube_channel_profile"
+            | "get_cube_image" => "cube",
             // Notebook dependencies.
             "check_notebook_dependencies" | "install_notebook_dependencies" => "notebook",
             // Search & Archive

@@ -210,6 +210,29 @@ fn over_budget_message(actual: usize, limit: usize, caption: Option<&str>) -> St
     )
 }
 
+/// The size to capture at when the widget may not be on screen.
+///
+/// A viewer whose tab is not the visible page has no allocation, so its widget
+/// reports 0x0. Refusing there would mean an agent could only look at whatever
+/// the user happened to be looking at, which is the opposite of the point: the
+/// viewer still HOLDS the camera, the channel, the colormap: only the pixel
+/// dimensions are missing.
+///
+/// So a default stands in, and the caller is told which it got — a capture at a
+/// made-up aspect ratio is fine as long as nobody believes it came from the
+/// screen.
+pub fn capture_size(view_w: i32, view_h: i32, limits: ImageLimits) -> (i32, i32, bool) {
+    const FALLBACK: (i32, i32) = (1024, 768);
+    let allocated = view_w > 0 && view_h > 0;
+    let (w, h) = if allocated {
+        (view_w, view_h)
+    } else {
+        FALLBACK
+    };
+    let (w, h) = fit_within(w, h, limits.max_dimension);
+    (w, h, allocated)
+}
+
 /// The size to render at, so the longest edge fits `max_dimension`.
 ///
 /// Never enlarges: a 400px view asked for at a 1024px limit stays 400px. A
@@ -373,6 +396,34 @@ mod tests {
         let (w, h) = fit_within(40_000, 3, 1024);
         assert_eq!(w, 1024);
         assert!(h >= 1, "height rounded to {h}");
+    }
+
+    /// A viewer on a hidden tab is still capturable.
+    #[test]
+    fn a_view_with_no_allocation_falls_back_and_says_so() {
+        let limits = ImageLimits {
+            max_dimension: 1024,
+            max_bytes: usize::MAX,
+        };
+        let (w, h, allocated) = capture_size(0, 0, limits);
+        assert!(w > 0 && h > 0, "no size to render at: {w}x{h}");
+        assert!(
+            !allocated,
+            "a fallback size must not be reported as the screen's"
+        );
+
+        // A real allocation is used as-is, and reported as real.
+        let (w, h, allocated) = capture_size(800, 600, limits);
+        assert_eq!((w, h), (800, 600));
+        assert!(allocated);
+
+        // ...and is still scaled when it is too large.
+        let (w, h, allocated) = capture_size(4000, 3000, limits);
+        assert_eq!((w, h), (1024, 768));
+        assert!(
+            allocated,
+            "scaling is not the same thing as not being on screen"
+        );
     }
 
     #[test]

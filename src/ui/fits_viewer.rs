@@ -959,16 +959,14 @@ impl FitsViewer {
                     .ok_or_else(|| "no FITS open".to_string())?;
                 let canvas = tab.canvas();
                 let (view_w, view_h) = canvas.view_size();
-                if view_w <= 0 || view_h <= 0 {
-                    return Err("the FITS view has not been drawn yet; \
-                                open the viewer tab and try again"
-                        .to_string());
-                }
                 // Scaled to the agent-image budget, never up: a model reads a
-                // capture at a few hundred pixels and pays for every one.
+                // capture at a few hundred pixels and pays for every one. A
+                // viewer on a hidden tab has no allocation and gets a stated
+                // default, rather than an agent being told to go and ask the
+                // user to click something.
                 let limits = crate::mcp::agent_image::ImageLimits::from_settings();
-                let (w, h) =
-                    crate::mcp::agent_image::fit_within(view_w, view_h, limits.max_dimension);
+                let (w, h, on_screen) =
+                    crate::mcp::agent_image::capture_size(view_w, view_h, limits);
                 let png = canvas.capture_png(w, h)?;
                 let image_base64 = {
                     use base64::Engine as _;
@@ -984,6 +982,9 @@ impl FitsViewer {
                     // view itself is described by `view`.
                     "viewWidth": view_w,
                     "viewHeight": view_h,
+                    // False when the tab was not on screen, so the aspect ratio
+                    // came from a default rather than from the viewport.
+                    "viewportOnScreen": on_screen,
                     "scale": if view_w > 0 { f64::from(w) / f64::from(view_w) } else { 1.0 },
                     "view": self.fits_view_state(&tab),
                     "caption": format!(
