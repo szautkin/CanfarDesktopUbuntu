@@ -1,5 +1,6 @@
 pub mod agent_attribution;
 pub mod ai_compute;
+pub mod annotation;
 pub mod auth_result;
 pub mod caom2;
 pub mod container_image;
