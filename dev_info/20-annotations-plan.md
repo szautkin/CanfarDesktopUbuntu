@@ -68,7 +68,50 @@ is then one function, and adding a third viewer is one `impl`.
 slide off its subject the moment anyone panned — which is the bug that makes
 annotation features feel broken, and it is invisible until someone zooms.
 
-### Reuse: the label primitive already exists, in one of four styles
+### The three place-markers that already exist
+
+Every view already does "mark a place and say what is there". Annotations are
+the general case of it, so the plan is to extend these rather than park a
+parallel system beside them:
+
+| View | Marker | Label |
+| --- | --- | --- |
+| FITS | hover crosshair (green, dashed) + **placed crosshair** (solid red) | `ui::coord_chip` — RA/Dec |
+| Cube 2D slice | hover crosshair + click-to-probe | `ui::coord_chip`, plus a spectrum in a revealer |
+| Cube 3D volume | wireframe box + slice-plane quad | shadowed axis captions, drawn inline |
+
+The FITS **placed** crosshair is already an annotation in everything but name:
+a persistent mark at an image position with a label. It keeps its own tools and
+bookmarks — converting it would break working behaviour for a tidier diagram —
+but it is the proof that the pieces fit, and a later unification would be small.
+
+### Reuse: `ui::coord_chip` is the label primitive, and it already exists
+
+**Correcting an earlier draft of this plan**, which proposed extracting the
+cube's caption drawing. The better primitive was already there:
+
+```rust
+ui::coord_chip::draw(cr, x, y, &lines, width, height)
+```
+
+Cairo-drawn, multi-line, anchored at a point, and — the part that matters — a
+chip near an edge **slides back inside the viewport instead of being clipped**.
+It is already shared by the FITS canvas and the cube slice view, with a comment
+saying why: so the two readouts cannot drift apart in look or in edge behaviour.
+
+Annotations use it, with a blueprint variant of its style. That leaves one
+outlier — the cube's axis captions, drawn inline with their own shadow — and
+they can stay: they label the axes of a box, not a point in the data, and
+boxing them would look wrong on the volume.
+
+**Its history settles the popover question below.** `coord_chip` exists because
+the slice view once used a `GtkLabel` in an overlay, moved by margins on every
+motion event: the position was computed from a `measure()` of the PREVIOUS text,
+so a chip whose width changed with every RA digit chased the pointer a frame
+behind and flickered between two places at once. That lesson is already paid
+for here; annotations should not re-learn it.
+
+### The old note on label styles, kept because the outlier is real
 
 On-canvas text is drawn in four places today and no two agree:
 
@@ -283,11 +326,11 @@ so a failure is visibly a geometry failure.
 1. **`models::annotation`** — types, ids, serde. Pure; unit-tested for the
    anchor round-trip and for rejecting a NaN coordinate, which would otherwise
    reach cairo and draw nothing with no error.
-1b. **`helpers::annotation_style::draw_label`** — lift the cube's caption
-   drawing out of its closure, with its shadow, centring and panel clamp, and
-   point the existing axis captions at it. A refactor with a behavioural claim
-   (the captions look identical), so it goes first and is verified by capturing
-   a cube before and after.
+1b. **A blueprint style for `ui::coord_chip`** — a variant, not a second
+   renderer: hairline border, no fill or a fainter one, monospace. Its anchor
+   and edge behaviour are reused as they are. Verified by capturing a FITS view
+   with a placed crosshair before and after, since the chip is shared and a
+   change to it is a change to the crosshair readout too.
 2. **`helpers::annotation_render`** — the renderer + the `AnnotationSurface`
    trait, against a fake surface. Every geometry rule above becomes a test:
    leader leaves the edge, rule matches text width, callout flips near an edge.
