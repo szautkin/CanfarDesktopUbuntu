@@ -68,6 +68,51 @@ is then one function, and adding a third viewer is one `impl`.
 slide off its subject the moment anyone panned — which is the bug that makes
 annotation features feel broken, and it is invisible until someone zooms.
 
+### Reuse: the label primitive already exists, in one of four styles
+
+On-canvas text is drawn in four places today and no two agree:
+
+| Where | Style |
+| --- | --- |
+| `cube_viewer` axis captions | centred on the anchor via `text_extents`, **clamped to the panel**, and a 1px dark shadow under a light glyph |
+| `cube_slice_view` | plain text, no shadow |
+| `cube_export` | plain text — fine, it draws on a controlled plate |
+| `fits_canvas` | **none at all** — the FITS canvas draws no text today |
+
+The cube's caption is the one that works, and it works for a reason worth
+keeping: annotations sit over arbitrary data, and thin light text over bright
+nebulosity is unreadable. The shadow is what makes a label legible on any
+background, the clamp is what stops a label leaving the canvas when its anchor
+is near an edge, and both are the sort of thing a second implementation gets
+wrong and nobody notices until a screenshot.
+
+So: **extract it**, as `helpers::annotation_style::draw_label(cr, at, text,
+style)` — and have the existing axis captions call it too. Then the blueprint
+text style is one decision, the axes and the annotations cannot drift, and the
+FITS viewer gets a label renderer without anyone writing a second one.
+
+`cube_export` and `cube_slice_view` keep their own text: they draw on
+backgrounds they control, and forcing a shadow on them would be reuse for its
+own sake.
+
+### Reuse: the popover is for INPUT, never for output
+
+The 2D viewer has a `coord_label` readout and GTK popovers — the right things to
+reuse for *entering* an annotation's text: a small popover with an entry,
+anchored at the click, shared by both viewers so text is captured the same way
+in each.
+
+But the annotation's text must be **drawn with cairo, not laid out as a widget**,
+and this is not a style preference. A capture replays the viewer's cairo draw
+function into an off-screen surface; a GTK label floating over the canvas is not
+in that function, so it would appear on screen and be **absent from every
+capture**. The user would see labelled shapes and the agent would see unlabelled
+ones, with nothing reporting a problem — the exact divergence "one drawing, two
+destinations" exists to prevent.
+
+Popover to collect the text; cairo to draw it. The rule is short enough to state
+in the code, and it should be.
+
 ### The blueprint look
 
 One style module, so "blueprint" is a decision made once:
@@ -238,6 +283,11 @@ so a failure is visibly a geometry failure.
 1. **`models::annotation`** — types, ids, serde. Pure; unit-tested for the
    anchor round-trip and for rejecting a NaN coordinate, which would otherwise
    reach cairo and draw nothing with no error.
+1b. **`helpers::annotation_style::draw_label`** — lift the cube's caption
+   drawing out of its closure, with its shadow, centring and panel clamp, and
+   point the existing axis captions at it. A refactor with a behavioural claim
+   (the captions look identical), so it goes first and is verified by capturing
+   a cube before and after.
 2. **`helpers::annotation_render`** — the renderer + the `AnnotationSurface`
    trait, against a fake surface. Every geometry rule above becomes a test:
    leader leaves the edge, rule matches text width, callout flips near an edge.
@@ -280,6 +330,8 @@ so a failure is visibly a geometry failure.
   before someone assumes Ctrl+Z.
 - **Freehand.** Shapes and callouts only — a blueprint look and a marker pen are
   different products.
+- **Rich text.** One line, one font, one size. A label that needs a paragraph is
+  a note, and notes already have a home in the research pages.
 - **Annotations in the export.** `export_cube_figure` is an export, and whether a
   figure carries the annotations is a separate decision from whether the working
   area does.
