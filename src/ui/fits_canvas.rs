@@ -290,8 +290,35 @@ impl FitsCanvas {
     // ── Public API for the toolbar ───────────────────────────────────────────
 
     /// Set the zoom scale and redraw. Offset is not changed.
+    /// Zoom to `scale`, keeping the point the user is looking at where it is.
+    ///
+    /// The wheel has always compensated the offset so a chosen point stays put;
+    /// this did not, so the toolbar dropdown, the zoom entry and MCP all scaled
+    /// about the image ORIGIN — zoom in and the subject flew off toward the top
+    /// left. It reads as annotations sliding away from their features, which is
+    /// how it was noticed, but the marks were on their pixels the whole time:
+    /// the image had left.
+    ///
+    /// Same anchor rule as the wheel — the crosshair if one is placed, else the
+    /// centre of the view — so the two ways of zooming now agree.
     pub fn set_zoom(&self, scale: f64) {
-        self.transform.borrow_mut().scale = scale.clamp(ZOOM_SCALE_RANGE.0, ZOOM_SCALE_RANGE.1);
+        let target = scale.clamp(ZOOM_SCALE_RANGE.0, ZOOM_SCALE_RANGE.1);
+        let anchor = (*self.crosshair_placed.borrow()).unwrap_or_else(|| {
+            let (vw, vh) = self.viewport_size();
+            let t = self.transform.borrow();
+            // The image pixel currently at the middle of the viewport.
+            (
+                (vw / 2.0 - t.offset_x) / t.scale.max(f64::EPSILON),
+                (vh / 2.0 - t.offset_y) / t.scale.max(f64::EPSILON),
+            )
+        });
+        {
+            let mut t = self.transform.borrow_mut();
+            let s0 = t.scale;
+            t.offset_x += anchor.0 * (s0 - target);
+            t.offset_y += anchor.1 * (s0 - target);
+            t.scale = target;
+        }
         self.drawing_area.queue_draw();
     }
 

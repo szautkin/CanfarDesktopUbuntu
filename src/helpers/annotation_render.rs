@@ -70,48 +70,76 @@ fn ink_for(a: &Annotation, selected: bool) -> (f64, f64, f64) {
     }
 }
 
-/// Where a leader line leaves a shape, and which way its rule runs.
+/// Where a leader line leaves a shape, and where its rule and text sit.
 ///
-/// The leader starts on the shape's EDGE — not its centre, which would draw a
-/// line through the subject, and not its corner, which reads as a mistake. It
-/// flips to whichever side has room, so a callout near the right edge points
-/// left instead of off the canvas.
+/// The leader starts ON the shape's outline in the direction it travels, then
+/// runs a fixed length at a fixed acute angle, then turns horizontal to carry
+/// the text. Three rules, each of which is a way it looked wrong before:
 ///
-/// Returned as `(start, elbow, rule_end, text_x, rightwards)`, all in device
-/// pixels.
+///  * The start is the outline, found along the leader's own direction — not
+///    the bounding-box corner, which for a circle is outside it, and not the
+///    centre, which draws a line through the subject.
+///  * The leader's length is measured FROM that start. Measuring it from the
+///    centre meant a shape bigger than the leader swallowed it, and the elbow
+///    came out a few pixels from the outline — the line read as crossing the
+///    circle rather than leaving it.
+///  * The rule is as long as its text, and the whole thing flips to whichever
+///    side has room.
+///
+/// Returns `(start, elbow, rule_end, text_x, rightwards)` in device pixels.
 #[allow(clippy::too_many_arguments)]
 pub fn leader_geometry(
     cx: f64,
     cy: f64,
     half_w: f64,
     half_h: f64,
+    elliptical: bool,
     offset: Option<(f64, f64)>,
     text_width: f64,
     canvas_w: f64,
 ) -> (f64, f64, f64, f64, f64, f64, bool) {
     let angle = style::LEADER_ANGLE_DEG.to_radians();
-    let (dx, dy) = offset.unwrap_or_else(|| {
-        (
-            style::LEADER_LEN * angle.cos(),
-            -style::LEADER_LEN * angle.sin(),
-        )
-    });
+    let (raw_dx, raw_dy) = offset.unwrap_or((angle.cos(), -angle.sin()));
+    let len = (raw_dx * raw_dx + raw_dy * raw_dy).sqrt().max(f64::EPSILON);
+    let (mut ux, uy) = (raw_dx / len, raw_dy / len);
 
-    // Which side has room for the rule AND its text.
-    let wants_right = dx >= 0.0;
     let rule_len = text_width + style::RULE_OVERHANG;
-    let rightwards = if wants_right {
-        cx + dx + rule_len <= canvas_w
+    // Enough room on the intended side for the leader AND the rule?
+    let leader_len = if offset.is_some() {
+        len.max(style::LEADER_LEN * 0.5)
     } else {
-        // Only flip back to the right if the left genuinely has no room.
-        cx + dx - rule_len < 0.0
+        style::LEADER_LEN
+    };
+    let reach = half_w + leader_len + rule_len;
+    let rightwards = if ux >= 0.0 {
+        cx + reach <= canvas_w
+    } else {
+        cx - reach < 0.0
+    };
+    ux = if rightwards { ux.abs() } else { -ux.abs() };
+
+    // The point where the leader leaves the outline.
+    let (sx, sy) = if elliptical {
+        (cx + half_w * ux, cy + half_h * uy)
+    } else {
+        // Ray/box intersection: scale the direction until it meets an edge.
+        let tx = if ux.abs() > f64::EPSILON {
+            half_w / ux.abs()
+        } else {
+            f64::MAX
+        };
+        let ty = if uy.abs() > f64::EPSILON {
+            half_h / uy.abs()
+        } else {
+            f64::MAX
+        };
+        let t = tx.min(ty);
+        (cx + ux * t, cy + uy * t)
     };
 
-    let dx = if rightwards { dx.abs() } else { -dx.abs() };
-    let start_x = cx + if rightwards { half_w } else { -half_w };
-    let start_y = cy + if dy < 0.0 { -half_h } else { half_h };
-    let elbow_x = cx + dx;
-    let elbow_y = cy + dy;
+    // The leader's length is measured from the outline, not the centre.
+    let elbow_x = sx + ux * leader_len;
+    let elbow_y = sy + uy * leader_len;
     let rule_end = if rightwards {
         elbow_x + rule_len
     } else {
@@ -122,9 +150,7 @@ pub fn leader_geometry(
     } else {
         rule_end + style::RULE_OVERHANG / 2.0
     };
-    (
-        start_x, start_y, elbow_x, elbow_y, rule_end, text_x, rightwards,
-    )
+    (sx, sy, elbow_x, elbow_y, rule_end, text_x, rightwards)
 }
 
 /// Draw every annotation onto `cr`.
@@ -202,7 +228,7 @@ pub fn draw(
                     cr.stroke().ok();
                 }
                 let (sx, sy, ex, ey, rule_end, text_x, _right) =
-                    leader_geometry(cx, cy, hw, hh, a.label_offset, text_width, canvas_w);
+                    leader_geometry(cx, cy, hw, hh, true, a.label_offset, text_width, canvas_w);
                 cr.new_path();
                 cr.move_to(sx, sy);
                 cr.line_to(ex, ey);
@@ -295,18 +321,29 @@ mod tests {
         a
     }
 
-    /// The leader starts on the shape's EDGE, not its centre.
+    /// The leader starts on the shape's OUTLINE, not its centre.
     ///
     /// A leader from the centre draws a line straight through the subject the
     /// annotation is pointing at, which is the one place it must not.
+    ///
+    /// This test used to require each axis to clear the half-extent, which is
+    /// true of the bounding-box CORNER and false of a circle's outline — so it
+    /// was asserting the very thing that made the leader look like it cut
+    /// across the circle. The outline is a distance from the centre, not a
+    /// pair of axis distances.
     #[test]
-    fn the_leader_leaves_the_edge_of_the_shape() {
-        let (sx, sy, ..) = leader_geometry(100.0, 100.0, 10.0, 10.0, None, 60.0, 800.0);
+    fn the_leader_leaves_the_outline_of_the_shape() {
+        let r = 10.0;
+        let (sx, sy, ..) = leader_geometry(100.0, 100.0, r, r, true, None, 60.0, 800.0);
+        let d = ((sx - 100.0).powi(2) + (sy - 100.0).powi(2)).sqrt();
         assert!(
-            (sx - 100.0).abs() >= 10.0 - f64::EPSILON,
-            "leader started inside the shape at {sx}"
+            (d - r).abs() < 0.5,
+            "the leader starts {d:.2} from the centre, not on the r={r} outline"
         );
-        assert!((sy - 100.0).abs() >= 10.0 - f64::EPSILON, "{sy}");
+        assert!(
+            d > 0.0,
+            "the leader starts at the centre, drawing through the subject"
+        );
     }
 
     /// Near the right edge, the callout points left instead of off-canvas.
@@ -314,7 +351,7 @@ mod tests {
     fn a_callout_near_the_right_edge_flips() {
         let canvas_w = 300.0;
         let (.., rule_end, text_x, rightwards) =
-            leader_geometry(280.0, 100.0, 10.0, 10.0, None, 90.0, canvas_w);
+            leader_geometry(280.0, 100.0, 10.0, 10.0, true, None, 90.0, canvas_w);
         assert!(!rightwards, "the callout ran off the right edge");
         assert!(rule_end < 280.0, "the rule did not flip: {rule_end}");
         assert!(text_x >= 0.0, "the text went off the left edge: {text_x}");
@@ -323,10 +360,18 @@ mod tests {
     /// With room, it points the way it was asked to.
     #[test]
     fn a_callout_with_room_keeps_its_direction() {
-        let (.., rightwards) = leader_geometry(100.0, 100.0, 10.0, 10.0, None, 60.0, 800.0);
+        let (.., rightwards) = leader_geometry(100.0, 100.0, 10.0, 10.0, true, None, 60.0, 800.0);
         assert!(rightwards);
-        let (.., rightwards_left) =
-            leader_geometry(400.0, 100.0, 10.0, 10.0, Some((-50.0, -40.0)), 60.0, 800.0);
+        let (.., rightwards_left) = leader_geometry(
+            400.0,
+            100.0,
+            10.0,
+            10.0,
+            true,
+            Some((-50.0, -40.0)),
+            60.0,
+            800.0,
+        );
         assert!(!rightwards_left, "an explicit left offset was overridden");
     }
 
@@ -335,7 +380,7 @@ mod tests {
     fn the_rule_is_long_enough_for_its_text() {
         let text_width = 120.0;
         let (.., ex, _ey, rule_end, _tx, _r) =
-            leader_geometry(100.0, 100.0, 10.0, 10.0, None, text_width, 900.0);
+            leader_geometry(100.0, 100.0, 10.0, 10.0, true, None, text_width, 900.0);
         assert!(
             (rule_end - ex).abs() >= text_width,
             "rule {} shorter than its text {text_width}",
@@ -343,10 +388,61 @@ mod tests {
         );
     }
 
+    /// A big shape does not swallow its own leader.
+    ///
+    /// The leader used to be measured from the CENTRE, so a circle wider than
+    /// the leader length put the elbow a few pixels outside the outline and the
+    /// line read as cutting across the subject instead of leaving it. Seen in a
+    /// screenshot at 100% zoom, where the radius was larger than the leader.
+    #[test]
+    fn a_large_shape_still_gets_a_full_length_leader() {
+        // Radius 60, leader 46: the old formula put the elbow INSIDE the shape.
+        let (sx, sy, ex, ey, ..) =
+            leader_geometry(300.0, 300.0, 60.0, 60.0, true, None, 80.0, 900.0);
+        let from_centre = ((ex - 300.0).powi(2) + (ey - 300.0).powi(2)).sqrt();
+        assert!(
+            from_centre > 60.0,
+            "the elbow is inside the shape ({from_centre:.1} from a centre with radius 60)"
+        );
+        let leader = ((ex - sx).powi(2) + (ey - sy).powi(2)).sqrt();
+        assert!(
+            leader > 30.0,
+            "the leader is only {leader:.1}px long — it was swallowed by the shape"
+        );
+    }
+
+    /// The leader starts ON the outline, not at the bounding-box corner.
+    #[test]
+    fn a_circles_leader_starts_on_the_circle() {
+        let r = 40.0;
+        let (sx, sy, ..) = leader_geometry(200.0, 200.0, r, r, true, None, 50.0, 900.0);
+        let d = ((sx - 200.0).powi(2) + (sy - 200.0).powi(2)).sqrt();
+        assert!(
+            (d - r).abs() < 0.5,
+            "the leader starts {d:.1} from the centre, not on the r={r} outline \
+             (the box corner is at {:.1})",
+            r * std::f64::consts::SQRT_2
+        );
+    }
+
+    /// A box's leader starts on its edge.
+    #[test]
+    fn a_rects_leader_starts_on_its_edge() {
+        let (hw, hh) = (50.0, 20.0);
+        let (sx, sy, ..) = leader_geometry(200.0, 200.0, hw, hh, false, None, 50.0, 900.0);
+        // At 45 degrees on a wide flat box, the short axis is met first.
+        assert!(
+            (sy - (200.0 - hh)).abs() < 0.5,
+            "expected the top edge at y={}, got {sy}",
+            200.0 - hh
+        );
+        assert!(sx > 200.0 && sx <= 200.0 + hw + 0.5, "{sx} left the box");
+    }
+
     /// Every leader on a canvas leaves at the same angle.
     #[test]
     fn the_default_leader_angle_is_fixed() {
-        let (sx, sy, ex, ey, ..) = leader_geometry(100.0, 100.0, 0.0, 0.0, None, 10.0, 800.0);
+        let (sx, sy, ex, ey, ..) = leader_geometry(100.0, 100.0, 0.0, 0.0, true, None, 10.0, 800.0);
         let angle = ((ey - sy) / (ex - sx)).atan().abs().to_degrees();
         assert!(
             (angle - style::LEADER_ANGLE_DEG).abs() < 0.5,
