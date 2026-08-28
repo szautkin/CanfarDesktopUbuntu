@@ -804,9 +804,21 @@ impl FitsViewer {
                     *v.suppress_sync.borrow_mut() = false;
                     return;
                 }
-                // The status label already carries the reason on failure; the
-                // dropdown reverts itself inside `switch_hdu`.
-                let _ = v.switch_hdu(info.index);
+                // Off the signal, not inside it. `switch_hdu` tears down the
+                // page and can rebuild this very dropdown's model; doing that
+                // while GTK is still emitting `selected_notify` on it freed
+                // objects the emission was still using. Deferring to the next
+                // main-loop turn lets the emission unwind first.
+                //
+                // The set_hdu_selector fix means the model is usually left
+                // alone now — this is the belt to that pair of braces, and it
+                // also keeps the handler short, which is what a signal handler
+                // that rebuilds half a page should be.
+                let index = info.index;
+                let v2 = v.clone();
+                glib::idle_add_local_once(move || {
+                    let _ = v2.switch_hdu(index);
+                });
             });
         }
 
@@ -1790,12 +1802,39 @@ impl FitsViewer {
         }
 
         *self.suppress_sync.borrow_mut() = true;
-        let model = gtk::StringList::new(&[]);
-        for h in hdus {
-            model.append(&h.label());
-        }
         *self.hdu_infos.borrow_mut() = hdus.to_vec();
-        self.hdu_dropdown.set_model(Some(&model));
+
+        // Only rebuild the model when the LIST changed.
+        //
+        // This is reached from the dropdown's own `selected_notify`, by way of
+        // `switch_hdu`: choosing an extension replaced the model of the widget
+        // whose signal was still being emitted, freeing the items GTK was
+        // holding — a segfault, and only ever from the dropdown, because the
+        // MCP path does not run inside that signal.
+        //
+        // Switching extension within a file cannot change the list — it is the
+        // same file — so in the case that crashes there is nothing to rebuild.
+        // `suppress_sync` never protected against this: it stops OUR handler
+        // re-entering and says nothing about GTK's own references.
+        let labels: Vec<String> = hdus.iter().map(|h| h.label()).collect();
+        let current: Option<Vec<String>> = self
+            .hdu_dropdown
+            .model()
+            .and_then(|m| m.downcast::<gtk::StringList>().ok())
+            .map(|list| {
+                (0..list.n_items())
+                    .map(|i| list.string(i).map(|s| s.to_string()).unwrap_or_default())
+                    .collect()
+            });
+
+        if model_needs_rebuild(current.as_deref(), &labels) {
+            let model = gtk::StringList::new(&[]);
+            for label in &labels {
+                model.append(label);
+            }
+            self.hdu_dropdown.set_model(Some(&model));
+        }
+
         let pos = hdus
             .iter()
             .position(|h| h.index == selected_index)
@@ -2606,5 +2645,78 @@ mod control_visibility_tests {
                  the column, where they can carry a caption"
             );
         }
+    }
+}
+
+/// Whether the extension dropdown's model has to be replaced.
+///
+/// Split out because it is the difference between a crash and no crash, and
+/// everything around it needs a realized widget to exercise. Replacing the model
+/// is only safe when the list actually differs: this function is reached from
+/// the dropdown's own `selected_notify`, and swapping the model there frees
+/// items GTK is still emitting on.
+fn model_needs_rebuild(current: Option<&[String]>, wanted: &[String]) -> bool {
+    match current {
+        Some(existing) => existing != wanted,
+        // No model yet — it has to be built.
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod hdu_selector_tests {
+    use super::model_needs_rebuild;
+
+    /// Switching extension within one file must not rebuild the model.
+    ///
+    /// This is the crash. `set_hdu_selector` is reached from the dropdown's own
+    /// `selected_notify`, and replacing the model there freed the items GTK was
+    /// still emitting on — a segfault, and only ever from the dropdown, since
+    /// the MCP path does not run inside that signal. The HDU list cannot change
+    /// when you pick a different extension of the SAME file, so in exactly the
+    /// case that crashed there is nothing to rebuild.
+    #[test]
+    fn choosing_another_extension_of_the_same_file_rebuilds_nothing() {
+        let list: Vec<String> = [
+            "1: Primary (non-image)",
+            "2: SCI 11471×4593",
+            "3: ERR 11471×4593",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(
+            !model_needs_rebuild(Some(&list), &list),
+            "the model would be replaced from inside its own signal handler"
+        );
+    }
+
+    /// A different file does need one.
+    #[test]
+    fn a_different_file_rebuilds_the_model() {
+        let a: Vec<String> = vec!["1: SCI".into(), "2: ERR".into()];
+        let b: Vec<String> = vec!["1: IMAGE".into()];
+        assert!(model_needs_rebuild(Some(&a), &b));
+        // Same length, different labels.
+        let c: Vec<String> = vec!["1: SCI".into(), "2: WHT".into()];
+        assert!(model_needs_rebuild(Some(&a), &c));
+    }
+
+    /// The first population has nothing to compare against.
+    #[test]
+    fn an_empty_dropdown_is_built() {
+        assert!(model_needs_rebuild(None, &["1: SCI".to_string()]));
+        // An existing but empty model still needs the real list.
+        assert!(model_needs_rebuild(Some(&[]), &["1: SCI".to_string()]));
+    }
+
+    /// Two files whose extensions happen to be named the same are the same
+    /// list, and reusing the model is correct — the labels carry dimensions,
+    /// so a genuine difference shows up in them.
+    #[test]
+    fn identical_lists_are_treated_as_identical() {
+        let a: Vec<String> = vec!["2: SCI 100×100".into()];
+        let b: Vec<String> = vec!["2: SCI 100×100".into()];
+        assert!(!model_needs_rebuild(Some(&a), &b));
     }
 }

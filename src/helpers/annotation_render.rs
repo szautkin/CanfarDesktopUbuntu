@@ -250,11 +250,15 @@ fn draw_label_at(cr: &cairo::Context, a: &Annotation, cx: f64, cy: f64, canvas_w
 /// renderer did not — the probe showed a label over a bright patch of the test
 /// image and it could not be read.
 fn draw_text_with_shadow(cr: &cairo::Context, x: f64, y: f64, text: &str) {
-    let ink = cr.source();
+    // save/restore rather than holding the old pattern across a `set_source`.
+    // `cairo_get_source` hands back a pattern the context owns; keeping a
+    // reference to it over a call that replaces it is the shape of a
+    // use-after-free, and cairo's failures are segfaults rather than errors.
+    cr.save().ok();
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.75);
     cr.move_to(x + 1.0, y + 1.0);
     cr.show_text(text).ok();
-    cr.set_source(&ink).ok();
+    cr.restore().ok();
     cr.move_to(x, y);
     cr.show_text(text).ok();
 }
