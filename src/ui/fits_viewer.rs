@@ -1959,9 +1959,9 @@ impl FitsViewer {
         }
         let kind = self.selected_draw_kind();
         let viewer = Rc::downgrade(self);
-        canvas.set_on_left_click(move |img_x, img_y| {
+        canvas.set_on_left_click(move |img_x, img_y, half| {
             let Some(v) = viewer.upgrade() else { return };
-            v.place_mark(kind, img_x, img_y);
+            v.place_mark(kind, img_x, img_y, half);
         });
     }
 
@@ -1985,6 +1985,7 @@ impl FitsViewer {
         kind: crate::models::annotation::AnnotationKind,
         img_x: f64,
         img_y: f64,
+        dragged_half_px: f64,
     ) {
         use crate::models::annotation::{Anchor, Annotation, Author};
         let Some(tab) = self.current_tab() else {
@@ -2005,18 +2006,25 @@ impl FitsViewer {
             .filter(|a| a.is_valid())
             .unwrap_or(Anchor::ImagePixel { x: img_x, y: img_y });
 
-        let needs_text = matches!(
-            kind,
-            crate::models::annotation::AnnotationKind::Callout
-                | crate::models::annotation::AnnotationKind::Text
-        );
-        if needs_text {
-            self.ask_for_text(kind, anchor);
-            return;
-        }
-        let mark = Annotation::new(kind, anchor, "", Author::User)
-            .with_extent(tab.canvas().default_extent_for(&anchor));
+        // The size the user dragged out, converted into the anchor's own
+        // units. A tap with no drag falls back to a default, so a click still
+        // makes a mark rather than nothing.
+        let canvas = tab.canvas();
+        let extent = if dragged_half_px > 3.0 {
+            crate::models::annotation::Extent::square(
+                dragged_half_px * canvas.units_per_image_pixel(&anchor),
+            )
+        } else {
+            canvas.default_extent_for(&anchor)
+        };
+
+        // Every kind gets its label the same way: the shape lands, then a
+        // cursor appears at the end of its leader and you type. A callout with
+        // no words is fine for the moment — you are about to give it some.
+        let mark = Annotation::new(kind, anchor, "", Author::User).with_extent(extent);
+        let id = mark.id.clone();
         self.add_mark(mark);
+        self.ask_for_text_at_leader(&id);
     }
 
     /// Store a validated mark and show it.
@@ -2035,60 +2043,75 @@ impl FitsViewer {
         self.refresh_annotations_panel();
     }
 
-    /// A one-line entry for a label, anchored at the sidebar.
+    /// A cursor at the end of the mark's leader, to type its label into.
     ///
-    /// A popover collects the text; the mark itself is drawn with cairo. A
-    /// label laid out as a widget would show on screen and be missing from
-    /// every capture an agent takes.
-    fn ask_for_text(
-        self: &Rc<Self>,
-        kind: crate::models::annotation::AnnotationKind,
-        anchor: crate::models::annotation::Anchor,
-    ) {
-        use crate::models::annotation::{Annotation, Author};
+    /// Where the text will BE, rather than in a dialog off to one side: you
+    /// drag out a shape, the leader appears, and the caret is waiting on its
+    /// rule. Escape leaves the shape unlabelled, which is a perfectly good
+    /// mark.
+    ///
+    /// The popover collects the words; cairo draws them. A label laid out as a
+    /// widget would show on screen and be missing from every capture an agent
+    /// takes.
+    fn ask_for_text_at_leader(self: &Rc<Self>, id: &str) {
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        let Some(mark) = canvas.annotations().into_iter().find(|a| a.id == id) else {
+            return;
+        };
+        let Some(rect) = canvas.leader_label_rect(&mark) else {
+            return;
+        };
+
         let popover = gtk::Popover::new();
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        row.set_margin_top(8);
-        row.set_margin_bottom(8);
-        row.set_margin_start(8);
-        row.set_margin_end(8);
+        popover.set_parent(canvas.drawing_area());
+        popover.set_pointing_to(Some(&rect));
+        popover.set_position(gtk::PositionType::Top);
+        popover.set_autohide(true);
+
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
-        entry.set_activates_default(true);
-        entry.set_width_chars(24);
-        row.append(&entry);
-        let ok = gtk::Button::with_label(crate::tr_en!("Add"));
-        ok.add_css_class("suggested-action");
-        row.append(&ok);
-        popover.set_child(Some(&row));
-        popover.set_parent(&self.draw_mode);
+        entry.set_width_chars(20);
+        entry.set_has_frame(false);
+        popover.set_child(Some(&entry));
 
         let viewer = Rc::downgrade(self);
-        let commit = {
-            let entry = entry.clone();
+        let id = id.to_string();
+        {
             let popover = popover.clone();
-            move || {
-                let text = entry.text().to_string();
-                if text.trim().is_empty() {
-                    return;
-                }
+            let id = id.clone();
+            entry.connect_activate(move |e| {
+                let text = e.text().to_string();
                 if let Some(v) = viewer.upgrade() {
-                    let mut mark = Annotation::new(kind, anchor, text, Author::User);
-                    if let Some(tab) = v.current_tab() {
-                        mark = mark.with_extent(tab.canvas().default_extent_for(&anchor));
-                    }
-                    v.add_mark(mark);
+                    v.set_mark_text(&id, &text);
                 }
                 popover.popdown();
-            }
-        };
-        {
-            let commit = commit.clone();
-            ok.connect_clicked(move |_| commit());
+            });
         }
-        entry.connect_activate(move |_| commit());
+        // Closing without typing leaves the shape as it is.
+        popover.connect_closed(|p| {
+            p.unparent();
+        });
         popover.popup();
         entry.grab_focus();
+    }
+
+    /// Give an existing mark its label.
+    fn set_mark_text(&self, id: &str, text: &str) {
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        let mut all = canvas.annotations();
+        let Some(mark) = all.iter_mut().find(|a| a.id == id) else {
+            return;
+        };
+        mark.text = text.trim().to_string();
+        canvas.set_annotations(all);
+        self.persist_annotations(&tab);
+        self.refresh_annotations_panel();
     }
 
     /// Save the active tab's marks under its file.

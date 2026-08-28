@@ -209,8 +209,14 @@ pub struct FitsCanvas {
     crosshair_placed: Rc<RefCell<Option<(f64, f64)>>>,
     /// Installed by the viewer while draw mode is on. Shared with the pan
     /// gesture, which stands down while it is set.
+    ///
+    /// Called on RELEASE with the centre in image pixels and the half-extent
+    /// the user dragged out, also in image pixels.
     #[allow(clippy::type_complexity)]
-    on_left_click: Rc<RefCell<Option<Box<dyn Fn(f64, f64)>>>>,
+    on_left_click: Rc<RefCell<Option<Box<dyn Fn(f64, f64, f64)>>>>,
+    /// The shape being dragged out: `(centre_x, centre_y, half_extent)` in
+    /// image pixels. Drawn as a preview so the size is chosen by eye.
+    pending_shape: Rc<RefCell<Option<(f64, f64, f64)>>>,
     /// Marks drawn on this image, by the user or an agent.
     annotations: Rc<RefCell<Vec<crate::models::annotation::Annotation>>>,
     /// The selected mark's id, highlighted on the canvas and in the panel.
@@ -265,6 +271,7 @@ impl FitsCanvas {
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
             on_left_click: Rc::new(RefCell::new(None)),
+            pending_shape: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
             selected_annotation: Rc::new(RefCell::new(None)),
             rotation: Rc::new(RefCell::new(0.0)),
@@ -680,6 +687,19 @@ impl FitsCanvas {
             }
         }
 
+        // The shape being dragged out, in the same ink as a finished one so
+        // what you release is what you saw.
+        if let Some((ix, iy, half)) = *self.pending_shape.borrow() {
+            let (sx, sy) = self.image_to_screen_point(ix, iy);
+            let r = (half * self.transform.borrow().scale).max(1.0);
+            let (ink_r, ink_g, ink_b) = crate::helpers::annotation_render::style::INK;
+            cr.set_source_rgba(ink_r, ink_g, ink_b, 0.9);
+            cr.set_line_width(crate::helpers::annotation_render::style::STROKE);
+            cr.new_path();
+            cr.arc(sx, sy, r, 0.0, std::f64::consts::TAU);
+            cr.stroke().ok();
+        }
+
         // Marks last, over everything, and drawn HERE — inside the function the
         // capture replays — so an agent's picture and the user's screen show
         // the same annotations without either path knowing about the other.
@@ -737,6 +757,54 @@ impl FitsCanvas {
             }
         }
         None
+    }
+
+    /// The drawing area, for anchoring a popover to a place on the image.
+    pub fn drawing_area(&self) -> &gtk::DrawingArea {
+        &self.drawing_area
+    }
+
+    /// Where a mark's label sits on screen, as a rectangle to point at.
+    ///
+    /// Computed with the same `leader_geometry` the renderer uses, so the caret
+    /// appears exactly where the text will be drawn rather than near it.
+    pub fn leader_label_rect(
+        &self,
+        mark: &crate::models::annotation::Annotation,
+    ) -> Option<gtk::gdk::Rectangle> {
+        use crate::helpers::annotation_render::leader_geometry;
+        let (cx, cy) = self.project_anchor(&mark.anchor)?;
+        let scale = self.annotation_scale(&mark.anchor);
+        let (hw, hh) = mark
+            .extent
+            .map(|e| (e.half_width * scale, e.half_height * scale))
+            .unwrap_or((6.0, 6.0));
+        let width = self.drawing_area.width().max(1) as f64;
+        // A nominal text width: the label does not exist yet, and the caret
+        // only needs to land on the rule.
+        let (.., ey, _rule_end, text_x, _right) =
+            leader_geometry(cx, cy, hw, hh, true, mark.label_offset, 90.0, width);
+        Some(gtk::gdk::Rectangle::new(
+            text_x as i32,
+            (ey - 14.0).max(0.0) as i32,
+            1,
+            14,
+        ))
+    }
+
+    /// How many of the anchor's units one image pixel is.
+    ///
+    /// The inverse of the scale the renderer asks for, without the zoom: a
+    /// distance dragged out on screen is in image pixels, and the extent it
+    /// becomes has to be in whatever the anchor counts in.
+    pub fn units_per_image_pixel(&self, anchor: &crate::models::annotation::Anchor) -> f64 {
+        let view = self.transform.borrow().scale.max(f64::EPSILON);
+        let image_px_per_unit = self.annotation_scale(anchor) / view;
+        if image_px_per_unit.is_finite() && image_px_per_unit > 0.0 {
+            1.0 / image_px_per_unit
+        } else {
+            1.0
+        }
     }
 
     /// A sensible size for a new mark, in the anchor's own units.
@@ -995,7 +1063,7 @@ impl FitsCanvas {
     /// Image coordinates rather than screen, because that is what an annotation
     /// is anchored in — converting at the edge means the viewer never handles a
     /// screen coordinate it might forget to transform.
-    pub fn set_on_left_click(&self, f: impl Fn(f64, f64) + 'static) {
+    pub fn set_on_left_click(&self, f: impl Fn(f64, f64, f64) + 'static) {
         *self.on_left_click.borrow_mut() = Some(Box::new(f));
         // Say so. A mode that changes what a click does and looks identical is
         // a mode people fight with.
@@ -1009,60 +1077,98 @@ impl FitsCanvas {
     }
 
     fn setup_left_click(self: &Rc<Self>) {
-        let click = gtk::GestureClick::new();
-        click.set_button(1);
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(1);
         // Ahead of the pan gesture, which also wants button 1.
-        click.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let canvas = Rc::downgrade(self);
-        click.connect_pressed(move |gesture, _n, x, y| {
-            let Some(canvas) = canvas.upgrade() else {
-                return;
-            };
-            // Nothing installed means nothing to do — panning and selection are
-            // unaffected, which is why this is a hook and not a mode the canvas
-            // knows about.
-            let has_handler = canvas.on_left_click.borrow().is_some();
-            if !has_handler {
-                return;
-            }
-            // Shift means "move the image, not the marks" — you need to
-            // reposition while drawing, and leaving the mode to do it and
-            // coming back is the kind of thing that makes a mode annoying.
-            if gesture
-                .current_event_state()
-                .contains(gtk::gdk::ModifierType::SHIFT_MASK)
-            {
-                return;
-            }
-            let (img_x, img_y) = {
-                let t = canvas.transform.borrow();
-                let rot = *canvas.rotation.borrow();
-                screen_to_image(
-                    x,
-                    y,
-                    t.scale,
-                    t.offset_x,
-                    t.offset_y,
-                    rot,
-                    canvas.img_width,
-                    canvas.img_height,
-                )
-            };
-            if !on_image(img_x, img_y, canvas.img_width, canvas.img_height) {
-                return;
-            }
-            // Ours: stops the pan gesture picking the same press up.
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            // The borrow is released before the callback runs: it may reach
-            // back into the canvas to add a mark, and holding a RefCell across
-            // a callback is how that becomes a panic.
-            let handler = canvas.on_left_click.borrow_mut().take();
-            if let Some(f) = handler {
-                f(img_x, img_y);
-                *canvas.on_left_click.borrow_mut() = Some(f);
-            }
-        });
-        self.drawing_area.add_controller(click);
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+
+        let started = Rc::new(RefCell::new(None::<(f64, f64)>));
+
+        {
+            let canvas = Rc::downgrade(self);
+            let started = started.clone();
+            drag.connect_drag_begin(move |gesture, x, y| {
+                let Some(canvas) = canvas.upgrade() else {
+                    return;
+                };
+                if canvas.on_left_click.borrow().is_none() {
+                    return;
+                }
+                // Shift means "move the image, not the marks".
+                if gesture
+                    .current_event_state()
+                    .contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                {
+                    return;
+                }
+                let (ix, iy) = canvas.screen_to_image_point(x, y);
+                if !on_image(ix, iy, canvas.img_width, canvas.img_height) {
+                    return;
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                *started.borrow_mut() = Some((x, y));
+                *canvas.pending_shape.borrow_mut() = Some((ix, iy, 0.0));
+                canvas.drawing_area.queue_draw();
+            });
+        }
+        {
+            let canvas = Rc::downgrade(self);
+            let started = started.clone();
+            drag.connect_drag_update(move |_, dx, dy| {
+                let Some(canvas) = canvas.upgrade() else {
+                    return;
+                };
+                let Some(start) = *started.borrow() else {
+                    return;
+                };
+                // The radius is the drag distance, in IMAGE pixels, so the
+                // preview and the finished mark are the same size.
+                let (ix, iy) = canvas.screen_to_image_point(start.0, start.1);
+                let (ex, ey) = canvas.screen_to_image_point(start.0 + dx, start.1 + dy);
+                let half = ((ex - ix).powi(2) + (ey - iy).powi(2)).sqrt();
+                *canvas.pending_shape.borrow_mut() = Some((ix, iy, half));
+                canvas.drawing_area.queue_draw();
+            });
+        }
+        {
+            let canvas = Rc::downgrade(self);
+            drag.connect_drag_end(move |_, _dx, _dy| {
+                let Some(canvas) = canvas.upgrade() else {
+                    return;
+                };
+                let pending = canvas.pending_shape.borrow_mut().take();
+                let Some((ix, iy, half)) = pending else {
+                    return;
+                };
+                *started.borrow_mut() = None;
+                canvas.drawing_area.queue_draw();
+                // A tap with no drag still makes a mark, at a default size the
+                // viewer chooses — insisting on a drag would mean a click that
+                // silently does nothing, which is where this started.
+                let handler = canvas.on_left_click.borrow_mut().take();
+                if let Some(f) = handler {
+                    f(ix, iy, half);
+                    *canvas.on_left_click.borrow_mut() = Some(f);
+                }
+            });
+        }
+        self.drawing_area.add_controller(drag);
+    }
+
+    /// Screen point to image pixel, through the current view.
+    fn screen_to_image_point(&self, x: f64, y: f64) -> (f64, f64) {
+        let t = self.transform.borrow();
+        let rot = *self.rotation.borrow();
+        screen_to_image(
+            x,
+            y,
+            t.scale,
+            t.offset_x,
+            t.offset_y,
+            rot,
+            self.img_width,
+            self.img_height,
+        )
     }
 
     fn setup_right_click_crosshair(&self) {

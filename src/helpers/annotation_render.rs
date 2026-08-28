@@ -204,31 +204,48 @@ pub fn draw(
             AnnotationKind::Rect => {
                 cr.rectangle(cx - half_w, cy - half_h, half_w * 2.0, half_h * 2.0);
                 cr.stroke().ok();
-                draw_label_at(cr, a, cx, cy - half_h - style::TEXT_LIFT, canvas_w);
             }
             AnnotationKind::Circle => {
                 draw_ellipse(cr, cx, cy, half_w.max(0.5), half_h.max(0.5));
                 cr.stroke().ok();
-                draw_label_at(cr, a, cx, cy - half_h - style::TEXT_LIFT, canvas_w);
-            }
-            AnnotationKind::Text => {
-                draw_label_at(cr, a, cx, cy, canvas_w);
             }
             AnnotationKind::Callout => {
+                // A callout's shape is a small ring at the subject: the leader
+                // is the point of it.
+                if a.extent.is_some() {
+                    draw_ellipse(cr, cx, cy, half_w.max(0.5), half_h.max(0.5));
+                    cr.stroke().ok();
+                }
+            }
+            AnnotationKind::Text => {}
+        }
+
+        // Every labelled shape is labelled the same way — a leader leaving the
+        // outline at a fixed acute angle, and the text on the rule at its end.
+        // A box and a circle used to put their label centred above them, which
+        // read as two different products on one canvas; a blueprint labels
+        // everything with a leader.
+        if !a.text.trim().is_empty() {
+            if a.kind == AnnotationKind::Text {
+                draw_label_at(cr, a, cx, cy, canvas_w);
+            } else {
                 let text_width = cr.text_extents(&a.text).map(|e| e.width()).unwrap_or(0.0);
-                // A callout with no shape still needs somewhere for the leader
-                // to start; a small notional radius keeps it off the subject.
+                let elliptical = a.kind != AnnotationKind::Rect;
                 let (hw, hh) = if a.extent.is_some() {
                     (half_w, half_h)
                 } else {
                     (3.0, 3.0)
                 };
-                if a.extent.is_some() {
-                    draw_ellipse(cr, cx, cy, hw.max(0.5), hh.max(0.5));
-                    cr.stroke().ok();
-                }
-                let (sx, sy, ex, ey, rule_end, text_x, _right) =
-                    leader_geometry(cx, cy, hw, hh, true, a.label_offset, text_width, canvas_w);
+                let (sx, sy, ex, ey, rule_end, text_x, _right) = leader_geometry(
+                    cx,
+                    cy,
+                    hw,
+                    hh,
+                    elliptical,
+                    a.label_offset,
+                    text_width,
+                    canvas_w,
+                );
                 cr.new_path();
                 cr.move_to(sx, sy);
                 cr.line_to(ex, ey);
