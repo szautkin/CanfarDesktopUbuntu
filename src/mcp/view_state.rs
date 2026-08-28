@@ -16,9 +16,38 @@ use std::sync::RwLock;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-/// How long a UI-marshalled tool call waits for the GTK main loop before giving
-/// up with a typed "UI busy" error (mirrors the reference's 30s budget).
+/// How long a UI-marshalled tool call waits before giving up (the reference's
+/// 30s budget).
+///
+/// Right for the operations it was written for — steering a viewer, reading a
+/// header — where 30s means something is wrong. Wrong for an archive query,
+/// which CADC itself allows 600s: QA watched a `caom2.Observation JOIN Plane`
+/// abort here while the same ADQL returned over `curl` in under a second, and
+/// the agent was told the viewer had not answered.
 pub(crate) const UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The budget for a query the archive is allowed to take its time over.
+///
+/// Matches TAP's own `executionDuration` default, so this stops being the thing
+/// that gives up first.
+pub(crate) const QUERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long `op` on `target` may take.
+///
+/// One table, because the alternative is a magic number at each call site and
+/// no way to see them together. A slow operation is slow because of what it
+/// ASKS OF A SERVICE, not because of which widget it belongs to.
+pub(crate) fn timeout_for(target: &str, op: &str) -> Duration {
+    match (target, op) {
+        // Archive queries: a cone search over a large collection, or a JOIN
+        // across caom2.Observation and Plane, legitimately runs for minutes.
+        (_, "run_search")
+        | (_, "execute_adql_query")
+        | (_, "load_more_results")
+        | (_, "resolve_target_name") => QUERY_COMMAND_TIMEOUT,
+        _ => UI_COMMAND_TIMEOUT,
+    }
+}
 
 /// A `Send` snapshot of the current UI state, pushed by the UI and read by tools.
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -113,7 +142,8 @@ pub async fn viewer_command(
     // Bound the wait: the reply only arrives once the GTK main loop drains the
     // command queue, so a saturated UI thread would otherwise hang the tool call
     // until the transport itself gave up. Fail with a descriptive error instead.
-    match tokio::time::timeout(UI_COMMAND_TIMEOUT, reply_rx).await {
+    let budget = timeout_for(target, op);
+    match tokio::time::timeout(budget, reply_rx).await {
         Ok(reply) => reply.map_err(|_| "viewer did not respond".to_string())?,
         // Says what is known, not what is guessed. It used to assert "the
         // window is blocked by a long-running operation", which sent readers
@@ -125,7 +155,7 @@ pub async fn viewer_command(
              running; check its own status before retrying.",
             target,
             op,
-            UI_COMMAND_TIMEOUT.as_secs()
+            budget.as_secs()
         )),
     }
 }
@@ -391,5 +421,57 @@ mod push_tests {
                  with its default for the life of the process. It belongs in {expected}."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    /// An archive query gets the archive's own budget.
+    ///
+    /// QA: a `caom2.Observation JOIN Plane` on `proposal_id` aborted at 30s
+    /// while the same ADQL returned over `curl` in under a second — the client
+    /// gave up before the service had answered, and reported it as the viewer
+    /// failing to respond.
+    #[test]
+    fn a_query_may_take_as_long_as_the_archive_allows() {
+        assert_eq!(
+            timeout_for("search", "execute_adql_query"),
+            QUERY_COMMAND_TIMEOUT
+        );
+        assert_eq!(timeout_for("search", "run_search"), QUERY_COMMAND_TIMEOUT);
+        assert!(
+            QUERY_COMMAND_TIMEOUT.as_secs() >= 600,
+            "shorter than TAP's own executionDuration default, so this gives up first"
+        );
+    }
+
+    /// Steering a viewer does not.
+    ///
+    /// The long budget must not leak onto everything: a viewer that has stopped
+    /// answering should be reported in seconds, not in ten minutes.
+    #[test]
+    fn steering_a_viewer_keeps_the_short_budget() {
+        for op in [
+            "set_fits_view",
+            "get_fits_image",
+            "run_cell",
+            "get_cube_view",
+        ] {
+            assert_eq!(
+                timeout_for("fits", op),
+                UI_COMMAND_TIMEOUT,
+                "{op} was given the query budget"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_budgets_are_actually_different() {
+        assert!(
+            QUERY_COMMAND_TIMEOUT > UI_COMMAND_TIMEOUT,
+            "the table exists to distinguish them"
+        );
     }
 }

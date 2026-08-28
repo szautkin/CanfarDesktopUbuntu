@@ -354,7 +354,37 @@ async fn handle_initialize(
             // while a client is connected.
             "capabilities": { "tools": { "listChanged": true } },
             "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
+            // The one place a server can address the MODEL before it has read
+            // anything. A client MUST call `tools/list` — that is the protocol,
+            // and no server can opt out — so an agent receives all ~149 schemas
+            // whatever we do. What it does NOT arrive with is any idea which of
+            // them matter, and this is the only channel for saying so.
+            "instructions": server_instructions(),
         }),
+    )
+}
+
+/// What a model should know about this server before it starts.
+///
+/// Kept to a few lines: it sits in context for the whole session, so it earns
+/// its place by naming the two tools that make the rest navigable, and stops.
+/// The counts are read from the catalog rather than written down, because a
+/// number in prose is a number that goes stale — this file would still promise
+/// "147 tools" three releases from now.
+fn server_instructions() -> String {
+    let apps = crate::models::tool_category::all().count();
+    format!(
+        "Verbinal is a desktop client for CADC/CANFAR: archive search, FITS and \
+         spectral-cube viewers, a notebook, VOSpace storage, and compute sessions.\n\n\
+         It has many tools, grouped into {apps} areas. You do not need to read them \
+         all. To find the right one:\n\
+         - `list_apps` — the areas and what each is for.\n\
+         - `describe_app({{\"app\": \"fits\"}})` — one area's tools with their arguments.\n\
+         - `search_tools({{\"query\": \"...\"}})` — find a tool by what it does, when you \
+         know the job but not the area.\n\n\
+         The viewers are shared with a person who is looking at them: `get_fits_image` \
+         and `get_cube_image` return what is on screen right now, so you can see what \
+         they see before changing it."
     )
 }
 

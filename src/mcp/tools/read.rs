@@ -319,7 +319,7 @@ async fn search_observations(services: &crate::state::AppServices, args: &Value)
         .await
     {
         Ok(results) => {
-            let truncated = results.rows.len() as u32 > max_rows;
+            let more_matched = results.rows.len() as u32 > max_rows;
             let cols = &results.columns;
             let rows: Vec<Vec<String>> = results
                 .rows
@@ -328,13 +328,34 @@ async fn search_observations(services: &crate::state::AppServices, args: &Value)
                 .map(|r| cols.iter().map(|c| r.get(c).to_string()).collect())
                 .collect();
 
-            ToolResult::Data(json!({
+            // `max` bounds the ROW count; it cannot bound the reply, because a
+            // `SELECT *` over caom2 is some sixty columns wide. QA measured a
+            // thousand such rows at 622 KB, which the client spooled to a file
+            // for the agent to grep — a question answered with a document.
+            use crate::mcp::result_budget::{fit_rows, json_size, trim_note, ResultBudget};
+            let trimmed = fit_rows(rows, ResultBudget::from_settings(), |r| {
+                json_size(&serde_json::json!(r))
+            });
+
+            let mut out = json!({
                 "adql": adql,
                 "columns": cols,
-                "returnedRows": rows.len(),
-                "truncated": truncated,
-                "rows": rows,
-            }))
+                "returnedRows": trimmed.kept.len(),
+                "matchedRows": trimmed.total,
+                // True when the QUERY hit `max`, so more exist in the archive.
+                "moreAvailable": more_matched,
+                "rows": trimmed.kept,
+            });
+            if trimmed.over_budget {
+                out["note"] = json!(trim_note(
+                    trimmed.kept.len(),
+                    trimmed.total,
+                    "rows",
+                    "Ask for fewer columns in an explicit ADQL `SELECT`, or lower `max`. \
+                     A cone search returns every column unless you name them.",
+                ));
+            }
+            ToolResult::Data(out)
         }
         Err(e) => ToolResult::Failed(format!("observation search failed: {e}")),
     }

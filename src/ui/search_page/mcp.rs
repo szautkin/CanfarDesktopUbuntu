@@ -182,7 +182,7 @@ impl SearchPage {
             // ── Additional Constraints (data train) ─────────────────────────
             "get_search_constraints" => {
                 self.ensure_data_train().await;
-                Ok(self.constraints_snapshot())
+                Ok(self.constraints_snapshot(args))
             }
             "set_search_constraints" => {
                 self.ensure_data_train().await;
@@ -190,7 +190,7 @@ impl SearchPage {
                 self.refresh_train_ui();
                 self.train_expander.set_expanded(true);
                 self.notebook.set_current_page(Some(TAB_FORM));
-                let mut out = self.constraints_snapshot();
+                let mut out = self.constraints_snapshot(args);
                 out["dropped"] = json!(dropped);
                 Ok(out)
             }
@@ -312,7 +312,16 @@ impl SearchPage {
 
     /// Per-facet available + selected values, plus whether the data train has
     /// loaded at all (an empty facet list means "not loaded", not "no values").
-    fn constraints_snapshot(&self) -> Value {
+    /// How many values of one facet are listed before the list is summarised.
+    ///
+    /// CADC has thousands of instruments and collections, and listing every
+    /// value of all seven facets measured 99 KB in QA — spooled to a file the
+    /// agent then had to grep. A caller choosing a filter needs to know what is
+    /// on offer, not to receive the archive's whole vocabulary; when it needs
+    /// one facet in full it can ask for that facet by name.
+    const FACET_VALUES_INLINE: usize = 40;
+
+    fn constraints_snapshot(&self, args: &Value) -> Value {
         let mgr = self.train_manager.borrow();
         let all: [&[String]; 7] = [
             &mgr.all_bands,
@@ -345,10 +354,36 @@ impl SearchPage {
                 .map(|s| s.iter().cloned().collect())
                 .unwrap_or_default();
             selected.sort();
-            facets.insert(
-                (*name).to_string(),
-                json!({ "available": avail, "selected": selected }),
-            );
+
+            // One facet asked for by name comes back whole; otherwise each is
+            // capped so the reply stays readable.
+            let wanted = crate::mcp::tools::arg(args, "facet")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|f| !f.is_empty());
+            let full = wanted.is_some_and(|f| f.eq_ignore_ascii_case(name));
+            let total = avail.len();
+            let shown: Vec<&String> = if full {
+                avail
+            } else {
+                avail.into_iter().take(Self::FACET_VALUES_INLINE).collect()
+            };
+
+            let mut entry = serde_json::Map::new();
+            entry.insert("available".into(), json!(shown));
+            entry.insert("availableCount".into(), json!(total));
+            entry.insert("selected".into(), json!(selected));
+            if total > shown.len() {
+                entry.insert(
+                    "note".into(),
+                    json!(format!(
+                        "{} of {total} values shown — call get_search_constraints \
+                         {{\"facet\": \"{name}\"}} for all of them.",
+                        shown.len()
+                    )),
+                );
+            }
+            facets.insert((*name).to_string(), Value::Object(entry));
         }
 
         json!({
@@ -412,8 +447,22 @@ impl SearchPage {
 
         if include_rows {
             let start = page.saturating_mul(page_size);
-            let visible: Vec<&crate::models::search_result::ResultColumnInfo> =
+            // Column visibility is a preference about the GRID, tuned for the
+            // default search view. An arbitrary ADQL `SELECT` — a JOIN, an
+            // ObsCore query — returns columns that preference has never heard
+            // of, so nothing matched, `rowColumns` came back empty, and every
+            // row serialized as `[]`. QA saw `totalRows: 100` beside a hundred
+            // empty arrays: the query worked, the data was there, and the tool
+            // reported success while handing back nothing.
+            //
+            // A preference that would hide EVERY column is not a preference the
+            // caller expressed. When it selects nothing, show the result as it
+            // came back.
+            let mut visible: Vec<&crate::models::search_result::ResultColumnInfo> =
                 columns.iter().filter(|c| self.is_col_visible(c)).collect();
+            if visible.is_empty() {
+                visible = columns.iter().collect();
+            }
             let headers: Vec<&str> = visible.iter().map(|c| c.key.as_str()).collect();
             let rows: Vec<Value> = processed
                 .iter()

@@ -98,6 +98,7 @@ mod tests {
             max_open_file_mb: 128,
             agent_image_max_dimension: 1024,
             agent_image_max_bytes_mb: 16,
+            agent_result_max_kb: 64,
         };
         svc.save(&settings).expect("save");
         let back = svc.load();

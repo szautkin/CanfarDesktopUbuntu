@@ -158,10 +158,23 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             "get_search_constraints",
             "Read the Additional Constraints facets (band, collection, instrument, filter, \
              calibration level, data type, observation type). Each reports the values still \
-             AVAILABLE under the current cascade plus the ones SELECTED. Loads the data train \
-             first if it has not arrived yet, so an empty list always means 'no such value', \
-             never 'not fetched'.",
-            no_args(),
+             AVAILABLE under the current cascade plus the ones SELECTED, and how many there \
+             are in `availableCount`. Long lists are shortened — CADC has thousands of \
+             instruments — so pass `facet` with one facet's name to get that one in full. \
+             Loads the data train first if it has not arrived yet, so an empty list always \
+             means 'no such value', never 'not fetched'.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "facet": {
+                        "type": "string",
+                        "description": "Return this one facet's values in full \
+                                        (band, collection, instrument, filter, calLevel, \
+                                        dataType, obsType). Omit for a shortened view of all."
+                    }
+                },
+                "additionalProperties": false
+            }),
         ),
         write_tool(
             "set_search_constraints",

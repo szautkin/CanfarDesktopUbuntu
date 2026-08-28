@@ -20,6 +20,7 @@ pub mod constants;
 pub mod diagnostics;
 pub mod jsonrpc;
 pub mod preview;
+pub mod result_budget;
 pub mod selftest;
 pub mod tools;
 pub mod view_state;

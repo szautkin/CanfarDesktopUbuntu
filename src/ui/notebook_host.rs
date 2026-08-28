@@ -2174,6 +2174,25 @@ impl NotebookTabHost {
         );
         agent_bytes_row.set_title(crate::tr_en!("Largest agent image (MB)"));
         agent_group.add(&agent_bytes_row);
+
+        let agent_result_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cur.agent_result_max_kb as f64,
+                4.0,
+                4096.0,
+                16.0,
+                64.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        agent_result_row.set_title(crate::tr_en!("Largest agent result (KB)"));
+        agent_result_row.set_subtitle(crate::tr_en!(
+            "Search results and lists are cut to fit this, newest rules first, and the \
+             reply says how many were left out."
+        ));
+        agent_group.add(&agent_result_row);
         content.append(&agent_group);
 
         let py_row = adw::EntryRow::new();
@@ -2261,6 +2280,7 @@ impl NotebookTabHost {
             let max_file_row = max_file_row.clone();
             let agent_dim_row = agent_dim_row.clone();
             let agent_bytes_row = agent_bytes_row.clone();
+            let agent_result_row = agent_result_row.clone();
             move || {
                 let py = py_row.text().trim().to_string();
                 let new = NotebookSettings {
@@ -2275,6 +2295,7 @@ impl NotebookTabHost {
                     max_open_file_mb: max_file_row.value().round() as u32,
                     agent_image_max_dimension: agent_dim_row.value().round() as u32,
                     agent_image_max_bytes_mb: agent_bytes_row.value().round() as u32,
+                    agent_result_max_kb: agent_result_row.value().round() as u32,
                 };
                 h.update_settings(new);
             }
@@ -2307,6 +2328,10 @@ impl NotebookTabHost {
         {
             let p = persist.clone();
             agent_bytes_row.connect_value_notify(move |_| p());
+        }
+        {
+            let p = persist.clone();
+            agent_result_row.connect_value_notify(move |_| p());
         }
         {
             let p = persist.clone();

@@ -90,6 +90,9 @@ static HAND_PAIRS: &[(&str, &str)] = &[
      "Captures de la zone de travail d'une visionneuse envoyées à un agent IA. Un modèle lit une image à quelques centaines de pixels ; une capture plus grande coûte du contexte à l'agent sans lui en apprendre davantage."),
     ("Largest agent image (pixels)",                "Taille maximale de l'image de l'agent (pixels)"),
     ("Largest agent image (MB)",                    "Taille maximale de l'image de l'agent (Mo)"),
+    ("Largest agent result (KB)",                   "Taille maximale du résultat de l'agent (Ko)"),
+    ("Search results and lists are cut to fit this, newest rules first, and the reply says how many were left out.",
+     "Les résultats de recherche et les listes sont réduits pour tenir dans cette limite, et la réponse indique combien d'éléments ont été omis."),
     ("Kernel: not started",                         "Noyau : non démarré"),
     // The rest of the kernel states. Only "not started" was ever translated,
     // because the others were English literals doing double duty as machine

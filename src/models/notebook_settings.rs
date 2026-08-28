@@ -26,6 +26,13 @@ pub const DEFAULT_AGENT_IMAGE_MAX_DIMENSION: u32 = 1024;
 /// budget for every image source rather than for one of them.
 pub const DEFAULT_AGENT_IMAGE_MAX_BYTES_MB: u32 = 16;
 
+/// Default for [`NotebookSettings::agent_result_max_kb`].
+///
+/// About 16 000 tokens of JSON — large enough for a real page of results, small
+/// enough that a client does not spool it to a file. QA measured a single
+/// search at 622 KB against this.
+pub const DEFAULT_AGENT_RESULT_MAX_KB: u32 = 64;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotebookSettings {
@@ -64,6 +71,13 @@ pub struct NotebookSettings {
     pub agent_image_max_dimension: u32,
     /// Largest agent image, in MB, after scaling.
     pub agent_image_max_bytes_mb: u32,
+    /// Largest tool RESULT handed to an agent, in KB.
+    ///
+    /// A row cap is not a size cap: a `SELECT *` over `caom2.Observation` is
+    /// some sixty columns, so the 1000-row limit still measured 622 KB in QA and
+    /// the client wrote it to a file for the agent to grep. Rows are kept whole
+    /// until this runs out, and what was dropped is always reported.
+    pub agent_result_max_kb: u32,
 }
 
 impl Default for NotebookSettings {
@@ -84,6 +98,7 @@ impl Default for NotebookSettings {
             max_open_file_mb: DEFAULT_MAX_OPEN_FILE_MB,
             agent_image_max_dimension: DEFAULT_AGENT_IMAGE_MAX_DIMENSION,
             agent_image_max_bytes_mb: DEFAULT_AGENT_IMAGE_MAX_BYTES_MB,
+            agent_result_max_kb: DEFAULT_AGENT_RESULT_MAX_KB,
         }
     }
 }
@@ -109,6 +124,9 @@ impl NotebookSettings {
         // budget would refuse every one of them — neither is a preference.
         self.agent_image_max_dimension = self.agent_image_max_dimension.clamp(64, 8192);
         self.agent_image_max_bytes_mb = self.agent_image_max_bytes_mb.clamp(1, 256);
+        // Below a few KB nothing useful fits; above a few MB the client spools
+        // the reply to a file and the agent is reading a document again.
+        self.agent_result_max_kb = self.agent_result_max_kb.clamp(4, 4096);
         // Normalise an all-whitespace python path to None.
         if let Some(p) = &self.python_path {
             if p.trim().is_empty() {
@@ -184,6 +202,7 @@ mod tests {
             max_open_file_mb: 256,
             agent_image_max_dimension: 1024,
             agent_image_max_bytes_mb: 16,
+            agent_result_max_kb: 64,
         };
         let json = serde_json::to_string_pretty(&s).expect("serialise");
         let back: NotebookSettings = serde_json::from_str(&json).expect("deserialise");
