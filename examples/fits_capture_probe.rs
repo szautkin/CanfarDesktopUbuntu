@@ -90,8 +90,49 @@ fn main() {
         failures += 1;
     }
 
+    // ── Annotations ─────────────────────────────────────────────────────────
+    //
+    // The invariant the whole anchor design exists for: a mark is pinned to an
+    // IMAGE pixel, so when the view moves the mark moves with the image. A mark
+    // stored in screen pixels passes every other test and fails this one, and
+    // in the app it shows up as annotations sliding off their subjects.
+    use verbinal::models::annotation::{Anchor, Annotation, AnnotationKind, Author, Extent};
+    canvas.set_zoom(1.0);
+    let mut ring = Annotation::new(
+        AnnotationKind::Circle,
+        Anchor::ImagePixel { x: 128.0, y: 96.0 },
+        "subject",
+        Author::Agent,
+    );
+    ring.extent = Some(Extent::square(20.0));
+    canvas.set_annotations(vec![ring]);
+
+    let annotated = canvas.capture_png(cw, ch).expect("capture");
+    println!(
+        "annotated {} bytes, sha {}",
+        annotated.len(),
+        sha(&annotated)
+    );
+    if annotated == first {
+        println!("  !! the annotation did not appear in the capture");
+        failures += 1;
+    }
+
+    let where_before = canvas.image_to_screen_point(128.0, 96.0);
+    canvas.set_zoom(2.0);
+    let where_after = canvas.image_to_screen_point(128.0, 96.0);
+    if (where_before.0 - where_after.0).abs() < 0.5 && (where_before.1 - where_after.1).abs() < 0.5
+    {
+        println!(
+            "  !! the anchor did not move with the image on zoom ({where_before:?} -> {where_after:?}) \
+             — it is pinned to the window, not the data"
+        );
+        failures += 1;
+    }
+    canvas.set_zoom(1.0);
+
     let out = std::env::temp_dir().join("fits_capture_probe.png");
-    std::fs::write(&out, &first).expect("write");
+    std::fs::write(&out, &annotated).expect("write");
     println!(
         "\nwrote {} — look at it once; a render can be plausible and wrong",
         out.display()

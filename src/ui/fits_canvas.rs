@@ -207,6 +207,10 @@ pub struct FitsCanvas {
     local_hover: Rc<RefCell<Option<(f64, f64)>>>,
     /// A right-clicked persistent crosshair position (in image-space).
     crosshair_placed: Rc<RefCell<Option<(f64, f64)>>>,
+    /// Marks drawn on this image, by the user or an agent.
+    annotations: Rc<RefCell<Vec<crate::models::annotation::Annotation>>>,
+    /// The selected mark's id, highlighted on the canvas and in the panel.
+    selected_annotation: Rc<RefCell<Option<String>>>,
     /// Rotation angle in radians (for North Up).
     rotation: Rc<RefCell<f64>>,
     /// A second image cross-faded over this canvas during a blink comparison.
@@ -256,6 +260,8 @@ impl FitsCanvas {
             shared,
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
+            annotations: Rc::new(RefCell::new(Vec::new())),
+            selected_annotation: Rc::new(RefCell::new(None)),
             rotation: Rc::new(RefCell::new(0.0)),
             blink_overlay: Rc::new(RefCell::new(None)),
             blink_opacity: Rc::new(Cell::new(0.0)),
@@ -640,6 +646,86 @@ impl FitsCanvas {
                 );
             }
         }
+
+        // Marks last, over everything, and drawn HERE — inside the function the
+        // capture replays — so an agent's picture and the user's screen show
+        // the same annotations without either path knowing about the other.
+        crate::helpers::annotation_render::draw(
+            &self.annotations.borrow(),
+            self,
+            self.selected_annotation.borrow().as_deref(),
+            cr,
+            widget_w as f64,
+            widget_h as f64,
+        );
+    }
+
+    // ── Annotations ─────────────────────────────────────────────────────────
+
+    /// Replace the marks on this canvas.
+    pub fn set_annotations(&self, annotations: Vec<crate::models::annotation::Annotation>) {
+        *self.annotations.borrow_mut() = annotations;
+        self.drawing_area.queue_draw();
+    }
+
+    pub fn annotations(&self) -> Vec<crate::models::annotation::Annotation> {
+        self.annotations.borrow().clone()
+    }
+
+    pub fn set_selected_annotation(&self, id: Option<String>) {
+        *self.selected_annotation.borrow_mut() = id;
+        self.drawing_area.queue_draw();
+    }
+
+    pub fn selected_annotation(&self) -> Option<String> {
+        self.selected_annotation.borrow().clone()
+    }
+
+    /// The mark whose shape contains `(sx, sy)`, topmost first.
+    ///
+    /// Hit-testing is done in SCREEN space against the projected shape, so what
+    /// the user can click is exactly what they can see — the alternative,
+    /// testing in image space, quietly disagrees with the drawing wherever
+    /// rotation is in play.
+    pub fn annotation_at(&self, sx: f64, sy: f64) -> Option<String> {
+        let anns = self.annotations.borrow();
+        for a in anns.iter().rev() {
+            let (cx, cy) = self.project_anchor(&a.anchor)?;
+            let scale = self.annotation_scale();
+            let (hw, hh) = a
+                .extent
+                .map(|e| (e.half_width * scale, e.half_height * scale))
+                .unwrap_or((8.0, 8.0));
+            // A generous minimum: a hairline circle a few pixels across is
+            // impossible to hit exactly, and a near miss reads as broken.
+            let (hw, hh) = (hw.max(6.0), hh.max(6.0));
+            if (sx - cx).abs() <= hw && (sy - cy).abs() <= hh {
+                return Some(a.id.clone());
+            }
+        }
+        None
+    }
+
+    /// An anchor's position on this canvas, or `None` when it is not on it.
+    fn project_anchor(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
+        use crate::models::annotation::Anchor;
+        let (px, py) = match *anchor {
+            Anchor::ImagePixel { x, y } => (x, y),
+            // A sky anchor is placed through this image's OWN WCS, so a mark
+            // made on one image lands correctly on another of the same field.
+            Anchor::Sky { ra_deg, dec_deg } => {
+                self.wcs.as_ref()?.world_to_pixel(ra_deg, dec_deg)?
+            }
+            // A cube's voxel means nothing here.
+            Anchor::Data { .. } => return None,
+        };
+        let (sx, sy) = self.image_to_screen_point(px, py);
+        sx.is_finite().then_some((sx, sy))
+    }
+
+    /// Device pixels per image pixel, for sizing a shape.
+    fn annotation_scale(&self) -> f64 {
+        self.transform.borrow().scale
     }
 
     /// The working area as PNG bytes, at `(width, height)`.
@@ -930,5 +1016,19 @@ mod capture_size_tests {
         // process that tries to allocate 4 GB and is killed.
         let err = validate_capture_size(100_000, 100_000).expect_err("should refuse");
         assert!(err.contains("too large"), "{err}");
+    }
+}
+
+/// The FITS canvas as a place to draw marks.
+///
+/// Two methods, and they are the entire difference between annotating a flat
+/// image and annotating a rotating volume.
+impl crate::helpers::annotation_render::AnnotationSurface for FitsCanvas {
+    fn project(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
+        self.project_anchor(anchor)
+    }
+
+    fn units_to_pixels(&self, _anchor: &crate::models::annotation::Anchor) -> f64 {
+        self.annotation_scale()
     }
 }

@@ -209,8 +209,7 @@ pub fn draw(
                 cr.line_to(rule_end, ey);
                 cr.stroke().ok();
                 let ty = (ey - style::TEXT_LIFT).max(style::FONT_SIZE);
-                cr.move_to(text_x, ty);
-                cr.show_text(&a.text).ok();
+                draw_text_with_shadow(cr, text_x, ty, &a.text);
             }
         }
         let _ = canvas_h;
@@ -229,7 +228,8 @@ fn draw_ellipse(cr: &cairo::Context, cx: f64, cy: f64, rx: f64, ry: f64) {
     cr.restore().ok();
 }
 
-/// A label centred over a point, kept inside the canvas.
+/// A label centred over a point, kept inside the canvas and legible on top of
+/// whatever is under it.
 fn draw_label_at(cr: &cairo::Context, a: &Annotation, cx: f64, cy: f64, canvas_w: f64) {
     if a.text.trim().is_empty() {
         return;
@@ -239,8 +239,24 @@ fn draw_label_at(cr: &cairo::Context, a: &Annotation, cx: f64, cy: f64, canvas_w
     // unreadable exactly when it matters.
     let x = (cx - width / 2.0).clamp(2.0, (canvas_w - width - 2.0).max(2.0));
     let y = cy.max(style::FONT_SIZE);
+    draw_text_with_shadow(cr, x, y, &a.text);
+}
+
+/// Text with a dark offset copy under it.
+///
+/// Annotations sit over data, and data is not a background you chose: pale ink
+/// on a bright star or on nebulosity is invisible. The cube's axis captions
+/// have done this since they were written, and the first version of this
+/// renderer did not — the probe showed a label over a bright patch of the test
+/// image and it could not be read.
+fn draw_text_with_shadow(cr: &cairo::Context, x: f64, y: f64, text: &str) {
+    let ink = cr.source();
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.75);
+    cr.move_to(x + 1.0, y + 1.0);
+    cr.show_text(text).ok();
+    cr.set_source(&ink).ok();
     cr.move_to(x, y);
-    cr.show_text(&a.text).ok();
+    cr.show_text(text).ok();
 }
 
 #[cfg(test)]
@@ -448,6 +464,45 @@ mod tests {
         assert_eq!(
             lit, 0,
             "{lit} pixels of ink between two separate marks — they are joined"
+        );
+    }
+
+    /// A label is legible over a bright background.
+    ///
+    /// The probe caught this: pale ink on the bright part of the test image was
+    /// invisible. Annotations sit over data, which is not a background anyone
+    /// chose, so every label carries a dark copy of itself underneath.
+    #[test]
+    fn a_label_is_readable_on_a_bright_background() {
+        let (w, h) = (200i32, 80i32);
+        let mut img = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).expect("surface");
+        let cr = cairo::Context::new(&img).expect("cr");
+        // Paint it white, the worst case for pale ink.
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.paint().ok();
+
+        let a = Annotation::new(
+            AnnotationKind::Text,
+            Anchor::ImagePixel { x: 100.0, y: 40.0 },
+            "label",
+            Author::User,
+        );
+        draw(&[a], &Flat, None, &cr, w as f64, h as f64);
+        drop(cr);
+
+        // Something markedly darker than the white ground must have been laid
+        // down, or the text is invisible against it.
+        let stride = img.stride() as usize;
+        let data = img.data().expect("pixels");
+        let darkest = (20..70usize)
+            .flat_map(|y| (0..w as usize).map(move |x| (x, y)))
+            .map(|(x, y)| data[y * stride + x * 4] as u32)
+            .min()
+            .unwrap_or(255);
+        assert!(
+            darkest < 140,
+            "the darkest pixel is {darkest}: nothing was drawn dark enough to read \
+             against a white background"
         );
     }
 
