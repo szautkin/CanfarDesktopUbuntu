@@ -1836,14 +1836,18 @@ impl FitsViewer {
 
         self.north_up_btn.set_active(tab.is_north_up());
 
-        // Zoom: find the closest preset + reflect the exact % in the entry.
-        let current_pct = (tab.zoom_scale() * 100.0).round() as i32;
-        let closest = ZOOM_PRESETS
-            .iter()
-            .position(|(p, _)| *p == current_pct)
-            .unwrap_or(3); // default to 100%
-        self.zoom_combo.set_selected(closest as u32);
-        self.zoom_entry.set_text(&current_pct.to_string());
+        // Zoom: the preset if the zoom IS one, and no preset otherwise.
+        //
+        // This used to fall back to index 3 — "100%" — whenever the zoom did
+        // not match a preset exactly, so the dropdown said 100% while the tab
+        // sat at 28% and the entry beside it said 28. Sync-zoom lands on a
+        // preset almost never (matching another image's angular scale is an
+        // arbitrary number), so the control was wrong whenever it mattered
+        // most, and made sync look like it had zoomed the wrong way.
+        //
+        // The entry carries the exact value; an empty dropdown says "not one
+        // of these", which is true, rather than naming one it is not.
+        self.refresh_zoom_controls(tab);
 
         // Sync crosshair readout
         self.coords_panel
@@ -1983,9 +1987,13 @@ impl FitsViewer {
             }
             {
                 let viewer = Rc::downgrade(self);
+                let tab_for_zoom = tab.clone();
                 tab.canvas().set_on_marks_moved(move || {
                     if let Some(v) = viewer.upgrade() {
                         v.follow_label_editor();
+                        // The wheel and a pan both land here, and the wheel
+                        // changes the zoom without touching the toolbar.
+                        v.refresh_zoom_controls(&tab_for_zoom);
                     }
                 });
             }
@@ -2482,6 +2490,23 @@ impl FitsViewer {
             &canvas.annotations(),
             canvas.selected_annotation().as_deref(),
         );
+    }
+
+    /// Show `tab`'s zoom in the toolbar.
+    ///
+    /// Called on a tab switch AND whenever the view moves, because the wheel
+    /// changes the zoom without going near the toolbar — so the entry showed
+    /// whatever it was last set to while the image was at something else.
+    fn refresh_zoom_controls(&self, tab: &Rc<FitsTab>) {
+        let was_suppressed = *self.suppress_sync.borrow();
+        *self.suppress_sync.borrow_mut() = true;
+        let current_pct = (tab.zoom_scale() * 100.0).round() as i32;
+        match ZOOM_PRESETS.iter().position(|(p, _)| *p == current_pct) {
+            Some(i) => self.zoom_combo.set_selected(i as u32),
+            None => self.zoom_combo.set_selected(gtk::INVALID_LIST_POSITION),
+        }
+        self.zoom_entry.set_text(&current_pct.to_string());
+        *self.suppress_sync.borrow_mut() = was_suppressed;
     }
 
     /// Reload a different image HDU of the active tab's file, replacing the
