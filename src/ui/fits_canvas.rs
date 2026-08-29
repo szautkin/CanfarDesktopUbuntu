@@ -244,6 +244,11 @@ pub struct FitsCanvas {
     /// The mark this press selected, if it selected one. A press that turns
     /// into a drag is a move; one that does not is a request to edit.
     tapped: Rc<RefCell<Option<String>>>,
+    /// Told while a mark is being moved or resized, so anything anchored to it
+    /// — an open label editor — can follow rather than sit where the mark used
+    /// to be.
+    #[allow(clippy::type_complexity)]
+    on_shape_changing: Rc<RefCell<Option<Box<dyn Fn()>>>>,
     /// Told with an id when a mark's LABEL is clicked, so the viewer can open
     /// it for editing.
     #[allow(clippy::type_complexity)]
@@ -310,6 +315,7 @@ impl FitsCanvas {
             pending_shape: Rc::new(RefCell::new(None)),
             grab: Rc::new(RefCell::new(None)),
             tapped: Rc::new(RefCell::new(None)),
+            on_shape_changing: Rc::new(RefCell::new(None)),
             on_label_clicked: Rc::new(RefCell::new(None)),
             on_selection_changed: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
@@ -980,6 +986,10 @@ impl FitsCanvas {
         self.annotations.borrow().clone()
     }
 
+    pub fn set_on_shape_changing(&self, f: impl Fn() + 'static) {
+        *self.on_shape_changing.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn set_on_label_clicked(&self, f: impl Fn(&str) + 'static) {
         *self.on_label_clicked.borrow_mut() = Some(Box::new(f));
     }
@@ -1317,6 +1327,9 @@ impl FitsCanvas {
                         match grab {
                             Grab::Handle => canvas.resize_selected_to(sx + dx, sy + dy),
                             Grab::Body => canvas.move_selected_to(sx + dx, sy + dy),
+                        }
+                        if let Some(f) = canvas.on_shape_changing.borrow().as_ref() {
+                            f();
                         }
                     }
                     return;

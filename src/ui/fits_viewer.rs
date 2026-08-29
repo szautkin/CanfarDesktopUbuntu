@@ -79,9 +79,10 @@ pub struct FitsViewer {
     blink_target: Rc<Cell<usize>>,
     coords_panel: Rc<FitsCoordsPanel>,
     annotations_panel: Rc<crate::ui::annotations_panel::AnnotationsPanel>,
-    /// The label editor currently open, so a second one replaces it rather
-    /// than stacking on top — the popovers no longer close themselves.
-    open_label_editor: RefCell<Option<gtk::Popover>>,
+    /// The label editor currently open and the mark it belongs to, so a second
+    /// one replaces it rather than stacking, and so it can follow that mark
+    /// while it is dragged.
+    open_label_editor: RefCell<Option<(String, gtk::Popover)>>,
     /// On while the next click places a mark.
     draw_mode: gtk::ToggleButton,
     /// Which shape that click makes.
@@ -1830,6 +1831,15 @@ impl FitsViewer {
                 });
             }
 
+            {
+                let viewer = Rc::downgrade(self);
+                tab.canvas().set_on_shape_changing(move || {
+                    if let Some(v) = viewer.upgrade() {
+                        v.follow_label_editor();
+                    }
+                });
+            }
+
             let tab_for_save = tab.clone();
             tab.canvas().set_on_selection_changed(move || {
                 if let Some(v) = viewer.upgrade() {
@@ -1999,11 +2009,13 @@ impl FitsViewer {
             canvas.clear_on_left_click();
             return;
         }
-        let kind = self.selected_draw_kind();
         let viewer = Rc::downgrade(self);
         canvas.set_on_left_click(move |img_x, img_y, half| {
             let Some(v) = viewer.upgrade() else { return };
-            v.place_mark(kind, img_x, img_y, half);
+            // Read at CLICK time, not when Draw was switched on. Capturing it
+            // here meant the shape picked when the mode was armed was the shape
+            // you got for ever after: choosing Box and drawing gave a circle.
+            v.place_mark(v.selected_draw_kind(), img_x, img_y, half);
         });
     }
 
@@ -2204,15 +2216,37 @@ impl FitsViewer {
             entry.add_controller(keys);
         }
         // One editor at a time: opening another closes this one.
-        if let Some(old) = self.open_label_editor.borrow_mut().take() {
+        if let Some((_, old)) = self.open_label_editor.borrow_mut().take() {
             old.popdown();
         }
-        *self.open_label_editor.borrow_mut() = Some(popover.clone());
+        *self.open_label_editor.borrow_mut() = Some((id.clone(), popover.clone()));
         popover.connect_closed(|p| {
             p.unparent();
         });
         popover.popup();
         entry.grab_focus();
+    }
+
+    /// Re-aim the open label editor at its mark's current position.
+    ///
+    /// A popover is pointed at a rectangle once, so dragging the mark left the
+    /// editor behind, hanging over wherever the shape used to be. It is
+    /// re-pointed as the shape moves.
+    fn follow_label_editor(&self) {
+        let open = self.open_label_editor.borrow();
+        let Some((id, popover)) = open.as_ref() else {
+            return;
+        };
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        let Some(mark) = canvas.annotations().into_iter().find(|a| &a.id == id) else {
+            return;
+        };
+        if let Some(rect) = canvas.leader_label_rect(&mark) {
+            popover.set_pointing_to(Some(&rect));
+        }
     }
 
     /// Remove one mark.
