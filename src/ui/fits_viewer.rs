@@ -837,9 +837,16 @@ impl FitsViewer {
             let v = viewer.clone();
             let keys = gtk::EventControllerKey::new();
             keys.connect_key_pressed(move |_, key, _, _| {
-                if key == gtk::gdk::Key::Escape && v.draw_mode.is_active() {
-                    v.draw_mode.set_active(false);
-                    return gtk::glib::Propagation::Stop;
+                if key == gtk::gdk::Key::Escape {
+                    if v.draw_mode.is_active() {
+                        v.draw_mode.set_active(false);
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    // Escape is the way out of whichever one you are in.
+                    if v.open_label_editor.borrow().is_some() {
+                        v.leave_edit_mode();
+                        return gtk::glib::Propagation::Stop;
+                    }
                 }
                 gtk::glib::Propagation::Proceed
             });
@@ -857,6 +864,9 @@ impl FitsViewer {
         {
             let v = viewer.clone();
             viewer.annotations_panel.set_on_delete(move |id| {
+                // An editor open on the mark being deleted would be left
+                // pointing at a mark that no longer exists.
+                v.leave_edit_mode();
                 if let Some(tab) = v.current_tab() {
                     let canvas = tab.canvas();
                     let mut all = canvas.annotations();
@@ -882,6 +892,7 @@ impl FitsViewer {
         {
             let v = viewer.clone();
             viewer.annotations_panel.set_on_clear(move |_| {
+                v.leave_edit_mode();
                 if let Some(tab) = v.current_tab() {
                     tab.canvas().set_annotations(Vec::new());
                     v.persist_annotations(&tab);
@@ -2189,6 +2200,9 @@ impl FitsViewer {
                 let text = entry.text().to_string();
                 if let Some(v) = viewer.upgrade() {
                     v.set_mark_text(&id, &text);
+                    // The tick means "done with this mark": the words are
+                    // kept, the field goes, and the grips go with it.
+                    v.leave_edit_mode();
                 }
                 popover.popdown();
             }
@@ -2208,6 +2222,7 @@ impl FitsViewer {
             bin.connect_clicked(move |_| {
                 if let Some(v) = viewer2.upgrade() {
                     v.delete_mark(&id);
+                    v.leave_edit_mode();
                 }
                 popover.popdown();
             });
@@ -2217,9 +2232,13 @@ impl FitsViewer {
             // Escape leaves the label as it was.
             let popover = popover.clone();
             let keys = gtk::EventControllerKey::new();
+            let viewer = Rc::downgrade(self);
             keys.connect_key_pressed(move |_, key, _, _| {
                 if key == gtk::gdk::Key::Escape {
                     popover.popdown();
+                    if let Some(v) = viewer.upgrade() {
+                        v.leave_edit_mode();
+                    }
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk::glib::Propagation::Proceed
@@ -2238,6 +2257,22 @@ impl FitsViewer {
         entry.grab_focus();
     }
 
+    /// Leave edit mode: commit nothing, close the field, drop the selection.
+    ///
+    /// Edit mode IS a mark being selected — the grips and the label field are
+    /// two faces of the same state, so they start and end together. Anything
+    /// that ends one has to end the other, or the window shows a mark that is
+    /// half in and half out of being edited.
+    fn leave_edit_mode(&self) {
+        if let Some((_, popover)) = self.open_label_editor.borrow_mut().take() {
+            popover.popdown();
+        }
+        if let Some(tab) = self.current_tab() {
+            tab.canvas().set_selected_annotation(None);
+        }
+        self.refresh_annotations_panel();
+    }
+
     /// Re-aim the open label editor at its mark's current position.
     ///
     /// A popover is pointed at a rectangle once, so dragging the mark left the
@@ -2248,6 +2283,11 @@ impl FitsViewer {
         let Some((id, popover)) = open.as_ref() else {
             return;
         };
+        // Still the mark being edited? A drag on a different one means edit
+        // mode moved with it.
+        if !popover.is_visible() {
+            popover.popup();
+        }
         let Some(tab) = self.current_tab() else {
             return;
         };

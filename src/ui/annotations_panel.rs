@@ -51,7 +51,7 @@ impl AnnotationsPanel {
         widget.append(&count_label);
 
         let hint = gtk::Label::new(Some(crate::tr_en!(
-            "Drag a grip to resize, the shape to move it."
+            "Click a mark to edit it: drag a grip to resize, the shape to move it, then confirm."
         )));
         hint.add_css_class("dim-label");
         hint.add_css_class("caption");
