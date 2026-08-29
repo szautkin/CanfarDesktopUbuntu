@@ -79,6 +79,9 @@ pub struct FitsViewer {
     blink_target: Rc<Cell<usize>>,
     coords_panel: Rc<FitsCoordsPanel>,
     annotations_panel: Rc<crate::ui::annotations_panel::AnnotationsPanel>,
+    /// The label editor currently open, so a second one replaces it rather
+    /// than stacking on top — the popovers no longer close themselves.
+    open_label_editor: RefCell<Option<gtk::Popover>>,
     /// On while the next click places a mark.
     draw_mode: gtk::ToggleButton,
     /// Which shape that click makes.
@@ -550,6 +553,7 @@ impl FitsViewer {
             blink_target: Rc::new(Cell::new(1)),
             coords_panel,
             annotations_panel,
+            open_label_editor: RefCell::new(None),
             draw_mode,
             draw_kind,
             search_here_btn,
@@ -2107,7 +2111,11 @@ impl FitsViewer {
         popover.set_parent(canvas.drawing_area());
         popover.set_pointing_to(Some(&rect));
         popover.set_position(gtk::PositionType::Top);
-        popover.set_autohide(true);
+        // Not autohide. It dismissed itself the moment the pointer went back to
+        // the image — so moving or resizing the mark you were labelling threw
+        // the label away mid-edit. It closes on the tick, on Enter, on Escape,
+        // or when another mark is picked up: all deliberate.
+        popover.set_autohide(false);
 
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row.set_margin_top(6);
@@ -2182,6 +2190,24 @@ impl FitsViewer {
             });
         }
         // Closing without typing leaves the shape as it is.
+        {
+            // Escape leaves the label as it was.
+            let popover = popover.clone();
+            let keys = gtk::EventControllerKey::new();
+            keys.connect_key_pressed(move |_, key, _, _| {
+                if key == gtk::gdk::Key::Escape {
+                    popover.popdown();
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk::glib::Propagation::Proceed
+            });
+            entry.add_controller(keys);
+        }
+        // One editor at a time: opening another closes this one.
+        if let Some(old) = self.open_label_editor.borrow_mut().take() {
+            old.popdown();
+        }
+        *self.open_label_editor.borrow_mut() = Some(popover.clone());
         popover.connect_closed(|p| {
             p.unparent();
         });

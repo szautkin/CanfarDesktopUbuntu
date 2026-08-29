@@ -219,6 +219,16 @@ pub struct FitsCanvas {
     local_hover: Rc<RefCell<Option<(f64, f64)>>>,
     /// A right-clicked persistent crosshair position (in image-space).
     crosshair_placed: Rc<RefCell<Option<(f64, f64)>>>,
+    /// The pixel data as cairo wants it, built once per image rather than once
+    /// per frame.
+    ///
+    /// `rgba_to_surface` premultiplies and channel-swaps every pixel. That ran
+    /// on EVERY draw: for the 11471x4593 NIRCam frame that is 52 million pixels
+    /// converted per redraw, so anything that caused a repaint — a popover
+    /// taking a keystroke, a pointer moving — paid for the whole image again.
+    /// The conversion depends only on the data, so it is done when the data
+    /// changes.
+    surface_cache: RefCell<Option<cairo::ImageSurface>>,
     /// Installed by the viewer while draw mode is on. Shared with the pan
     /// gesture, which stands down while it is set.
     ///
@@ -295,6 +305,7 @@ impl FitsCanvas {
             shared,
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
+            surface_cache: RefCell::new(None),
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
             grab: Rc::new(RefCell::new(None)),
@@ -326,7 +337,20 @@ impl FitsCanvas {
 
     pub fn update_image(&self, rgba: Vec<u8>) {
         *self.pixel_data.borrow_mut() = rgba;
+        // The one writer of the pixels is the one place the cache is dropped,
+        // so they cannot disagree about which image is on screen.
+        *self.surface_cache.borrow_mut() = None;
         self.drawing_area.queue_draw();
+    }
+
+    /// The image as a cairo surface, built on demand and kept.
+    fn image_surface(&self, w: usize, h: usize) -> Option<cairo::ImageSurface> {
+        if let Some(surface) = self.surface_cache.borrow().as_ref() {
+            return Some(surface.clone());
+        }
+        let built = rgba_to_surface(&self.pixel_data.borrow(), w, h)?;
+        *self.surface_cache.borrow_mut() = Some(built.clone());
+        Some(built)
     }
 
     // ── Public API for the toolbar ───────────────────────────────────────────
@@ -614,7 +638,7 @@ impl FitsCanvas {
         let t = transform.borrow();
         let rot = *rotation.borrow();
 
-        if let Some(surface) = rgba_to_surface(&data, w, h) {
+        if let Some(surface) = self.image_surface(w, h) {
             cr.save().ok();
             // Apply rotation around the center of the image (north-up)
             if rot.abs() > 1e-6 {
