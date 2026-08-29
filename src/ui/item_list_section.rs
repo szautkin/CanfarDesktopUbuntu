@@ -241,6 +241,7 @@ impl ItemListSection {
         self.rebuilding.set(true);
         *self.items.borrow_mut() = items.to_vec();
         *self.selected_id.borrow_mut() = selected.map(str::to_string);
+        *self.selected_before_press.borrow_mut() = selected.map(str::to_string);
         while let Some(row) = self.list.first_child() {
             self.list.remove(&row);
         }
@@ -258,6 +259,14 @@ impl ItemListSection {
             if selected == Some(item.id.as_str()) {
                 self.list.select_row(Some(&row));
             }
+        }
+        // Nothing chosen means nothing chosen. Removing rows makes a ListBox
+        // move its selection to a surviving one, and a rebuild removes them
+        // all — so deselecting landed on whatever came first, and the list
+        // reported a selection the user had just cleared. The guard silences
+        // the callback; it does not stop GTK choosing.
+        if selected.is_none() {
+            self.list.select_row(None::<&gtk::ListBoxRow>);
         }
         self.rebuilding.set(false);
         self.apply_filter();
