@@ -46,7 +46,11 @@ pub struct AnnotationsPanel {
 impl AnnotationsPanel {
     pub fn new() -> Rc<Self> {
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        widget.set_vexpand(true);
+        // No vexpand. The sidebar is a Box inside a ScrolledWindow: a child
+        // that asks to expand makes the column try to fit the viewport rather
+        // than its contents, and a ScrolledWindow's minimum height is zero — so
+        // the header list next door was crushed to a couple of rows while this
+        // panel took the slack.
         widget.set_margin_top(10);
         widget.set_margin_bottom(12);
 

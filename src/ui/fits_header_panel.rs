@@ -65,6 +65,12 @@ impl FitsHeaderPanel {
         // the room it needs, so a larger ceiling costs nothing until there is
         // something to put in it.
         scroll.set_max_content_height(560);
+        // A floor as well: this is the one thing in the sidebar that is read
+        // rather than glanced at, and a header list two rows tall is not a
+        // header list. It is safe here — unlike inside an Expander whose child
+        // has no other height source — because `propagate_natural_height` is
+        // already giving it one.
+        scroll.set_min_content_height(320);
         scroll.set_child(Some(&list_box));
         container.append(&scroll);
 
