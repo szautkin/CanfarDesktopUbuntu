@@ -82,7 +82,7 @@ pub struct FitsViewer {
     /// The label editor currently open and the mark it belongs to, so a second
     /// one replaces it rather than stacking, and so it can follow that mark
     /// while it is dragged.
-    open_label_editor: RefCell<Option<(String, gtk::Popover)>>,
+    open_label_editor: RefCell<Option<(String, gtk::Box)>>,
     /// On while the next click places a mark.
     draw_mode: gtk::ToggleButton,
     /// Which shape that click makes.
@@ -998,8 +998,12 @@ impl FitsViewer {
         {
             let v = viewer.clone();
             viewer.tab_view.connect_n_pages_notify(move |tv| {
+                let empty = tv.n_pages() == 0;
                 v.content_stack
-                    .set_visible_child_name(if tv.n_pages() == 0 { "empty" } else { "tabs" });
+                    .set_visible_child_name(if empty { "empty" } else { "tabs" });
+                if empty {
+                    v.show_no_file_open();
+                }
             });
         }
 
@@ -1697,6 +1701,10 @@ impl FitsViewer {
 
     /// Sync every control in the column to the given tab's current state.
     fn sync_controls_to_tab(&self, tab: &Rc<FitsTab>) {
+        // Called after a tab is registered — on open, on HDU switch and on tab
+        // change — so the marks list settles onto the same tab the rest of the
+        // toolbar does.
+        self.refresh_annotations_panel_for(tab);
         *self.suppress_sync.borrow_mut() = true;
 
         // The header section shows the image you are LOOKING at. One panel for
@@ -1856,9 +1864,17 @@ impl FitsViewer {
                 // goes through the canvas, so the list follows all of them
                 // without any of them knowing it exists.
                 let viewer = Rc::downgrade(self);
+                // From THIS tab, not from `current_tab()`. `wire_tab_callbacks`
+                // runs BEFORE the tab is registered — on open and on every HDU
+                // switch — so a refresh that asked which tab was current got
+                // the old one or none, and the panel was handed an empty list
+                // while the marks sat on the new canvas. It filled in later
+                // only because clicking a mark refreshes again, by which time
+                // the tab exists.
+                let owner = Rc::downgrade(tab);
                 tab.canvas().set_on_annotations_changed(move || {
-                    if let Some(v) = viewer.upgrade() {
-                        v.refresh_annotations_panel();
+                    if let (Some(v), Some(tab)) = (viewer.upgrade(), owner.upgrade()) {
+                        v.refresh_annotations_panel_for(&tab);
                     }
                 });
             }
@@ -2159,70 +2175,51 @@ impl FitsViewer {
             return;
         };
 
-        let popover = gtk::Popover::new();
-        popover.set_parent(canvas.drawing_area());
-        popover.set_pointing_to(Some(&rect));
-        popover.set_position(gtk::PositionType::Top);
-        // Not autohide. It dismissed itself the moment the pointer went back to
-        // the image — so moving or resizing the mark you were labelling threw
-        // the label away mid-edit. It closes on the tick, on Enter, on Escape,
-        // or when another mark is picked up: all deliberate.
-        popover.set_autohide(false);
-
+        // An overlay child, not a popover. A popover is its own surface: with
+        // autohide on it dismissed itself the moment the pointer went back to
+        // the image, and with autohide off one was seen floating above an
+        // unrelated application's window. This is clipped to the canvas, moves
+        // with the window, and can follow the mark while it is dragged.
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        row.set_margin_top(6);
-        row.set_margin_bottom(6);
-        row.set_margin_start(6);
+        row.add_css_class("osd");
+        row.add_css_class("toolbar");
         row.set_margin_end(6);
+
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
-        entry.set_width_chars(18);
-        entry.set_has_frame(false);
+        entry.set_width_chars(16);
         row.append(&entry);
-
-        // Done. Enter finishes too, but a visible way out of an editor is not
-        // optional: a field with no button looks like something that has not
-        // finished loading.
-        let done = gtk::Button::from_icon_name("object-select-symbolic");
-        // Not flat. A confirm that has to be hunted for is not a confirm, and
-        // this one shares the row with a delete — the two should not look
-        // alike.
-        done.add_css_class("suggested-action");
-        done.set_valign(gtk::Align::Center);
-        done.set_tooltip_text(Some(crate::tr_en!("Done")));
-        row.append(&done);
-
-        // Delete, beside the words. Removing a mark is something you decide
-        // while looking at it, and the sidebar is the long way round from here.
-        let bin = gtk::Button::from_icon_name("user-trash-symbolic");
-        bin.add_css_class("destructive-action");
-        bin.set_valign(gtk::Align::Center);
-        bin.set_tooltip_text(Some(crate::tr_en!("Delete this mark")));
-        row.append(&bin);
-        // Renaming starts from what it says now, selected, so typing replaces
-        // it and Enter alone keeps it.
         if !mark.text.is_empty() {
             entry.set_text(&mark.text);
             entry.select_region(0, -1);
         }
-        popover.set_child(Some(&row));
 
-        let viewer = Rc::downgrade(self);
+        let done = gtk::Button::from_icon_name("object-select-symbolic");
+        done.add_css_class("suggested-action");
+        done.set_tooltip_text(Some(crate::tr_en!("Done")));
+        row.append(&done);
+
+        let bin = gtk::Button::from_icon_name("user-trash-symbolic");
+        bin.add_css_class("destructive-action");
+        bin.set_tooltip_text(Some(crate::tr_en!("Delete this mark")));
+        row.append(&bin);
+
+        // One editor at a time.
+        self.close_label_editor();
+        canvas.place_over_image(&row, rect.x() as f64, (rect.y() - 26).max(0) as f64);
+        *self.open_label_editor.borrow_mut() = Some((id.to_string(), row.clone()));
+
         let id = id.to_string();
-        // One commit path for Enter and for the tick, so they cannot disagree.
         let commit = {
+            let viewer = Rc::downgrade(self);
             let entry = entry.clone();
-            let popover = popover.clone();
             let id = id.clone();
             move || {
                 let text = entry.text().to_string();
                 if let Some(v) = viewer.upgrade() {
                     v.set_mark_text(&id, &text);
-                    // The tick means "done with this mark": the words are
-                    // kept, the field goes, and the grips go with it.
                     v.leave_edit_mode();
                 }
-                popover.popdown();
             }
         };
         {
@@ -2234,26 +2231,20 @@ impl FitsViewer {
             done.connect_clicked(move |_| commit());
         }
         {
-            let viewer2 = Rc::downgrade(self);
-            let popover = popover.clone();
+            let viewer = Rc::downgrade(self);
             let id = id.clone();
             bin.connect_clicked(move |_| {
-                if let Some(v) = viewer2.upgrade() {
+                if let Some(v) = viewer.upgrade() {
                     v.delete_mark(&id);
                     v.leave_edit_mode();
                 }
-                popover.popdown();
             });
         }
-        // Closing without typing leaves the shape as it is.
         {
-            // Escape leaves the label as it was.
-            let popover = popover.clone();
-            let keys = gtk::EventControllerKey::new();
             let viewer = Rc::downgrade(self);
+            let keys = gtk::EventControllerKey::new();
             keys.connect_key_pressed(move |_, key, _, _| {
                 if key == gtk::gdk::Key::Escape {
-                    popover.popdown();
                     if let Some(v) = viewer.upgrade() {
                         v.leave_edit_mode();
                     }
@@ -2263,16 +2254,17 @@ impl FitsViewer {
             });
             entry.add_controller(keys);
         }
-        // One editor at a time: opening another closes this one.
-        if let Some((_, old)) = self.open_label_editor.borrow_mut().take() {
-            old.popdown();
-        }
-        *self.open_label_editor.borrow_mut() = Some((id.clone(), popover.clone()));
-        popover.connect_closed(|p| {
-            p.unparent();
-        });
-        popover.popup();
         entry.grab_focus();
+    }
+
+    /// Take the label editor off the image, if one is up.
+    fn close_label_editor(&self) {
+        let open = self.open_label_editor.borrow_mut().take();
+        if let Some((_, row)) = open {
+            if let Some(tab) = self.current_tab() {
+                tab.canvas().remove_from_image(&row);
+            }
+        }
     }
 
     /// Leave edit mode: commit nothing, close the field, drop the selection.
@@ -2282,9 +2274,7 @@ impl FitsViewer {
     /// that ends one has to end the other, or the window shows a mark that is
     /// half in and half out of being edited.
     fn leave_edit_mode(&self) {
-        if let Some((_, popover)) = self.open_label_editor.borrow_mut().take() {
-            popover.popdown();
-        }
+        self.close_label_editor();
         if let Some(tab) = self.current_tab() {
             tab.canvas().set_selected_annotation(None);
         }
@@ -2298,14 +2288,9 @@ impl FitsViewer {
     /// re-pointed as the shape moves.
     fn follow_label_editor(&self) {
         let open = self.open_label_editor.borrow();
-        let Some((id, popover)) = open.as_ref() else {
+        let Some((id, row)) = open.as_ref() else {
             return;
         };
-        // Still the mark being edited? A drag on a different one means edit
-        // mode moved with it.
-        if !popover.is_visible() {
-            popover.popup();
-        }
         let Some(tab) = self.current_tab() else {
             return;
         };
@@ -2314,7 +2299,7 @@ impl FitsViewer {
             return;
         };
         if let Some(rect) = canvas.leader_label_rect(&mark) {
-            popover.set_pointing_to(Some(&rect));
+            canvas.position_over_image(row, rect.x() as f64, (rect.y() - 26).max(0) as f64);
         }
     }
 
@@ -2357,15 +2342,32 @@ impl FitsViewer {
     /// Redraw the list from the active tab.
     fn refresh_annotations_panel(&self) {
         match self.current_tab() {
-            Some(tab) => {
-                let canvas = tab.canvas();
-                self.annotations_panel.set_annotations(
-                    &canvas.annotations(),
-                    canvas.selected_annotation().as_deref(),
-                );
-            }
+            Some(tab) => self.refresh_annotations_panel_for(&tab),
             None => self.annotations_panel.set_annotations(&[], None),
         }
+    }
+
+    /// Put the sidebar back to "no file open".
+    ///
+    /// Closing the last file left the extension dropdown sitting there naming
+    /// HDUs of a file that was gone, and the marks list showing marks from it.
+    /// Everything that describes a FILE is cleared in one place, so the next
+    /// thing that describes one cannot be forgotten here.
+    fn show_no_file_open(&self) {
+        self.hdu_bar.set_visible(false);
+        self.hdu_infos.borrow_mut().clear();
+        self.close_label_editor();
+        self.annotations_panel.set_annotations(&[], None);
+        self.draw_mode.set_active(false);
+    }
+
+    /// Show `tab`'s marks, whether or not it is the registered current tab.
+    fn refresh_annotations_panel_for(&self, tab: &Rc<FitsTab>) {
+        let canvas = tab.canvas();
+        self.annotations_panel.set_annotations(
+            &canvas.annotations(),
+            canvas.selected_annotation().as_deref(),
+        );
     }
 
     /// Reload a different image HDU of the active tab's file, replacing the

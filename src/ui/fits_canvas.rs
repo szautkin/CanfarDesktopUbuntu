@@ -229,6 +229,8 @@ pub struct FitsCanvas {
     /// The conversion depends only on the data, so it is done when the data
     /// changes.
     surface_cache: RefCell<Option<cairo::ImageSurface>>,
+    /// Holds the drawing area, and any transient editor placed over it.
+    image_overlay: gtk::Overlay,
     /// Installed by the viewer while draw mode is on. Shared with the pan
     /// gesture, which stands down while it is set.
     ///
@@ -313,7 +315,14 @@ impl FitsCanvas {
         coord_label.set_margin_start(8);
         coord_label.set_margin_bottom(4);
 
-        widget.append(&drawing_area);
+        // The drawing area sits under an Overlay so transient editing widgets
+        // — the label field — can be placed ON the image. A GtkPopover cannot:
+        // without autohide it is its own surface, and one was seen floating
+        // above an unrelated application's window. An overlay child is clipped
+        // to this window and moves with it.
+        let image_overlay = gtk::Overlay::new();
+        image_overlay.set_child(Some(&drawing_area));
+        widget.append(&image_overlay);
         widget.append(&coord_label);
 
         let canvas = Rc::new(FitsCanvas {
@@ -327,6 +336,7 @@ impl FitsCanvas {
             shared,
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
+            image_overlay,
             surface_cache: RefCell::new(None),
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
@@ -1090,9 +1100,42 @@ impl FitsCanvas {
         None
     }
 
-    /// The drawing area, for anchoring a popover to a place on the image.
+    /// The drawing area, for anchoring to a place on the image.
     pub fn drawing_area(&self) -> &gtk::DrawingArea {
         &self.drawing_area
+    }
+
+    /// Put `child` over the image, its top-left near `(x, y)` in device pixels.
+    ///
+    /// Kept inside the canvas so an editor for a mark near an edge stays
+    /// reachable instead of hanging off it.
+    pub fn place_over_image(&self, child: &impl IsA<gtk::Widget>, x: f64, y: f64) {
+        let child = child.as_ref();
+        if child.parent().is_none() {
+            self.image_overlay.add_overlay(child);
+        }
+        child.set_halign(gtk::Align::Start);
+        child.set_valign(gtk::Align::Start);
+        self.position_over_image(child, x, y);
+    }
+
+    /// Move an already-placed child.
+    pub fn position_over_image(&self, child: &impl IsA<gtk::Widget>, x: f64, y: f64) {
+        let child = child.as_ref();
+        let (aw, ah) = (self.drawing_area.width(), self.drawing_area.height());
+        let (cw, ch) = (child.width().max(1), child.height().max(1));
+        let max_x = (aw - cw).max(0) as f64;
+        let max_y = (ah - ch).max(0) as f64;
+        child.set_margin_start(x.clamp(0.0, max_x) as i32);
+        child.set_margin_top(y.clamp(0.0, max_y) as i32);
+    }
+
+    /// Take a transient editor back off the image.
+    pub fn remove_from_image(&self, child: &impl IsA<gtk::Widget>) {
+        let child = child.as_ref();
+        if child.parent().is_some() {
+            self.image_overlay.remove_overlay(child);
+        }
     }
 
     /// Where a mark's label sits on screen, as a rectangle to point at.
