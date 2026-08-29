@@ -360,6 +360,12 @@ mod tests {
          stacked, and is the step before an agent can mark a feature in a cube for a person.",
     ),
     (
+        "update_annotation",
+        "An agent could draw a mark and delete a mark and nothing in between, so correcting one \
+         meant destroying it and drawing another with a new id — and any reference it had already \
+         given a person was then wrong. This changes the label, the position or the size in place.",
+    ),
+    (
         "remove_annotation",
         "One tool for both viewers: an id identifies a mark uniquely, and a caller should not have \
          to know — and often would not know — which viewer is holding it.",

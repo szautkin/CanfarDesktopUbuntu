@@ -1133,7 +1133,27 @@ impl FitsViewer {
                         ra_deg: ra,
                         dec_deg: dec,
                     },
-                    (_, _, Some(x), Some(y)) => Anchor::ImagePixel { x, y },
+                    // Image pixels become a SKY anchor when the image has
+                    // usable WCS — the same choice a click in the viewer
+                    // makes. Otherwise the same position produced two
+                    // different kinds of mark depending on the route: one that
+                    // survives reopening the file and lands on another image
+                    // of the field, and one that does not. The reply says
+                    // which was stored.
+                    (_, _, Some(x), Some(y)) => tab
+                        .data()
+                        .wcs
+                        .as_ref()
+                        .filter(|w| w.is_valid())
+                        .map(|w| {
+                            let (ra, dec) = w.pixel_to_sky(x, y);
+                            Anchor::Sky {
+                                ra_deg: ra,
+                                dec_deg: dec,
+                            }
+                        })
+                        .filter(|a| a.is_valid())
+                        .unwrap_or(Anchor::ImagePixel { x, y }),
                     _ => {
                         return Err("give ra and dec (degrees), or x and y (image pixels), \
                                     for where to draw"
@@ -1208,6 +1228,61 @@ impl FitsViewer {
                 let _ = crate::helpers::annotation_store::save_for(&file, &[]);
                 self.refresh_annotations_panel();
                 Ok(json!({ "cleared": removed, "viewer": "fits" }))
+            }
+
+            // Change a mark that is already there: its words, where it points,
+            // how big it is. An agent could create one and delete one and
+            // nothing in between, so correcting a mark meant destroying it and
+            // drawing another with a new id — and any reference it had already
+            // given a person was then wrong.
+            "update_annotation" => {
+                use crate::models::annotation::{Anchor, Extent};
+                let id = crate::mcp::tools::arg(args, "id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let canvas = tab.canvas();
+                let mut all = canvas.annotations();
+                let Some(mark) = all.iter_mut().find(|a| a.id == id) else {
+                    return Err(format!(
+                        "no annotation '{id}' on this tab — list_fits_annotations shows \
+                         what is there"
+                    ));
+                };
+                let num = |k: &str| crate::mcp::tools::arg(args, k).and_then(|v| v.as_f64());
+                if let Some(text) = crate::mcp::tools::arg(args, "text").and_then(|v| v.as_str()) {
+                    mark.text = text.trim().to_string();
+                }
+                if let (Some(ra), Some(dec)) = (num("ra"), num("dec")) {
+                    mark.anchor = Anchor::Sky {
+                        ra_deg: ra,
+                        dec_deg: dec,
+                    };
+                }
+                if let (Some(x), Some(y)) = (num("x"), num("y")) {
+                    mark.anchor = Anchor::ImagePixel { x, y };
+                }
+                if let Some(r) = num("radius") {
+                    mark.extent = Some(Extent::square(r));
+                }
+                mark.validate()?;
+                let changed = mark.clone();
+                canvas.set_annotations(all);
+                let file = Self::annotation_target(&tab);
+                let saved =
+                    crate::helpers::annotation_store::save_for(&file, &canvas.annotations())
+                        .is_ok();
+                Ok(json!({
+                    "id": changed.id,
+                    "kind": changed.kind.as_str(),
+                    "text": changed.text,
+                    "anchoredIn": changed.anchor.space(),
+                    "anchor": changed.anchor,
+                    "persisted": saved,
+                }))
             }
 
             "list_fits_annotations" => {
@@ -1363,6 +1438,13 @@ impl FitsViewer {
                     .and_then(|v| v.as_f64())
                 {
                     tab.set_zoom(z / 100.0);
+                    // The shared angular scale is what sync-zoom matches other
+                    // tabs to, and only the toolbar used to refresh it — so a
+                    // zoom set over MCP left sync applying a value captured
+                    // from a DIFFERENT image, possibly one already closed.
+                    // Switching tabs then jumped to whatever zoom that implied,
+                    // which for two images of unlike pixel scale is the clamp.
+                    self.update_shared_angular_zoom();
                 }
                 if let Some(n) = crate::mcp::tools::arg(args, "northUp").and_then(|v| v.as_bool()) {
                     tab.set_north_up(n);
@@ -1969,6 +2051,12 @@ impl FitsViewer {
     /// Capture the active tab's current zoom as a shared angular scale
     /// (arcsec per screen pixel) so other tabs can match it when they become
     /// active (mirrors Windows `UpdateSharedAngularZoom`).
+    /// Capture the active tab's angular scale as the one other tabs match.
+    ///
+    /// Called from every path that changes zoom — the toolbar, the wheel, and
+    /// MCP — because sync-zoom is only as good as the last capture, and a
+    /// capture that a whole input route skips is a stale number waiting for
+    /// someone to switch tabs.
     fn update_shared_angular_zoom(&self) {
         let Some(tab) = self.current_tab() else {
             return;

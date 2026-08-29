@@ -372,6 +372,7 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "close_active_tab"
         | "list_open_tabs"
         | "remove_annotation"
+        | "update_annotation"
         | "clear_annotations" => {
             "navigation"
         }

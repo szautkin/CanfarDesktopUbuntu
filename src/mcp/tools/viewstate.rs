@@ -198,6 +198,31 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "update_annotation".into(),
+            description: "Change a mark that is already drawn: its label, where it points, or \
+                          how big it is. Pass `id` from list_fits_annotations, then any of \
+                          `text`, `ra`/`dec`, `x`/`y`, `radius` — what you leave out is left \
+                          alone. Correcting a mark this way keeps its id, so a reference you \
+                          have already given someone still points at it."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "id": {"type":"string","description":"The annotation id."},
+                    "text": {"type":"string","description":"New label."},
+                    "ra": {"type":"number","description":"New sky position, degrees."},
+                    "dec": {"type":"number"},
+                    "x": {"type":"number","description":"New image pixel position."},
+                    "y": {"type":"number"},
+                    "radius": {"type":"number","description":"New half-size, in the anchor's units."}
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "clear_annotations".into(),
             description: "Delete EVERY mark on a viewer — the user's as well as yours. Pass \
                           `viewer` as \"fits\" or \"cube\". There is no undo, so prefer \
@@ -336,6 +361,14 @@ pub async fn dispatch(
                  list_fits_annotations or list_cube_annotations show what is there"
             )))
         }
+        "update_annotation" => Some(
+            match crate::mcp::view_state::viewer_command("fits", "update_annotation", args.clone())
+                .await
+            {
+                Ok(v) => ToolResult::Data(v),
+                Err(e) => ToolResult::Failed(e),
+            },
+        ),
         "clear_annotations" => {
             let viewer = args
                 .get("viewer")
