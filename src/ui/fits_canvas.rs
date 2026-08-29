@@ -231,6 +231,10 @@ pub struct FitsCanvas {
     pending_shape: Rc<RefCell<Option<(f64, f64, f64)>>>,
     /// What the current drag is doing to the selected mark, if anything.
     grab: Rc<RefCell<Option<Grab>>>,
+    /// Told with an id when a mark's LABEL is clicked, so the viewer can open
+    /// it for editing.
+    #[allow(clippy::type_complexity)]
+    on_label_clicked: Rc<RefCell<Option<Box<dyn Fn(&str)>>>>,
     /// Told when a click on the image changes which mark is selected, so the
     /// list can follow the canvas.
     #[allow(clippy::type_complexity)]
@@ -291,6 +295,7 @@ impl FitsCanvas {
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
             grab: Rc::new(RefCell::new(None)),
+            on_label_clicked: Rc::new(RefCell::new(None)),
             on_selection_changed: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
             selected_annotation: Rc::new(RefCell::new(None)),
@@ -778,6 +783,62 @@ impl FitsCanvas {
         }
     }
 
+    /// The mark whose LABEL covers `(sx, sy)`, topmost first.
+    ///
+    /// Clicking the words is how you edit them — it is where you are already
+    /// looking, and the shape itself means "select" rather than "rename".
+    pub fn label_at(&self, sx: f64, sy: f64) -> Option<String> {
+        for a in self.annotations.borrow().iter().rev() {
+            if a.text.trim().is_empty() {
+                continue;
+            }
+            if let Some(rect) = self.label_bounds(a) {
+                if rect.0 <= sx && sx <= rect.2 && rect.1 <= sy && sy <= rect.3 {
+                    return Some(a.id.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// A label's box on screen, as `(x0, y0, x1, y1)`.
+    ///
+    /// The width is estimated from the character count rather than measured:
+    /// measuring needs a cairo context, this runs on a click, and a hit box a
+    /// few pixels out is not something anyone can feel.
+    fn label_bounds(
+        &self,
+        mark: &crate::models::annotation::Annotation,
+    ) -> Option<(f64, f64, f64, f64)> {
+        use crate::helpers::annotation_render::{leader_geometry, style};
+        let (cx, cy) = self.project_anchor(&mark.anchor)?;
+        let scale = self.annotation_scale(&mark.anchor);
+        let (hw, hh) = mark
+            .extent
+            .map(|e| (e.half_width * scale, e.half_height * scale))
+            .unwrap_or((3.0, 3.0));
+        // Monospace at this size advances about 0.6 of the font size.
+        let text_w = mark.text.chars().count() as f64 * style::FONT_SIZE * 0.62;
+        let width = self.drawing_area.width().max(1) as f64;
+        let (.., ey, _rule_end, text_x, _right) = leader_geometry(
+            cx,
+            cy,
+            hw,
+            hh,
+            mark.kind != crate::models::annotation::AnnotationKind::Rect,
+            mark.label_offset,
+            text_w,
+            width,
+        );
+        let pad = 4.0;
+        Some((
+            text_x - pad,
+            ey - style::FONT_SIZE - pad,
+            text_x + text_w + pad,
+            ey + pad,
+        ))
+    }
+
     /// Whether `(sx, sy)` is on one of the selected mark's grips.
     fn handle_at(&self, sx: f64, sy: f64) -> bool {
         let Some(mark) = self.selected_mark() else {
@@ -889,6 +950,10 @@ impl FitsCanvas {
 
     pub fn annotations(&self) -> Vec<crate::models::annotation::Annotation> {
         self.annotations.borrow().clone()
+    }
+
+    pub fn set_on_label_clicked(&self, f: impl Fn(&str) + 'static) {
+        *self.on_label_clicked.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_on_selection_changed(&self, f: impl Fn() + 'static) {
@@ -1156,6 +1221,17 @@ impl FitsCanvas {
                 return;
             }
             if let Some(canvas) = pick.upgrade() {
+                // The words first: clicking a label edits it.
+                if let Some(id) = canvas.label_at(x, y) {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    canvas.set_selected_annotation(Some(id.clone()));
+                    let handler = canvas.on_label_clicked.borrow_mut().take();
+                    if let Some(f) = handler {
+                        f(&id);
+                        *canvas.on_label_clicked.borrow_mut() = Some(f);
+                    }
+                    return;
+                }
                 // A grip on the SELECTED mark resizes it; inside its shape
                 // moves it. Either way the image does not pan: you are
                 // adjusting a mark, not travelling.

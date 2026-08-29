@@ -1816,6 +1816,16 @@ impl FitsViewer {
         // its row, so the two are one selection rather than two.
         {
             let viewer = Rc::downgrade(self);
+            {
+                let viewer = Rc::downgrade(self);
+                tab.canvas().set_on_label_clicked(move |id| {
+                    if let Some(v) = viewer.upgrade() {
+                        v.refresh_annotations_panel();
+                        v.ask_for_text_at_leader(id);
+                    }
+                });
+            }
+
             let tab_for_save = tab.clone();
             tab.canvas().set_on_selection_changed(move || {
                 if let Some(v) = viewer.upgrade() {
@@ -2106,6 +2116,15 @@ impl FitsViewer {
         entry.set_has_frame(false);
         row.append(&entry);
 
+        // Done. Enter finishes too, but a visible way out of an editor is not
+        // optional: a field with no button looks like something that has not
+        // finished loading.
+        let done = gtk::Button::from_icon_name("object-select-symbolic");
+        done.add_css_class("flat");
+        done.add_css_class("suggested-action");
+        done.set_tooltip_text(Some(crate::tr_en!("Done")));
+        row.append(&done);
+
         // Delete, beside the words. Removing a mark is something you decide
         // while looking at it, and the sidebar is the long way round from here.
         let bin = gtk::Button::from_icon_name("user-trash-symbolic");
@@ -2122,16 +2141,26 @@ impl FitsViewer {
 
         let viewer = Rc::downgrade(self);
         let id = id.to_string();
-        {
+        // One commit path for Enter and for the tick, so they cannot disagree.
+        let commit = {
+            let entry = entry.clone();
             let popover = popover.clone();
             let id = id.clone();
-            entry.connect_activate(move |e| {
-                let text = e.text().to_string();
+            move || {
+                let text = entry.text().to_string();
                 if let Some(v) = viewer.upgrade() {
                     v.set_mark_text(&id, &text);
                 }
                 popover.popdown();
-            });
+            }
+        };
+        {
+            let commit = commit.clone();
+            entry.connect_activate(move |_| commit());
+        }
+        {
+            let commit = commit.clone();
+            done.connect_clicked(move |_| commit());
         }
         {
             let viewer2 = Rc::downgrade(self);
