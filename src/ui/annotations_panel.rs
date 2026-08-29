@@ -40,9 +40,9 @@ pub struct AnnotationsPanel {
 
 impl AnnotationsPanel {
     pub fn new() -> Rc<Self> {
-        let widget = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        widget.set_margin_top(8);
-        widget.set_margin_bottom(8);
+        let widget = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        widget.set_margin_top(10);
+        widget.set_margin_bottom(12);
 
         let count_label = gtk::Label::new(None);
         count_label.add_css_class("dim-label");
@@ -73,10 +73,15 @@ impl AnnotationsPanel {
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_child(Some(&list));
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        // Tall enough to show a few, short enough not to push the rest of the
-        // sidebar off — the list is a finder, not the main event.
-        scroll.set_max_content_height(320);
+        // The sidebar column is itself a ScrolledWindow, so this is a scroller
+        // inside a scroller: keep it tall enough that the inner one rarely has
+        // to engage, because two nested scrollers make the wheel ambiguous and
+        // the list feel cramped. A floor as well as a ceiling — an empty-ish
+        // list that collapses to two rows high is hard to aim at.
+        scroll.set_min_content_height(260);
+        scroll.set_max_content_height(560);
         scroll.set_propagate_natural_height(true);
+        scroll.set_vexpand(true);
         widget.append(&scroll);
 
         let clear_button = gtk::Button::with_label(crate::tr_en!("Clear all marks"));
@@ -170,8 +175,8 @@ impl AnnotationsPanel {
             // Room to read. The rows were tight enough that the label and its
             // position ran together, and these are two different things: what
             // the mark says, and where it is.
-            line.set_margin_top(10);
-            line.set_margin_bottom(10);
+            line.set_margin_top(12);
+            line.set_margin_bottom(12);
             line.set_margin_start(10);
             line.set_margin_end(8);
 
