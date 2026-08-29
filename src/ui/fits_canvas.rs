@@ -231,6 +231,9 @@ pub struct FitsCanvas {
     pending_shape: Rc<RefCell<Option<(f64, f64, f64)>>>,
     /// What the current drag is doing to the selected mark, if anything.
     grab: Rc<RefCell<Option<Grab>>>,
+    /// The mark this press selected, if it selected one. A press that turns
+    /// into a drag is a move; one that does not is a request to edit.
+    tapped: Rc<RefCell<Option<String>>>,
     /// Told with an id when a mark's LABEL is clicked, so the viewer can open
     /// it for editing.
     #[allow(clippy::type_complexity)]
@@ -295,6 +298,7 @@ impl FitsCanvas {
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
             grab: Rc::new(RefCell::new(None)),
+            tapped: Rc::new(RefCell::new(None)),
             on_label_clicked: Rc::new(RefCell::new(None)),
             on_selection_changed: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
@@ -1243,11 +1247,19 @@ impl FitsCanvas {
                 let hit = canvas.annotation_at(x, y);
                 if hit.is_some() {
                     if hit != canvas.selected_annotation() {
+                        // Selecting IS entering edit: the grips appear and the
+                        // label opens for typing, on one click rather than two.
+                        // Held until the release, because a press that becomes
+                        // a drag is a move and should not raise a popover
+                        // under the pointer.
+                        *canvas.tapped.borrow_mut() = hit.clone();
                         canvas.set_selected_annotation(hit);
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
                         let notify = canvas.on_selection_changed.borrow();
                         if let Some(f) = notify.as_ref() {
                             f();
                         }
+                        return;
                     } else {
                         // Already selected: this press is a move.
                         *canvas.grab.borrow_mut() = Some(Grab::Body);
@@ -1290,10 +1302,22 @@ impl FitsCanvas {
 
         {
             let notify = self.on_selection_changed.clone();
-            drag.connect_drag_end(move |_, _, _| {
+            drag.connect_drag_end(move |_, dx, dy| {
                 let Some(canvas) = end_pick.upgrade() else {
                     return;
                 };
+                // A tap that selected a mark, and did not become a drag, opens
+                // its label. A few pixels of travel is a hand, not an intent.
+                let tapped = canvas.tapped.borrow_mut().take();
+                if let Some(id) = tapped {
+                    if dx.abs() < 4.0 && dy.abs() < 4.0 {
+                        let handler = canvas.on_label_clicked.borrow_mut().take();
+                        if let Some(f) = handler {
+                            f(&id);
+                            *canvas.on_label_clicked.borrow_mut() = Some(f);
+                        }
+                    }
+                }
                 if canvas.grab.borrow_mut().take().is_some() {
                     // Same channel the list already listens on: the mark
                     // changed, so whoever is showing it should save and
