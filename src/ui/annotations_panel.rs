@@ -27,6 +27,13 @@ pub struct AnnotationsPanel {
     on_delete: Callback,
     /// Called (with an empty id) when Clear all is pressed.
     on_clear: Callback,
+    /// True while the list is being repopulated.
+    ///
+    /// Rebuilding selects a row, and selecting a row tells the viewer, which
+    /// refreshes the panel, which rebuilds... The first version also connected
+    /// the handler inside the rebuild, so each pass added another one and every
+    /// one of them fired. It ended as a stack overflow while placing a mark.
+    rebuilding: std::cell::Cell<bool>,
 }
 
 impl AnnotationsPanel {
@@ -75,6 +82,7 @@ impl AnnotationsPanel {
             on_select: Rc::new(RefCell::new(None)),
             on_delete: Rc::new(RefCell::new(None)),
             on_clear: Rc::new(RefCell::new(None)),
+            rebuilding: std::cell::Cell::new(false),
         });
 
         {
@@ -82,6 +90,26 @@ impl AnnotationsPanel {
             panel.clear_button.connect_clicked(move |_| {
                 if let Some(f) = cb.borrow().as_ref() {
                     f("");
+                }
+            });
+        }
+        {
+            // Once, here — not inside the rebuild.
+            let cb = panel.on_select.clone();
+            let panel_ref = Rc::downgrade(&panel);
+            panel.list.connect_row_selected(move |_, row| {
+                let Some(p) = panel_ref.upgrade() else { return };
+                // A selection the rebuild made is not a selection the user
+                // made, and telling anyone about it starts the loop again.
+                if p.rebuilding.get() {
+                    return;
+                }
+                let Some(row) = row else { return };
+                let id: Option<&String> = unsafe { row.data("annotation-id").map(|p| p.as_ref()) };
+                if let Some(id) = id {
+                    if let Some(f) = cb.borrow().as_ref() {
+                        f(id);
+                    }
                 }
             });
         }
@@ -106,6 +134,7 @@ impl AnnotationsPanel {
 
     /// Redraw the list from `annotations`.
     pub fn set_annotations(&self, annotations: &[Annotation], selected: Option<&str>) {
+        self.rebuilding.set(true);
         while let Some(row) = self.list.first_child() {
             self.list.remove(&row);
         }
@@ -166,16 +195,7 @@ impl AnnotationsPanel {
             }
         }
 
-        let cb = self.on_select.clone();
-        self.list.connect_row_selected(move |_, row| {
-            let Some(row) = row else { return };
-            let id: Option<&String> = unsafe { row.data("annotation-id").map(|p| p.as_ref()) };
-            if let Some(id) = id {
-                if let Some(f) = cb.borrow().as_ref() {
-                    f(id);
-                }
-            }
-        });
+        self.rebuilding.set(false);
     }
 }
 
