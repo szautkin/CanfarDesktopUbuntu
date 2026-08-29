@@ -17,6 +17,7 @@
 //! [`set_colormap`](CubeSliceView::set_colormap) re-render, so the slice shares the
 //! window/stretch/colormap with the 3D volume.
 
+use crate::helpers::annotation_render::AnnotationSurface;
 use crate::helpers::cube_colormaps;
 use crate::helpers::cube_native_slice::NativeSliceSource;
 use crate::helpers::cube_slice::{extract_spectrum, render_plane_bgra, StretchMode};
@@ -37,6 +38,28 @@ const PAN_THRESHOLD: f64 = 6.0;
 const SLICE_DISPLAY_CAP: usize = 2048;
 
 /// Per-cube slice display / interaction state.
+/// What a press on the slice is going to do.
+///
+/// Settled at drag-begin from what is under the pointer, and not revisited:
+/// deciding per motion event let a slow drag on a grip cross the pan threshold
+/// and start dragging the image instead, halfway through a resize.
+#[derive(Clone, PartialEq)]
+enum DragIntent {
+    Pan,
+    Place,
+    /// Moving a mark: its id, and where the pointer was relative to its centre,
+    /// so the mark does not jump to sit under the cursor on the first motion.
+    Move {
+        id: String,
+        grab_dx: f64,
+        grab_dy: f64,
+    },
+    /// Resizing a mark by a grip: its id.
+    Resize {
+        id: String,
+    },
+}
+
 struct SliceState {
     z: usize,
     window: (f32, f32),
@@ -96,6 +119,18 @@ pub struct CubeSliceView {
     /// True while the viewer is in draw mode: a click places a mark instead of
     /// probing, and a drag sizes it instead of panning.
     placing: Cell<bool>,
+    /// The mark being edited: grips out, and a drag moves or resizes it.
+    editing_annotation: RefCell<Option<String>>,
+    /// What the drag in progress is doing. Decided once at drag-begin, so a
+    /// drag cannot change its mind halfway and start panning out from under a
+    /// mark being resized.
+    drag_intent: RefCell<DragIntent>,
+    /// Told when a drag has finished changing the marks, so the viewer — which
+    /// owns them — can save. This view holds a mirror for live feedback; it is
+    /// not the record.
+    on_marks_changed: crate::ui::CallbackSlot<dyn Fn(Vec<crate::models::annotation::Annotation>)>,
+    /// Told when a click picks a mark out, or clears the choice.
+    on_mark_selected: crate::ui::CallbackSlot<dyn Fn(Option<String>)>,
     /// Called with `(voxel x, voxel y, radius in voxels)` when a placing click
     /// lands. The viewer decides what kind of mark that becomes — this view
     /// knows where, not what.
@@ -253,6 +288,10 @@ impl CubeSliceView {
             suppress: Cell::new(false),
             play_gen: Cell::new(0),
             placing: Cell::new(false),
+            editing_annotation: RefCell::new(None),
+            drag_intent: RefCell::new(DragIntent::Pan),
+            on_marks_changed: RefCell::new(None),
+            on_mark_selected: RefCell::new(None),
             on_place: RefCell::new(None),
             annotations: RefCell::new(Vec::new()),
             selected_annotation: RefCell::new(None),
@@ -510,6 +549,27 @@ impl CubeSliceView {
         self.slice_area.queue_draw();
     }
 
+    pub fn set_editing_annotation(&self, id: Option<String>) {
+        *self.editing_annotation.borrow_mut() = id;
+        self.slice_area.queue_draw();
+    }
+
+    /// The mark currently open for editing, if any.
+    pub fn editing_annotation(&self) -> Option<String> {
+        self.editing_annotation.borrow().clone()
+    }
+
+    pub fn set_on_marks_changed(
+        &self,
+        cb: impl Fn(Vec<crate::models::annotation::Annotation>) + 'static,
+    ) {
+        *self.on_marks_changed.borrow_mut() = Some(std::rc::Rc::new(cb));
+    }
+
+    pub fn set_on_mark_selected(&self, cb: impl Fn(Option<String>) + 'static) {
+        *self.on_mark_selected.borrow_mut() = Some(std::rc::Rc::new(cb));
+    }
+
     /// Arm or disarm placing. While armed the pointer is a crosshair, so it is
     /// visible that a click will do something other than probe.
     pub fn set_placing(&self, on: bool) {
@@ -561,6 +621,102 @@ impl CubeSliceView {
             vol_nx: self.vol.nx as f64,
             vol_ny: self.vol.ny as f64,
         })
+    }
+
+    /// What a press at `(px, py)` should do.
+    ///
+    /// Order matters: a grip sits ON the edge of its own shape, so testing the
+    /// shape first would mean a grip could never be grabbed.
+    fn intent_at(&self, px: f64, py: f64) -> DragIntent {
+        if self.placing.get() {
+            return DragIntent::Place;
+        }
+        let Some(surface) = self.annotation_surface() else {
+            return DragIntent::Pan;
+        };
+        let marks = self.annotations.borrow().clone();
+        if let Some(mark) = self
+            .editing_annotation
+            .borrow()
+            .as_ref()
+            .and_then(|id| marks.iter().find(|a| &a.id == id))
+        {
+            if crate::helpers::annotation_render::handle_at(mark, &surface, px, py) {
+                return DragIntent::Resize {
+                    id: mark.id.clone(),
+                };
+            }
+        }
+        match crate::helpers::annotation_render::annotation_at(&marks, &surface, px, py) {
+            Some(id) => {
+                // Remember where in the shape it was grabbed, so it does not
+                // jump to centre itself under the pointer.
+                let (gx, gy) = marks
+                    .iter()
+                    .find(|a| a.id == id)
+                    .and_then(|a| surface.project(&a.anchor))
+                    .map(|(cx, cy)| (px - cx, py - cy))
+                    .unwrap_or((0.0, 0.0));
+                DragIntent::Move {
+                    id,
+                    grab_dx: gx,
+                    grab_dy: gy,
+                }
+            }
+            None => DragIntent::Pan,
+        }
+    }
+
+    /// Apply a move or resize to the mirror, for live feedback while dragging.
+    fn drag_mark(&self, intent: &DragIntent, px: f64, py: f64) {
+        let Some(surface) = self.annotation_surface() else {
+            return;
+        };
+        let mut marks = self.annotations.borrow_mut();
+        match intent {
+            DragIntent::Move {
+                id,
+                grab_dx,
+                grab_dy,
+            } => {
+                let Some((vx, vy)) = surface.screen_to_voxel(px - grab_dx, py - grab_dy) else {
+                    return;
+                };
+                if let Some(m) = marks.iter_mut().find(|a| &a.id == id) {
+                    // Only the plane position moves. A drag on a 2D slice says
+                    // nothing about the channel, and silently changing z would
+                    // move the mark off the plane you are looking at.
+                    if let crate::models::annotation::Anchor::Data { z, .. } = m.anchor {
+                        m.anchor = crate::models::annotation::Anchor::Data { x: vx, y: vy, z };
+                    }
+                }
+            }
+            DragIntent::Resize { id } => {
+                let Some(m) = marks.iter_mut().find(|a| &a.id == id) else {
+                    return;
+                };
+                let Some((cx, cy)) = surface.project(&m.anchor) else {
+                    return;
+                };
+                let scale = surface.units_to_pixels(&m.anchor).max(f64::EPSILON);
+                // The grip is a corner, so the half-size is the larger of the
+                // two offsets — dragging away from the centre grows the shape
+                // whichever way you go.
+                let half = ((px - cx).abs().max((py - cy).abs()) / scale).max(0.5);
+                m.extent = Some(crate::models::annotation::Extent::square(half));
+            }
+            _ => return,
+        }
+        drop(marks);
+        self.slice_area.queue_draw();
+    }
+
+    /// Tell the viewer a mark was picked out (or the choice cleared).
+    fn announce_selected(&self, id: Option<String>) {
+        let cb = self.on_mark_selected.borrow().clone();
+        if let Some(cb) = cb {
+            cb(id);
+        }
     }
 
     /// Turn a placing click-drag into a voxel position and a radius.
@@ -910,15 +1066,28 @@ impl CubeSliceView {
             // renderer the volume view and the FITS canvas use, so one shape
             // cannot start looking different depending on where you see it.
             if let Some(surface) = this.annotation_surface() {
+                let editing = this.editing_annotation.borrow().clone();
                 crate::helpers::annotation_render::draw(
                     &this.annotations.borrow(),
                     &surface,
                     this.selected_annotation.borrow().as_deref(),
-                    None,
+                    editing.as_deref(),
                     cr,
                     w as f64,
                     h as f64,
                 );
+                // Grips on the edited mark alone — the same four the FITS
+                // canvas draws, from the same function, so a grip cannot end
+                // up somewhere the hit test is not looking.
+                if let Some(mark) = editing.and_then(|id| {
+                    this.annotations
+                        .borrow()
+                        .iter()
+                        .find(|a| a.id == id)
+                        .cloned()
+                }) {
+                    crate::helpers::annotation_render::draw_handles(&mark, &surface, cr);
+                }
             }
         });
     }
@@ -1045,6 +1214,7 @@ impl CubeSliceView {
                     (s.pan_x, s.pan_y)
                 };
                 *start.borrow_mut() = (x, y, pan_x, pan_y, false);
+                *this.drag_intent.borrow_mut() = this.intent_at(x, y);
             });
         }
         {
@@ -1053,7 +1223,10 @@ impl CubeSliceView {
             drag.connect_drag_update(move |_, dx, dy| {
                 // While placing, a drag sizes the mark; panning would drag the
                 // image out from under the shape being drawn.
-                if this.placing.get() {
+                let intent = this.drag_intent.borrow().clone();
+                if intent != DragIntent::Pan {
+                    let st = *start.borrow();
+                    this.drag_mark(&intent, st.0 + dx, st.1 + dy);
                     return;
                 }
                 let mut st = start.borrow_mut();
@@ -1074,12 +1247,37 @@ impl CubeSliceView {
             let start = start.clone();
             drag.connect_drag_end(move |_, dx, dy| {
                 let st = *start.borrow();
-                if this.placing.get() {
-                    this.place_at(st.0, st.1, dx, dy);
-                    return;
-                }
-                if !st.4 {
-                    this.probe_at(st.0, st.1);
+                let intent = this.drag_intent.borrow().clone();
+                *this.drag_intent.borrow_mut() = DragIntent::Pan;
+                match intent {
+                    DragIntent::Place => this.place_at(st.0, st.1, dx, dy),
+                    // A press on a mark that never moved is a click on it:
+                    // pick it out and open it, the way clicking a shape does
+                    // on the FITS canvas.
+                    DragIntent::Move { ref id, .. } | DragIntent::Resize { ref id }
+                        if dx.hypot(dy) <= PAN_THRESHOLD =>
+                    {
+                        this.announce_selected(Some(id.clone()));
+                    }
+                    DragIntent::Move { .. } | DragIntent::Resize { .. } => {
+                        let marks = this.annotations.borrow().clone();
+                        let cb = this.on_marks_changed.borrow().clone();
+                        if let Some(cb) = cb {
+                            cb(marks);
+                        }
+                    }
+                    DragIntent::Pan => {
+                        if !st.4 {
+                            // A click on empty image with a mark open closes
+                            // it — the same "click away to finish" the FITS
+                            // viewer has — otherwise it probes a spectrum.
+                            if this.editing_annotation.borrow().is_some() {
+                                this.announce_selected(None);
+                            } else {
+                                this.probe_at(st.0, st.1);
+                            }
+                        }
+                    }
                 }
             });
         }

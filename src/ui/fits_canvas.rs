@@ -180,9 +180,6 @@ enum Grab {
     Body,
 }
 
-/// How big a resize grip is on screen, in device pixels.
-const HANDLE_RADIUS: f64 = 5.0;
-
 /// Whether a capture of `width` x `height` can be drawn at all.
 ///
 /// Split out of [`FitsCanvas::capture_png`] because everything else in this
@@ -847,37 +844,15 @@ impl FitsCanvas {
         }
     }
 
-    /// The four grips on the selected mark.
+    /// The four grips on the mark being edited.
     ///
-    /// Screen-sized, not data-sized: a grip has to be grabbable at any zoom,
-    /// and one that shrank with the image would become unusable exactly when a
-    /// mark is small enough to need adjusting.
+    /// Only that one. A selected mark is pointed out, not opened up: grips on
+    /// it would say "drag me" when nothing is expecting a drag.
     fn draw_handles(&self, cr: &cairo::Context) {
-        // Only the mark being edited. A selected mark is pointed out, not
-        // opened up: grips on it would say "drag me" when nothing is expecting
-        // a drag.
         let Some(mark) = self.editing_mark() else {
             return;
         };
-        let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
-            return;
-        };
-        let scale = self.annotation_scale(&mark.anchor);
-        let Some(extent) = mark.extent else {
-            return;
-        };
-        let (hw, hh) = (extent.half_width * scale, extent.half_height * scale);
-        let (r, g, b) = crate::helpers::annotation_render::style::SELECTED_INK;
-        for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            let (x, y) = (cx + dx * hw, cy + dy * hh);
-            cr.new_path();
-            cr.arc(x, y, HANDLE_RADIUS, 0.0, std::f64::consts::TAU);
-            cr.set_source_rgba(0.08, 0.09, 0.11, 0.95);
-            cr.fill_preserve().ok();
-            cr.set_source_rgba(r, g, b, 1.0);
-            cr.set_line_width(1.5);
-            cr.stroke().ok();
-        }
+        crate::helpers::annotation_render::draw_handles(&mark, self, cr);
     }
 
     /// The mark whose LABEL covers `(sx, sy)`, topmost first.
@@ -936,28 +911,12 @@ impl FitsCanvas {
         ))
     }
 
-    /// Whether `(sx, sy)` is on one of the selected mark's grips.
+    /// Whether `(sx, sy)` is on one of the edited mark's grips.
     fn handle_at(&self, sx: f64, sy: f64) -> bool {
         let Some(mark) = self.editing_mark() else {
             return false;
         };
-        let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
-            return false;
-        };
-        let Some(extent) = mark.extent else {
-            return false;
-        };
-        let scale = self.annotation_scale(&mark.anchor);
-        let (hw, hh) = (extent.half_width * scale, extent.half_height * scale);
-        // A little larger than it looks: a 5px dot is hard to hit exactly, and
-        // a near miss that pans the image instead is infuriating.
-        let reach = HANDLE_RADIUS + 4.0;
-        [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
-            .iter()
-            .any(|(dx, dy)| {
-                let (x, y) = (cx + dx * hw, cy + dy * hh);
-                (sx - x).abs() <= reach && (sy - y).abs() <= reach
-            })
+        crate::helpers::annotation_render::handle_at(&mark, self, sx, sy)
     }
 
     /// Resize the selected mark so its corner sits under `(sx, sy)`.
@@ -1118,28 +1077,8 @@ impl FitsCanvas {
     /// testing in image space, quietly disagrees with the drawing wherever
     /// rotation is in play.
     pub fn annotation_at(&self, sx: f64, sy: f64) -> Option<String> {
-        let anns = self.annotations.borrow();
-        for a in anns.iter().rev() {
-            // `continue`, not `?`. A mark that cannot be placed — one anchored
-            // in another viewer's space, or off this image — used to abandon
-            // the whole search, so a single unplaceable mark made every other
-            // mark unclickable.
-            let Some((cx, cy)) = self.project_anchor(&a.anchor) else {
-                continue;
-            };
-            let scale = self.annotation_scale(&a.anchor);
-            let (hw, hh) = a
-                .extent
-                .map(|e| (e.half_width * scale, e.half_height * scale))
-                .unwrap_or((8.0, 8.0));
-            // A generous minimum: a hairline circle a few pixels across is
-            // impossible to hit exactly, and a near miss reads as broken.
-            let (hw, hh) = (hw.max(6.0), hh.max(6.0));
-            if (sx - cx).abs() <= hw && (sy - cy).abs() <= hh {
-                return Some(a.id.clone());
-            }
-        }
-        None
+        let anns = self.annotations.borrow().clone();
+        crate::helpers::annotation_render::annotation_at(&anns, self, sx, sy)
     }
 
     /// The drawing area, for anchoring to a place on the image.

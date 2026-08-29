@@ -314,6 +314,105 @@ fn draw_text_with_shadow(cr: &cairo::Context, x: f64, y: f64, text: &str) {
     cr.show_text(text).ok();
 }
 
+// ── Editing geometry ────────────────────────────────────────────────────────
+//
+// Grips, and the hit tests that go with them. Everything here is expressed
+// through [`AnnotationSurface`] — a centre and a scale — which is all a canvas
+// has to supply, so the FITS image and the cube's slice share one definition of
+// where a grip is instead of each carrying its own. The second copy is the one
+// that drifts: a grip drawn at one radius and hit-tested at another is a
+// control that misses when you click it, and looks like a dead widget.
+
+/// How big a resize grip is on screen, in device pixels.
+pub const HANDLE_RADIUS: f64 = 5.0;
+
+/// The four corner offsets a grip sits at.
+const HANDLE_CORNERS: [(f64, f64); 4] = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+
+/// A mark's half-size on screen, or `None` when it is not on this surface.
+fn half_size(
+    mark: &Annotation,
+    surface: &dyn AnnotationSurface,
+    fallback: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let (cx, cy) = surface.project(&mark.anchor)?;
+    let scale = surface.units_to_pixels(&mark.anchor);
+    let (hw, hh) = mark
+        .extent
+        .map(|e| (e.half_width * scale, e.half_height * scale))
+        .unwrap_or((fallback, fallback));
+    Some((cx, cy, hw, hh))
+}
+
+/// Draw the four resize grips on `mark`.
+///
+/// Screen-sized, not data-sized: a grip has to be grabbable at any zoom, and
+/// one that shrank with the image would become unusable exactly when a mark is
+/// small enough to need adjusting.
+pub fn draw_handles(mark: &Annotation, surface: &dyn AnnotationSurface, cr: &cairo::Context) {
+    let Some((cx, cy, hw, hh)) = half_size(mark, surface, 3.0) else {
+        return;
+    };
+    if mark.extent.is_none() {
+        return;
+    }
+    let (r, g, b) = style::SELECTED_INK;
+    for (dx, dy) in HANDLE_CORNERS {
+        let (x, y) = (cx + dx * hw, cy + dy * hh);
+        cr.new_path();
+        cr.arc(x, y, HANDLE_RADIUS, 0.0, std::f64::consts::TAU);
+        cr.set_source_rgba(0.08, 0.09, 0.11, 0.95);
+        cr.fill_preserve().ok();
+        cr.set_source_rgba(r, g, b, 1.0);
+        cr.set_line_width(1.5);
+        cr.stroke().ok();
+    }
+}
+
+/// Whether `(sx, sy)` is on one of `mark`'s grips.
+pub fn handle_at(mark: &Annotation, surface: &dyn AnnotationSurface, sx: f64, sy: f64) -> bool {
+    let Some((cx, cy, hw, hh)) = half_size(mark, surface, 3.0) else {
+        return false;
+    };
+    if mark.extent.is_none() {
+        return false;
+    }
+    // A little larger than it looks: a 5px dot is hard to hit exactly, and a
+    // near miss that pans the image instead is infuriating.
+    let reach = HANDLE_RADIUS + 4.0;
+    HANDLE_CORNERS.iter().any(|(dx, dy)| {
+        let (x, y) = (cx + dx * hw, cy + dy * hh);
+        (sx - x).abs() <= reach && (sy - y).abs() <= reach
+    })
+}
+
+/// The topmost mark whose shape covers `(sx, sy)`.
+///
+/// Last drawn is tested first, so the mark on top is the one you get.
+pub fn annotation_at(
+    annotations: &[Annotation],
+    surface: &dyn AnnotationSurface,
+    sx: f64,
+    sy: f64,
+) -> Option<String> {
+    for a in annotations.iter().rev() {
+        // `continue`, not `?`. A mark that cannot be placed — one anchored in
+        // another viewer's space, or off this image — used to abandon the whole
+        // search, so a single unplaceable mark made every other mark
+        // unclickable.
+        let Some((cx, cy, hw, hh)) = half_size(a, surface, 8.0) else {
+            continue;
+        };
+        // A generous minimum: a hairline circle a few pixels across is
+        // impossible to hit exactly, and a near miss reads as broken.
+        let (hw, hh) = (hw.max(6.0), hh.max(6.0));
+        if (sx - cx).abs() <= hw && (sy - cy).abs() <= hh {
+            return Some(a.id.clone());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,5 +810,109 @@ mod tests {
             data.iter().any(|b| *b != 0),
             "nothing was drawn on the canvas"
         );
+    }
+
+    // ── Editing geometry ────────────────────────────────────────────────────
+
+    fn boxed(x: f64, y: f64, half: f64) -> Annotation {
+        let mut a = Annotation::new(
+            AnnotationKind::Rect,
+            Anchor::ImagePixel { x, y },
+            "",
+            Author::User,
+        );
+        a.extent = Some(Extent::square(half));
+        a
+    }
+
+    /// A grip is grabbable exactly where it is drawn.
+    ///
+    /// `draw_handles` and `handle_at` walk the same four corner offsets, and
+    /// this is the test that keeps them walking the same ones: a grip drawn at
+    /// one place and tested at another is a control that misses when you click
+    /// it, which reads as a dead widget rather than as a bug.
+    #[test]
+    fn a_grip_is_grabbable_where_it_is_drawn() {
+        let mark = boxed(100.0, 100.0, 20.0);
+        for (dx, dy) in HANDLE_CORNERS {
+            let (x, y) = (100.0 + dx * 20.0, 100.0 + dy * 20.0);
+            assert!(
+                handle_at(&mark, &Flat, x, y),
+                "corner ({dx},{dy}) at ({x},{y}) is not grabbable"
+            );
+        }
+        assert!(
+            !handle_at(&mark, &Flat, 100.0, 100.0),
+            "the centre is not a grip — dragging there moves the mark"
+        );
+    }
+
+    /// A grip is forgiving to hit, and not infinitely so.
+    ///
+    /// A 5px dot is hard to land on exactly, and a near miss that pans the
+    /// image instead is infuriating — so the catch is deliberately wider than
+    /// the dot. Pinned from OUTSIDE the drawn radius, because a test that only
+    /// clicks grip centres passes at any reach at all and so proves nothing
+    /// about the tolerance.
+    #[test]
+    fn a_grip_catches_a_near_miss_but_not_a_wild_one() {
+        let mark = boxed(100.0, 100.0, 20.0);
+        let (gx, gy) = (120.0, 120.0); // the bottom-right grip
+        assert!(
+            handle_at(&mark, &Flat, gx + HANDLE_RADIUS + 2.0, gy),
+            "a miss just outside the dot should still grab it"
+        );
+        assert!(
+            !handle_at(&mark, &Flat, gx + HANDLE_RADIUS + 12.0, gy),
+            "a miss this wide is not aimed at the grip"
+        );
+    }
+
+    /// A mark with no size has no grips to drag.
+    #[test]
+    fn a_mark_with_no_extent_has_no_grips() {
+        let mut mark = boxed(100.0, 100.0, 20.0);
+        mark.extent = None;
+        assert!(!handle_at(&mark, &Flat, 100.0, 100.0));
+        assert!(!handle_at(&mark, &Flat, 120.0, 120.0));
+    }
+
+    /// The topmost mark wins, because it is the one you can see.
+    #[test]
+    fn the_mark_on_top_is_the_one_you_hit() {
+        let under = boxed(100.0, 100.0, 30.0);
+        let over = boxed(100.0, 100.0, 30.0);
+        let found = annotation_at(&[under.clone(), over.clone()], &Flat, 100.0, 100.0);
+        assert_eq!(found.as_deref(), Some(over.id.as_str()));
+    }
+
+    /// One unplaceable mark does not make every other mark unclickable.
+    ///
+    /// The hit test walks the list newest-first and a sky-anchored mark cannot
+    /// be projected by this surface. Returning early on the first such mark —
+    /// which is what `?` does — abandoned the whole search, so a single mark
+    /// from another viewer's space silently disabled clicking on all of them.
+    #[test]
+    fn an_unplaceable_mark_does_not_block_the_ones_behind_it() {
+        let real = boxed(100.0, 100.0, 30.0);
+        let unplaceable = Annotation::new(
+            AnnotationKind::Circle,
+            Anchor::Sky {
+                ra_deg: 202.0,
+                dec_deg: 47.0,
+            },
+            "",
+            Author::Agent,
+        );
+        // The unplaceable one is LAST, so it is tested FIRST.
+        let found = annotation_at(&[real.clone(), unplaceable], &Flat, 100.0, 100.0);
+        assert_eq!(found.as_deref(), Some(real.id.as_str()));
+    }
+
+    /// A tiny mark is still clickable.
+    #[test]
+    fn a_hairline_mark_still_has_a_hit_box() {
+        let tiny = boxed(100.0, 100.0, 0.5);
+        assert!(annotation_at(&[tiny], &Flat, 104.0, 104.0).is_some());
     }
 }

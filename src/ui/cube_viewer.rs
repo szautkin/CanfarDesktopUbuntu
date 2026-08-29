@@ -639,6 +639,15 @@ impl CubeViewer {
         self.annotations.borrow().clone()
     }
 
+    /// Open a mark for editing: grips out, and a drag moves or resizes it.
+    ///
+    /// Separate from selection because the two mean different things — a
+    /// selected mark is pointed OUT, an edited one is opened UP, and grips on
+    /// a mark nobody is editing invite a drag that means nothing.
+    pub fn set_editing_annotation(&self, id: Option<String>) {
+        self.slice.set_editing_annotation(id);
+    }
+
     pub fn set_selected_annotation(&self, id: Option<String>) {
         *self.selected_annotation.borrow_mut() = id.clone();
         self.overlay_area.queue_draw();
@@ -967,6 +976,7 @@ impl CubeViewer {
             let this = self.clone();
             ctl.annotations_panel.set_on_select(move |id| {
                 if id.is_empty() {
+                    this.set_editing_annotation(None);
                     this.set_selected_annotation(None);
                     return;
                 }
@@ -981,6 +991,9 @@ impl CubeViewer {
                 if let Some(z) = channel {
                     this.set_current_channel(z.round().max(0.0) as usize);
                 }
+                // Pointed out, not opened up: the list picks a mark, the image
+                // is where you edit one.
+                this.set_editing_annotation(None);
                 this.set_selected_annotation(Some(id.to_string()));
             });
         }
@@ -1016,6 +1029,9 @@ impl CubeViewer {
             ctl.draw_mode.connect_toggled(move |btn| {
                 let on = btn.is_active();
                 this.slice.set_placing(on);
+                if !on {
+                    this.set_editing_annotation(None);
+                }
                 if on {
                     // Placing happens on the plane you are looking at, so show
                     // it. Arming while the volume is up would leave the click
@@ -1030,6 +1046,23 @@ impl CubeViewer {
                 this.place_mark(vx, vy, radius);
             });
         }
+        // A drag finished moving or resizing a mark. The slice holds a mirror
+        // for live feedback; this is where it becomes the record.
+        {
+            let this = self.clone();
+            self.slice.set_on_marks_changed(move |marks| {
+                this.set_annotations(marks);
+                this.persist_annotations();
+            });
+        }
+        // Clicking a mark on the image opens it; clicking away closes it.
+        {
+            let this = self.clone();
+            self.slice.set_on_mark_selected(move |id| {
+                this.set_selected_annotation(id.clone());
+                this.set_editing_annotation(id);
+            });
+        }
 
         // Escape leaves draw mode, as it does in the FITS viewer. Driven
         // through the toggle rather than by disarming the slice directly, so
@@ -1037,8 +1070,18 @@ impl CubeViewer {
         {
             let key = gtk::EventControllerKey::new();
             let draw_mode = ctl.draw_mode.clone();
+            let this = self.clone();
             key.connect_key_pressed(move |_, keyval, _code, _modifier| {
-                if keyval == gtk::gdk::Key::Escape && draw_mode.is_active() {
+                if keyval != gtk::gdk::Key::Escape {
+                    return glib::Propagation::Proceed;
+                }
+                // Closing an open mark first: Escape means "stop what I am in
+                // the middle of", and editing is the more immediate of the two.
+                if this.slice.editing_annotation().is_some() {
+                    this.set_editing_annotation(None);
+                    return glib::Propagation::Stop;
+                }
+                if draw_mode.is_active() {
                     draw_mode.set_active(false);
                     return glib::Propagation::Stop;
                 }
@@ -1084,6 +1127,7 @@ impl CubeViewer {
         // Straight into naming it: a mark with no label is a ring around
         // nothing, and the point of drawing one is to say what it is.
         self.set_selected_annotation(Some(id.clone()));
+        self.set_editing_annotation(Some(id.clone()));
         self.ask_for_mark_text(&id);
     }
 
