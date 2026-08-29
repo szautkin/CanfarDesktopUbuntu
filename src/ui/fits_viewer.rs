@@ -1021,6 +1021,15 @@ impl FitsViewer {
 
         // Wire coords panel → active tab
         {
+            let v2 = viewer.clone();
+            viewer.coords_panel.set_on_clear_crosshair(move || {
+                // Unchoosing a bookmark takes away the crosshair it placed.
+                if let Some(tab) = v2.current_tab() {
+                    tab.canvas().set_crosshair(None);
+                }
+            });
+        }
+        {
             let v = viewer.clone();
             viewer.coords_panel.set_on_go_to(move |ra, dec| {
                 if let Some(tab) = v.current_tab() {

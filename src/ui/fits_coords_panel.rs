@@ -18,6 +18,8 @@ type SaveBookmarkCallback = Rc<RefCell<Option<Box<dyn Fn() -> Option<(f64, f64, 
 /// handler that reaches back into this panel would otherwise panic on the
 /// borrow.
 type SearchHereCallback = Rc<RefCell<Option<Rc<dyn Fn(f64, f64)>>>>;
+/// Told when the chosen bookmark is unchosen.
+type ClearCrosshairCallback = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 pub struct FitsCoordsPanel {
     /// The panel's content. Collapsing is the column expander's job now — a
@@ -35,6 +37,8 @@ pub struct FitsCoordsPanel {
     on_go_to: GoToCallback,
     on_save_bookmark: SaveBookmarkCallback,
     on_search_here: SearchHereCallback,
+    /// Called when a bookmark is unchosen: the crosshair it placed goes too.
+    on_clear_crosshair: ClearCrosshairCallback,
     search_here_btn: gtk::Button,
 }
 
@@ -117,8 +121,11 @@ impl FitsCoordsPanel {
         // height, and the buttons this section needs — go, and delete.
         use crate::ui::item_list_section::{ItemListSection, RowActions, SectionSpec};
         let bookmarks_section = ItemListSection::new(SectionSpec {
+            // Choosing a row already takes you there and puts the crosshair on
+            // it, so the row's own button is for the thing that is NOT just
+            // looking: searching the archive at that position.
             actions: RowActions::DELETE
-                .with_primary("go-next-symbolic", crate::tr_en!("Go to bookmark")),
+                .with_primary("system-search-symbolic", crate::tr_en!("Search here")),
             filter_placeholder: Some(crate::tr_en!("Filter bookmarks…")),
             empty_message: crate::tr_en!("No bookmarks yet"),
             // Selectable, like the marks list. Picking a bookmark out and
@@ -146,6 +153,7 @@ impl FitsCoordsPanel {
             on_go_to: Rc::new(RefCell::new(None)),
             on_save_bookmark: Rc::new(RefCell::new(None)),
             on_search_here: Rc::new(RefCell::new(None)),
+            on_clear_crosshair: Rc::new(RefCell::new(None)),
             search_here_btn,
         });
 
@@ -153,14 +161,36 @@ impl FitsCoordsPanel {
         // does with them. Deleting rebuilds from the store, which is the one
         // place bookmarks live.
         {
+            // The row's button: search the archive at this bookmark.
             let p = panel.clone();
             panel.bookmarks_section.set_on_primary(move |id| {
-                let Ok(id) = id.parse::<u64>() else { return };
-                let target = p.bookmarks.borrow().iter().find(|b| b.id == id).cloned();
-                if let Some(bm) = target {
-                    if let Some(cb) = p.on_go_to.borrow().as_ref() {
-                        cb(bm.ra_deg, bm.dec_deg);
+                let Some(bm) = p.bookmark_by_row_id(id) else {
+                    return;
+                };
+                let handler = p.on_search_here.borrow().clone();
+                if let Some(cb) = handler.as_ref() {
+                    cb(bm.ra_deg, bm.dec_deg);
+                }
+            });
+        }
+        {
+            // Choosing a row goes to it and marks it; unchoosing takes the
+            // mark away. Selection that only tints a row is decoration — this
+            // makes it the thing you wanted when you looked at the list.
+            let p = panel.clone();
+            panel.bookmarks_section.set_on_select(move |id| {
+                if id.is_empty() {
+                    let handler = p.on_clear_crosshair.borrow().clone();
+                    if let Some(cb) = handler.as_ref() {
+                        cb();
                     }
+                    return;
+                }
+                let Some(bm) = p.bookmark_by_row_id(id) else {
+                    return;
+                };
+                if let Some(cb) = p.on_go_to.borrow().as_ref() {
+                    cb(bm.ra_deg, bm.dec_deg);
                 }
             });
         }
@@ -287,6 +317,17 @@ impl FitsCoordsPanel {
     /// Whether a crosshair with sky coordinates is currently placed.
     pub fn has_sky_position(&self) -> bool {
         self.current_radec.borrow().is_some()
+    }
+
+    /// Told when the chosen bookmark is unchosen.
+    pub fn set_on_clear_crosshair(&self, cb: impl Fn() + 'static) {
+        *self.on_clear_crosshair.borrow_mut() = Some(Rc::new(cb));
+    }
+
+    /// The bookmark a row id refers to.
+    fn bookmark_by_row_id(&self, id: &str) -> Option<FitsBookmark> {
+        let id = id.parse::<u64>().ok()?;
+        self.bookmarks.borrow().iter().find(|b| b.id == id).cloned()
     }
 
     pub fn set_on_search_here(&self, cb: impl Fn(f64, f64) + 'static) {
