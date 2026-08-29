@@ -18,6 +18,15 @@ use std::rc::Rc;
 
 type Callback = Rc<RefCell<Option<Rc<dyn Fn(&str)>>>>;
 
+/// How many rows a section shows before it scrolls.
+///
+/// Enough to see a few at once and compare them; few enough that three sections
+/// still fit in a sidebar.
+const VISIBLE_ROWS: i32 = 4;
+
+/// One row's height in pixels: two lines of text plus its margins.
+const ROW_HEIGHT: i32 = 68;
+
 /// One row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListItem {
@@ -106,6 +115,10 @@ impl ItemListSection {
         empty.add_css_class("dim-label");
         empty.set_wrap(true);
         empty.set_xalign(0.0);
+        empty.set_valign(gtk::Align::Start);
+        // Sized like the list it stands in for, so a section that empties does
+        // not collapse and then jump back when something is added.
+        empty.set_size_request(-1, VISIBLE_ROWS * ROW_HEIGHT);
         widget.append(&empty);
 
         let list = gtk::ListBox::new();
@@ -115,10 +128,24 @@ impl ItemListSection {
         } else {
             gtk::SelectionMode::None
         });
-        // No inner ScrolledWindow: the sidebar column is already one, and a
-        // scroller nested in it reports almost no natural height — inside an
-        // Expander that leaves the rows present and invisible.
-        widget.append(&list);
+
+        // A fixed height: four rows, and it scrolls past that.
+        //
+        // The list used to be as tall as its contents, so filtering shrank the
+        // section and everything below it jumped up the sidebar — you type one
+        // character and the thing you were about to click has moved. It holds
+        // its height now whether it is showing one row or forty.
+        //
+        // `propagate_natural_height` is what gives a nested ScrolledWindow a
+        // height at all inside an Expander; a min/max pair without it is what
+        // left this list blank earlier.
+        let scroll = gtk::ScrolledWindow::new();
+        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroll.set_propagate_natural_height(true);
+        scroll.set_min_content_height(VISIBLE_ROWS * ROW_HEIGHT);
+        scroll.set_max_content_height(VISIBLE_ROWS * ROW_HEIGHT);
+        scroll.set_child(Some(&list));
+        widget.append(&scroll);
 
         let section = Rc::new(Self {
             widget,
