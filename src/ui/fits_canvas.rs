@@ -982,7 +982,13 @@ impl FitsCanvas {
     pub fn annotation_at(&self, sx: f64, sy: f64) -> Option<String> {
         let anns = self.annotations.borrow();
         for a in anns.iter().rev() {
-            let (cx, cy) = self.project_anchor(&a.anchor)?;
+            // `continue`, not `?`. A mark that cannot be placed — one anchored
+            // in another viewer's space, or off this image — used to abandon
+            // the whole search, so a single unplaceable mark made every other
+            // mark unclickable.
+            let Some((cx, cy)) = self.project_anchor(&a.anchor) else {
+                continue;
+            };
             let scale = self.annotation_scale(&a.anchor);
             let (hw, hh) = a
                 .extent
@@ -1220,7 +1226,12 @@ impl FitsCanvas {
             let shifted = gesture
                 .current_event_state()
                 .contains(gtk::gdk::ModifierType::SHIFT_MASK);
-            if d.borrow().is_some() && !shifted {
+            let on_a_mark = pick
+                .upgrade()
+                .map(|c| c.annotation_at(x, y).is_some() || c.label_at(x, y).is_some())
+                .unwrap_or(false);
+            // Draw mode owns empty space; a mark is still selectable through it.
+            if d.borrow().is_some() && !shifted && !on_a_mark {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
             }
@@ -1429,6 +1440,16 @@ impl FitsCanvas {
                 {
                     return;
                 }
+                // A press on a mark that is already there means "that one",
+                // not "another one on top of it". Draw mode makes NEW marks in
+                // empty space; on an existing mark it stands aside and lets the
+                // select-and-edit path have the press. Without this, clicking a
+                // mark while Draw was still on quietly stacked a second mark
+                // over the first, which looks exactly like selection doing
+                // nothing.
+                if canvas.annotation_at(x, y).is_some() || canvas.label_at(x, y).is_some() {
+                    return;
+                }
                 let (ix, iy) = canvas.screen_to_image_point(x, y);
                 if !on_image(ix, iy, canvas.img_width, canvas.img_height) {
                     return;
@@ -1481,6 +1502,11 @@ impl FitsCanvas {
             });
         }
         self.drawing_area.add_controller(drag);
+    }
+
+    /// Screen point to image pixel, for a probe that checks the view maths.
+    pub fn screen_to_image_point_public(&self, x: f64, y: f64) -> (f64, f64) {
+        self.screen_to_image_point(x, y)
     }
 
     /// Screen point to image pixel, through the current view.

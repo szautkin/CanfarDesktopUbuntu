@@ -118,18 +118,77 @@ fn main() {
         failures += 1;
     }
 
-    let where_before = canvas.image_to_screen_point(128.0, 96.0);
+    // Zoom holds the view CENTRE now, so a mark AT the centre correctly stays
+    // put — this probe used to check the middle pixel and began reporting a
+    // failure the moment that fix landed. An off-centre pixel is the one that
+    // must travel with the image.
+    let off_centre = (40.0, 30.0);
+    let before = canvas.image_to_screen_point(off_centre.0, off_centre.1);
     canvas.set_zoom(2.0);
-    let where_after = canvas.image_to_screen_point(128.0, 96.0);
-    if (where_before.0 - where_after.0).abs() < 0.5 && (where_before.1 - where_after.1).abs() < 0.5
-    {
+    let after = canvas.image_to_screen_point(off_centre.0, off_centre.1);
+    let travelled = ((before.0 - after.0).powi(2) + (before.1 - after.1).powi(2)).sqrt();
+    println!("off-centre anchor travelled {travelled:.1}px on a 2x zoom");
+    if travelled < 5.0 {
         println!(
-            "  !! the anchor did not move with the image on zoom ({where_before:?} -> {where_after:?}) \
-             — it is pinned to the window, not the data"
+            "  !! it barely moved ({before:?} -> {after:?}) — pinned to the window, not the data"
         );
         failures += 1;
     }
+
+    // The other half of that rule — the view centre must NOT move — needs a
+    // REALIZED widget: `set_zoom` anchors on the allocated viewport, and an
+    // unrealized drawing area reports no size, so the two disagree here and
+    // nowhere else. It is checked against the running app instead, where the
+    // centre held at 100%, 200% and 400%.
+    let (vw, vh) = canvas.view_size();
+    if vw > 0 && vh > 0 {
+        let centre_px = canvas.screen_to_image_point_public(vw as f64 / 2.0, vh as f64 / 2.0);
+        canvas.set_zoom(4.0);
+        let centre_now = canvas.screen_to_image_point_public(vw as f64 / 2.0, vh as f64 / 2.0);
+        if (centre_px.0 - centre_now.0).abs() > 2.0 || (centre_px.1 - centre_now.1).abs() > 2.0 {
+            println!("  !! zooming moved the view centre ({centre_px:?} -> {centre_now:?})");
+            failures += 1;
+        } else {
+            println!("view centre held across a 4x zoom");
+        }
+    } else {
+        println!("view centre check skipped — no allocation in a headless probe");
+    }
     canvas.set_zoom(1.0);
+
+    // ── Hit-testing ─────────────────────────────────────────────────────────
+    //
+    // `annotation_at` used `?` inside its loop, so ONE mark that could not be
+    // placed on this canvas abandoned the whole search and every other mark
+    // became unclickable. A cube's voxel anchor is exactly such a mark.
+    let mut clickable = Annotation::new(
+        AnnotationKind::Circle,
+        Anchor::ImagePixel { x: 128.0, y: 96.0 },
+        "clickable",
+        Author::User,
+    );
+    clickable.extent = Some(Extent::square(20.0));
+    let unplaceable = Annotation::new(
+        AnnotationKind::Circle,
+        // Voxel space means nothing on a FITS canvas.
+        Anchor::Data {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        },
+        "not here",
+        Author::Agent,
+    );
+    // The unplaceable one LAST, so the reversed search meets it first.
+    canvas.set_annotations(vec![clickable.clone(), unplaceable]);
+    let (hx, hy) = canvas.image_to_screen_point(128.0, 96.0);
+    match canvas.annotation_at(hx, hy) {
+        Some(id) if id == clickable.id => println!("hit test found the clickable mark"),
+        other => {
+            println!("  !! hit test returned {other:?} — one unplaceable mark hid the rest");
+            failures += 1;
+        }
+    }
 
     let out = std::env::temp_dir().join("fits_capture_probe.png");
     std::fs::write(&out, &annotated).expect("write");
