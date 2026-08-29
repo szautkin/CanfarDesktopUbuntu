@@ -28,7 +28,7 @@ pub struct FitsCoordsPanel {
     bookmark_label_entry: gtk::Entry,
     ra_entry: gtk::Entry,
     dec_entry: gtk::Entry,
-    bookmarks_list: gtk::ListBox,
+    bookmarks_section: Rc<crate::ui::item_list_section::ItemListSection>,
     bookmarks: Rc<RefCell<Vec<FitsBookmark>>>,
     /// The current crosshair's sky position (when a WCS is available).
     current_radec: Rc<RefCell<Option<(f64, f64)>>>,
@@ -113,15 +113,18 @@ impl FitsCoordsPanel {
         sec3_title.set_halign(gtk::Align::Start);
         section3.append(&sec3_title);
 
-        let bookmarks_list = gtk::ListBox::new();
-        bookmarks_list.set_selection_mode(gtk::SelectionMode::None);
-        bookmarks_list.add_css_class("boxed-list");
-
-        let scroll = gtk::ScrolledWindow::new();
-        scroll.set_vexpand(true);
-        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        scroll.set_child(Some(&bookmarks_list));
-        section3.append(&scroll);
+        // The same list component the marks section uses: a filter, a fixed
+        // height, and the buttons this section needs — go, and delete.
+        use crate::ui::item_list_section::{ItemListSection, RowActions, SectionSpec};
+        let bookmarks_section = ItemListSection::new(SectionSpec {
+            actions: RowActions::DELETE
+                .with_primary("go-next-symbolic", crate::tr_en!("Go to bookmark")),
+            filter_placeholder: Some(crate::tr_en!("Filter bookmarks…")),
+            empty_message: crate::tr_en!("No bookmarks yet"),
+            selectable: false,
+            monospace: false,
+        });
+        section3.append(bookmarks_section.widget());
 
         container.append(&section3);
 
@@ -133,7 +136,7 @@ impl FitsCoordsPanel {
             bookmark_label_entry,
             ra_entry,
             dec_entry,
-            bookmarks_list,
+            bookmarks_section,
             bookmarks: Rc::new(RefCell::new(fits_bookmarks::load_bookmarks())),
             current_radec: Rc::new(RefCell::new(None)),
             on_go_to: Rc::new(RefCell::new(None)),
@@ -141,6 +144,32 @@ impl FitsCoordsPanel {
             on_search_here: Rc::new(RefCell::new(None)),
             search_here_btn,
         });
+
+        // The go and delete buttons the section draws, wired to what this panel
+        // does with them. Deleting rebuilds from the store, which is the one
+        // place bookmarks live.
+        {
+            let p = panel.clone();
+            panel.bookmarks_section.set_on_primary(move |id| {
+                let Ok(id) = id.parse::<u64>() else { return };
+                let target = p.bookmarks.borrow().iter().find(|b| b.id == id).cloned();
+                if let Some(bm) = target {
+                    if let Some(cb) = p.on_go_to.borrow().as_ref() {
+                        cb(bm.ra_deg, bm.dec_deg);
+                    }
+                }
+            });
+        }
+        {
+            let p = panel.clone();
+            panel.bookmarks_section.set_on_delete(move |id| {
+                let Ok(id) = id.parse::<u64>() else { return };
+                if let Ok(remaining) = fits_bookmarks::remove_bookmark(id) {
+                    *p.bookmarks.borrow_mut() = remaining;
+                    p.rebuild_bookmarks_list();
+                }
+            });
+        }
 
         // Wire Search Here
         {
@@ -271,79 +300,24 @@ impl FitsCoordsPanel {
     }
 
     fn rebuild_bookmarks_list(self: &Rc<Self>) {
-        while let Some(child) = self.bookmarks_list.first_child() {
-            self.bookmarks_list.remove(&child);
-        }
-
+        use crate::ui::item_list_section::ListItem;
         let bookmarks = self.bookmarks.borrow().clone();
-        if bookmarks.is_empty() {
-            let empty = gtk::Label::new(Some(crate::tr_en!("No bookmarks yet")));
-            empty.add_css_class("dim-label");
-            empty.add_css_class("caption");
-            empty.set_margin_top(8);
-            empty.set_margin_bottom(8);
-            let row = gtk::ListBoxRow::new();
-            row.set_child(Some(&empty));
-            self.bookmarks_list.append(&row);
-            return;
-        }
-
-        for bm in bookmarks {
-            let row = gtk::ListBoxRow::new();
-            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            hbox.set_margin_start(6);
-            hbox.set_margin_end(6);
-            hbox.set_margin_top(4);
-            hbox.set_margin_bottom(4);
-
-            let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            vbox.set_hexpand(true);
-            let name = gtk::Label::new(Some(&bm.label));
-            name.add_css_class("heading");
-            name.set_halign(gtk::Align::Start);
-            vbox.append(&name);
-
-            let (ra_str, dec_str) = WcsInfo::format_coords(bm.ra_deg, bm.dec_deg);
-            let coords = gtk::Label::new(Some(&format!("{}  {}", ra_str, dec_str)));
-            coords.add_css_class("monospace");
-            coords.add_css_class("caption");
-            coords.add_css_class("dim-label");
-            coords.set_halign(gtk::Align::Start);
-            vbox.append(&coords);
-            hbox.append(&vbox);
-
-            let go_bm_btn = gtk::Button::from_icon_name("go-next-symbolic");
-            go_bm_btn.add_css_class("flat");
-            go_bm_btn.set_tooltip_text(Some(crate::tr_en!("Go to bookmark")));
-            {
-                let p = self.clone();
-                let ra = bm.ra_deg;
-                let dec = bm.dec_deg;
-                go_bm_btn.connect_clicked(move |_| {
-                    if let Some(cb) = p.on_go_to.borrow().as_ref() {
-                        cb(ra, dec);
-                    }
-                });
-            }
-            hbox.append(&go_bm_btn);
-
-            let del_bm_btn = gtk::Button::from_icon_name("edit-delete-symbolic");
-            del_bm_btn.add_css_class("flat");
-            del_bm_btn.set_tooltip_text(Some(crate::tr_en!("Delete bookmark")));
-            {
-                let p = self.clone();
-                let id = bm.id;
-                del_bm_btn.connect_clicked(move |_| {
-                    if let Ok(new_list) = fits_bookmarks::remove_bookmark(id) {
-                        *p.bookmarks.borrow_mut() = new_list;
-                        p.rebuild_bookmarks_list();
-                    }
-                });
-            }
-            hbox.append(&del_bm_btn);
-
-            row.set_child(Some(&hbox));
-            self.bookmarks_list.append(&row);
-        }
+        let items: Vec<ListItem> = bookmarks
+            .iter()
+            .map(|bm| {
+                let (ra_str, dec_str) = WcsInfo::format_coords(bm.ra_deg, bm.dec_deg);
+                ListItem {
+                    id: bm.id.to_string(),
+                    title: bm.label.clone(),
+                    // Two coordinates and two spaces: nothing to translate,
+                    // and a template that says only "{}  {}" tells a translator
+                    // nothing either.
+                    subtitle: format!("{ra_str}  {dec_str}"),
+                }
+            })
+            .collect();
+        let count = (!items.is_empty())
+            .then(|| crate::tr_plural!(items.len(), "{} bookmark", "{} bookmarks"));
+        self.bookmarks_section.set_items(&items, None, count);
     }
 }

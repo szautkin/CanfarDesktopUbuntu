@@ -35,26 +35,48 @@ pub struct ListItem {
     pub subtitle: String,
 }
 
+/// An extra button on every row, beyond edit and delete.
+#[derive(Debug, Clone, Copy)]
+pub struct RowAction {
+    pub icon: &'static str,
+    pub tooltip: &'static str,
+}
+
 /// Which buttons a section's rows carry.
+///
+/// Three sections, three answers: a header keyword has nothing to do to it, a
+/// bookmark can be gone to or removed, a mark can be renamed or removed. So the
+/// buttons are described rather than assumed.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RowActions {
+    /// A section-specific action, shown first.
+    pub primary: Option<RowAction>,
     pub edit: bool,
     pub delete: bool,
 }
 
 impl RowActions {
     pub const NONE: Self = Self {
+        primary: None,
         edit: false,
         delete: false,
     };
     pub const DELETE: Self = Self {
+        primary: None,
         edit: false,
         delete: true,
     };
     pub const EDIT_AND_DELETE: Self = Self {
+        primary: None,
         edit: true,
         delete: true,
     };
+
+    /// With a leading action of its own.
+    pub const fn with_primary(mut self, icon: &'static str, tooltip: &'static str) -> Self {
+        self.primary = Some(RowAction { icon, tooltip });
+        self
+    }
 }
 
 /// How a section is set up.
@@ -66,6 +88,9 @@ pub struct SectionSpec<'a> {
     pub empty_message: &'a str,
     /// Whether picking a row means anything to this section.
     pub selectable: bool,
+    /// Monospace titles. A FITS header is columns of keyword and value, and
+    /// proportional text takes the columns away.
+    pub monospace: bool,
 }
 
 pub struct ItemListSection {
@@ -75,6 +100,7 @@ pub struct ItemListSection {
     count_label: gtk::Label,
     filter: Option<gtk::SearchEntry>,
     actions: RowActions,
+    monospace: bool,
     items: RefCell<Vec<ListItem>>,
     selected_id: RefCell<Option<String>>,
     selectable: bool,
@@ -89,6 +115,7 @@ pub struct ItemListSection {
     selected_before_press: RefCell<Option<String>>,
     rebuilding: Cell<bool>,
     on_select: Callback,
+    on_primary: Callback,
     on_edit: Callback,
     on_delete: Callback,
 }
@@ -158,12 +185,14 @@ impl ItemListSection {
             count_label,
             filter,
             actions: spec.actions,
+            monospace: spec.monospace,
             items: RefCell::new(Vec::new()),
             selected_id: RefCell::new(None),
             selectable: spec.selectable,
             selected_before_press: RefCell::new(None),
             rebuilding: Cell::new(false),
             on_select: Rc::new(RefCell::new(None)),
+            on_primary: Rc::new(RefCell::new(None)),
             on_edit: Rc::new(RefCell::new(None)),
             on_delete: Rc::new(RefCell::new(None)),
         });
@@ -238,6 +267,11 @@ impl ItemListSection {
         *self.on_select.borrow_mut() = Some(Rc::new(f));
     }
 
+    /// The section's own row action — "go to this one", and the like.
+    pub fn set_on_primary(&self, f: impl Fn(&str) + 'static) {
+        *self.on_primary.borrow_mut() = Some(Rc::new(f));
+    }
+
     pub fn set_on_edit(&self, f: impl Fn(&str) + 'static) {
         *self.on_edit.borrow_mut() = Some(Rc::new(f));
     }
@@ -290,6 +324,9 @@ impl ItemListSection {
 
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
         let title = gtk::Label::new(Some(&item.title));
+        if self.monospace {
+            title.add_css_class("monospace");
+        }
         title.set_xalign(0.0);
         title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         text.append(&title);
@@ -304,12 +341,25 @@ impl ItemListSection {
         text.set_hexpand(true);
         line.append(&text);
 
+        if let Some(primary) = self.actions.primary {
+            let button = icon_button(primary.icon, primary.tooltip);
+            let id = item.id.clone();
+            let cb = self.on_primary.clone();
+            button.connect_clicked(move |_| {
+                let handler = cb.borrow().clone();
+                if let Some(f) = handler.as_ref() {
+                    f(&id);
+                }
+            });
+            line.append(&button);
+        }
         if self.actions.edit {
             let edit = icon_button("document-edit-symbolic", crate::tr_en!("Rename this mark"));
             let id = item.id.clone();
             let cb = self.on_edit.clone();
             edit.connect_clicked(move |_| {
-                if let Some(f) = cb.borrow().as_ref() {
+                let handler = cb.borrow().clone();
+                if let Some(f) = handler.as_ref() {
                     f(&id);
                 }
             });
@@ -320,7 +370,8 @@ impl ItemListSection {
             let id = item.id.clone();
             let cb = self.on_delete.clone();
             delete.connect_clicked(move |_| {
-                if let Some(f) = cb.borrow().as_ref() {
+                let handler = cb.borrow().clone();
+                if let Some(f) = handler.as_ref() {
                     f(&id);
                 }
             });
@@ -411,5 +462,16 @@ mod tests {
         assert_eq!(buttons(RowActions::NONE), (false, false));
         assert_eq!(buttons(RowActions::DELETE), (false, true));
         assert_eq!(buttons(RowActions::EDIT_AND_DELETE), (true, true));
+        assert!(RowActions::NONE.primary.is_none());
+    }
+
+    /// A section can add one action of its own without a new flag per section.
+    #[test]
+    fn a_primary_action_is_described_not_hard_coded() {
+        let go = RowActions::DELETE.with_primary("go-next-symbolic", "Go to bookmark");
+        let action = go.primary.expect("a primary action");
+        assert_eq!(action.icon, "go-next-symbolic");
+        assert!(go.delete, "the other buttons are unaffected");
+        assert!(!go.edit);
     }
 }

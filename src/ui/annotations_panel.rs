@@ -31,6 +31,7 @@ impl AnnotationsPanel {
                 "Nothing marked yet. Turn on Draw in the toolbar, then click the image."
             ),
             selectable: true,
+            monospace: false,
         });
 
         let hint = gtk::Label::new(Some(crate::tr_en!(

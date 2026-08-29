@@ -14,9 +14,8 @@ pub struct FitsHeaderPanel {
     /// The at-a-glance summary, rebuilt when the panel is pointed at another
     /// image.
     info_grid: gtk::Grid,
-    list_box: gtk::ListBox,
+    section: Rc<crate::ui::item_list_section::ItemListSection>,
     entries: Rc<RefCell<Vec<(String, String, String)>>>,
-    search_entry: gtk::SearchEntry,
 }
 
 impl FitsHeaderPanel {
@@ -44,56 +43,29 @@ impl FitsHeaderPanel {
         container.append(&title);
 
         // Search
-        let search_entry = gtk::SearchEntry::new();
-        search_entry.set_placeholder_text(Some(crate::tr_en!("Filter keywords…")));
-        search_entry.set_margin_bottom(4);
-        container.append(&search_entry);
-
-        // List
-        let list_box = gtk::ListBox::new();
-        list_box.set_selection_mode(gtk::SelectionMode::None);
-        list_box.add_css_class("boxed-list");
-
-        // Bounded, and it scrolls its own content: a header of three hundred
-        // keywords inside a column that also scrolls would otherwise make the
-        // column itself hundreds of screens tall.
-        let scroll = gtk::ScrolledWindow::new();
-        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        scroll.set_propagate_natural_height(true);
-        // 320 was enough to prove it scrolled and not enough to read a header
-        // in. `propagate_natural_height` means a short header still takes only
-        // the room it needs, so a larger ceiling costs nothing until there is
-        // something to put in it.
-        scroll.set_max_content_height(560);
-        // A floor as well: this is the one thing in the sidebar that is read
-        // rather than glanced at, and a header list two rows tall is not a
-        // header list. It is safe here — unlike inside an Expander whose child
-        // has no other height source — because `propagate_natural_height` is
-        // already giving it one.
-        scroll.set_min_content_height(320);
-        scroll.set_child(Some(&list_box));
-        container.append(&scroll);
+        // The same list component the marks and bookmarks sections use: its
+        // filter, its fixed height, and no row buttons — a header keyword has
+        // nothing to do to it.
+        use crate::ui::item_list_section::{ItemListSection, RowActions, SectionSpec};
+        let section = ItemListSection::new(SectionSpec {
+            actions: RowActions::NONE,
+            filter_placeholder: Some(crate::tr_en!("Filter keywords…")),
+            empty_message: crate::tr_en!("This extension carries no header keywords."),
+            selectable: false,
+            monospace: true,
+        });
+        container.append(section.widget());
 
         let widget = container;
 
         let panel = Rc::new(FitsHeaderPanel {
             widget,
             info_grid,
-            list_box,
+            section,
             entries: Rc::new(RefCell::new(Vec::new())),
-            search_entry,
         });
-
-        // Initial population
-        panel.rebuild("");
-
-        // Wire search
-        let p = panel.clone();
-        panel.search_entry.connect_search_changed(move |entry| {
-            let q = entry.text().to_string().to_ascii_lowercase();
-            p.rebuild(&q);
-        });
-
+        // Filtering is the section's own; this panel only supplies rows.
+        panel.rebuild();
         panel
     }
 
@@ -106,7 +78,11 @@ impl FitsHeaderPanel {
     /// One panel for the viewer rather than one per tab. The per-tab panels each
     /// carried their own 320 px of layout beside the image, whether or not
     /// anyone had opened them.
-    pub fn set_content(&self, entries: Vec<(String, String, String)>, info: Vec<(String, String)>) {
+    pub fn set_content(
+        self: &Rc<Self>,
+        entries: Vec<(String, String, String)>,
+        info: Vec<(String, String)>,
+    ) {
         while let Some(child) = self.info_grid.first_child() {
             self.info_grid.remove(&child);
         }
@@ -127,87 +103,29 @@ impl FitsHeaderPanel {
             self.info_grid.attach(&v, 1, i as i32, 1, 1);
         }
         *self.entries.borrow_mut() = entries;
-        self.rebuild(&self.search_entry.text().to_string().to_ascii_lowercase());
+        self.rebuild();
     }
 
-    fn rebuild(&self, filter: &str) {
-        while let Some(child) = self.list_box.first_child() {
-            self.list_box.remove(&child);
-        }
-
+    /// Hand the section this extension's keywords.
+    ///
+    /// Was a hundred lines of row-building and its own filter; the rows, the
+    /// filter, the empty message and the height all belong to the component
+    /// now, and what is left is the part only a FITS header knows: a keyword
+    /// and its value read as one line, and the comment beneath it.
+    fn rebuild(self: &Rc<Self>) {
+        use crate::ui::item_list_section::ListItem;
         let entries = self.entries.borrow();
-        let filter_lower = filter.trim().to_ascii_lowercase();
-
-        // Say WHY the list is empty. A panel that opens onto nothing reads as a
-        // broken panel; an extension with no keywords, or a filter that matched
-        // none, is information the reader can act on.
-        let mut shown = 0usize;
-
-        for (key, value, comment) in entries.iter() {
-            if !filter_lower.is_empty()
-                && !key.to_ascii_lowercase().contains(&filter_lower)
-                && !value.to_ascii_lowercase().contains(&filter_lower)
-            {
-                continue;
-            }
-
-            let row = gtk::ListBoxRow::new();
-            let grid = gtk::Grid::new();
-            grid.set_column_spacing(8);
-            grid.set_margin_start(6);
-            grid.set_margin_end(6);
-            grid.set_margin_top(4);
-            grid.set_margin_bottom(4);
-
-            let k_label = gtk::Label::new(Some(key));
-            k_label.add_css_class("monospace");
-            k_label.add_css_class("caption-heading");
-            k_label.set_halign(gtk::Align::Start);
-            k_label.set_width_chars(10);
-            grid.attach(&k_label, 0, 0, 1, 1);
-
-            let v_label = gtk::Label::new(Some(value));
-            v_label.add_css_class("monospace");
-            v_label.add_css_class("caption");
-            v_label.set_halign(gtk::Align::Start);
-            v_label.set_hexpand(true);
-            v_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            v_label.set_selectable(true);
-            grid.attach(&v_label, 1, 0, 1, 1);
-
-            if !comment.is_empty() {
-                let c_label = gtk::Label::new(Some(comment));
-                c_label.add_css_class("dim-label");
-                c_label.add_css_class("caption");
-                c_label.set_halign(gtk::Align::Start);
-                c_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                grid.attach(&c_label, 0, 1, 2, 1);
-            }
-
-            row.set_child(Some(&grid));
-            self.list_box.append(&row);
-            shown += 1;
-        }
-
-        if shown == 0 {
-            let message = if entries.is_empty() {
-                crate::tr_en!("This extension carries no header keywords.")
-            } else {
-                crate::tr_en!("No keyword matches that search.")
-            };
-            let empty = gtk::Label::new(Some(message));
-            empty.add_css_class("dim-label");
-            empty.add_css_class("caption");
-            empty.set_wrap(true);
-            empty.set_margin_start(12);
-            empty.set_margin_end(12);
-            empty.set_margin_top(12);
-            empty.set_margin_bottom(12);
-            let row = gtk::ListBoxRow::new();
-            row.set_selectable(false);
-            row.set_activatable(false);
-            row.set_child(Some(&empty));
-            self.list_box.append(&row);
-        }
+        let items: Vec<ListItem> = entries
+            .iter()
+            .map(|(key, value, comment)| ListItem {
+                id: key.clone(),
+                title: format!("{key:<8} {value}"),
+                subtitle: comment.clone(),
+            })
+            .collect();
+        let count = (!items.is_empty())
+            .then(|| crate::tr_plural!(items.len(), "{} keyword", "{} keywords"));
+        drop(entries);
+        self.section.set_items(&items, None, count);
     }
 }

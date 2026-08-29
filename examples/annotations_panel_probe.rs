@@ -108,6 +108,7 @@ fn main() {
             filter_placeholder: Some("filter"),
             empty_message: "nothing",
             selectable: true,
+            monospace: false,
         });
         let items: Vec<ListItem> = (0..4)
             .map(|i| ListItem {
