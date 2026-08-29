@@ -68,6 +68,35 @@ fn main() {
         failures += 1;
     }
 
+    // Does the canvas ANNOUNCE a change? The list is built from that signal,
+    // so if it does not fire, marks land on the image and never in the panel —
+    // which looks like an empty list that fills in as soon as you click a mark,
+    // because clicking goes through a different callback.
+    {
+        use std::rc::Rc as R;
+        use verbinal::ui::fits_canvas::FitsCanvas;
+        let canvas = FitsCanvas::new(64, 64, vec![0u8; 64 * 64 * 4], Default::default(), None);
+        let fired = R::new(Cell::new(0usize));
+        {
+            let fired = fired.clone();
+            canvas.set_on_annotations_changed(move || fired.set(fired.get() + 1));
+        }
+        canvas.set_annotations(marks(2));
+        println!(
+            "annotations-changed fired {} time(s) for one set",
+            fired.get()
+        );
+        if fired.get() == 0 {
+            println!("  !! the canvas did not announce the change — the list cannot follow");
+            failures += 1;
+        }
+        // And the marks really are there to be read back.
+        if canvas.annotations().len() != 2 {
+            println!("  !! the canvas did not keep the marks");
+            failures += 1;
+        }
+    }
+
     // An empty list is a valid state and must not panic.
     panel.set_annotations(&[], None);
     println!("empty list rebuilt cleanly");

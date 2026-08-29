@@ -71,18 +71,17 @@ impl AnnotationsPanel {
         let list = gtk::ListBox::new();
         list.add_css_class("boxed-list");
         list.set_selection_mode(gtk::SelectionMode::Single);
-        let scroll = gtk::ScrolledWindow::new();
-        scroll.set_child(Some(&list));
-        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        // Exactly what the saved-coordinates panel next door does, and for the
-        // same reason: inside an Expander inside the sidebar's own
-        // ScrolledWindow, a `min_content_height` plus
-        // `propagate_natural_height` asks for a height the expander cannot
-        // grant, and the rows are allocated nothing — the list went blank the
-        // moment those were added. `vexpand` alone lets it take the room that
-        // is actually there.
-        scroll.set_vexpand(true);
-        widget.append(&scroll);
+        // No inner ScrolledWindow. The sidebar column is already one, and a
+        // scroller nested in it reports a natural height of nearly nothing —
+        // so inside an Expander, which sizes to its child's natural height, the
+        // list collapsed and the rows were present and invisible.
+        // `propagate_natural_height` had been papering over that; removing it
+        // alongside a bad `min_content_height` took the list's height with it.
+        //
+        // Without the nesting the ListBox reports the height of its rows, all
+        // of them are visible, and the sidebar scrolls when there are many —
+        // one scroller doing the work instead of two negotiating.
+        widget.append(&list);
 
         let clear_button = gtk::Button::with_label(crate::tr_en!("Clear all marks"));
         clear_button.add_css_class("destructive-action");
