@@ -265,7 +265,7 @@ impl FitsCoordsPanel {
         match pos_pixel {
             Some((px, py)) => {
                 if let Some(w) = wcs {
-                    let (ra, dec) = w.pixel_to_sky(px, py);
+                    let (ra, dec) = w.display_to_sky(px, py);
                     let (ra_str, dec_str) = WcsInfo::format_coords(ra, dec);
                     self.crosshair_label.set_text(&crate::tr_fmt!(
                         "Pixel ({}, {})\nRA  {}\nDec {}",

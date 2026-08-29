@@ -28,7 +28,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         "type":"object",
         "properties": {
             "localPath": { "type":"string", "description":"Local filesystem path to a FITS file" },
-            "hdu": { "type":"integer", "minimum":0, "description":"0-based HDU index (default 0, the primary HDU) — the same numbering astropy uses." }
+            "hdu": { "type":"integer", "minimum":0, "description":"0-based HDU index (default 0, the primary HDU) — astropy's numbering. NOTE: the viewer's extension selector and set_fits_view are 1-BASED, so what get_fits_view lists as `2: SCI` is hdu 1 here; its `headerHdu` field gives this number directly. The reply echoes `extname` so you can check you got the extension you meant." }
         },
         "required": ["localPath"], "additionalProperties": false
     });
@@ -170,8 +170,13 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "text": {"type":"string","description":"The label. Required for callout and text."},
                     "radius": {
                         "type":"number",
-                        "description":"Half-size, in the units of the anchor you used — image \
-                                       pixels, or DEGREES for a sky anchor."
+                        "description":"Half-size, in IMAGE PIXELS unless you pass `ra`/`dec`, \
+                                       in which case it is in degrees like they are. A mark \
+                                       placed by pixel is stored against the sky when the image \
+                                       has WCS, and the radius is converted with it — so \
+                                       `radius: 80` beside `x`/`y` is eighty pixels, as you \
+                                       would expect. Omit it for a size that is visible on this \
+                                       image whatever its pixel scale."
                     }
                 },
                 "additionalProperties": false
@@ -386,9 +391,24 @@ fn get_fits_header(args: &Value) -> Result<Value, String> {
         .iter()
         .map(|(k, v, c)| json!({ "keyword": k, "value": v, "comment": c }))
         .collect();
+    // Say WHICH extension this is. `hdu` here is 0-based (astropy's numbering,
+    // because this reads the file directly) while the viewer's selector and
+    // `set_fits_view` are 1-based — so the same extension has two numbers, and
+    // an agent that carried one across silently got the neighbouring one. The
+    // name it actually read makes that visible in the reply instead.
+    let extname = cards
+        .iter()
+        .find(|c| c["keyword"] == "EXTNAME")
+        .and_then(|c| c["value"].as_str())
+        .unwrap_or("")
+        .to_string();
     Ok(json!({
         "localPath": path,
         "hdu": hdu,
+        "extname": extname,
+        // What the viewer calls this extension, so the two numberings can be
+        // lined up without guessing.
+        "viewerHdu": hdu + 1,
         "count": cards.len(),
         "cards": cards,
         // Beyond the reference's record: read straight off NAXIS1/NAXIS2, so it

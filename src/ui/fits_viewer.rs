@@ -1106,9 +1106,7 @@ impl FitsViewer {
 
             // ── Annotations ─────────────────────────────────────────────
             "annotate_fits" => {
-                use crate::models::annotation::{
-                    Anchor, Annotation, AnnotationKind, Author, Extent,
-                };
+                use crate::models::annotation::{Anchor, Annotation, AnnotationKind, Author};
                 let tab = self
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
@@ -1146,7 +1144,7 @@ impl FitsViewer {
                         .as_ref()
                         .filter(|w| w.is_valid())
                         .map(|w| {
-                            let (ra, dec) = w.pixel_to_sky(x, y);
+                            let (ra, dec) = w.array_to_sky(x, y);
                             Anchor::Sky {
                                 ra_deg: ra,
                                 dec_deg: dec,
@@ -1166,8 +1164,8 @@ impl FitsViewer {
                     .to_string();
 
                 let mut mark = Annotation::new(kind, anchor, text, Author::Agent);
-                mark = match num("radius") {
-                    Some(r) => mark.with_extent(Extent::square(r)),
+                mark = match Self::radius_extent(canvas, args, &anchor) {
+                    Some(extent) => mark.with_extent(extent),
                     // No radius given: a size that is visible on THIS image,
                     // whatever its pixel scale.
                     None => mark.with_extent(canvas.default_extent_for(&anchor)),
@@ -1227,7 +1225,16 @@ impl FitsViewer {
                 let file = Self::annotation_target(&tab);
                 let _ = crate::helpers::annotation_store::save_for(&file, &[]);
                 self.refresh_annotations_panel();
-                Ok(json!({ "cleared": removed, "viewer": "fits" }))
+                // Say WHICH tab was cleared. This clears the current tab, not
+                // every tab, and with two files open an agent that had counted
+                // marks across both read the smaller number back as a loss.
+                // Naming the file makes the count self-explaining.
+                Ok(json!({
+                    "cleared": removed,
+                    "viewer": "fits",
+                    "file": file,
+                    "note": "marks on other FITS tabs are untouched",
+                }))
             }
 
             // Change a mark that is already there: its words, where it points,
@@ -1236,7 +1243,7 @@ impl FitsViewer {
             // drawing another with a new id — and any reference it had already
             // given a person was then wrong.
             "update_annotation" => {
-                use crate::models::annotation::{Anchor, Extent};
+                use crate::models::annotation::Anchor;
                 let id = crate::mcp::tools::arg(args, "id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
@@ -1265,8 +1272,10 @@ impl FitsViewer {
                 if let (Some(x), Some(y)) = (num("x"), num("y")) {
                     mark.anchor = Anchor::ImagePixel { x, y };
                 }
-                if let Some(r) = num("radius") {
-                    mark.extent = Some(Extent::square(r));
+                // The anchor is settled above, so the conversion uses the
+                // anchor the mark ENDS UP with rather than the one it had.
+                if let Some(extent) = Self::radius_extent(canvas, args, &mark.anchor) {
+                    mark.extent = Some(extent);
                 }
                 mark.validate()?;
                 let changed = mark.clone();
@@ -1338,6 +1347,9 @@ impl FitsViewer {
                 Ok(json!({
                     "count": items.len(),
                     "selected": tab.canvas().selected_annotation(),
+                    // Which tab these are on — the same identity
+                    // clear_annotations reports, so the two can be compared.
+                    "file": Self::annotation_target(&tab),
                     "annotations": items,
                 }))
             }
@@ -1607,7 +1619,7 @@ impl FitsViewer {
                     out["blanked"] = json!(true);
                 }
                 if let Some(w) = data.wcs.as_ref() {
-                    let (ra, dec) = w.pixel_to_sky(x as f64, y as f64);
+                    let (ra, dec) = w.array_to_sky(x as f64, y as f64);
                     out["ra"] = json!(ra);
                     out["dec"] = json!(dec);
                 }
@@ -1631,7 +1643,7 @@ impl FitsViewer {
                     .wcs
                     .as_ref()
                     .ok_or_else(|| "the loaded FITS has no WCS".to_string())?;
-                match wcs.world_to_pixel(ra, dec) {
+                match wcs.sky_to_display(ra, dec) {
                     Some((px, py)) => {
                         let in_bounds = px >= 0.0
                             && px < data.width as f64
@@ -1767,7 +1779,15 @@ impl FitsViewer {
                 .hdus()
                 .iter()
                 .map(|h| json!({
+                    // 1-based, as the extension selector and `set_fits_view`
+                    // use — and as the label reads.
                     "index": h.index,
+                    // 0-based, as `get_fits_header` and `get_fits_wcs` use,
+                    // because they read a file with astropy's numbering. The
+                    // same extension therefore has two numbers, and an agent
+                    // that carried one across got a different extension with
+                    // no error: `2: SCI` here is hdu 1 there.
+                    "headerHdu": h.index.saturating_sub(1),
                     "label": h.label(),
                     "isImage": h.is_image,
                 }))
@@ -2185,6 +2205,33 @@ impl FitsViewer {
 
     // ── Annotations ─────────────────────────────────────────────────────────
 
+    /// The half-size a `radius` argument asks for, in the anchor's own units.
+    ///
+    /// One rule, in one place, because a caller cannot see which anchor kind a
+    /// mark is stored against: **`radius` is in image pixels unless the same
+    /// call passed `ra`/`dec`**, in which case it is in degrees like they are.
+    ///
+    /// Pixels are the default because they are what someone looking at the
+    /// image thinks in, and because a mark placed by pixel is stored against
+    /// the SKY when the image has WCS — so "the units the mark is stored in" is
+    /// an answer the caller has no way to know. Reading `radius: 80` as eighty
+    /// degrees put the mark off the sky with nothing reporting a problem.
+    fn radius_extent(
+        canvas: &FitsCanvas,
+        args: &serde_json::Value,
+        anchor: &crate::models::annotation::Anchor,
+    ) -> Option<crate::models::annotation::Extent> {
+        let r = crate::mcp::tools::arg(args, "radius").and_then(|v| v.as_f64())?;
+        let gave_sky = crate::mcp::tools::arg(args, "ra").is_some()
+            && crate::mcp::tools::arg(args, "dec").is_some();
+        let half = if gave_sky {
+            r
+        } else {
+            r * canvas.units_per_image_pixel(anchor)
+        };
+        Some(crate::models::annotation::Extent::square(half))
+    }
+
     /// What a tab's marks are filed under.
     ///
     /// `tab.source_file()`, and not the view-state JSON: five call sites read
@@ -2258,7 +2305,7 @@ impl FitsViewer {
             .as_ref()
             .filter(|w| w.is_valid())
             .map(|w| {
-                let (ra, dec) = w.pixel_to_sky(img_x, img_y);
+                let (ra, dec) = w.display_to_sky(img_x, img_y);
                 Anchor::Sky {
                     ra_deg: ra,
                     dec_deg: dec,
@@ -2838,7 +2885,7 @@ impl FitsViewer {
                 a.data()
                     .wcs
                     .as_ref()
-                    .and_then(|w| w.world_to_pixel(ra, dec))
+                    .and_then(|w| w.sky_to_display(ra, dec))
             })
             .unwrap_or((aw as f64 / 2.0, ah as f64 / 2.0));
         let (b_ref_px, b_ref_py) = ref_sky
@@ -2846,7 +2893,7 @@ impl FitsViewer {
                 b.data()
                     .wcs
                     .as_ref()
-                    .and_then(|w| w.world_to_pixel(ra, dec))
+                    .and_then(|w| w.sky_to_display(ra, dec))
             })
             .unwrap_or((bw as f64 / 2.0, bh as f64 / 2.0));
 

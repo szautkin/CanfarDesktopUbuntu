@@ -244,7 +244,7 @@ impl FitsTab {
             .data
             .wcs
             .as_ref()
-            .and_then(|w| w.world_to_pixel(ra, dec))
+            .and_then(|w| w.sky_to_display(ra, dec))
         {
             Some((px, py)) => {
                 self.set_viewport_center(px, py);
@@ -258,7 +258,7 @@ impl FitsTab {
     /// crosshair is set). `None` without a WCS.
     pub fn image_center_world(&self) -> Option<(f64, f64)> {
         let (cx, cy) = (self.data.width as f64 / 2.0, self.data.height as f64 / 2.0);
-        self.data.wcs.as_ref().map(|w| w.pixel_to_sky(cx, cy))
+        self.data.wcs.as_ref().map(|w| w.display_to_sky(cx, cy))
     }
 
     /// Clear both the placed (red) crosshair and the hover (green) marker, and

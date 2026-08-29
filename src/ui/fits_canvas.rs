@@ -505,7 +505,7 @@ impl FitsCanvas {
         let Some(w) = self.wcs.as_ref() else {
             return;
         };
-        self.shared.borrow_mut().placed = pos.map(|(px, py)| w.pixel_to_sky(px, py));
+        self.shared.borrow_mut().placed = pos.map(|(px, py)| w.display_to_sky(px, py));
     }
 
     /// Reposition this canvas's placed crosshair from the shared linked sky point
@@ -521,7 +521,7 @@ impl FitsCanvas {
             return;
         }
         let new_pos = match (placed, self.wcs.as_ref()) {
-            (Some((ra, dec)), Some(w)) => match w.world_to_pixel(ra, dec) {
+            (Some((ra, dec)), Some(w)) => match w.sky_to_display(ra, dec) {
                 Some((px, py)) if on_image(px, py, self.img_width, self.img_height) => {
                     Some((px, py))
                 }
@@ -544,7 +544,7 @@ impl FitsCanvas {
     /// Return the current placed crosshair as world coordinates (RA, Dec).
     pub fn crosshair_world_pos(&self) -> Option<(f64, f64)> {
         let (px, py) = self.crosshair_placed.borrow().as_ref().copied()?;
-        self.wcs.as_ref().map(|w| w.pixel_to_sky(px, py))
+        self.wcs.as_ref().map(|w| w.display_to_sky(px, py))
     }
 
     /// Center the view on a given sky coordinate and place a crosshair there.
@@ -552,7 +552,7 @@ impl FitsCanvas {
     /// than floated off the frame.
     pub fn go_to_world_coord(&self, ra: f64, dec: f64) {
         if let Some(ref wcs) = self.wcs {
-            match wcs.world_to_pixel(ra, dec) {
+            match wcs.sky_to_display(ra, dec) {
                 Some((px, py))
                     if px >= 0.0
                         && px < self.img_width as f64
@@ -728,7 +728,7 @@ impl FitsCanvas {
             (s.linked, s.hover)
         };
         let mapped_hover = match (linked, hover_sky, wcs.as_ref()) {
-            (true, Some((ra, dec)), Some(w_ref)) => w_ref.world_to_pixel(ra, dec),
+            (true, Some((ra, dec)), Some(w_ref)) => w_ref.sky_to_display(ra, dec),
             _ => None,
         };
         let hover_pixel =
@@ -775,7 +775,7 @@ impl FitsCanvas {
 
             // Label with sky coordinates if WCS available
             if let Some(ref w_ref) = wcs {
-                let (ra, dec) = w_ref.pixel_to_sky(cx, cy);
+                let (ra, dec) = w_ref.display_to_sky(cx, cy);
                 let (ra_str, dec_str) = WcsInfo::format_coords(ra, dec);
                 let text = format!("RA {}  Dec {}", ra_str, dec_str);
 
@@ -999,7 +999,7 @@ impl FitsCanvas {
         let moved = match mark.anchor {
             Anchor::Sky { .. } => match self.wcs.as_ref() {
                 Some(w) => {
-                    let (ra, dec) = w.pixel_to_sky(ix, iy);
+                    let (ra, dec) = w.display_to_sky(ix, iy);
                     let a = Anchor::Sky {
                         ra_deg: ra,
                         dec_deg: dec,
@@ -1251,11 +1251,16 @@ impl FitsCanvas {
     fn project_anchor(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
         use crate::models::annotation::Anchor;
         let (px, py) = match *anchor {
+            // Already a display coordinate: a dragged mark is stored from
+            // `screen_to_image`. An agent placing one by array index on an
+            // image with NO WCS is half a pixel off here, which is below the
+            // size of the mark and not worth a conversion it would then read
+            // back in its replies.
             Anchor::ImagePixel { x, y } => (x, y),
             // A sky anchor is placed through this image's OWN WCS, so a mark
             // made on one image lands correctly on another of the same field.
             Anchor::Sky { ra_deg, dec_deg } => {
-                self.wcs.as_ref()?.world_to_pixel(ra_deg, dec_deg)?
+                self.wcs.as_ref()?.sky_to_display(ra_deg, dec_deg)?
             }
             // A cube's voxel means nothing here.
             Anchor::Data { .. } => return None,
@@ -1553,13 +1558,13 @@ impl FitsCanvas {
                 *local_hover.borrow_mut() = Some((img_x, img_y));
                 // Publish the hover as SKY so other tabs can follow it by RA/Dec.
                 if let Some(ref wcs) = wcs {
-                    let (ra, dec) = wcs.pixel_to_sky(img_x, img_y);
+                    let (ra, dec) = wcs.display_to_sky(img_x, img_y);
                     shared.borrow_mut().hover = Some((ra, dec));
                 }
 
                 let mut text = format!("Pixel: ({:.0}, {:.0})", img_x, img_y);
                 if let Some(ref wcs) = wcs {
-                    let (ra, dec) = wcs.pixel_to_sky(img_x, img_y);
+                    let (ra, dec) = wcs.display_to_sky(img_x, img_y);
                     let (ra_str, dec_str) = WcsInfo::format_coords(ra, dec);
                     text = format!("{} | RA: {} Dec: {}", text, ra_str, dec_str);
                 }
@@ -1742,7 +1747,7 @@ impl FitsCanvas {
                 *crosshair_placed.borrow_mut() = pos;
                 // Publish as sky so linked tabs can follow this crosshair.
                 if let Some(ref wcs) = wcs {
-                    let (ra, dec) = wcs.pixel_to_sky(img_x, img_y);
+                    let (ra, dec) = wcs.display_to_sky(img_x, img_y);
                     shared.borrow_mut().placed = Some((ra, dec));
                 }
                 drawing_area.queue_draw();

@@ -214,7 +214,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "dec": {"type":"number"},
                     "x": {"type":"number","description":"New image pixel position."},
                     "y": {"type":"number"},
-                    "radius": {"type":"number","description":"New half-size, in the anchor's units."}
+                    "radius": {
+                        "type":"number",
+                        "description":"New half-size, in IMAGE PIXELS unless you pass \
+                                       `ra`/`dec` in the same call, in which case it is in \
+                                       degrees like they are. Same rule as annotate_fits."
+                    }
                 },
                 "required": ["id"],
                 "additionalProperties": false
@@ -224,9 +229,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "clear_annotations".into(),
-            description: "Delete EVERY mark on a viewer — the user's as well as yours. Pass \
-                          `viewer` as \"fits\" or \"cube\". There is no undo, so prefer \
-                          remove_annotation for your own marks."
+            description: "Delete every mark on the CURRENT tab of a viewer — the user's as \
+                          well as yours. Pass `viewer` as \"fits\" or \"cube\". Other open \
+                          tabs keep their marks, so the `cleared` count can be smaller than \
+                          everything you have drawn; the reply names the file it cleared. \
+                          There is no undo, so prefer remove_annotation for your own marks."
                 .into(),
             input_schema: json!({
                 "type":"object",

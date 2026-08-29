@@ -171,6 +171,56 @@ impl WcsInfo {
         Some((self.crpix1 + dx, self.crpix2 + dy))
     }
 
+    // ── Pixel conventions ───────────────────────────────────────────────────
+    //
+    // `pixel_to_sky` / `world_to_pixel` speak the FITS convention, because that
+    // is what CRPIX is stated in: pixels are 1-based and measured at their
+    // CENTRES, so the first pixel's centre is 1.0. Feeding either of the other
+    // two conventions straight in is a silent one-pixel error — right at the
+    // reference pixel, wrong everywhere else by a constant, and invisible
+    // unless you compare against astropy. It measured 0.045 arcsec on a JWST
+    // frame at 0.03 arcsec/px; on a wide-field image the same one pixel is
+    // arcminutes.
+    //
+    // So the two other conventions get their own names. Callers say which kind
+    // of number they hold instead of every call site rediscovering the offset,
+    // and the sums live here once.
+
+    /// Sky position of a 0-based ARRAY index — astropy's convention, and what
+    /// an agent means by "pixel (x, y)" because it is what the readouts show.
+    pub fn array_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
+        self.pixel_to_sky(x + 1.0, y + 1.0)
+    }
+
+    /// The 0-based array index under a sky position. Inverse of
+    /// [`Self::array_to_sky`].
+    pub fn sky_to_array(&self, ra: f64, dec: f64) -> Option<(f64, f64)> {
+        self.world_to_pixel(ra, dec)
+            .map(|(x, y)| (x - 1.0, y - 1.0))
+    }
+
+    /// Sky position of a corner-origin DISPLAY coordinate: 0.0 is the left edge
+    /// of the first pixel, so its centre is 0.5 and the image spans `0..width`.
+    ///
+    /// This is what the canvas produces — `screen_to_image` divides by the zoom
+    /// and `on_image` bounds the result to `0 <= p < width` — so it is what the
+    /// crosshair, the hover readout and a dragged mark all hold.
+    pub fn display_to_sky(&self, x: f64, y: f64) -> (f64, f64) {
+        self.pixel_to_sky(x + 0.5, y + 0.5)
+    }
+
+    /// The corner-origin display coordinate of a sky position. Inverse of
+    /// [`Self::display_to_sky`].
+    ///
+    /// Paired with it deliberately: crosshair and mark sync go display -> sky on
+    /// one tab and sky -> display on another, so the two offsets cancel and the
+    /// convention cannot pull linked tabs apart. Changing one without the other
+    /// would.
+    pub fn sky_to_display(&self, ra: f64, dec: f64) -> Option<(f64, f64)> {
+        self.world_to_pixel(ra, dec)
+            .map(|(x, y)| (x - 0.5, y - 0.5))
+    }
+
     /// A short human label for the WCS solution kind (for the Image Info panel).
     pub fn solution_kind(&self) -> &'static str {
         if self.is_approximate {
@@ -569,6 +619,30 @@ impl FitsImageData {
                 get_f64("CD2_1").unwrap_or(0.0),
                 get_f64("CD2_2").unwrap_or(0.0),
             )
+        } else if contains("PC1_1") || contains("PC1_2") || contains("PC2_1") || contains("PC2_2") {
+            // PC + CDELT, the modern FITS convention: CDi_j = CDELTi * PCi_j.
+            //
+            // Missing entirely before this, so a file with PC and no CD fell
+            // through to the CDELT+CROTA2 branch, found no CROTA2, and got a
+            // rotation of zero — the scale right and the orientation lost. It
+            // is not exotic: JWST i2d products use it, and one measured 40 to
+            // 90 arcseconds out, growing with distance from the reference
+            // pixel, which is the signature of a dropped rotation. Nothing
+            // reported a problem because a rotation of zero is a valid WCS.
+            //
+            // Defaults are the standard's: 1 on the diagonal, 0 off it.
+            let cdelt1 = get_f64("CDELT1").unwrap_or(1.0);
+            let cdelt2 = get_f64("CDELT2").unwrap_or(1.0);
+            let pc1_1 = get_f64("PC1_1").unwrap_or(1.0);
+            let pc1_2 = get_f64("PC1_2").unwrap_or(0.0);
+            let pc2_1 = get_f64("PC2_1").unwrap_or(0.0);
+            let pc2_2 = get_f64("PC2_2").unwrap_or(1.0);
+            (
+                cdelt1 * pc1_1,
+                cdelt1 * pc1_2,
+                cdelt2 * pc2_1,
+                cdelt2 * pc2_2,
+            )
         } else if contains("CDELT1") || contains("CDELT2") {
             let cdelt1 = get_f64("CDELT1").unwrap_or(0.0);
             let cdelt2 = get_f64("CDELT2").unwrap_or(0.0);
@@ -870,5 +944,177 @@ mod tests {
         assert_eq!(img.pixel_at(0, 0), Some(1.0));
         assert_eq!(img.pixel_at(1, 1), Some(4.0));
         assert_eq!(img.pixel_at(2, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod pc_matrix_tests {
+    use super::*;
+
+    /// A JWST i2d header: PC + CDELT, no CD, no CROTA2.
+    ///
+    /// The real keywords from
+    /// `jw01783-o003_t009_nircam_clear-f187n_i2d.fits`, whose sky positions
+    /// were 40 to 90 arcseconds out before the PC branch existed — the scale
+    /// was right and the rotation had silently become zero.
+    fn jwst_cards() -> std::collections::HashMap<String, String> {
+        [
+            ("CTYPE1", "RA---TAN"),
+            ("CTYPE2", "DEC--TAN"),
+            ("CRPIX1", "5738.423074184073"),
+            ("CRPIX2", "2279.5994461063583"),
+            ("CRVAL1", "202.46718693459422"),
+            ("CRVAL2", "47.20006625102562"),
+            ("CDELT1", "8.67324533272714e-06"),
+            ("CDELT2", "8.67324533272714e-06"),
+            ("PC1_1", "0.6458455917417035"),
+            ("PC1_2", "0.763468055407565"),
+            ("PC2_1", "0.763468055407565"),
+            ("PC2_2", "-0.6458455917417035"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+    }
+
+    /// The rotation survives, and the position matches astropy.
+    ///
+    /// Through `array_to_sky`, because astropy's `pixel_to_world` is 0-based
+    /// and `pixel_to_sky` is not. The tolerance is 5e-6 deg — the precision of
+    /// the reference values, and 70x tighter than the 1e-4 this started at.
+    /// That slack was 11 pixels wide and hid a whole-pixel convention error
+    /// underneath a passing test.
+    #[test]
+    fn a_pc_matrix_header_places_a_pixel_where_astropy_does() {
+        let wcs = FitsImageData::parse_wcs(&jwst_cards()).expect("a valid WCS");
+        // astropy, same header: (202.484210, 47.197671).
+        let (ra, dec) = wcs.array_to_sky(6388.0, 3475.0);
+        assert!(
+            (ra - 202.484210).abs() < 5e-6,
+            "RA {ra} is not astropy's 202.484210"
+        );
+        assert!(
+            (dec - 47.197671).abs() < 5e-6,
+            "Dec {dec} is not astropy's 47.197671"
+        );
+    }
+
+    /// A second point, further from the reference pixel.
+    ///
+    /// A dropped rotation is right AT the reference pixel and wrong everywhere
+    /// else, in proportion to the distance — so one point near it proves
+    /// nothing.
+    #[test]
+    fn the_error_does_not_grow_with_distance_from_the_reference_pixel() {
+        let wcs = FitsImageData::parse_wcs(&jwst_cards()).expect("a valid WCS");
+        // astropy on the real file, 0-based: these four are the reference.
+        for (x, y, ra_ref, dec_ref) in [
+            (0.0, 0.0, 202.397711448, 47.174817246),
+            (2682.0, 2246.0, 202.441688739, 47.180013797),
+            // The far corner of an 11471x4593 frame: the point where a
+            // dropped rotation is most wrong, and the one worth keeping.
+            (11470.0, 4592.0, 202.537027580, 47.225046005),
+        ] {
+            let (ra, dec) = wcs.array_to_sky(x, y);
+            assert!(
+                (ra - ra_ref).abs() < 5e-6,
+                "RA at ({x},{y}): {ra} not {ra_ref}"
+            );
+            assert!(
+                (dec - dec_ref).abs() < 5e-6,
+                "Dec at ({x},{y}): {dec} not {dec_ref}"
+            );
+        }
+    }
+
+    /// CRPIX maps to CRVAL, which is what pins the pixel convention.
+    ///
+    /// Measured rather than assumed: passing CRPIX straight in lands exactly on
+    /// CRVAL, so `pixel_to_sky` counts pixels the way CRPIX does. Subtracting
+    /// one — astropy's 0-based convention — misses by 0.044 arcsec, which on
+    /// this 0.031 arcsec image is the diagonal of one pixel.
+    ///
+    /// That one-pixel difference from astropy is a separate question from the
+    /// rotation this branch fixes, and a much smaller one: the dropped PC
+    /// matrix was out by 40 to 90 arcseconds.
+    #[test]
+    fn the_reference_pixel_lands_on_crval() {
+        let wcs = FitsImageData::parse_wcs(&jwst_cards()).expect("a valid WCS");
+        let (ra, dec) = wcs.pixel_to_sky(5738.423074184073, 2279.5994461063583);
+        let sep = (((ra - 202.46718693459422) * 47.2f64.to_radians().cos()).powi(2)
+            + (dec - 47.20006625102562).powi(2))
+        .sqrt()
+            * 3600.0;
+        assert!(sep < 0.001, "CRPIX is {sep:.4} arcsec from CRVAL");
+    }
+
+    /// Each convention round-trips through the sky and comes back unchanged.
+    ///
+    /// This is the property crosshair and mark sync depend on: a position goes
+    /// display -> sky on one tab and sky -> display on another, so the offsets
+    /// have to cancel exactly. Changing one direction without the other would
+    /// pull linked tabs a pixel apart, which is the failure this pairing
+    /// exists to prevent — and it would look like a WCS problem, not a
+    /// bookkeeping one.
+    #[test]
+    fn every_convention_round_trips() {
+        let wcs = FitsImageData::parse_wcs(&jwst_cards()).expect("a valid WCS");
+        for (x, y) in [(0.0, 0.0), (6388.0, 3475.0), (2682.5, 2246.5)] {
+            let (ra, dec) = wcs.display_to_sky(x, y);
+            let (bx, by) = wcs.sky_to_display(ra, dec).expect("invertible");
+            assert!(
+                (bx - x).abs() < 1e-6 && (by - y).abs() < 1e-6,
+                "display ({x},{y}) came back ({bx},{by})"
+            );
+
+            let (ra, dec) = wcs.array_to_sky(x, y);
+            let (bx, by) = wcs.sky_to_array(ra, dec).expect("invertible");
+            assert!(
+                (bx - x).abs() < 1e-6 && (by - y).abs() < 1e-6,
+                "array ({x},{y}) came back ({bx},{by})"
+            );
+        }
+    }
+
+    /// The three conventions sit half a pixel apart, in the stated order.
+    ///
+    /// Pinned as an identity rather than a number so it reads as the
+    /// definition it is: a display coordinate is the pixel's corner, an array
+    /// index is its centre counting from zero, and a FITS pixel is its centre
+    /// counting from one.
+    #[test]
+    fn the_conventions_differ_by_the_offsets_they_claim() {
+        let wcs = FitsImageData::parse_wcs(&jwst_cards()).expect("a valid WCS");
+        let fits = wcs.pixel_to_sky(101.0, 51.0);
+        assert_eq!(
+            wcs.array_to_sky(100.0, 50.0),
+            fits,
+            "array index is FITS minus one"
+        );
+        assert_eq!(
+            wcs.display_to_sky(100.5, 50.5),
+            fits,
+            "display is FITS minus a half"
+        );
+    }
+
+    /// CD still wins when both are present, as the standard says.
+    #[test]
+    fn a_cd_matrix_takes_precedence_over_pc() {
+        let mut cards = jwst_cards();
+        for (k, v) in [
+            ("CD1_1", "-1.0e-05"),
+            ("CD1_2", "0.0"),
+            ("CD2_1", "0.0"),
+            ("CD2_2", "1.0e-05"),
+        ] {
+            cards.insert(k.to_string(), v.to_string());
+        }
+        let wcs = FitsImageData::parse_wcs(&cards).expect("a valid WCS");
+        assert!(
+            (wcs.cd1_1 - -1.0e-05).abs() < 1e-12,
+            "PC overrode an explicit CD matrix: cd1_1 = {}",
+            wcs.cd1_1
+        );
     }
 }
