@@ -1816,8 +1816,13 @@ impl FitsViewer {
         // its row, so the two are one selection rather than two.
         {
             let viewer = Rc::downgrade(self);
+            let tab_for_save = tab.clone();
             tab.canvas().set_on_selection_changed(move || {
                 if let Some(v) = viewer.upgrade() {
+                    // Fires for a new selection AND for the end of a
+                    // move/resize drag, so this is also where a reshaped mark
+                    // reaches the disk.
+                    v.persist_annotations(&tab_for_save);
                     v.refresh_annotations_panel();
                 }
             });
@@ -2094,17 +2099,26 @@ impl FitsViewer {
         popover.set_position(gtk::PositionType::Top);
         popover.set_autohide(true);
 
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
-        entry.set_width_chars(20);
+        entry.set_width_chars(18);
         entry.set_has_frame(false);
+        row.append(&entry);
+
+        // Delete, beside the words. Removing a mark is something you decide
+        // while looking at it, and the sidebar is the long way round from here.
+        let bin = gtk::Button::from_icon_name("user-trash-symbolic");
+        bin.add_css_class("flat");
+        bin.set_tooltip_text(Some(crate::tr_en!("Delete this mark")));
+        row.append(&bin);
         // Renaming starts from what it says now, selected, so typing replaces
         // it and Enter alone keeps it.
         if !mark.text.is_empty() {
             entry.set_text(&mark.text);
             entry.select_region(0, -1);
         }
-        popover.set_child(Some(&entry));
+        popover.set_child(Some(&row));
 
         let viewer = Rc::downgrade(self);
         let id = id.to_string();
@@ -2119,12 +2133,37 @@ impl FitsViewer {
                 popover.popdown();
             });
         }
+        {
+            let viewer2 = Rc::downgrade(self);
+            let popover = popover.clone();
+            let id = id.clone();
+            bin.connect_clicked(move |_| {
+                if let Some(v) = viewer2.upgrade() {
+                    v.delete_mark(&id);
+                }
+                popover.popdown();
+            });
+        }
         // Closing without typing leaves the shape as it is.
         popover.connect_closed(|p| {
             p.unparent();
         });
         popover.popup();
         entry.grab_focus();
+    }
+
+    /// Remove one mark.
+    fn delete_mark(&self, id: &str) {
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        let mut all = canvas.annotations();
+        all.retain(|a| a.id != id);
+        canvas.set_annotations(all);
+        canvas.set_selected_annotation(None);
+        self.persist_annotations(&tab);
+        self.refresh_annotations_panel();
     }
 
     /// Give an existing mark its label.

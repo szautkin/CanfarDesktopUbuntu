@@ -171,6 +171,18 @@ fn choose_hover_pixel(
 
 type OnCrosshairPlacedCallback = Rc<RefCell<Option<Box<dyn Fn(Option<(f64, f64)>)>>>>;
 
+/// What a press on the selected mark took hold of.
+#[derive(Clone, Copy, PartialEq)]
+enum Grab {
+    /// A corner grip: the drag changes the size.
+    Handle,
+    /// Inside the shape: the drag moves it.
+    Body,
+}
+
+/// How big a resize grip is on screen, in device pixels.
+const HANDLE_RADIUS: f64 = 5.0;
+
 /// Whether a capture of `width` x `height` can be drawn at all.
 ///
 /// Split out of [`FitsCanvas::capture_png`] because everything else in this
@@ -217,6 +229,8 @@ pub struct FitsCanvas {
     /// The shape being dragged out: `(centre_x, centre_y, half_extent)` in
     /// image pixels. Drawn as a preview so the size is chosen by eye.
     pending_shape: Rc<RefCell<Option<(f64, f64, f64)>>>,
+    /// What the current drag is doing to the selected mark, if anything.
+    grab: Rc<RefCell<Option<Grab>>>,
     /// Told when a click on the image changes which mark is selected, so the
     /// list can follow the canvas.
     #[allow(clippy::type_complexity)]
@@ -276,6 +290,7 @@ impl FitsCanvas {
             crosshair_placed: Rc::new(RefCell::new(None)),
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
+            grab: Rc::new(RefCell::new(None)),
             on_selection_changed: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
             selected_annotation: Rc::new(RefCell::new(None)),
@@ -555,6 +570,17 @@ impl FitsCanvas {
     /// Knows nothing about its destination: a widget's context or an
     /// `ImageSurface` are the same to it.
     pub fn draw_working_area(&self, cr: &cairo::Context, widget_w: i32, widget_h: i32) {
+        self.draw_area_inner(cr, widget_w, widget_h, true)
+    }
+
+    /// The working area, with or without editing chrome.
+    ///
+    /// The marks are identical either way — that is the whole point of one
+    /// drawing serving the screen and the capture. Handles are not marks: they
+    /// are the grips you drag to resize one, and an agent looking at
+    /// `get_fits_image` should see what was drawn, not the tools for drawing
+    /// it. So the destination decides the chrome and nothing else.
+    fn draw_area_inner(&self, cr: &cairo::Context, widget_w: i32, widget_h: i32, chrome: bool) {
         let pixel_data = &self.pixel_data;
         let transform = &self.transform;
         let rotation = &self.rotation;
@@ -716,6 +742,141 @@ impl FitsCanvas {
             widget_w as f64,
             widget_h as f64,
         );
+
+        if chrome {
+            self.draw_handles(cr);
+        }
+    }
+
+    /// The four grips on the selected mark.
+    ///
+    /// Screen-sized, not data-sized: a grip has to be grabbable at any zoom,
+    /// and one that shrank with the image would become unusable exactly when a
+    /// mark is small enough to need adjusting.
+    fn draw_handles(&self, cr: &cairo::Context) {
+        let Some(mark) = self.selected_mark() else {
+            return;
+        };
+        let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
+            return;
+        };
+        let scale = self.annotation_scale(&mark.anchor);
+        let Some(extent) = mark.extent else {
+            return;
+        };
+        let (hw, hh) = (extent.half_width * scale, extent.half_height * scale);
+        let (r, g, b) = crate::helpers::annotation_render::style::SELECTED_INK;
+        for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let (x, y) = (cx + dx * hw, cy + dy * hh);
+            cr.new_path();
+            cr.arc(x, y, HANDLE_RADIUS, 0.0, std::f64::consts::TAU);
+            cr.set_source_rgba(0.08, 0.09, 0.11, 0.95);
+            cr.fill_preserve().ok();
+            cr.set_source_rgba(r, g, b, 1.0);
+            cr.set_line_width(1.5);
+            cr.stroke().ok();
+        }
+    }
+
+    /// Whether `(sx, sy)` is on one of the selected mark's grips.
+    fn handle_at(&self, sx: f64, sy: f64) -> bool {
+        let Some(mark) = self.selected_mark() else {
+            return false;
+        };
+        let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
+            return false;
+        };
+        let Some(extent) = mark.extent else {
+            return false;
+        };
+        let scale = self.annotation_scale(&mark.anchor);
+        let (hw, hh) = (extent.half_width * scale, extent.half_height * scale);
+        // A little larger than it looks: a 5px dot is hard to hit exactly, and
+        // a near miss that pans the image instead is infuriating.
+        let reach = HANDLE_RADIUS + 4.0;
+        [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+            .iter()
+            .any(|(dx, dy)| {
+                let (x, y) = (cx + dx * hw, cy + dy * hh);
+                (sx - x).abs() <= reach && (sy - y).abs() <= reach
+            })
+    }
+
+    /// Resize the selected mark so its corner sits under `(sx, sy)`.
+    fn resize_selected_to(&self, sx: f64, sy: f64) {
+        let Some(mark) = self.selected_mark() else {
+            return;
+        };
+        let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
+            return;
+        };
+        let scale = self.annotation_scale(&mark.anchor).max(f64::EPSILON);
+        // Symmetric about the centre: the anchor is the subject, and a resize
+        // that moved it would slide the mark off the thing it describes.
+        let half_w = ((sx - cx).abs() / scale).max(f64::EPSILON);
+        let half_h = ((sy - cy).abs() / scale).max(f64::EPSILON);
+        let mut all = self.annotations.borrow_mut();
+        if let Some(m) = all.iter_mut().find(|a| a.id == mark.id) {
+            m.extent = Some(crate::models::annotation::Extent {
+                half_width: half_w,
+                half_height: half_h,
+            });
+        }
+        drop(all);
+        self.drawing_area.queue_draw();
+    }
+
+    /// Move the selected mark so its centre sits under `(sx, sy)`.
+    fn move_selected_to(&self, sx: f64, sy: f64) {
+        let Some(mark) = self.selected_mark() else {
+            return;
+        };
+        let (ix, iy) = self.screen_to_image_point(sx, sy);
+        if !on_image(ix, iy, self.img_width, self.img_height) {
+            return;
+        }
+        use crate::models::annotation::Anchor;
+        // Stays in the space it was created in: a sky mark stays on the sky, so
+        // it still lands correctly on another image of the same field.
+        let moved = match mark.anchor {
+            Anchor::Sky { .. } => match self.wcs.as_ref() {
+                Some(w) => {
+                    let (ra, dec) = w.pixel_to_sky(ix, iy);
+                    let a = Anchor::Sky {
+                        ra_deg: ra,
+                        dec_deg: dec,
+                    };
+                    if a.is_valid() {
+                        a
+                    } else {
+                        return;
+                    }
+                }
+                None => Anchor::ImagePixel { x: ix, y: iy },
+            },
+            _ => Anchor::ImagePixel { x: ix, y: iy },
+        };
+        let mut all = self.annotations.borrow_mut();
+        if let Some(m) = all.iter_mut().find(|a| a.id == mark.id) {
+            m.anchor = moved;
+        }
+        drop(all);
+        self.drawing_area.queue_draw();
+    }
+
+    /// Whether a drag is currently reshaping a mark.
+    pub fn is_editing_shape(&self) -> bool {
+        self.grab.borrow().is_some()
+    }
+
+    /// The selected mark, if there is one.
+    pub fn selected_mark(&self) -> Option<crate::models::annotation::Annotation> {
+        let id = self.selected_annotation.borrow().clone()?;
+        self.annotations
+            .borrow()
+            .iter()
+            .find(|a| a.id == id)
+            .cloned()
     }
 
     // ── Annotations ─────────────────────────────────────────────────────────
@@ -901,7 +1062,7 @@ impl FitsCanvas {
         {
             let cr =
                 cairo::Context::new(&surface).map_err(|e| format!("cairo context error: {e}"))?;
-            self.draw_working_area(&cr, width, height);
+            self.draw_area_inner(&cr, width, height, false);
         }
         let mut png: Vec<u8> = Vec::new();
         surface
@@ -980,6 +1141,8 @@ impl FitsCanvas {
         // placed.
         let drawing = self.on_left_click.clone();
         let pick = Rc::downgrade(self);
+        let pan_pick = Rc::downgrade(self);
+        let end_pick = Rc::downgrade(self);
 
         let so = start_offset.clone();
         let t = transform.clone();
@@ -992,15 +1155,28 @@ impl FitsCanvas {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
             }
-            // A press that lands on a mark selects it. Panning still happens —
-            // selecting is not a mode, it is what clicking a thing means.
             if let Some(canvas) = pick.upgrade() {
+                // A grip on the SELECTED mark resizes it; inside its shape
+                // moves it. Either way the image does not pan: you are
+                // adjusting a mark, not travelling.
+                if canvas.handle_at(x, y) {
+                    *canvas.grab.borrow_mut() = Some(Grab::Handle);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    return;
+                }
                 let hit = canvas.annotation_at(x, y);
-                if hit.is_some() && hit != canvas.selected_annotation() {
-                    canvas.set_selected_annotation(hit);
-                    let notify = canvas.on_selection_changed.borrow();
-                    if let Some(f) = notify.as_ref() {
-                        f();
+                if hit.is_some() {
+                    if hit != canvas.selected_annotation() {
+                        canvas.set_selected_annotation(hit);
+                        let notify = canvas.on_selection_changed.borrow();
+                        if let Some(f) = notify.as_ref() {
+                            f();
+                        }
+                    } else {
+                        // Already selected: this press is a move.
+                        *canvas.grab.borrow_mut() = Some(Grab::Body);
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        return;
                     }
                 }
             }
@@ -1010,6 +1186,19 @@ impl FitsCanvas {
 
         let so = start_offset;
         drag.connect_drag_update(move |gesture, dx, dy| {
+            // A grab in progress reshapes the mark instead of panning.
+            if let Some(canvas) = pan_pick.upgrade() {
+                let grab = *canvas.grab.borrow();
+                if let Some(grab) = grab {
+                    if let Some((sx, sy)) = gesture.start_point() {
+                        match grab {
+                            Grab::Handle => canvas.resize_selected_to(sx + dx, sy + dy),
+                            Grab::Body => canvas.move_selected_to(sx + dx, sy + dy),
+                        }
+                    }
+                    return;
+                }
+            }
             let shifted = gesture
                 .current_event_state()
                 .contains(gtk::gdk::ModifierType::SHIFT_MASK);
@@ -1022,6 +1211,23 @@ impl FitsCanvas {
             t.offset_y = start.1 + dy;
             drawing_area.queue_draw();
         });
+
+        {
+            let notify = self.on_selection_changed.clone();
+            drag.connect_drag_end(move |_, _, _| {
+                let Some(canvas) = end_pick.upgrade() else {
+                    return;
+                };
+                if canvas.grab.borrow_mut().take().is_some() {
+                    // Same channel the list already listens on: the mark
+                    // changed, so whoever is showing it should save and
+                    // redraw.
+                    if let Some(f) = notify.borrow().as_ref() {
+                        f();
+                    }
+                }
+            });
+        }
 
         self.drawing_area.add_controller(drag);
     }

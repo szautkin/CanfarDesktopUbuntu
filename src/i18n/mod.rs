@@ -110,6 +110,8 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Clear all marks",                             "Effacer tous les repères"),
     ("Delete this mark",                            "Supprimer ce repère"),
     ("Rename this mark",                            "Renommer ce repère"),
+    ("Drag a grip to resize, the shape to move it.",
+     "Faites glisser une poignée pour redimensionner, la forme pour la déplacer."),
     ("What is this?",                               "De quoi s'agit-il ?"),
     ("Add",                                         "Ajouter"),
     ("{} marks",                                    "{} repères"),

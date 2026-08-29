@@ -50,6 +50,15 @@ impl AnnotationsPanel {
         count_label.set_halign(gtk::Align::Start);
         widget.append(&count_label);
 
+        let hint = gtk::Label::new(Some(crate::tr_en!(
+            "Drag a grip to resize, the shape to move it."
+        )));
+        hint.add_css_class("dim-label");
+        hint.add_css_class("caption");
+        hint.set_wrap(true);
+        hint.set_xalign(0.0);
+        widget.append(&hint);
+
         let empty = gtk::Label::new(Some(crate::tr_en!(
             "Nothing marked yet. Turn on Draw in the toolbar, then click the image."
         )));
