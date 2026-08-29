@@ -385,6 +385,13 @@ mod tests {
          you can point back at it.",
     ),
     (
+        "select_annotation",
+        "An agent could draw marks and change them and had no way to say WHICH one it meant — so \
+         \"the source I ringed, second from the left\" was left to a person to work out, which is \
+         exactly the work marking it was supposed to save. This highlights one on the image and in \
+         the sidebar list.",
+    ),
+    (
         "list_fits_annotations",
         "What is already marked, and by whom. Without it an agent cannot find the id of a mark to \
          remove, and cannot tell its own marks from the user's before adding more.",

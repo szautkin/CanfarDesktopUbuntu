@@ -1285,6 +1285,36 @@ impl FitsViewer {
                 }))
             }
 
+            // Point at one. An agent could draw marks and change them and had no
+            // way to say "this one" — so "the source I ringed second from the
+            // left" was left to a person to work out, which is the work the
+            // marks were meant to save.
+            "select_annotation" => {
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let canvas = tab.canvas();
+                let id = crate::mcp::tools::arg(args, "id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                match id {
+                    Some(id) => {
+                        if !canvas.annotations().iter().any(|a| a.id == id) {
+                            return Err(format!(
+                                "no annotation '{id}' on this tab — list_fits_annotations \
+                                 shows what is there"
+                            ));
+                        }
+                        canvas.set_selected_annotation(Some(id.to_string()));
+                    }
+                    // No id clears it, so an agent can take its highlight back.
+                    None => canvas.set_selected_annotation(None),
+                }
+                self.refresh_annotations_panel();
+                Ok(json!({ "selected": canvas.selected_annotation() }))
+            }
+
             "list_fits_annotations" => {
                 let tab = self
                     .current_tab()
@@ -1305,7 +1335,11 @@ impl FitsViewer {
                         })
                     })
                     .collect();
-                Ok(json!({ "count": items.len(), "annotations": items }))
+                Ok(json!({
+                    "count": items.len(),
+                    "selected": tab.canvas().selected_annotation(),
+                    "annotations": items,
+                }))
             }
 
             // The working area as an image — what the user is looking at, not

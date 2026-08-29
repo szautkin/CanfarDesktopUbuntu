@@ -279,6 +279,7 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "get_fits_image"
         | "annotate_fits"
         | "list_fits_annotations"
+        | "select_annotation"
         | "probe_fits_pixel"
         | "fits_goto_coordinate"
         | "list_fits_bookmarks"
