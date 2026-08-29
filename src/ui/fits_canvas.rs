@@ -263,11 +263,14 @@ pub struct FitsCanvas {
     /// image and absent from the list.
     #[allow(clippy::type_complexity)]
     on_annotations_changed: Rc<RefCell<Option<Box<dyn Fn()>>>>,
-    /// Told while a mark is being moved or resized, so anything anchored to it
-    /// — an open label editor — can follow rather than sit where the mark used
-    /// to be.
+    /// Told whenever marks MOVE ON SCREEN — because one is being dragged, or
+    /// because the view panned, zoomed or rotated under them.
+    ///
+    /// Anything anchored to a mark's on-screen position follows this. It used
+    /// to fire only for a mark being dragged, so panning the image slid the
+    /// marks along and left the open label editor behind.
     #[allow(clippy::type_complexity)]
-    on_shape_changing: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+    on_marks_moved: Rc<RefCell<Option<Box<dyn Fn()>>>>,
     /// Told with an id when a mark's LABEL is clicked, so the viewer can open
     /// it for editing.
     #[allow(clippy::type_complexity)]
@@ -347,7 +350,7 @@ impl FitsCanvas {
             grab: Rc::new(RefCell::new(None)),
             tapped: Rc::new(RefCell::new(None)),
             on_annotations_changed: Rc::new(RefCell::new(None)),
-            on_shape_changing: Rc::new(RefCell::new(None)),
+            on_marks_moved: Rc::new(RefCell::new(None)),
             on_label_clicked: Rc::new(RefCell::new(None)),
             on_selection_changed: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
@@ -424,7 +427,7 @@ impl FitsCanvas {
             t.offset_y += anchor.1 * (s0 - target);
             t.scale = target;
         }
-        self.drawing_area.queue_draw();
+        self.view_changed();
     }
 
     /// Current zoom scale.
@@ -435,7 +438,7 @@ impl FitsCanvas {
     /// Reset zoom and pan to default.
     pub fn reset_view(&self) {
         *self.transform.borrow_mut() = ViewTransform::default();
-        self.drawing_area.queue_draw();
+        self.view_changed();
     }
 
     /// Allocated drawing-area size, falling back to the requested content size
@@ -475,13 +478,13 @@ impl FitsCanvas {
             t.offset_x = w / 2.0 - cx * t.scale;
             t.offset_y = h / 2.0 - cy * t.scale;
         }
-        self.drawing_area.queue_draw();
+        self.view_changed();
     }
 
     /// Set the North Up rotation angle (radians). 0 disables rotation.
     pub fn set_rotation(&self, angle_rad: f64) {
         *self.rotation.borrow_mut() = angle_rad;
-        self.drawing_area.queue_draw();
+        self.view_changed();
     }
 
     /// Place or clear the persistent crosshair (image-space coordinates). Also
@@ -1065,8 +1068,20 @@ impl FitsCanvas {
         *self.on_annotations_changed.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn set_on_shape_changing(&self, f: impl Fn() + 'static) {
-        *self.on_shape_changing.borrow_mut() = Some(Box::new(f));
+    pub fn set_on_marks_moved(&self, f: impl Fn() + 'static) {
+        *self.on_marks_moved.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Redraw, and tell anything anchored to a mark that it has moved.
+    ///
+    /// Every path that changes the view goes through this instead of calling
+    /// `queue_draw` directly, so a new way to pan or zoom cannot forget.
+    fn view_changed(&self) {
+        self.drawing_area.queue_draw();
+        let notify = self.on_marks_moved.borrow();
+        if let Some(f) = notify.as_ref() {
+            f();
+        }
     }
 
     pub fn set_on_label_clicked(&self, f: impl Fn(&str) + 'static) {
@@ -1319,7 +1334,8 @@ impl FitsCanvas {
             });
     }
 
-    fn setup_scroll_zoom(&self) {
+    fn setup_scroll_zoom(self: &Rc<Self>) {
+        let wheel_notify = Rc::downgrade(self);
         let scroll_controller =
             gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         let transform = self.transform.clone();
@@ -1353,7 +1369,12 @@ impl FitsCanvas {
                 t.offset_y += anchor.1 * (s0 - s1);
                 t.scale = s1;
             }
-            drawing_area.queue_draw();
+            drop(t);
+            if let Some(canvas) = wheel_notify.upgrade() {
+                canvas.view_changed();
+            } else {
+                drawing_area.queue_draw();
+            }
             gtk::glib::Propagation::Stop
         });
 
@@ -1373,6 +1394,7 @@ impl FitsCanvas {
         let drawing = self.on_left_click.clone();
         let pick = Rc::downgrade(self);
         let pan_pick = Rc::downgrade(self);
+        let pan_notify = Rc::downgrade(self);
         let end_pick = Rc::downgrade(self);
 
         let so = start_offset.clone();
@@ -1450,9 +1472,7 @@ impl FitsCanvas {
                             Grab::Handle => canvas.resize_selected_to(sx + dx, sy + dy),
                             Grab::Body => canvas.move_selected_to(sx + dx, sy + dy),
                         }
-                        if let Some(f) = canvas.on_shape_changing.borrow().as_ref() {
-                            f();
-                        }
+                        canvas.view_changed();
                     }
                     return;
                 }
@@ -1463,11 +1483,17 @@ impl FitsCanvas {
             if drawing.borrow().is_some() && !shifted {
                 return;
             }
-            let start = so.borrow();
-            let mut t = transform.borrow_mut();
-            t.offset_x = start.0 + dx;
-            t.offset_y = start.1 + dy;
-            drawing_area.queue_draw();
+            {
+                let start = so.borrow();
+                let mut t = transform.borrow_mut();
+                t.offset_x = start.0 + dx;
+                t.offset_y = start.1 + dy;
+            }
+            if let Some(canvas) = pan_notify.upgrade() {
+                canvas.view_changed();
+            } else {
+                drawing_area.queue_draw();
+            }
         });
 
         {

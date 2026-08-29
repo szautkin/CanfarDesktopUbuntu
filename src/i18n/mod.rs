@@ -93,8 +93,6 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Largest agent result (KB)",                   "Taille maximale du résultat de l'agent (Ko)"),
     // Annotations
     ("Marks",                                       "Repères"),
-    ("DRAW",                                        "DESSIN"),
-    ("Mark",                                        "Repère"),
     ("Circle",                                      "Cercle"),
     ("Box",                                         "Rectangle"),
     ("circle",                                      "cercle"),
@@ -106,7 +104,7 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Nothing marked yet. Turn on Draw in the toolbar, then click the image.",
      "Aucun repère pour l'instant. Activez Dessin dans la barre d'outils, puis cliquez sur l'image."),
     ("Clear all marks",                             "Effacer tous les repères"),
-    ("Add a mark",                                  "Ajouter un repère"),
+    ("Add Mark",                                    "Ajouter un repère"),
     ("Delete every mark?",                          "Supprimer tous les repères ?"),
     ("This removes all marks on this image, including any an agent made. It cannot be undone.",
      "Cela supprime tous les repères de cette image, y compris ceux créés par un agent. Cette action est irréversible."),

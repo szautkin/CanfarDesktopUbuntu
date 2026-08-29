@@ -22,7 +22,7 @@ pub struct AnnotationsPanel {
     list: gtk::ListBox,
     empty: gtk::Label,
     count_label: gtk::Label,
-    add_button: gtk::Button,
+    draw_slot: gtk::Box,
     clear_button: gtk::Button,
     /// Called with an id when a row is chosen.
     on_select: Callback,
@@ -92,14 +92,20 @@ impl AnnotationsPanel {
         // one scroller doing the work instead of two negotiating.
         widget.append(&list);
 
-        // Adding a mark had no button anywhere near the list — it was the
-        // toggle up in the toolbar, which is a long way from where someone
-        // looking at their marks is looking.
-        let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-        add_button.set_label(crate::tr_en!("Add a mark"));
-        add_button.set_halign(gtk::Align::Start);
-        add_button.add_css_class("suggested-action");
-        widget.append(&add_button);
+        // Where the drawing controls go. They used to be a section of their own
+        // further up the sidebar — a toggle and a shape picker under their own
+        // heading —
+        // which put making a mark and looking at your marks in two different
+        // places. The viewer still owns the widgets; this panel decides where
+        // in the section they sit.
+        let draw_title = gtk::Label::new(Some(crate::tr_en!("Add Mark")));
+        draw_title.add_css_class("heading");
+        draw_title.set_halign(gtk::Align::Start);
+        widget.append(&draw_title);
+
+        let draw_slot = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        draw_slot.set_halign(gtk::Align::Start);
+        widget.append(&draw_slot);
 
         let clear_button = gtk::Button::with_label(crate::tr_en!("Clear all marks"));
         clear_button.add_css_class("destructive-action");
@@ -111,7 +117,7 @@ impl AnnotationsPanel {
             list,
             empty,
             count_label,
-            add_button,
+            draw_slot,
             clear_button,
             on_select: Rc::new(RefCell::new(None)),
             on_delete: Rc::new(RefCell::new(None)),
@@ -215,14 +221,9 @@ impl AnnotationsPanel {
         *self.on_delete.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Called when "Add a mark" is pressed.
-    pub fn set_on_add(&self, f: impl Fn(&str) + 'static) {
-        let cb: Callback = Rc::new(RefCell::new(Some(Box::new(f))));
-        self.add_button.connect_clicked(move |_| {
-            if let Some(f) = cb.borrow().as_ref() {
-                f("");
-            }
-        });
+    /// Put the viewer's drawing controls at the top of this section.
+    pub fn set_draw_controls(&self, controls: &impl IsA<gtk::Widget>) {
+        self.draw_slot.append(controls.as_ref());
     }
 
     pub fn set_on_edit(&self, f: impl Fn(&str) + 'static) {

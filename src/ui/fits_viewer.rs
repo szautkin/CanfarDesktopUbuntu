@@ -273,9 +273,9 @@ impl FitsViewer {
             &north_up_btn,
         ));
 
-        // ── DRAW ────────────────────────────────────────────────────────────
-        column.append(&viewer_shell::section_header(crate::tr_en!("DRAW")));
-
+        // The drawing controls are built here — the viewer owns them and reads
+        // the picker at click time — but they live inside the Marks section,
+        // beside the list of what they produce.
         let draw_mode = gtk::ToggleButton::new();
         draw_mode.set_icon_name("document-edit-symbolic");
         draw_mode.set_tooltip_text(Some(crate::tr_en!(
@@ -293,7 +293,6 @@ impl FitsViewer {
         let draw_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         draw_box.append(&draw_mode);
         draw_box.append(&draw_kind);
-        column.append(&viewer_shell::labeled(crate::tr_en!("Mark"), &draw_box));
 
         // ── CROSSHAIR ───────────────────────────────────────────────────────
         column.append(&viewer_shell::section_header(crate::tr_en!("CROSSHAIR")));
@@ -350,6 +349,7 @@ impl FitsViewer {
 
         // ── ANNOTATIONS ─────────────────────────────────────────────────────
         let annotations_panel = crate::ui::annotations_panel::AnnotationsPanel::new();
+        annotations_panel.set_draw_controls(&draw_box);
         let annotations_expander = gtk::Expander::new(Some(crate::tr_en!("Marks")));
         annotations_expander.set_child(Some(annotations_panel.widget()));
         column.append(&annotations_expander);
@@ -887,14 +887,6 @@ impl FitsViewer {
                     v.persist_annotations(&tab);
                     v.refresh_annotations_panel();
                 }
-            });
-        }
-        {
-            let v = viewer.clone();
-            viewer.annotations_panel.set_on_add(move |_| {
-                // The same switch the toolbar flips, so there is one way to be
-                // in draw mode rather than two that can disagree.
-                v.draw_mode.set_active(true);
             });
         }
         {
@@ -1900,7 +1892,7 @@ impl FitsViewer {
             }
             {
                 let viewer = Rc::downgrade(self);
-                tab.canvas().set_on_shape_changing(move || {
+                tab.canvas().set_on_marks_moved(move || {
                     if let Some(v) = viewer.upgrade() {
                         v.follow_label_editor();
                     }
