@@ -77,6 +77,7 @@ pub struct ItemListSection {
     actions: RowActions,
     items: RefCell<Vec<ListItem>>,
     selected_id: RefCell<Option<String>>,
+    selectable: bool,
     /// What was selected when the current press began.
     ///
     /// `row-activated` fires on the click that SELECTS a row as well as on a
@@ -123,11 +124,14 @@ impl ItemListSection {
 
         let list = gtk::ListBox::new();
         list.add_css_class("boxed-list");
-        list.set_selection_mode(if spec.selectable {
-            gtk::SelectionMode::Single
-        } else {
-            gtk::SelectionMode::None
-        });
+        // The list never selects anything itself. Its selection moves on its
+        // own when rows are removed, is already set by the time
+        // `row-activated` can ask what WAS selected, and needs a capture-phase
+        // gesture to inspect — three behaviours that each had to be suppressed,
+        // and each suppression broke something else: a rebuild loop, a
+        // deselect that jumped to the first row, and a select that took two
+        // clicks. A CSS class the section adds and removes has none of them.
+        list.set_selection_mode(gtk::SelectionMode::None);
 
         // A fixed height: four rows, and it scrolls past that.
         //
@@ -156,6 +160,7 @@ impl ItemListSection {
             actions: spec.actions,
             items: RefCell::new(Vec::new()),
             selected_id: RefCell::new(None),
+            selectable: spec.selectable,
             selected_before_press: RefCell::new(None),
             rebuilding: Cell::new(false),
             on_select: Rc::new(RefCell::new(None)),
@@ -172,63 +177,46 @@ impl ItemListSection {
             });
         }
 
-        if spec.selectable {
-            section.wire_selection();
-        }
         section
     }
 
-    /// Selection, and the second click that undoes it.
-    fn wire_selection(self: &Rc<Self>) {
-        // Capture phase: this runs before the ListBox updates its selection, so
-        // it sees what WAS selected rather than what is about to be.
-        {
-            let this = Rc::downgrade(self);
-            let press = gtk::GestureClick::new();
-            press.set_propagation_phase(gtk::PropagationPhase::Capture);
-            press.connect_pressed(move |_, _, _, _| {
-                if let Some(s) = this.upgrade() {
-                    *s.selected_before_press.borrow_mut() = s.selected_id.borrow().clone();
-                }
-            });
-            self.list.add_controller(press);
+    /// Choose `id`, or clear the choice when it is already chosen.
+    fn toggle(self: &Rc<Self>, id: &str) {
+        let already = self.selected_id.borrow().as_deref() == Some(id);
+        let now = if already { None } else { Some(id.to_string()) };
+        *self.selected_id.borrow_mut() = now.clone();
+        self.paint_selection();
+        let handler = self.on_select.borrow().clone();
+        if let Some(f) = handler.as_ref() {
+            f(now.as_deref().unwrap_or(""));
         }
-        {
-            let this = Rc::downgrade(self);
-            self.list.connect_row_selected(move |_, row| {
-                let Some(s) = this.upgrade() else { return };
-                if s.rebuilding.get() {
-                    return;
+    }
+
+    /// Which row is chosen, if any.
+    pub fn selected(&self) -> Option<String> {
+        self.selected_id.borrow().clone()
+    }
+
+    /// Choose a row as a click would, for tests and probes.
+    pub fn click_row(self: &Rc<Self>, id: &str) {
+        self.toggle(id);
+    }
+
+    /// Put the highlight on the chosen row and nowhere else.
+    fn paint_selection(&self) {
+        let chosen = self.selected_id.borrow().clone();
+        let mut child = self.list.first_child();
+        while let Some(row) = child {
+            let next = row.next_sibling();
+            if let Ok(row) = row.clone().downcast::<gtk::ListBoxRow>() {
+                let is_chosen = row_id(&row).as_deref() == chosen.as_deref();
+                if is_chosen {
+                    row.add_css_class("item-selected");
+                } else {
+                    row.remove_css_class("item-selected");
                 }
-                let Some(id) = row.and_then(row_id) else {
-                    return;
-                };
-                *s.selected_id.borrow_mut() = Some(id.clone());
-                let handler = s.on_select.borrow().clone();
-                if let Some(f) = handler.as_ref() {
-                    f(&id);
-                }
-            });
-        }
-        {
-            let this = Rc::downgrade(self);
-            self.list.connect_row_activated(move |list, row| {
-                let Some(s) = this.upgrade() else { return };
-                if s.rebuilding.get() {
-                    return;
-                }
-                let Some(id) = row_id(row) else { return };
-                // Only a click on something that was ALREADY chosen means
-                // "never mind".
-                if s.selected_before_press.borrow().as_deref() == Some(id.as_str()) {
-                    list.select_row(None::<&gtk::ListBoxRow>);
-                    *s.selected_id.borrow_mut() = None;
-                    let handler = s.on_select.borrow().clone();
-                    if let Some(f) = handler.as_ref() {
-                        f("");
-                    }
-                }
-            });
+            }
+            child = next;
         }
     }
 
@@ -260,7 +248,7 @@ impl ItemListSection {
 
     /// Replace the rows.
     pub fn set_items(
-        &self,
+        self: &Rc<Self>,
         items: &[ListItem],
         selected: Option<&str>,
         count_text: Option<String>,
@@ -282,19 +270,12 @@ impl ItemListSection {
 
         for item in items {
             let row = self.build_row(item);
-            self.list.append(&row);
-            if selected == Some(item.id.as_str()) {
-                self.list.select_row(Some(&row));
+            if self.selectable {
+                self.make_selectable(&row, &item.id);
             }
+            self.list.append(&row);
         }
-        // Nothing chosen means nothing chosen. Removing rows makes a ListBox
-        // move its selection to a surviving one, and a rebuild removes them
-        // all — so deselecting landed on whatever came first, and the list
-        // reported a selection the user had just cleared. The guard silences
-        // the callback; it does not stop GTK choosing.
-        if selected.is_none() {
-            self.list.select_row(None::<&gtk::ListBoxRow>);
-        }
+        self.paint_selection();
         self.rebuilding.set(false);
         self.apply_filter();
     }
@@ -349,6 +330,19 @@ impl ItemListSection {
         row.set_child(Some(&line));
         unsafe { row.set_data("list-item-id", item.id.clone()) };
         row
+    }
+
+    /// Make `row` respond to a click, when this section is selectable.
+    fn make_selectable(self: &Rc<Self>, row: &gtk::ListBoxRow, id: &str) {
+        let click = gtk::GestureClick::new();
+        let this = Rc::downgrade(self);
+        let id = id.to_string();
+        click.connect_released(move |_, _, _, _| {
+            if let Some(s) = this.upgrade() {
+                s.toggle(&id);
+            }
+        });
+        row.add_controller(click);
     }
 
     /// Hide rows that do not match the filter.

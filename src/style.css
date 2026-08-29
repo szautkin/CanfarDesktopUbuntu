@@ -184,3 +184,15 @@ label.warning { color: @warning_color; }
     padding-bottom: 4px;
     border-bottom: 1px solid alpha(@borders, 0.8);
 }
+
+/* A row the user has picked in a sidebar list.
+ *
+ * The lists manage their own selection rather than using GtkListBox's: its
+ * selection moves on its own when rows are removed, is set before
+ * `row-activated` can ask what was selected, and needs a gesture in the capture
+ * phase to inspect — each of which had to be suppressed, and each suppression
+ * broke something else. A class the list adds and removes has none of that
+ * behaviour, because it has no behaviour. */
+row.item-selected {
+  background-color: alpha(@accent_bg_color, 0.20);
+}

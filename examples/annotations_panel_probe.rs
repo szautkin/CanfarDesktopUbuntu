@@ -97,6 +97,63 @@ fn main() {
         }
     }
 
+    // Select and deselect, which has been wrong three different ways: a click
+    // that selected then instantly deselected itself, a deselect that landed on
+    // the first row, and a select that needed two clicks. All three came from
+    // GtkListBox's own selection; the section owns it now, so it can be asked.
+    {
+        use verbinal::ui::item_list_section::{ItemListSection, ListItem, RowActions, SectionSpec};
+        let section = ItemListSection::new(SectionSpec {
+            actions: RowActions::EDIT_AND_DELETE,
+            filter_placeholder: Some("filter"),
+            empty_message: "nothing",
+            selectable: true,
+        });
+        let items: Vec<ListItem> = (0..4)
+            .map(|i| ListItem {
+                id: format!("id-{i}"),
+                title: format!("row {i}"),
+                subtitle: "sub".into(),
+            })
+            .collect();
+        let reported = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        {
+            let reported = reported.clone();
+            section.set_on_select(move |id| reported.borrow_mut().push(id.to_string()));
+        }
+        section.set_items(&items, None, None);
+
+        section.click_row("id-2");
+        println!("after one click: {:?}", section.selected());
+        if section.selected().as_deref() != Some("id-2") {
+            println!("  !! one click did not select — it used to need two");
+            failures += 1;
+        }
+
+        section.click_row("id-2");
+        println!("after a second click on it: {:?}", section.selected());
+        match section.selected() {
+            None => {}
+            Some(other) => {
+                println!("  !! deselecting landed on {other} instead of clearing");
+                failures += 1;
+            }
+        }
+
+        // A rebuild must not invent a selection.
+        section.set_items(&items, None, None);
+        if section.selected().is_some() {
+            println!("  !! a rebuild selected something on its own");
+            failures += 1;
+        }
+        let seen = reported.borrow().clone();
+        println!("reported: {seen:?}");
+        if seen != vec!["id-2".to_string(), String::new()] {
+            println!("  !! the section reported {seen:?}, not one select then one clear");
+            failures += 1;
+        }
+    }
+
     // An empty list is a valid state and must not panic.
     panel.set_annotations(&[], None);
     println!("empty list rebuilt cleanly");
