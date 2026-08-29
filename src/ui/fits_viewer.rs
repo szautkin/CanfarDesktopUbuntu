@@ -1136,6 +1136,9 @@ impl FitsViewer {
                 // Persist, but a viewer that cannot write must still show the
                 // mark it just drew.
                 let saved = crate::helpers::annotation_store::save_for(&file, &current).is_ok();
+                // An agent's mark is a mark: it belongs in the list the person
+                // is looking at, not only on the image.
+                self.refresh_annotations_panel();
 
                 Ok(json!({
                     "id": mark.id,
@@ -1165,6 +1168,7 @@ impl FitsViewer {
                     let file = Self::annotation_target(&tab);
                     let _ = crate::helpers::annotation_store::save_for(&file, &current);
                 }
+                self.refresh_annotations_panel();
                 Ok(json!({ "removed": removed, "viewer": "fits", "remaining": current.len() }))
             }
 
@@ -1177,6 +1181,7 @@ impl FitsViewer {
                 canvas.set_annotations(Vec::new());
                 let file = Self::annotation_target(&tab);
                 let _ = crate::helpers::annotation_store::save_for(&file, &[]);
+                self.refresh_annotations_panel();
                 Ok(json!({ "cleared": removed, "viewer": "fits" }))
             }
 
@@ -1825,6 +1830,9 @@ impl FitsViewer {
             let saved = crate::helpers::annotation_store::load_for(&file);
             if !saved.is_empty() {
                 tab.canvas().set_annotations(saved);
+                // The list is built from the canvas, so loading marks into the
+                // canvas without saying so left the panel showing none of them.
+                self.refresh_annotations_panel();
             }
         }
 
@@ -1842,6 +1850,18 @@ impl FitsViewer {
                 });
             }
 
+            {
+                // One subscription. Every route that changes the marks — the
+                // toolbar, the panel, an agent's tool call, loading a file —
+                // goes through the canvas, so the list follows all of them
+                // without any of them knowing it exists.
+                let viewer = Rc::downgrade(self);
+                tab.canvas().set_on_annotations_changed(move || {
+                    if let Some(v) = viewer.upgrade() {
+                        v.refresh_annotations_panel();
+                    }
+                });
+            }
             {
                 let viewer = Rc::downgrade(self);
                 tab.canvas().set_on_shape_changing(move || {

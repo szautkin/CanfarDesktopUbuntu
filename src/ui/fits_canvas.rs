@@ -252,6 +252,15 @@ pub struct FitsCanvas {
     /// The mark this press selected, if it selected one. A press that turns
     /// into a drag is a move; one that does not is a request to edit.
     tapped: Rc<RefCell<Option<String>>>,
+    /// Told whenever the set of marks changes, by any route.
+    ///
+    /// The canvas owns the marks, so it is the one place that knows they
+    /// changed. Pushing a refresh from every caller instead meant each new
+    /// route had to remember — and the MCP tools and the load-on-open path both
+    /// forgot, so an agent's marks and a reopened file's marks were on the
+    /// image and absent from the list.
+    #[allow(clippy::type_complexity)]
+    on_annotations_changed: Rc<RefCell<Option<Box<dyn Fn()>>>>,
     /// Told while a mark is being moved or resized, so anything anchored to it
     /// — an open label editor — can follow rather than sit where the mark used
     /// to be.
@@ -324,6 +333,7 @@ impl FitsCanvas {
             preview_kind: Rc::new(RefCell::new(None)),
             grab: Rc::new(RefCell::new(None)),
             tapped: Rc::new(RefCell::new(None)),
+            on_annotations_changed: Rc::new(RefCell::new(None)),
             on_shape_changing: Rc::new(RefCell::new(None)),
             on_label_clicked: Rc::new(RefCell::new(None)),
             on_selection_changed: Rc::new(RefCell::new(None)),
@@ -1012,10 +1022,20 @@ impl FitsCanvas {
     pub fn set_annotations(&self, annotations: Vec<crate::models::annotation::Annotation>) {
         *self.annotations.borrow_mut() = annotations;
         self.drawing_area.queue_draw();
+        // Announced from the one place the set can change, so no caller has to
+        // remember to tell the list.
+        let notify = self.on_annotations_changed.borrow();
+        if let Some(f) = notify.as_ref() {
+            f();
+        }
     }
 
     pub fn annotations(&self) -> Vec<crate::models::annotation::Annotation> {
         self.annotations.borrow().clone()
+    }
+
+    pub fn set_on_annotations_changed(&self, f: impl Fn() + 'static) {
+        *self.on_annotations_changed.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_on_shape_changing(&self, f: impl Fn() + 'static) {
