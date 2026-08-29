@@ -97,8 +97,6 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Mark",                                        "Repère"),
     ("Circle",                                      "Cercle"),
     ("Box",                                         "Rectangle"),
-    ("Callout",                                     "Légende"),
-    ("Text",                                        "Texte"),
     ("circle",                                      "cercle"),
     ("box",                                         "rectangle"),
     ("callout",                                     "légende"),

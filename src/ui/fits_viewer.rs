@@ -282,12 +282,12 @@ impl FitsViewer {
             "Draw a mark on the image. Click where you mean, Shift-drag to move the image, \
              Escape to stop."
         )));
-        let kind_items = gtk::StringList::new(&[
-            crate::tr_en!("Circle"),
-            crate::tr_en!("Box"),
-            crate::tr_en!("Callout"),
-            crate::tr_en!("Text"),
-        ]);
+        // Two shapes. A "callout" was a small circle with a leader, and every
+        // shape has a leader now; a "text" was a label with nothing to point
+        // at. Both kinds still exist in the model and over MCP — stored marks
+        // and an agent's calls keep working — they are simply not choices a
+        // person has to make here.
+        let kind_items = gtk::StringList::new(&[crate::tr_en!("Circle"), crate::tr_en!("Box")]);
         let draw_kind = gtk::DropDown::new(Some(kind_items), gtk::Expression::NONE);
         draw_kind.set_selected(0);
         let draw_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -2045,8 +2045,6 @@ impl FitsViewer {
         use crate::models::annotation::AnnotationKind::*;
         match self.draw_kind.selected() {
             1 => Rect,
-            2 => Callout,
-            3 => Text,
             _ => Circle,
         }
     }
