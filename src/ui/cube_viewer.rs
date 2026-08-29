@@ -22,6 +22,8 @@ use crate::ui::viewer_shell::{self, labeled};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
+use libadwaita as adw;
+use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -54,9 +56,19 @@ pub struct CubeViewer {
     /// be a SECOND channel, decoupled from the slice view's, so the marker in
     /// the volume stayed where it was seeded however far you scrubbed.
     current_channel: Cell<usize>,
+    /// The file this cube was loaded from — what its marks are filed under.
+    ///
+    /// Held here rather than looked up from the view payload: the cube's
+    /// `view_json` has no `path` key, so `get("path")` was `None` on every
+    /// call and every cube's marks were saved under `""`. The FITS side had
+    /// exactly this bug; ask the viewer, which knows.
+    source_path: RefCell<String>,
     /// Marks drawn on this cube, by the user or an agent.
     annotations: RefCell<Vec<crate::models::annotation::Annotation>>,
     selected_annotation: RefCell<Option<String>>,
+    /// The sidebar list of those marks, and the controls that make them.
+    annotations_panel: Rc<crate::ui::annotations_panel::AnnotationsPanel>,
+    draw_kind: gtk::DropDown,
     // Handles the overlay / colorbar methods read back.
     window_lo: gtk::Scale,
     window_hi: gtk::Scale,
@@ -178,8 +190,11 @@ impl CubeViewer {
             volume_section: ctl.volume_section.clone(),
             overlay_area,
             current_channel: Cell::new(vol.nz / 2),
+            source_path: RefCell::new(String::new()),
             annotations: RefCell::new(Vec::new()),
             selected_annotation: RefCell::new(None),
+            annotations_panel: ctl.annotations_panel.clone(),
+            draw_kind: ctl.draw_kind.clone(),
             window_lo: ctl.window_lo.clone(),
             window_hi: ctl.window_hi.clone(),
             colormap: ctl.colormap.clone(),
@@ -223,9 +238,23 @@ impl CubeViewer {
     /// slice renders at full FITS resolution (and hover sky coords are exact).
     /// A no-op when the file isn't a plain, seekable, modestly-sized cube.
     pub fn set_source_path(&self, path: &std::path::Path) {
+        *self.source_path.borrow_mut() = path.display().to_string();
         if let Some(src) = crate::helpers::cube_native_slice::NativeSliceSource::try_open(path) {
             self.slice.set_native_source(src);
         }
+        // Marks saved from a previous session come back with the file. The
+        // store was write-only on this side: `save_for` on every change and
+        // `load_for` nowhere, so nothing a user or an agent drew on a cube
+        // survived closing it.
+        let saved = crate::helpers::annotation_store::load_for(&self.source_path.borrow());
+        if !saved.is_empty() {
+            self.set_annotations(saved);
+        }
+    }
+
+    /// The file this cube's marks are filed under. Empty before a path is set.
+    pub fn source_file(&self) -> String {
+        self.source_path.borrow().clone()
     }
 
     // ── Live MCP accessors (per-viewer cube tools) ───────────────────────────
@@ -523,6 +552,87 @@ impl CubeViewer {
     pub fn set_annotations(&self, annotations: Vec<crate::models::annotation::Annotation>) {
         *self.annotations.borrow_mut() = annotations;
         self.overlay_area.queue_draw();
+        self.slice
+            .set_annotations(self.annotations.borrow().clone());
+        self.refresh_annotations_panel();
+    }
+
+    /// Ask for a mark's label.
+    ///
+    /// A dialog rather than the FITS viewer's in-place overlay: that one sits
+    /// at the end of the mark's leader, which needs a stable 2D geometry to
+    /// point at. In a volume the mark moves whenever the camera does, so an
+    /// editor pinned to it would chase the mark around the panel while you
+    /// typed in it.
+    fn ask_for_mark_text(self: &Rc<Self>, id: &str) {
+        let Some(mark) = self.annotations().into_iter().find(|a| a.id == id) else {
+            return;
+        };
+        let root = self
+            .widget
+            .root()
+            .and_then(|r| r.downcast::<gtk::Window>().ok());
+        let dialog =
+            adw::MessageDialog::new(root.as_ref(), Some(crate::tr_en!("Label this mark")), None);
+        let entry = gtk::Entry::new();
+        entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
+        entry.set_text(&mark.text);
+        entry.select_region(0, -1);
+        entry.set_margin_top(6);
+        entry.set_margin_bottom(6);
+        entry.set_margin_start(6);
+        entry.set_margin_end(6);
+        dialog.set_extra_child(Some(&entry));
+        dialog.add_response("cancel", crate::tr_en!("Cancel"));
+        dialog.add_response("save", crate::tr_en!("Save"));
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("save"));
+        dialog.set_close_response("cancel");
+
+        // Enter in the field is the same as pressing Save — typing a label and
+        // hitting return is what a person does without thinking about it.
+        {
+            let dialog = dialog.clone();
+            entry.connect_activate(move |_| dialog.response("save"));
+        }
+        let this = self.clone();
+        let id = id.to_string();
+        let entry_ref = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "save" {
+                return;
+            }
+            let text = entry_ref.text().trim().to_string();
+            let mut all = this.annotations();
+            if let Some(m) = all.iter_mut().find(|a| a.id == id) {
+                m.text = text;
+            }
+            this.set_annotations(all);
+            this.persist_annotations();
+        });
+        dialog.present();
+        entry.grab_focus();
+    }
+
+    /// Refill the sidebar list from what is actually stored.
+    ///
+    /// Called by the setters rather than by their callers: the owner announces
+    /// its own change, so no path — MCP, a click, a file load — can move the
+    /// marks and leave the list showing the old set.
+    pub fn refresh_annotations_panel(&self) {
+        self.annotations_panel.set_annotations(
+            &self.annotations.borrow(),
+            self.selected_annotation.borrow().as_deref(),
+        );
+    }
+
+    /// Write the current marks to the store, under this cube's own path.
+    pub fn persist_annotations(&self) -> bool {
+        crate::helpers::annotation_store::save_for(
+            &self.source_path.borrow(),
+            &self.annotations.borrow(),
+        )
+        .is_ok()
     }
 
     pub fn annotations(&self) -> Vec<crate::models::annotation::Annotation> {
@@ -530,8 +640,10 @@ impl CubeViewer {
     }
 
     pub fn set_selected_annotation(&self, id: Option<String>) {
-        *self.selected_annotation.borrow_mut() = id;
+        *self.selected_annotation.borrow_mut() = id.clone();
         self.overlay_area.queue_draw();
+        self.slice.set_selected_annotation(id);
+        self.refresh_annotations_panel();
     }
 
     pub fn selected_annotation(&self) -> Option<String> {
@@ -846,6 +958,133 @@ impl CubeViewer {
             let this = self.clone();
             ctl.export.connect_clicked(move |_| this.show_export());
         }
+
+        // ── Marks ───────────────────────────────────────────────────────────
+        // Picking a row points a mark OUT, and takes you to the channel it is
+        // on: a cube mark lives on one plane, so selecting one you cannot see
+        // would light up nothing. Clicking the lit row again clears it.
+        {
+            let this = self.clone();
+            ctl.annotations_panel.set_on_select(move |id| {
+                if id.is_empty() {
+                    this.set_selected_annotation(None);
+                    return;
+                }
+                let channel = this
+                    .annotations()
+                    .iter()
+                    .find(|a| a.id == id)
+                    .and_then(|a| match a.anchor {
+                        crate::models::annotation::Anchor::Data { z, .. } => Some(z),
+                        _ => None,
+                    });
+                if let Some(z) = channel {
+                    this.set_current_channel(z.round().max(0.0) as usize);
+                }
+                this.set_selected_annotation(Some(id.to_string()));
+            });
+        }
+        {
+            let this = self.clone();
+            ctl.annotations_panel.set_on_delete(move |id| {
+                let mut all = this.annotations();
+                all.retain(|a| a.id != id);
+                this.set_annotations(all);
+                this.persist_annotations();
+            });
+        }
+        {
+            let this = self.clone();
+            ctl.annotations_panel.set_on_edit(move |id| {
+                this.set_selected_annotation(Some(id.to_string()));
+                this.ask_for_mark_text(id);
+            });
+        }
+        {
+            let this = self.clone();
+            ctl.annotations_panel.set_on_clear(move |_| {
+                this.set_annotations(Vec::new());
+                this.persist_annotations();
+            });
+        }
+
+        // Draw mode arms the slice: a click there places a mark instead of
+        // probing a spectrum. Only the 2D slice, because a click on a volume
+        // is a ray through it rather than a point — see `place_mark`.
+        {
+            let this = self.clone();
+            ctl.draw_mode.connect_toggled(move |btn| {
+                let on = btn.is_active();
+                this.slice.set_placing(on);
+                if on {
+                    // Placing happens on the plane you are looking at, so show
+                    // it. Arming while the volume is up would leave the click
+                    // target invisible.
+                    this.mode_slice.set_active(true);
+                }
+            });
+        }
+        {
+            let this = self.clone();
+            self.slice.set_on_place(move |vx, vy, radius| {
+                this.place_mark(vx, vy, radius);
+            });
+        }
+
+        // Escape leaves draw mode, as it does in the FITS viewer. Driven
+        // through the toggle rather than by disarming the slice directly, so
+        // the button cannot end up pressed while nothing is armed.
+        {
+            let key = gtk::EventControllerKey::new();
+            let draw_mode = ctl.draw_mode.clone();
+            key.connect_key_pressed(move |_, keyval, _code, _modifier| {
+                if keyval == gtk::gdk::Key::Escape && draw_mode.is_active() {
+                    draw_mode.set_active(false);
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            self.widget.add_controller(key);
+        }
+    }
+
+    /// Add a mark at a voxel, from a click on the slice.
+    ///
+    /// `radius` of zero means the click was not dragged: fall back to a size
+    /// that is visible on THIS cube rather than a fixed number of voxels,
+    /// which would be a dot on a 2048-wide plane and cover a 32-wide one.
+    fn place_mark(self: &Rc<Self>, vx: f64, vy: f64, radius: f64) {
+        use crate::models::annotation::{Anchor, Annotation, AnnotationKind, Author, Extent};
+        let kind = if self.draw_kind.selected() == 1 {
+            AnnotationKind::Rect
+        } else {
+            AnnotationKind::Circle
+        };
+        let half = if radius > 0.0 {
+            radius
+        } else {
+            (self.vol.nx.min(self.vol.ny) as f64 * 0.03).max(1.5)
+        };
+        let mark = Annotation::new(
+            kind,
+            Anchor::Data {
+                x: vx,
+                y: vy,
+                z: self.current_channel.get() as f64,
+            },
+            String::new(),
+            Author::User,
+        )
+        .with_extent(Extent::square(half));
+        let id = mark.id.clone();
+        let mut all = self.annotations();
+        all.push(mark);
+        self.set_annotations(all);
+        self.persist_annotations();
+        // Straight into naming it: a mark with no label is a ring around
+        // nothing, and the point of drawing one is to say what it is.
+        self.set_selected_annotation(Some(id.clone()));
+        self.ask_for_mark_text(&id);
     }
 
     // ── Wireframe box + WCS caption overlay ──────────────────────────────────
@@ -1289,6 +1528,12 @@ struct Controls {
     transfer_reset: gtk::Button,
     info_grid: gtk::Grid,
     export: gtk::Button,
+    /// The marks list, and the two controls that produce marks. Same panel the
+    /// FITS viewer uses — it takes `&[Annotation]` and callbacks, so nothing
+    /// about it was FITS-specific except who had mounted it.
+    annotations_panel: Rc<crate::ui::annotations_panel::AnnotationsPanel>,
+    draw_mode: gtk::ToggleButton,
+    draw_kind: gtk::DropDown,
 }
 
 fn build_controls(_name: &str) -> (Controls, Controls) {
@@ -1431,6 +1676,28 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
 
     column.append(&volume_section);
 
+    // ── Marks ───────────────────────────────────────────────────────────────
+    // The drawing controls are built here and live inside the Marks section,
+    // beside the list of what they produce — the same arrangement as the FITS
+    // viewer, because it is the same job.
+    let draw_mode = gtk::ToggleButton::new();
+    draw_mode.set_icon_name("document-edit-symbolic");
+    draw_mode.set_tooltip_text(Some(crate::tr_en!(
+        "Draw a mark on the cube. Click where you mean, Escape to stop."
+    )));
+    let kind_items = gtk::StringList::new(&[crate::tr_en!("Circle"), crate::tr_en!("Box")]);
+    let draw_kind = gtk::DropDown::new(Some(kind_items), gtk::Expression::NONE);
+    draw_kind.set_selected(0);
+    let draw_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    draw_box.append(&draw_mode);
+    draw_box.append(&draw_kind);
+
+    let annotations_panel = crate::ui::annotations_panel::AnnotationsPanel::new();
+    annotations_panel.set_draw_controls(&draw_box);
+    let annotations_expander = gtk::Expander::new(Some(crate::tr_en!("Marks")));
+    annotations_expander.set_child(Some(annotations_panel.widget()));
+    column.append(&annotations_expander);
+
     // ── Info expander ───────────────────────────────────────────────────────
     let info_grid = gtk::Grid::new();
     info_grid.set_row_spacing(3);
@@ -1470,6 +1737,9 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
         transfer_reset,
         info_grid,
         export,
+        annotations_panel,
+        draw_mode,
+        draw_kind,
     };
     (controls.clone(), controls)
 }

@@ -93,6 +93,18 @@ pub struct CubeSliceView {
     suppress: Cell<bool>,
     /// Generation token so a restarted playback timer supersedes the old one.
     play_gen: Cell<u64>,
+    /// True while the viewer is in draw mode: a click places a mark instead of
+    /// probing, and a drag sizes it instead of panning.
+    placing: Cell<bool>,
+    /// Called with `(voxel x, voxel y, radius in voxels)` when a placing click
+    /// lands. The viewer decides what kind of mark that becomes — this view
+    /// knows where, not what.
+    on_place: crate::ui::CallbackSlot<dyn Fn(f64, f64, f64)>,
+    /// The cube's marks, mirrored here so the slice draws the same set the
+    /// volume does. The viewer owns them; this is a copy kept in step by
+    /// `CubeViewer::set_annotations`, which is the only writer.
+    annotations: RefCell<Vec<crate::models::annotation::Annotation>>,
+    selected_annotation: RefCell<Option<String>>,
 }
 
 impl CubeSliceView {
@@ -240,6 +252,10 @@ impl CubeSliceView {
             }),
             suppress: Cell::new(false),
             play_gen: Cell::new(0),
+            placing: Cell::new(false),
+            on_place: RefCell::new(None),
+            annotations: RefCell::new(Vec::new()),
+            selected_annotation: RefCell::new(None),
         });
 
         this.setup_slice_draw();
@@ -482,6 +498,94 @@ impl CubeSliceView {
     }
 
     /// Invert the zoom/pan + aspect-fit transform: viewport point → voxel (x, y).
+    /// Mirror the cube's marks into this view. Called by `CubeViewer`, which
+    /// owns them; nothing here writes the set.
+    pub fn set_annotations(&self, annotations: Vec<crate::models::annotation::Annotation>) {
+        *self.annotations.borrow_mut() = annotations;
+        self.slice_area.queue_draw();
+    }
+
+    pub fn set_selected_annotation(&self, id: Option<String>) {
+        *self.selected_annotation.borrow_mut() = id;
+        self.slice_area.queue_draw();
+    }
+
+    /// Arm or disarm placing. While armed the pointer is a crosshair, so it is
+    /// visible that a click will do something other than probe.
+    pub fn set_placing(&self, on: bool) {
+        self.placing.set(on);
+        self.slice_area
+            .set_cursor_from_name(Some(if on { "crosshair" } else { "default" }));
+    }
+
+    pub fn set_on_place(&self, cb: impl Fn(f64, f64, f64) + 'static) {
+        *self.on_place.borrow_mut() = Some(std::rc::Rc::new(cb));
+    }
+
+    /// The current channel, for placing a mark on the plane being looked at.
+    pub fn current_z(&self) -> usize {
+        self.state.borrow().z
+    }
+
+    /// Screen point to a CONTINUOUS volume-voxel position, or `None` off-image.
+    ///
+    /// `map_to_pixel` floors to a voxel index, which is right for sampling a
+    /// value and wrong for placing a mark: a click in the middle of a voxel
+    /// would be stored at its corner, half a voxel from where the user aimed.
+    /// Voxel coordinates are continuous positions here, which is also how
+    /// `project_voxel` reads them in the volume view — the two views have to
+    /// agree or a mark moves when you switch mode.
+    pub fn screen_to_voxel(&self, px: f64, py: f64) -> Option<(f64, f64)> {
+        self.annotation_surface()?.screen_to_voxel(px, py)
+    }
+
+    /// The projection marks use on this slice, for the current view.
+    fn annotation_surface(&self) -> Option<SliceAnnotationSurface> {
+        let (fit, ox, oy, aw, ah) = self.fit_params()?;
+        let (zoom, pan_x, pan_y, z) = {
+            let s = self.state.borrow();
+            (s.zoom, s.pan_x, s.pan_y, s.z)
+        };
+        Some(SliceAnnotationSurface {
+            fit,
+            ox,
+            oy,
+            aw,
+            ah,
+            zoom,
+            pan_x,
+            pan_y,
+            z,
+            disp_nx: self.disp_nx.get() as f64,
+            disp_ny: self.disp_ny.get() as f64,
+            vol_nx: self.vol.nx as f64,
+            vol_ny: self.vol.ny as f64,
+        })
+    }
+
+    /// Turn a placing click-drag into a voxel position and a radius.
+    ///
+    /// The radius is measured in VOXELS, not screen pixels, so a mark drawn at
+    /// one zoom is the same size on the data at any other — the same rule the
+    /// FITS viewer follows, and the reason a mark does not swell when you zoom
+    /// in on it.
+    fn place_at(&self, px: f64, py: f64, dx: f64, dy: f64) {
+        let Some((vx, vy)) = self.screen_to_voxel(px, py) else {
+            return;
+        };
+        let radius = match self.screen_to_voxel(px + dx, py + dy) {
+            // A drag of a few pixels is a click that wobbled, not a size.
+            Some((ex, ey)) if dx.hypot(dy) > PAN_THRESHOLD => {
+                ((ex - vx).powi(2) + (ey - vy).powi(2)).sqrt()
+            }
+            _ => 0.0,
+        };
+        let cb = self.on_place.borrow().clone();
+        if let Some(cb) = cb {
+            cb(vx, vy, radius);
+        }
+    }
+
     fn map_to_pixel(&self, px: f64, py: f64) -> Option<(usize, usize)> {
         let (fit, ox, oy, aw, ah) = self.fit_params()?;
         let (zoom, pan_x, pan_y) = {
@@ -801,6 +905,21 @@ impl CubeSliceView {
                     h as f64,
                 );
             }
+
+            // Marks last, so they sit over the image — and through the same
+            // renderer the volume view and the FITS canvas use, so one shape
+            // cannot start looking different depending on where you see it.
+            if let Some(surface) = this.annotation_surface() {
+                crate::helpers::annotation_render::draw(
+                    &this.annotations.borrow(),
+                    &surface,
+                    this.selected_annotation.borrow().as_deref(),
+                    None,
+                    cr,
+                    w as f64,
+                    h as f64,
+                );
+            }
         });
     }
 
@@ -932,6 +1051,11 @@ impl CubeSliceView {
             let this = self.clone();
             let start = start.clone();
             drag.connect_drag_update(move |_, dx, dy| {
+                // While placing, a drag sizes the mark; panning would drag the
+                // image out from under the shape being drawn.
+                if this.placing.get() {
+                    return;
+                }
                 let mut st = start.borrow_mut();
                 if !st.4 && (dx.abs() > PAN_THRESHOLD || dy.abs() > PAN_THRESHOLD) {
                     st.4 = true;
@@ -948,8 +1072,12 @@ impl CubeSliceView {
         {
             let this = self.clone();
             let start = start.clone();
-            drag.connect_drag_end(move |_, _dx, _dy| {
+            drag.connect_drag_end(move |_, dx, dy| {
                 let st = *start.borrow();
+                if this.placing.get() {
+                    this.place_at(st.0, st.1, dx, dy);
+                    return;
+                }
                 if !st.4 {
                     this.probe_at(st.0, st.1);
                 }
@@ -1075,6 +1203,93 @@ impl CubeSliceView {
     }
 }
 
+/// Where a cube mark lands on the 2D slice, for one frame's view.
+///
+/// A snapshot rather than a borrow of the view: the renderer runs inside the
+/// draw closure, which already holds `state`, and a second borrow there
+/// panics.
+struct SliceAnnotationSurface {
+    fit: f64,
+    ox: f64,
+    oy: f64,
+    aw: f64,
+    ah: f64,
+    zoom: f64,
+    pan_x: f64,
+    pan_y: f64,
+    /// The channel on screen. A mark on another one is not drawn.
+    z: usize,
+    disp_nx: f64,
+    disp_ny: f64,
+    vol_nx: f64,
+    vol_ny: f64,
+}
+
+impl SliceAnnotationSurface {
+    /// Screen point to a CONTINUOUS volume-voxel position, or `None` when the
+    /// point is off the plane.
+    ///
+    /// The exact inverse of [`Self::voxel_to_screen`], and it lives beside it
+    /// so the two are read together: placing uses this and drawing uses that,
+    /// so any disagreement between them puts a mark somewhere other than where
+    /// the user clicked. A round-trip test pins it.
+    fn screen_to_voxel(&self, px: f64, py: f64) -> Option<(f64, f64)> {
+        if self.fit <= 0.0 || self.zoom <= 0.0 || self.disp_nx <= 0.0 || self.disp_ny <= 0.0 {
+            return None;
+        }
+        let fx = self.aw / 2.0 + (px - self.pan_x - self.aw / 2.0) / self.zoom;
+        let fy = self.ah / 2.0 + (py - self.pan_y - self.ah / 2.0) / self.zoom;
+        let dx = (fx - self.ox) / self.fit;
+        let dy = (fy - self.oy) / self.fit;
+        if dx < 0.0 || dy < 0.0 || dx >= self.disp_nx || dy >= self.disp_ny {
+            return None;
+        }
+        Some((
+            dx * self.vol_nx / self.disp_nx,
+            dy * self.vol_ny / self.disp_ny,
+        ))
+    }
+
+    /// Volume voxel to screen, the same chain the image itself is drawn
+    /// through: fit, then pan and zoom about the widget centre.
+    fn voxel_to_screen(&self, vx: f64, vy: f64) -> (f64, f64) {
+        let dx = vx * self.disp_nx / self.vol_nx.max(1.0);
+        let dy = vy * self.disp_ny / self.vol_ny.max(1.0);
+        let fitx = self.ox + dx * self.fit;
+        let fity = self.oy + dy * self.fit;
+        (
+            self.pan_x + self.aw / 2.0 + (fitx - self.aw / 2.0) * self.zoom,
+            self.pan_y + self.ah / 2.0 + (fity - self.ah / 2.0) * self.zoom,
+        )
+    }
+}
+
+impl crate::helpers::annotation_render::AnnotationSurface for SliceAnnotationSurface {
+    fn project(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
+        use crate::models::annotation::Anchor;
+        let Anchor::Data { x, y, z } = *anchor else {
+            // A sky position or a FITS image pixel means nothing in voxel
+            // space; skipped rather than guessed at.
+            return None;
+        };
+        // Only marks on the channel being shown. A mark three channels away is
+        // not AT this position on this plane, and drawing it here would say it
+        // was — the marks list carries the others, with their channel.
+        if (z.round() as i64) != self.z as i64 {
+            return None;
+        }
+        Some(self.voxel_to_screen(x, y))
+    }
+
+    fn units_to_pixels(&self, _anchor: &crate::models::annotation::Anchor) -> f64 {
+        // One volume voxel, in screen pixels. Uniform across the plane — unlike
+        // the volume view, this projection has no perspective.
+        let a = self.voxel_to_screen(0.0, 0.0);
+        let b = self.voxel_to_screen(1.0, 0.0);
+        ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt().max(0.25)
+    }
+}
+
 /// Map a displayed-slice pixel to the matching index in a `target_n`-wide axis
 /// (down-sampled volume voxel, or native WCS pixel). Mirrors `MapDispToVolume`.
 fn map_disp_to(p: usize, disp_n: usize, target_n: usize) -> usize {
@@ -1133,5 +1348,192 @@ fn channel_profile(vol: &VolumeData) -> Vec<f32> {
         means.iter().map(|&v| (v - mn) / (mx - mn)).collect()
     } else {
         vec![0.5; nz]
+    }
+}
+
+#[cfg(test)]
+mod slice_annotation_tests_support {
+    use super::SliceAnnotationSurface;
+
+    /// A surface with no pan, no zoom, and the displayed plane at the volume's
+    /// own resolution — the plain case, where the arithmetic is checkable by
+    /// hand. Shared so the projection and placement tests cannot drift onto
+    /// different geometry and both pass while disagreeing.
+    pub fn surface(z: usize) -> SliceAnnotationSurface {
+        SliceAnnotationSurface {
+            fit: 4.0,
+            ox: 10.0,
+            oy: 20.0,
+            aw: 400.0,
+            ah: 300.0,
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            z,
+            disp_nx: 64.0,
+            disp_ny: 64.0,
+            vol_nx: 64.0,
+            vol_ny: 64.0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod slice_annotation_tests {
+    use super::slice_annotation_tests_support::surface;
+    use crate::helpers::annotation_render::AnnotationSurface;
+    use crate::models::annotation::Anchor;
+
+    /// A mark on another channel is not drawn.
+    ///
+    /// The important half of this view's projection. A cube mark sits on one
+    /// plane; drawing it on every plane would say it was at that position in
+    /// all of them, which is exactly the false statement the renderer's
+    /// "skip, do not clamp" rule exists to avoid.
+    #[test]
+    fn a_mark_on_another_channel_is_not_drawn() {
+        let s = surface(12);
+        let here = Anchor::Data {
+            x: 30.0,
+            y: 30.0,
+            z: 12.0,
+        };
+        let elsewhere = Anchor::Data {
+            x: 30.0,
+            y: 30.0,
+            z: 13.0,
+        };
+        assert!(s.project(&here).is_some(), "the current channel draws");
+        assert!(
+            s.project(&elsewhere).is_none(),
+            "a mark one channel away must not be drawn here"
+        );
+    }
+
+    /// A sky or image-pixel anchor means nothing in voxel space.
+    #[test]
+    fn only_voxel_anchors_project() {
+        let s = surface(0);
+        assert!(s
+            .project(&Anchor::Sky {
+                ra_deg: 202.0,
+                dec_deg: 47.0
+            })
+            .is_none());
+        assert!(s.project(&Anchor::ImagePixel { x: 5.0, y: 5.0 }).is_none());
+    }
+
+    /// The projection follows the same chain the image is drawn through.
+    ///
+    /// Voxel 0 sits at the image origin `ox, oy`, and one voxel spans `fit`
+    /// screen pixels — so a mark lands on the feature under it rather than
+    /// beside it.
+    #[test]
+    fn a_voxel_lands_where_the_image_draws_it() {
+        let s = surface(0);
+        assert_eq!(s.voxel_to_screen(0.0, 0.0), (10.0, 20.0));
+        assert_eq!(s.voxel_to_screen(1.0, 0.0), (14.0, 20.0));
+        assert!(
+            (s.units_to_pixels(&Anchor::Data {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            }) - 4.0)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    /// Zoom and pan move marks with the image, not independently of it.
+    #[test]
+    fn marks_travel_with_zoom_and_pan() {
+        let mut s = surface(0);
+        s.zoom = 2.0;
+        s.pan_x = 7.0;
+        s.pan_y = -3.0;
+        // Same chain as the draw function: fit, then zoom about the widget
+        // centre, then pan.
+        let expect =
+            |v: f64, o: f64, half: f64, pan: f64| pan + half + ((o + v * 4.0) - half) * 2.0;
+        let (sx, sy) = s.voxel_to_screen(5.0, 6.0);
+        assert!((sx - expect(5.0, 10.0, 200.0, 7.0)).abs() < 1e-9, "x {sx}");
+        assert!((sy - expect(6.0, 20.0, 150.0, -3.0)).abs() < 1e-9, "y {sy}");
+        // A mark keeps its size on the DATA: at 2x zoom one voxel is 8px.
+        assert!(
+            (s.units_to_pixels(&Anchor::Data {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            }) - 8.0)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    /// A native-resolution plane does not shift the marks.
+    ///
+    /// The slice can show a plane with more pixels than the in-RAM cube, while
+    /// marks are anchored in VOLUME voxels. Getting this ratio wrong puts every
+    /// mark at a fraction of its true position — visible only on the files that
+    /// have a native source, which is not the one you test on.
+    #[test]
+    fn a_native_resolution_plane_keeps_marks_in_place() {
+        let mut s = surface(0);
+        s.disp_nx = 256.0;
+        s.disp_ny = 256.0; // 4x the volume's 64
+                           // Voxel 32 is halfway across the volume, so halfway across the
+                           // displayed plane too: display pixel 128.
+        assert_eq!(s.voxel_to_screen(32.0, 0.0).0, 10.0 + 128.0 * 4.0);
+    }
+}
+
+#[cfg(test)]
+mod slice_placement_tests {
+    use super::slice_annotation_tests_support::*;
+
+    /// Where you click is where the mark lands.
+    ///
+    /// Placing goes screen -> voxel and drawing goes voxel -> screen; if the
+    /// two disagree the mark appears beside the feature you pointed at, which
+    /// looks like a rendering bug and is an arithmetic one. Checked across
+    /// zoom, pan, and a native-resolution plane, because each of those is a
+    /// term that can be dropped from one direction and not the other.
+    #[test]
+    fn a_click_round_trips_to_the_pixel_it_came_from() {
+        for (zoom, pan_x, pan_y, disp) in [
+            (1.0, 0.0, 0.0, 64.0),
+            (2.5, 17.0, -9.0, 64.0),
+            (0.4, -30.0, 12.0, 256.0),
+        ] {
+            let mut s = surface(0);
+            s.zoom = zoom;
+            s.pan_x = pan_x;
+            s.pan_y = pan_y;
+            s.disp_nx = disp;
+            s.disp_ny = disp;
+            for (vx, vy) in [(0.0, 0.0), (31.5, 8.25), (63.0, 63.0)] {
+                let (sx, sy) = s.voxel_to_screen(vx, vy);
+                let back = s.screen_to_voxel(sx, sy).expect("on the plane");
+                assert!(
+                    (back.0 - vx).abs() < 1e-9 && (back.1 - vy).abs() < 1e-9,
+                    "zoom {zoom} pan ({pan_x},{pan_y}) disp {disp}: \
+                     voxel ({vx},{vy}) came back as {back:?}"
+                );
+            }
+        }
+    }
+
+    /// A click outside the plane places nothing rather than clamping to an edge.
+    #[test]
+    fn a_click_off_the_plane_places_nothing() {
+        let s = surface(0);
+        let (sx, sy) = s.voxel_to_screen(0.0, 0.0);
+        assert!(
+            s.screen_to_voxel(sx - 1.0, sy).is_none(),
+            "left of the plane"
+        );
+        assert!(s.screen_to_voxel(sx, sy - 1.0).is_none(), "above the plane");
+        let (ex, ey) = s.voxel_to_screen(64.0, 64.0);
+        assert!(s.screen_to_voxel(ex, ey).is_none(), "past the far corner");
     }
 }

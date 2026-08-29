@@ -198,12 +198,34 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "select_annotation".into(),
+            description: "Highlight one mark, so a person looking at the image can see WHICH \
+                          one you mean. Works on either viewer — pass `id` from \
+                          list_fits_annotations or list_cube_annotations and whichever holds \
+                          it lights up; omit `id` to take the highlight away. Only one mark \
+                          is lit at a time across the app, so selecting on one viewer clears \
+                          the other. The highlighted mark is drawn differently and its row is \
+                          picked out in the sidebar list."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "id": {"type":"string","description":"Annotation id. Omit to clear."}
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "update_annotation".into(),
             description: "Change a mark that is already drawn: its label, where it points, or \
-                          how big it is. Pass `id` from list_fits_annotations, then any of \
-                          `text`, `ra`/`dec`, `x`/`y`, `radius` — what you leave out is left \
-                          alone. Correcting a mark this way keeps its id, so a reference you \
-                          have already given someone still points at it."
+                          how big it is. Works on either viewer — pass `id` from \
+                          list_fits_annotations or list_cube_annotations, then any of `text`, \
+                          `ra`/`dec`, `x`/`y` (`z` too on a cube, where coordinates are \
+                          voxels), `radius`. What you leave out is left alone. Correcting a \
+                          mark this way keeps its id, so a reference you have already given \
+                          someone still points at it."
                 .into(),
             input_schema: json!({
                 "type":"object",
@@ -214,6 +236,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "dec": {"type":"number"},
                     "x": {"type":"number","description":"New image pixel position."},
                     "y": {"type":"number"},
+                    "z": {"type":"number","description":"New channel, on a cube. Voxel coordinates keep whatever you leave out, so you can shift a mark in z alone."},
                     "radius": {
                         "type":"number",
                         "description":"New half-size, in IMAGE PIXELS unless you pass \
@@ -333,49 +356,15 @@ pub async fn dispatch(
             let ok = view_state::navigate_to(view).await;
             Some(ToolResult::Data(json!({ "navigated": ok, "view": view })))
         }
-        // One pair for both viewers rather than four tools. An id identifies a
-        // mark uniquely, so the caller should not have to know which viewer is
-        // holding it — and would often not.
-        "remove_annotation" => {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if id.is_empty() {
-                return Some(ToolResult::Failed(
-                    "id is required — get one from list_fits_annotations or \
-                     list_cube_annotations"
-                        .to_string(),
-                ));
-            }
-            for viewer in ["fits", "cube"] {
-                if let Ok(v) = crate::mcp::view_state::viewer_command(
-                    viewer,
-                    "remove_annotation",
-                    json!({ "id": id }),
-                )
-                .await
-                {
-                    if v.get("removed").and_then(|r| r.as_bool()) == Some(true) {
-                        return Some(ToolResult::Data(v));
-                    }
-                }
-            }
-            Some(ToolResult::Failed(format!(
-                "no annotation '{id}' in either viewer — it may already be gone; \
-                 list_fits_annotations or list_cube_annotations show what is there"
-            )))
-        }
-        "update_annotation" => Some(
-            match crate::mcp::view_state::viewer_command("fits", "update_annotation", args.clone())
-                .await
-            {
-                Ok(v) => ToolResult::Data(v),
-                Err(e) => ToolResult::Failed(e),
-            },
-        ),
+        // One tool per operation for both viewers rather than one per viewer.
+        // An id identifies a mark uniquely, so the caller should not have to
+        // know which viewer is holding it — and would often not.
+        "remove_annotation" => Some(on_whichever_viewer_holds("remove_annotation", args).await),
+        // Was hardcoded to "fits", so a mark on a cube could be drawn and
+        // listed but never corrected — an agent's only repair was to delete it
+        // and draw another, which changes the id it had already quoted.
+        "update_annotation" => Some(on_whichever_viewer_holds("update_annotation", args).await),
+        "select_annotation" => Some(on_whichever_viewer_holds("select_annotation", args).await),
         "clear_annotations" => {
             let viewer = args
                 .get("viewer")
@@ -483,6 +472,59 @@ pub async fn dispatch(
         }),
         _ => None,
     }
+}
+
+/// Run an id-addressed annotation op on whichever viewer is holding the mark.
+///
+/// An id identifies a mark uniquely, so a caller should not have to know which
+/// viewer has it — and often could not, since a cube and a FITS can be open at
+/// once. Each viewer answers `Err` for an id it does not hold, so the first
+/// real success is the right one.
+///
+/// `select_annotation` alone accepts no id: that clears the highlight, and it
+/// clears it on BOTH viewers, so "take your highlight back" cannot leave one
+/// lit on the viewer the caller was not thinking about. For the same reason a
+/// successful select clears the other viewer: one highlighted mark across the
+/// app, because the highlight means "this is the one I mean".
+async fn on_whichever_viewer_holds(op: &str, args: &Value) -> ToolResult {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let Some(id) = id else {
+        if op != "select_annotation" {
+            return ToolResult::Failed(
+                "id is required — get one from list_fits_annotations or list_cube_annotations"
+                    .to_string(),
+            );
+        }
+        for viewer in ["fits", "cube"] {
+            let _ = view_state::viewer_command(viewer, op, args.clone()).await;
+        }
+        return ToolResult::Data(json!({ "selected": Value::Null }));
+    };
+
+    for viewer in ["fits", "cube"] {
+        let Ok(v) = view_state::viewer_command(viewer, op, args.clone()).await else {
+            continue;
+        };
+        // remove_annotation reports a miss in its payload rather than as an
+        // error, so an Ok is not on its own proof the viewer held the mark.
+        if v.get("removed").and_then(|r| r.as_bool()) == Some(false) {
+            continue;
+        }
+        if op == "select_annotation" {
+            let other = if viewer == "fits" { "cube" } else { "fits" };
+            let _ = view_state::viewer_command(other, op, json!({})).await;
+        }
+        return ToolResult::Data(v);
+    }
+    ToolResult::Failed(format!(
+        "no annotation '{id}' in either viewer — it may already be gone; \
+         list_fits_annotations or list_cube_annotations show what is there"
+    ))
 }
 
 #[cfg(test)]

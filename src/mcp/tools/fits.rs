@@ -185,24 +185,6 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
-            name: "select_annotation".into(),
-            description: "Highlight one mark on the FITS viewer, so a person looking at the \
-                          image can see WHICH one you mean. Pass `id` from \
-                          list_fits_annotations; omit it to take the highlight away. The \
-                          highlighted mark is drawn differently and its row is picked out in \
-                          the sidebar list."
-                .into(),
-            input_schema: json!({
-                "type":"object",
-                "properties": {
-                    "id": {"type":"string","description":"Annotation id. Omit to clear."}
-                },
-                "additionalProperties": false
-            }),
-            verb: VerbClass::Write,
-            agent_safe: true,
-        },
-        ToolDescriptor {
             name: "list_fits_annotations".into(),
             description: "Every mark on the active FITS tab — id, kind, text, where it is \
                           anchored, and whether a person or an agent drew it. Use it to find an \
@@ -337,7 +319,6 @@ pub async fn dispatch(
         | "list_fits_bookmarks"
         | "annotate_fits"
         | "list_fits_annotations"
-        | "select_annotation"
         | "save_fits_bookmark"
         | "delete_fits_bookmark"
         | "switch_fits_tab"

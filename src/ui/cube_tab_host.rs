@@ -289,11 +289,7 @@ impl CubeTabHost {
                 }
                 mark.validate()?;
 
-                let target = view_json(&v)
-                    .get("path")
-                    .and_then(|p| p.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+                let target = v.source_file();
                 let mut current = v.annotations();
                 current.push(mark.clone());
                 v.set_annotations(current.clone());
@@ -323,11 +319,7 @@ impl CubeTabHost {
                 let removed = current.len() < before;
                 if removed {
                     v.set_annotations(current.clone());
-                    let target = view_json(&v)
-                        .get("path")
-                        .and_then(|p| p.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+                    let target = v.source_file();
                     let _ = crate::helpers::annotation_store::save_for(&target, &current);
                 }
                 Ok(json!({ "removed": removed, "viewer": "cube", "remaining": current.len() }))
@@ -339,13 +331,93 @@ impl CubeTabHost {
                     .ok_or_else(|| "no cube open".to_string())?;
                 let removed = v.annotations().len();
                 v.set_annotations(Vec::new());
-                let target = view_json(&v)
-                    .get("path")
-                    .and_then(|p| p.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+                let target = v.source_file();
                 let _ = crate::helpers::annotation_store::save_for(&target, &[]);
-                Ok(json!({ "cleared": removed, "viewer": "cube" }))
+                Ok(json!({
+                    "cleared": removed,
+                    "viewer": "cube",
+                    "file": v.source_file(),
+                    "note": "marks on other cube tabs are untouched",
+                }))
+            }
+
+            // Correct a mark instead of destroying it and drawing another:
+            // the id an agent has already quoted to someone stays valid. Cube
+            // coordinates are voxels throughout, so a radius here needs no
+            // unit conversion — unlike the FITS side, where it does.
+            "update_annotation" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let id = crate::mcp::tools::arg(args, "id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let num = |k: &str| crate::mcp::tools::arg(args, k).and_then(|x| x.as_f64());
+                let mut current = v.annotations();
+                let Some(mark) = current.iter_mut().find(|a| a.id == id) else {
+                    return Err(format!(
+                        "no annotation '{id}' on this cube — list_cube_annotations shows \
+                         what is there"
+                    ));
+                };
+                if let Some(text) = crate::mcp::tools::arg(args, "text").and_then(|t| t.as_str()) {
+                    mark.text = text.trim().to_string();
+                }
+                // A voxel move keeps whichever coordinates were left out, so
+                // "shift it two channels" does not also reset x and y.
+                if num("x").is_some() || num("y").is_some() || num("z").is_some() {
+                    let (cx, cy, cz) = match mark.anchor {
+                        crate::models::annotation::Anchor::Data { x, y, z } => (x, y, z),
+                        _ => (0.0, 0.0, 0.0),
+                    };
+                    mark.anchor = crate::models::annotation::Anchor::Data {
+                        x: num("x").unwrap_or(cx),
+                        y: num("y").unwrap_or(cy),
+                        z: num("z").unwrap_or(cz),
+                    };
+                }
+                if let Some(r) = num("radius") {
+                    mark.extent = Some(crate::models::annotation::Extent::square(r));
+                }
+                mark.validate()?;
+                let changed = mark.clone();
+                v.set_annotations(current.clone());
+                let saved =
+                    crate::helpers::annotation_store::save_for(&v.source_file(), &current).is_ok();
+                Ok(json!({
+                    "id": changed.id,
+                    "kind": changed.kind.as_str(),
+                    "text": changed.text,
+                    "anchor": changed.anchor,
+                    "viewer": "cube",
+                    "persisted": saved,
+                }))
+            }
+
+            // Pick one mark out so a person looking at the cube can see WHICH
+            // one is meant. No id takes the highlight away.
+            "select_annotation" => {
+                let v = self
+                    .active_viewer()
+                    .ok_or_else(|| "no cube open".to_string())?;
+                let id = crate::mcp::tools::arg(args, "id")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty());
+                match id {
+                    Some(id) => {
+                        if !v.annotations().iter().any(|a| a.id == id) {
+                            return Err(format!(
+                                "no annotation '{id}' on this cube — list_cube_annotations \
+                                 shows what is there"
+                            ));
+                        }
+                        v.set_selected_annotation(Some(id.to_string()));
+                    }
+                    None => v.set_selected_annotation(None),
+                }
+                Ok(json!({ "selected": v.selected_annotation(), "viewer": "cube" }))
             }
 
             "list_cube_annotations" => {
@@ -366,7 +438,12 @@ impl CubeTabHost {
                         })
                     })
                     .collect();
-                Ok(json!({ "count": items.len(), "annotations": items }))
+                Ok(json!({
+                    "count": items.len(),
+                    "selected": v.selected_annotation(),
+                    "file": v.source_file(),
+                    "annotations": items,
+                }))
             }
 
             // SEE the working area — the volume WITH the axes overlay the user
