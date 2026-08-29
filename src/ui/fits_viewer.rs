@@ -2109,7 +2109,11 @@ impl FitsViewer {
         popover.set_position(gtk::PositionType::Top);
         popover.set_autohide(true);
 
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row.set_margin_top(6);
+        row.set_margin_bottom(6);
+        row.set_margin_start(6);
+        row.set_margin_end(6);
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
         entry.set_width_chars(18);
@@ -2120,15 +2124,19 @@ impl FitsViewer {
         // optional: a field with no button looks like something that has not
         // finished loading.
         let done = gtk::Button::from_icon_name("object-select-symbolic");
-        done.add_css_class("flat");
+        // Not flat. A confirm that has to be hunted for is not a confirm, and
+        // this one shares the row with a delete — the two should not look
+        // alike.
         done.add_css_class("suggested-action");
+        done.set_valign(gtk::Align::Center);
         done.set_tooltip_text(Some(crate::tr_en!("Done")));
         row.append(&done);
 
         // Delete, beside the words. Removing a mark is something you decide
         // while looking at it, and the sidebar is the long way round from here.
         let bin = gtk::Button::from_icon_name("user-trash-symbolic");
-        bin.add_css_class("flat");
+        bin.add_css_class("destructive-action");
+        bin.set_valign(gtk::Align::Center);
         bin.set_tooltip_text(Some(crate::tr_en!("Delete this mark")));
         row.append(&bin);
         // Renaming starts from what it says now, selected, so typing replaces
