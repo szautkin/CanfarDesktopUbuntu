@@ -60,7 +60,11 @@ impl FitsHeaderPanel {
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         scroll.set_propagate_natural_height(true);
-        scroll.set_max_content_height(320);
+        // 320 was enough to prove it scrolled and not enough to read a header
+        // in. `propagate_natural_height` means a short header still takes only
+        // the room it needs, so a larger ceiling costs nothing until there is
+        // something to put in it.
+        scroll.set_max_content_height(560);
         scroll.set_child(Some(&list_box));
         container.append(&scroll);
 

@@ -856,7 +856,19 @@ impl FitsViewer {
             let v = viewer.clone();
             viewer.annotations_panel.set_on_select(move |id| {
                 if let Some(tab) = v.current_tab() {
-                    tab.canvas().set_selected_annotation(Some(id.to_string()));
+                    // An empty id is the list saying "never mind" — the same
+                    // row clicked twice.
+                    let picked = (!id.is_empty()).then(|| id.to_string());
+                    if picked.is_none() {
+                        v.leave_edit_mode();
+                        return;
+                    }
+                    // Picking a row points a mark OUT. It does not open it:
+                    // the pencil does that, and grips on a mark nobody is
+                    // editing invite a drag that means nothing.
+                    tab.canvas().set_selected_annotation(picked);
+                    v.close_label_editor();
+                    tab.canvas().set_editing_annotation(None);
                     v.refresh_annotations_panel();
                 }
             });
@@ -875,6 +887,14 @@ impl FitsViewer {
                     v.persist_annotations(&tab);
                     v.refresh_annotations_panel();
                 }
+            });
+        }
+        {
+            let v = viewer.clone();
+            viewer.annotations_panel.set_on_add(move |_| {
+                // The same switch the toolbar flips, so there is one way to be
+                // in draw mode rather than two that can disagree.
+                v.draw_mode.set_active(true);
             });
         }
         {
@@ -2168,6 +2188,9 @@ impl FitsViewer {
             return;
         };
         let canvas = tab.canvas();
+        // Editing implies selection, and only the edited mark gets grips.
+        canvas.set_selected_annotation(Some(id.to_string()));
+        canvas.set_editing_annotation(Some(id.to_string()));
         let Some(mark) = canvas.annotations().into_iter().find(|a| a.id == id) else {
             return;
         };
@@ -2276,7 +2299,9 @@ impl FitsViewer {
     fn leave_edit_mode(&self) {
         self.close_label_editor();
         if let Some(tab) = self.current_tab() {
-            tab.canvas().set_selected_annotation(None);
+            let canvas = tab.canvas();
+            canvas.set_editing_annotation(None);
+            canvas.set_selected_annotation(None);
         }
         self.refresh_annotations_panel();
     }

@@ -10,6 +10,8 @@
 use crate::models::annotation::Annotation;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
+use libadwaita as adw;
+use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -20,6 +22,7 @@ pub struct AnnotationsPanel {
     list: gtk::ListBox,
     empty: gtk::Label,
     count_label: gtk::Label,
+    add_button: gtk::Button,
     clear_button: gtk::Button,
     /// Called with an id when a row is chosen.
     on_select: Callback,
@@ -29,6 +32,8 @@ pub struct AnnotationsPanel {
     on_edit: Callback,
     /// Called (with an empty id) when Clear all is pressed.
     on_clear: Callback,
+    /// Which row is chosen, so a second click on it can mean "never mind".
+    selected_id: RefCell<Option<String>>,
     /// True while the list is being repopulated.
     ///
     /// Rebuilding selects a row, and selecting a row tells the viewer, which
@@ -83,6 +88,15 @@ impl AnnotationsPanel {
         // one scroller doing the work instead of two negotiating.
         widget.append(&list);
 
+        // Adding a mark had no button anywhere near the list — it was the
+        // toggle up in the toolbar, which is a long way from where someone
+        // looking at their marks is looking.
+        let add_button = gtk::Button::from_icon_name("list-add-symbolic");
+        add_button.set_label(crate::tr_en!("Add a mark"));
+        add_button.set_halign(gtk::Align::Start);
+        add_button.add_css_class("suggested-action");
+        widget.append(&add_button);
+
         let clear_button = gtk::Button::with_label(crate::tr_en!("Clear all marks"));
         clear_button.add_css_class("destructive-action");
         clear_button.set_halign(gtk::Align::Start);
@@ -93,26 +107,78 @@ impl AnnotationsPanel {
             list,
             empty,
             count_label,
+            add_button,
             clear_button,
             on_select: Rc::new(RefCell::new(None)),
             on_delete: Rc::new(RefCell::new(None)),
             on_edit: Rc::new(RefCell::new(None)),
             on_clear: Rc::new(RefCell::new(None)),
+            selected_id: RefCell::new(None),
             rebuilding: std::cell::Cell::new(false),
         });
 
         {
+            // Clearing takes the user's own marks as well as an agent's, and
+            // nothing brings them back — so it asks. The other destructive
+            // action, deleting one mark, does not: one mark is easy to redraw
+            // and the button is right beside it.
             let cb = panel.on_clear.clone();
+            let widget = panel.widget.clone();
             panel.clear_button.connect_clicked(move |_| {
-                if let Some(f) = cb.borrow().as_ref() {
-                    f("");
-                }
+                // `AdwMessageDialog`, as the research page's own delete
+                // confirmation uses — one dialog style across the app.
+                let root = widget.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+                let dialog = adw::MessageDialog::new(
+                    root.as_ref(),
+                    Some(crate::tr_en!("Delete every mark?")),
+                    Some(crate::tr_en!(
+                        "This removes all marks on this image, including any an agent \
+                         made. It cannot be undone."
+                    )),
+                );
+                dialog.add_response("cancel", crate::tr_en!("Cancel"));
+                dialog.add_response("clear", crate::tr_en!("Delete all"));
+                dialog.set_response_appearance("clear", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.set_close_response("cancel");
+                let cb = cb.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response == "clear" {
+                        if let Some(f) = cb.borrow().as_ref() {
+                            f("");
+                        }
+                    }
+                });
+                dialog.present();
             });
         }
         {
             // Once, here — not inside the rebuild.
             let cb = panel.on_select.clone();
             let panel_ref = Rc::downgrade(&panel);
+            // `row-activated` fires on every click, including one on the row
+            // that is already selected — which `row-selected` does not. That is
+            // how a second click can mean "never mind".
+            let cb_activate = panel.on_select.clone();
+            let panel_activate = Rc::downgrade(&panel);
+            panel.list.connect_row_activated(move |list, row| {
+                let Some(p) = panel_activate.upgrade() else {
+                    return;
+                };
+                if p.rebuilding.get() {
+                    return;
+                }
+                let id: Option<&String> = unsafe { row.data("annotation-id").map(|p| p.as_ref()) };
+                let Some(id) = id else { return };
+                if p.selected_id.borrow().as_deref() == Some(id.as_str()) {
+                    // Already the chosen one: unchoose it.
+                    list.select_row(None::<&gtk::ListBoxRow>);
+                    *p.selected_id.borrow_mut() = None;
+                    if let Some(f) = cb_activate.borrow().as_ref() {
+                        f("");
+                    }
+                }
+            });
             panel.list.connect_row_selected(move |_, row| {
                 let Some(p) = panel_ref.upgrade() else { return };
                 // A selection the rebuild made is not a selection the user
@@ -123,6 +189,7 @@ impl AnnotationsPanel {
                 let Some(row) = row else { return };
                 let id: Option<&String> = unsafe { row.data("annotation-id").map(|p| p.as_ref()) };
                 if let Some(id) = id {
+                    *p.selected_id.borrow_mut() = Some(id.clone());
                     if let Some(f) = cb.borrow().as_ref() {
                         f(id);
                     }
@@ -144,6 +211,16 @@ impl AnnotationsPanel {
         *self.on_delete.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Called when "Add a mark" is pressed.
+    pub fn set_on_add(&self, f: impl Fn(&str) + 'static) {
+        let cb: Callback = Rc::new(RefCell::new(Some(Box::new(f))));
+        self.add_button.connect_clicked(move |_| {
+            if let Some(f) = cb.borrow().as_ref() {
+                f("");
+            }
+        });
+    }
+
     pub fn set_on_edit(&self, f: impl Fn(&str) + 'static) {
         *self.on_edit.borrow_mut() = Some(Box::new(f));
     }
@@ -155,6 +232,7 @@ impl AnnotationsPanel {
     /// Redraw the list from `annotations`.
     pub fn set_annotations(&self, annotations: &[Annotation], selected: Option<&str>) {
         self.rebuilding.set(true);
+        *self.selected_id.borrow_mut() = selected.map(str::to_string);
         while let Some(row) = self.list.first_child() {
             self.list.remove(&row);
         }

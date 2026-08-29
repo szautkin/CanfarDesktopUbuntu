@@ -43,8 +43,12 @@ pub mod style {
     pub const INK: (f64, f64, f64) = (0.62, 0.85, 1.0);
     /// An agent's marks, distinguishable without being louder.
     pub const AGENT_INK: (f64, f64, f64) = (0.55, 1.0, 0.80);
-    /// The selected mark.
-    pub const SELECTED_INK: (f64, f64, f64) = (1.0, 0.78, 0.35);
+    /// The mark being EDITED — grips out, label field open.
+    pub const EDITING_INK: (f64, f64, f64) = (1.0, 0.78, 0.35);
+    /// A mark merely picked out, from the list or a click. Brighter than the
+    /// rest, but not the editing colour: the two states look different because
+    /// they ARE different — one has grips you can drag and the other does not.
+    pub const SELECTED_INK: (f64, f64, f64) = (1.0, 1.0, 1.0);
     pub const ALPHA: f64 = 0.92;
     pub const FONT_SIZE: f64 = 11.0;
     /// The leader leaves a shape at this angle, and every leader on a canvas
@@ -60,8 +64,10 @@ pub mod style {
 }
 
 /// The ink for one annotation.
-fn ink_for(a: &Annotation, selected: bool) -> (f64, f64, f64) {
-    if selected {
+fn ink_for(a: &Annotation, selected: bool, editing: bool) -> (f64, f64, f64) {
+    if editing {
+        style::EDITING_INK
+    } else if selected {
         style::SELECTED_INK
     } else if a.author == Author::Agent {
         style::AGENT_INK
@@ -158,6 +164,7 @@ pub fn draw(
     annotations: &[Annotation],
     surface: &dyn AnnotationSurface,
     selected: Option<&str>,
+    editing: Option<&str>,
     cr: &cairo::Context,
     canvas_w: f64,
     canvas_h: f64,
@@ -186,9 +193,10 @@ pub fn draw(
         cr.new_path();
 
         let is_selected = selected == Some(a.id.as_str());
-        let (r, g, b) = ink_for(a, is_selected);
+        let is_editing = editing == Some(a.id.as_str());
+        let (r, g, b) = ink_for(a, is_selected, is_editing);
         cr.set_source_rgba(r, g, b, style::ALPHA);
-        cr.set_line_width(if is_selected {
+        cr.set_line_width(if is_selected || is_editing {
             style::SELECTED_STROKE
         } else {
             style::STROKE
@@ -499,6 +507,7 @@ mod tests {
             )],
             &surface,
             None,
+            None,
             &cr,
             50.0,
             50.0,
@@ -529,10 +538,14 @@ mod tests {
     fn an_agents_mark_is_distinguishable() {
         let mut mine = callout(None);
         mine.author = Author::Agent;
-        assert_ne!(ink_for(&mine, false), style::INK);
-        assert_eq!(ink_for(&mine, false), style::AGENT_INK);
-        // Selection wins over authorship — you need to see what you picked.
-        assert_eq!(ink_for(&mine, true), style::SELECTED_INK);
+        assert_ne!(ink_for(&mine, false, false), style::INK);
+        assert_eq!(ink_for(&mine, false, false), style::AGENT_INK);
+        // Picking one out wins over authorship — you need to see what you
+        // chose — and editing wins over both, because that is the one you can
+        // drag.
+        assert_eq!(ink_for(&mine, true, false), style::SELECTED_INK);
+        assert_eq!(ink_for(&mine, true, true), style::EDITING_INK);
+        assert_ne!(style::SELECTED_INK, style::EDITING_INK);
     }
 
     /// Marks are not strung together into one path.
@@ -563,7 +576,7 @@ mod tests {
             Author::User,
         );
         right.extent = Some(Extent::square(10.0));
-        draw(&[left, right], &Flat, None, &cr, w as f64, h as f64);
+        draw(&[left, right], &Flat, None, None, &cr, w as f64, h as f64);
         drop(cr);
 
         // The gap between them, on the line joining their centres, must be
@@ -644,7 +657,7 @@ mod tests {
             "label",
             Author::User,
         );
-        draw(&[a], &Flat, None, &cr, w as f64, h as f64);
+        draw(&[a], &Flat, None, None, &cr, w as f64, h as f64);
         drop(cr);
 
         // Something markedly darker than the white ground must have been laid
@@ -691,7 +704,7 @@ mod tests {
             a
         })
         .collect();
-        draw(&anns, &Flat, Some(&anns[0].id), &cr, 400.0, 300.0);
+        draw(&anns, &Flat, Some(&anns[0].id), None, &cr, 400.0, 300.0);
         drop(cr);
         let data = img.data().expect("pixels");
         assert!(

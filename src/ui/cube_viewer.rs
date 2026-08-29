@@ -934,6 +934,7 @@ impl CubeViewer {
             &self.annotations.borrow(),
             &surface,
             self.selected_annotation.borrow().as_deref(),
+            None,
             cr,
             w as f64,
             h as f64,

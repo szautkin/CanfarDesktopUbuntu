@@ -278,8 +278,11 @@ pub struct FitsCanvas {
     on_selection_changed: Rc<RefCell<Option<Box<dyn Fn()>>>>,
     /// Marks drawn on this image, by the user or an agent.
     annotations: Rc<RefCell<Vec<crate::models::annotation::Annotation>>>,
-    /// The selected mark's id, highlighted on the canvas and in the panel.
+    /// The selected mark's id — picked out on the canvas and in the panel.
     selected_annotation: Rc<RefCell<Option<String>>>,
+    /// The mark being EDITED: grips out, label field open. Selection alone is
+    /// quieter — it says "this one", not "you are changing this one".
+    editing_annotation: Rc<RefCell<Option<String>>>,
     /// Rotation angle in radians (for North Up).
     rotation: Rc<RefCell<f64>>,
     /// A second image cross-faded over this canvas during a blink comparison.
@@ -349,6 +352,7 @@ impl FitsCanvas {
             on_selection_changed: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
             selected_annotation: Rc::new(RefCell::new(None)),
+            editing_annotation: Rc::new(RefCell::new(None)),
             rotation: Rc::new(RefCell::new(0.0)),
             blink_overlay: Rc::new(RefCell::new(None)),
             blink_opacity: Rc::new(Cell::new(0.0)),
@@ -829,6 +833,7 @@ impl FitsCanvas {
             &self.annotations.borrow(),
             self,
             self.selected_annotation.borrow().as_deref(),
+            self.editing_annotation.borrow().as_deref(),
             cr,
             widget_w as f64,
             widget_h as f64,
@@ -845,7 +850,10 @@ impl FitsCanvas {
     /// and one that shrank with the image would become unusable exactly when a
     /// mark is small enough to need adjusting.
     fn draw_handles(&self, cr: &cairo::Context) {
-        let Some(mark) = self.selected_mark() else {
+        // Only the mark being edited. A selected mark is pointed out, not
+        // opened up: grips on it would say "drag me" when nothing is expecting
+        // a drag.
+        let Some(mark) = self.editing_mark() else {
             return;
         };
         let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
@@ -927,7 +935,7 @@ impl FitsCanvas {
 
     /// Whether `(sx, sy)` is on one of the selected mark's grips.
     fn handle_at(&self, sx: f64, sy: f64) -> bool {
-        let Some(mark) = self.selected_mark() else {
+        let Some(mark) = self.editing_mark() else {
             return false;
         };
         let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
@@ -951,7 +959,7 @@ impl FitsCanvas {
 
     /// Resize the selected mark so its corner sits under `(sx, sy)`.
     fn resize_selected_to(&self, sx: f64, sy: f64) {
-        let Some(mark) = self.selected_mark() else {
+        let Some(mark) = self.editing_mark() else {
             return;
         };
         let Some((cx, cy)) = self.project_anchor(&mark.anchor) else {
@@ -975,7 +983,7 @@ impl FitsCanvas {
 
     /// Move the selected mark so its centre sits under `(sx, sy)`.
     fn move_selected_to(&self, sx: f64, sy: f64) {
-        let Some(mark) = self.selected_mark() else {
+        let Some(mark) = self.editing_mark() else {
             return;
         };
         let (ix, iy) = self.screen_to_image_point(sx, sy);
@@ -1018,7 +1026,16 @@ impl FitsCanvas {
 
     /// The selected mark, if there is one.
     pub fn selected_mark(&self) -> Option<crate::models::annotation::Annotation> {
-        let id = self.selected_annotation.borrow().clone()?;
+        self.mark_by_id(self.selected_annotation.borrow().clone())
+    }
+
+    /// The mark being edited, if there is one.
+    pub fn editing_mark(&self) -> Option<crate::models::annotation::Annotation> {
+        self.mark_by_id(self.editing_annotation.borrow().clone())
+    }
+
+    fn mark_by_id(&self, id: Option<String>) -> Option<crate::models::annotation::Annotation> {
+        let id = id?;
         self.annotations
             .borrow()
             .iter()
@@ -1067,6 +1084,16 @@ impl FitsCanvas {
 
     pub fn selected_annotation(&self) -> Option<String> {
         self.selected_annotation.borrow().clone()
+    }
+
+    /// Mark `id` as the one being edited — grips appear on it alone.
+    pub fn set_editing_annotation(&self, id: Option<String>) {
+        *self.editing_annotation.borrow_mut() = id;
+        self.drawing_area.queue_draw();
+    }
+
+    pub fn editing_annotation(&self) -> Option<String> {
+        self.editing_annotation.borrow().clone()
     }
 
     /// The mark whose shape contains `(sx, sy)`, topmost first.

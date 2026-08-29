@@ -98,8 +98,19 @@ fn main() {
             Author::Agent,
         ),
     ];
+    // One mark merely selected, another being edited: the probe is where the
+    // two inks are compared side by side.
     let selected = anns[1].id.clone();
-    draw(&anns, &Flat, Some(&selected), &cr, w as f64, h as f64);
+    let editing = anns[3].id.clone();
+    draw(
+        &anns,
+        &Flat,
+        Some(&selected),
+        Some(&editing),
+        &cr,
+        w as f64,
+        h as f64,
+    );
     drop(cr);
 
     let out = std::env::temp_dir().join("annotation_style_probe.png");
@@ -107,6 +118,6 @@ fn main() {
     surface.write_to_png(&mut file).expect("write");
     println!("wrote {}", out.display());
     println!("look for: leaders leaving the EDGE, all at the same angle, every");
-    println!("callout's rule and text on the canvas, the circle selected in amber,");
-    println!("and the agent's two marks in their own green.");
+    println!("callout's rule and text on the canvas, the selected circle in white,");
+    println!("the edited one in amber, and the agent's marks in their own green.");
 }
