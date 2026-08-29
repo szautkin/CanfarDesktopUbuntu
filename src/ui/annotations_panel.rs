@@ -130,7 +130,12 @@ impl AnnotationsPanel {
             })
             .collect();
         let count = (!items.is_empty()).then(|| crate::tr_fmt!("{} marks", items.len()));
-        self.section.set_items(&items, selected, count);
+        // The canvas owns which mark is chosen, so this states it.
+        self.section.set_items(
+            &items,
+            crate::ui::item_list_section::Selection::Set(selected),
+            count,
+        );
         self.clear_button.set_sensitive(!annotations.is_empty());
     }
 }

@@ -126,6 +126,7 @@ impl FitsHeaderPanel {
         let count = (!items.is_empty())
             .then(|| crate::tr_plural!(items.len(), "{} keyword", "{} keywords"));
         drop(entries);
-        self.section.set_items(&items, None, count);
+        self.section
+            .set_items(&items, crate::ui::item_list_section::Selection::Keep, count);
     }
 }

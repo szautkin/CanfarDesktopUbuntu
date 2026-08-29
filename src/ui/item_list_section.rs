@@ -27,6 +27,18 @@ const VISIBLE_ROWS: i32 = 4;
 /// One row's height in pixels: two lines of text plus its margins.
 const ROW_HEIGHT: i32 = 68;
 
+/// What a rebuild should do about the chosen row.
+///
+/// Two callers, two intents: the marks list is told by the canvas which mark is
+/// chosen — including that none is — while the bookmarks list has no outside
+/// owner and simply keeps its own. A bare `Option` cannot say both, and reading
+/// `None` as the wrong one either wipes a selection or brings one back.
+#[derive(Debug, Clone, Copy)]
+pub enum Selection<'a> {
+    Set(Option<&'a str>),
+    Keep,
+}
+
 /// One row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListItem {
@@ -284,13 +296,29 @@ impl ItemListSection {
     pub fn set_items(
         self: &Rc<Self>,
         items: &[ListItem],
-        selected: Option<&str>,
+        selected: Selection<'_>,
         count_text: Option<String>,
     ) {
         self.rebuilding.set(true);
         *self.items.borrow_mut() = items.to_vec();
-        *self.selected_id.borrow_mut() = selected.map(str::to_string);
-        *self.selected_before_press.borrow_mut() = selected.map(str::to_string);
+        let chosen = match selected {
+            // The caller owns the selection and is stating it — including
+            // stating that there is none.
+            Selection::Set(id) => id.map(str::to_string),
+            // The caller does not track it, so the section keeps what it had,
+            // as long as that row still exists. Without the distinction, a
+            // refresh either wipes a selection the caller meant to keep or
+            // resurrects one the caller meant to clear.
+            Selection::Keep => self
+                .selected_id
+                .borrow()
+                .clone()
+                .filter(|id| items.iter().any(|i| &i.id == id)),
+        };
+        *self.selected_id.borrow_mut() = chosen.clone();
+        // The press-time memory follows the real selection, or the next click
+        // on the row that used to be chosen would read as a second click.
+        *self.selected_before_press.borrow_mut() = chosen;
         while let Some(row) = self.list.first_child() {
             self.list.remove(&row);
         }

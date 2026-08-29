@@ -121,7 +121,11 @@ impl FitsCoordsPanel {
                 .with_primary("go-next-symbolic", crate::tr_en!("Go to bookmark")),
             filter_placeholder: Some(crate::tr_en!("Filter bookmarks…")),
             empty_message: crate::tr_en!("No bookmarks yet"),
-            selectable: false,
+            // Selectable, like the marks list. Picking a bookmark out and
+            // clicking it again to change your mind should work the same way in
+            // every list in this sidebar — that consistency is most of what the
+            // shared component is for.
+            selectable: true,
             monospace: false,
         });
         section3.append(bookmarks_section.widget());
@@ -318,6 +322,12 @@ impl FitsCoordsPanel {
             .collect();
         let count = (!items.is_empty())
             .then(|| crate::tr_plural!(items.len(), "{} bookmark", "{} bookmarks"));
-        self.bookmarks_section.set_items(&items, None, count);
+        // Nothing outside this list tracks which bookmark is chosen, so a
+        // refresh keeps whatever was.
+        self.bookmarks_section.set_items(
+            &items,
+            crate::ui::item_list_section::Selection::Keep,
+            count,
+        );
     }
 }

@@ -102,7 +102,9 @@ fn main() {
     // the first row, and a select that needed two clicks. All three came from
     // GtkListBox's own selection; the section owns it now, so it can be asked.
     {
-        use verbinal::ui::item_list_section::{ItemListSection, ListItem, RowActions, SectionSpec};
+        use verbinal::ui::item_list_section::{
+            ItemListSection, ListItem, RowActions, SectionSpec, Selection,
+        };
         let section = ItemListSection::new(SectionSpec {
             actions: RowActions::EDIT_AND_DELETE,
             filter_placeholder: Some("filter"),
@@ -122,7 +124,7 @@ fn main() {
             let reported = reported.clone();
             section.set_on_select(move |id| reported.borrow_mut().push(id.to_string()));
         }
-        section.set_items(&items, None, None);
+        section.set_items(&items, Selection::Set(None), None);
 
         section.click_row("id-2");
         println!("after one click: {:?}", section.selected());
@@ -142,15 +144,31 @@ fn main() {
         }
 
         // A rebuild must not invent a selection.
-        section.set_items(&items, None, None);
+        section.set_items(&items, Selection::Set(None), None);
         if section.selected().is_some() {
             println!("  !! a rebuild selected something on its own");
             failures += 1;
         }
+        // `Keep` holds the chosen row across a refresh; `Set(None)` clears it.
+        // A bare Option could not say both, and reading it as the wrong one
+        // either wipes a selection or brings one back.
+        section.click_row("id-1");
+        section.set_items(&items, Selection::Keep, None);
+        if section.selected().as_deref() != Some("id-1") {
+            println!("  !! Keep lost the chosen row on a refresh");
+            failures += 1;
+        }
+        section.set_items(&items, Selection::Set(None), None);
+        if section.selected().is_some() {
+            println!("  !! Set(None) did not clear the chosen row");
+            failures += 1;
+        }
+        println!("Keep holds the choice, Set(None) clears it");
+
         let seen = reported.borrow().clone();
         println!("reported: {seen:?}");
-        if seen != vec!["id-2".to_string(), String::new()] {
-            println!("  !! the section reported {seen:?}, not one select then one clear");
+        if seen != vec!["id-2".to_string(), String::new(), "id-1".to_string()] {
+            println!("  !! the section reported {seen:?} — expected select, clear, select");
             failures += 1;
         }
     }
