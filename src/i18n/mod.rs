@@ -109,6 +109,7 @@ static HAND_PAIRS: &[(&str, &str)] = &[
      "Aucun repère pour l'instant. Activez Dessin dans la barre d'outils, puis cliquez sur l'image."),
     ("Clear all marks",                             "Effacer tous les repères"),
     ("Delete this mark",                            "Supprimer ce repère"),
+    ("Rename this mark",                            "Renommer ce repère"),
     ("What is this?",                               "De quoi s'agit-il ?"),
     ("Add",                                         "Ajouter"),
     ("{} marks",                                    "{} repères"),

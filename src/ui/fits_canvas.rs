@@ -217,6 +217,10 @@ pub struct FitsCanvas {
     /// The shape being dragged out: `(centre_x, centre_y, half_extent)` in
     /// image pixels. Drawn as a preview so the size is chosen by eye.
     pending_shape: Rc<RefCell<Option<(f64, f64, f64)>>>,
+    /// Told when a click on the image changes which mark is selected, so the
+    /// list can follow the canvas.
+    #[allow(clippy::type_complexity)]
+    on_selection_changed: Rc<RefCell<Option<Box<dyn Fn()>>>>,
     /// Marks drawn on this image, by the user or an agent.
     annotations: Rc<RefCell<Vec<crate::models::annotation::Annotation>>>,
     /// The selected mark's id, highlighted on the canvas and in the panel.
@@ -272,6 +276,7 @@ impl FitsCanvas {
             crosshair_placed: Rc::new(RefCell::new(None)),
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
+            on_selection_changed: Rc::new(RefCell::new(None)),
             annotations: Rc::new(RefCell::new(Vec::new())),
             selected_annotation: Rc::new(RefCell::new(None)),
             rotation: Rc::new(RefCell::new(0.0)),
@@ -725,6 +730,10 @@ impl FitsCanvas {
         self.annotations.borrow().clone()
     }
 
+    pub fn set_on_selection_changed(&self, f: impl Fn() + 'static) {
+        *self.on_selection_changed.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn set_selected_annotation(&self, id: Option<String>) {
         *self.selected_annotation.borrow_mut() = id;
         self.drawing_area.queue_draw();
@@ -970,17 +979,30 @@ impl FitsCanvas {
         // to place a mark panned the image instead, and nothing was ever
         // placed.
         let drawing = self.on_left_click.clone();
+        let pick = Rc::downgrade(self);
 
         let so = start_offset.clone();
         let t = transform.clone();
         let d = drawing.clone();
-        drag.connect_drag_begin(move |gesture, _x, _y| {
+        drag.connect_drag_begin(move |gesture, x, y| {
             let shifted = gesture
                 .current_event_state()
                 .contains(gtk::gdk::ModifierType::SHIFT_MASK);
             if d.borrow().is_some() && !shifted {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
+            }
+            // A press that lands on a mark selects it. Panning still happens —
+            // selecting is not a mode, it is what clicking a thing means.
+            if let Some(canvas) = pick.upgrade() {
+                let hit = canvas.annotation_at(x, y);
+                if hit.is_some() && hit != canvas.selected_annotation() {
+                    canvas.set_selected_annotation(hit);
+                    let notify = canvas.on_selection_changed.borrow();
+                    if let Some(f) = notify.as_ref() {
+                        f();
+                    }
+                }
             }
             let t = t.borrow();
             *so.borrow_mut() = (t.offset_x, t.offset_y);

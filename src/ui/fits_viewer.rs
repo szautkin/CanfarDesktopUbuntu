@@ -864,6 +864,18 @@ impl FitsViewer {
         }
         {
             let v = viewer.clone();
+            viewer.annotations_panel.set_on_edit(move |id| {
+                // Select it first, so the mark being renamed is the one lit up
+                // on the image.
+                if let Some(tab) = v.current_tab() {
+                    tab.canvas().set_selected_annotation(Some(id.to_string()));
+                }
+                v.refresh_annotations_panel();
+                v.ask_for_text_at_leader(id);
+            });
+        }
+        {
+            let v = viewer.clone();
             viewer.annotations_panel.set_on_clear(move |_| {
                 if let Some(tab) = v.current_tab() {
                     tab.canvas().set_annotations(Vec::new());
@@ -1708,7 +1720,7 @@ impl FitsViewer {
         *self.suppress_sync.borrow_mut() = false;
     }
 
-    async fn open_file_dialog(&self, parent: &impl IsA<gtk::Widget>) {
+    async fn open_file_dialog(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>) {
         let root = parent.root().and_downcast::<gtk::Window>();
         let filter = gtk::FileFilter::new();
         filter.add_pattern("*.fits");
@@ -1734,7 +1746,7 @@ impl FitsViewer {
         }
     }
 
-    fn load_file(&self, path: &std::path::Path) -> Result<(), String> {
+    fn load_file(self: &Rc<Self>, path: &std::path::Path) -> Result<(), String> {
         match fits_loader::load_fits_image(path) {
             Ok(data) => {
                 let filename = path
@@ -1790,7 +1802,7 @@ impl FitsViewer {
     /// and, when zoomed in (>1.05×), recenter the viewport on the placed pixel
     /// (mirrors the Windows `PlaceCrosshair` / `CenterOnImagePixel` behaviour so
     /// go-to and right-click targets stay on-screen).
-    fn wire_tab_callbacks(&self, tab: &Rc<FitsTab>) {
+    fn wire_tab_callbacks(self: &Rc<Self>, tab: &Rc<FitsTab>) {
         // Marks come back with the image they were drawn on.
         let file = Self::annotation_target(tab);
         if !file.is_empty() {
@@ -1798,6 +1810,17 @@ impl FitsViewer {
             if !saved.is_empty() {
                 tab.canvas().set_annotations(saved);
             }
+        }
+
+        // The list follows the canvas: clicking a mark on the image highlights
+        // its row, so the two are one selection rather than two.
+        {
+            let viewer = Rc::downgrade(self);
+            tab.canvas().set_on_selection_changed(move || {
+                if let Some(v) = viewer.upgrade() {
+                    v.refresh_annotations_panel();
+                }
+            });
         }
 
         let coords_panel = self.coords_panel.clone();
@@ -2075,6 +2098,12 @@ impl FitsViewer {
         entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
         entry.set_width_chars(20);
         entry.set_has_frame(false);
+        // Renaming starts from what it says now, selected, so typing replaces
+        // it and Enter alone keeps it.
+        if !mark.text.is_empty() {
+            entry.set_text(&mark.text);
+            entry.select_region(0, -1);
+        }
         popover.set_child(Some(&entry));
 
         let viewer = Rc::downgrade(self);
@@ -2136,7 +2165,7 @@ impl FitsViewer {
 
     /// Reload a different image HDU of the active tab's file, replacing the
     /// current tab's content in place (mirrors Windows `SelectHdu`).
-    fn switch_hdu(&self, hdu_index: usize) -> Result<(), String> {
+    fn switch_hdu(self: &Rc<Self>, hdu_index: usize) -> Result<(), String> {
         let page_idx = self
             .selected_index()
             .ok_or_else(|| "no FITS tab is selected".to_string())?;
@@ -2571,7 +2600,7 @@ impl FitsViewer {
     /// — so an agent was told a file had opened when no tab existed. The
     /// reference's own comment on this path reads "report opened:true only on a
     /// confirmed load … not optimism".
-    pub fn load_from_path(&self, path: &std::path::Path) -> Result<(), String> {
+    pub fn load_from_path(self: &Rc<Self>, path: &std::path::Path) -> Result<(), String> {
         self.load_file(path)
     }
 }

@@ -25,6 +25,8 @@ pub struct AnnotationsPanel {
     on_select: Callback,
     /// Called with an id when a row's delete is pressed.
     on_delete: Callback,
+    /// Called with an id when a row's edit is pressed.
+    on_edit: Callback,
     /// Called (with an empty id) when Clear all is pressed.
     on_clear: Callback,
     /// True while the list is being repopulated.
@@ -64,7 +66,7 @@ impl AnnotationsPanel {
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         // Tall enough to show a few, short enough not to push the rest of the
         // sidebar off — the list is a finder, not the main event.
-        scroll.set_max_content_height(240);
+        scroll.set_max_content_height(320);
         scroll.set_propagate_natural_height(true);
         widget.append(&scroll);
 
@@ -81,6 +83,7 @@ impl AnnotationsPanel {
             clear_button,
             on_select: Rc::new(RefCell::new(None)),
             on_delete: Rc::new(RefCell::new(None)),
+            on_edit: Rc::new(RefCell::new(None)),
             on_clear: Rc::new(RefCell::new(None)),
             rebuilding: std::cell::Cell::new(false),
         });
@@ -128,6 +131,10 @@ impl AnnotationsPanel {
         *self.on_delete.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn set_on_edit(&self, f: impl Fn(&str) + 'static) {
+        *self.on_edit.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn set_on_clear(&self, f: impl Fn(&str) + 'static) {
         *self.on_clear.borrow_mut() = Some(Box::new(f));
     }
@@ -151,12 +158,15 @@ impl AnnotationsPanel {
         for a in annotations {
             let row = gtk::ListBoxRow::new();
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            line.set_margin_top(6);
-            line.set_margin_bottom(6);
-            line.set_margin_start(8);
+            // Room to read. The rows were tight enough that the label and its
+            // position ran together, and these are two different things: what
+            // the mark says, and where it is.
+            line.set_margin_top(10);
+            line.set_margin_bottom(10);
+            line.set_margin_start(10);
             line.set_margin_end(8);
 
-            let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
             let title = gtk::Label::new(Some(&display_title(a)));
             title.set_xalign(0.0);
             title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
@@ -169,6 +179,21 @@ impl AnnotationsPanel {
             text.append(&sub);
             text.set_hexpand(true);
             line.append(&text);
+
+            let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+            edit.add_css_class("flat");
+            edit.set_valign(gtk::Align::Center);
+            edit.set_tooltip_text(Some(crate::tr_en!("Rename this mark")));
+            {
+                let id = a.id.clone();
+                let cb = self.on_edit.clone();
+                edit.connect_clicked(move |_| {
+                    if let Some(f) = cb.borrow().as_ref() {
+                        f(&id);
+                    }
+                });
+            }
+            line.append(&edit);
 
             let delete = gtk::Button::from_icon_name("user-trash-symbolic");
             delete.add_css_class("flat");
