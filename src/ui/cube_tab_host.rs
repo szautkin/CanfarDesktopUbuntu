@@ -284,9 +284,12 @@ impl CubeTabHost {
                     .to_string();
 
                 let mut mark = Annotation::new(kind, Anchor::Data { x, y, z }, text, Author::Agent);
-                if let Some(r) = num("radius") {
-                    mark = mark.with_extent(Extent::square(r));
-                }
+                // No radius given gets a size visible on THIS cube. It used to
+                // get no extent at all, which the renderer draws at zero size:
+                // the mark existed, listed, and could not be seen.
+                mark = mark.with_extent(Extent::square(
+                    num("radius").unwrap_or_else(|| v.default_mark_extent()),
+                ));
                 mark.validate()?;
 
                 let target = v.source_file();

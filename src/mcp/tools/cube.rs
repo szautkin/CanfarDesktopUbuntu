@@ -184,7 +184,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "description":"Channel. Omit for the channel the viewer is showing."
                     },
                     "text": {"type":"string","description":"The label. Required for callout and text."},
-                    "radius": {"type":"number","description":"Half-size in voxels."}
+                    "radius": {
+                        "type":"number",
+                        "description":"Half-size in voxels. Omit it for a size that is visible \
+                                       on this cube whatever its dimensions."
+                    }
                 },
                 "required": ["x","y"],
                 "additionalProperties": false

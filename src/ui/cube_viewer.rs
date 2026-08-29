@@ -1091,11 +1091,20 @@ impl CubeViewer {
         }
     }
 
+    /// A mark size that is visible on THIS cube.
+    ///
+    /// Not a fixed number of voxels: that is a dot on a 2048-wide plane and
+    /// covers a 32-wide one. A mark with no extent at all draws at zero size —
+    /// the renderer falls back to `(0.0, 0.0)` — so "no radius given" must
+    /// become a real number here rather than nothing, or the mark is invisible
+    /// with nothing reporting a problem.
+    pub fn default_mark_extent(&self) -> f64 {
+        (self.vol.nx.min(self.vol.ny) as f64 * 0.03).max(1.5)
+    }
+
     /// Add a mark at a voxel, from a click on the slice.
     ///
-    /// `radius` of zero means the click was not dragged: fall back to a size
-    /// that is visible on THIS cube rather than a fixed number of voxels,
-    /// which would be a dot on a 2048-wide plane and cover a 32-wide one.
+    /// `radius` of zero means the click was not dragged.
     fn place_mark(self: &Rc<Self>, vx: f64, vy: f64, radius: f64) {
         use crate::models::annotation::{Anchor, Annotation, AnnotationKind, Author, Extent};
         let kind = if self.draw_kind.selected() == 1 {
@@ -1106,7 +1115,7 @@ impl CubeViewer {
         let half = if radius > 0.0 {
             radius
         } else {
-            (self.vol.nx.min(self.vol.ny) as f64 * 0.03).max(1.5)
+            self.default_mark_extent()
         };
         let mark = Annotation::new(
             kind,
