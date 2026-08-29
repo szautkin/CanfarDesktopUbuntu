@@ -26,6 +26,7 @@ pub mod fits_header_panel;
 pub mod fits_tab;
 pub mod fits_viewer;
 pub mod image_discovery_dialog;
+pub mod item_list_section;
 pub mod launch_dialog;
 pub mod launch_form;
 pub mod login_dialog;
