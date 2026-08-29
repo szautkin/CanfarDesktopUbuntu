@@ -41,6 +41,7 @@ pub struct AnnotationsPanel {
 impl AnnotationsPanel {
     pub fn new() -> Rc<Self> {
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        widget.set_vexpand(true);
         widget.set_margin_top(10);
         widget.set_margin_bottom(12);
 
@@ -73,14 +74,13 @@ impl AnnotationsPanel {
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_child(Some(&list));
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        // The sidebar column is itself a ScrolledWindow, so this is a scroller
-        // inside a scroller: keep it tall enough that the inner one rarely has
-        // to engage, because two nested scrollers make the wheel ambiguous and
-        // the list feel cramped. A floor as well as a ceiling — an empty-ish
-        // list that collapses to two rows high is hard to aim at.
-        scroll.set_min_content_height(260);
-        scroll.set_max_content_height(560);
-        scroll.set_propagate_natural_height(true);
+        // Exactly what the saved-coordinates panel next door does, and for the
+        // same reason: inside an Expander inside the sidebar's own
+        // ScrolledWindow, a `min_content_height` plus
+        // `propagate_natural_height` asks for a height the expander cannot
+        // grant, and the rows are allocated nothing — the list went blank the
+        // moment those were added. `vexpand` alone lets it take the room that
+        // is actually there.
         scroll.set_vexpand(true);
         widget.append(&scroll);
 
