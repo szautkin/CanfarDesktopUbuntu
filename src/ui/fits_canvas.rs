@@ -239,6 +239,14 @@ pub struct FitsCanvas {
     /// The shape being dragged out: `(centre_x, centre_y, half_extent)` in
     /// image pixels. Drawn as a preview so the size is chosen by eye.
     pending_shape: Rc<RefCell<Option<(f64, f64, f64)>>>,
+    /// What the preview should look like, ASKED at draw time.
+    ///
+    /// A kind handed over when draw mode was armed would be the kind you got
+    /// for ever after — the exact bug the shape picker already had. The canvas
+    /// asks the picker instead, so the preview cannot fall out of step with
+    /// what the release will produce.
+    #[allow(clippy::type_complexity)]
+    preview_kind: Rc<RefCell<Option<Box<dyn Fn() -> crate::models::annotation::AnnotationKind>>>>,
     /// What the current drag is doing to the selected mark, if anything.
     grab: Rc<RefCell<Option<Grab>>>,
     /// The mark this press selected, if it selected one. A press that turns
@@ -313,6 +321,7 @@ impl FitsCanvas {
             surface_cache: RefCell::new(None),
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
+            preview_kind: Rc::new(RefCell::new(None)),
             grab: Rc::new(RefCell::new(None)),
             tapped: Rc::new(RefCell::new(None)),
             on_shape_changing: Rc::new(RefCell::new(None)),
@@ -760,13 +769,36 @@ impl FitsCanvas {
         // The shape being dragged out, in the same ink as a finished one so
         // what you release is what you saw.
         if let Some((ix, iy, half)) = *self.pending_shape.borrow() {
+            use crate::models::annotation::AnnotationKind;
             let (sx, sy) = self.image_to_screen_point(ix, iy);
             let r = (half * self.transform.borrow().scale).max(1.0);
             let (ink_r, ink_g, ink_b) = crate::helpers::annotation_render::style::INK;
             cr.set_source_rgba(ink_r, ink_g, ink_b, 0.9);
             cr.set_line_width(crate::helpers::annotation_render::style::STROKE);
             cr.new_path();
-            cr.arc(sx, sy, r, 0.0, std::f64::consts::TAU);
+            // The preview is the shape you will get. It was always a circle,
+            // so drawing a box showed a ring that turned square on release.
+            let kind = self
+                .preview_kind
+                .borrow()
+                .as_ref()
+                .map(|f| f())
+                .unwrap_or(AnnotationKind::Circle);
+            match kind {
+                AnnotationKind::Rect => {
+                    cr.rectangle(sx - r, sy - r, r * 2.0, r * 2.0);
+                }
+                AnnotationKind::Text => {
+                    // Text has no outline; a small cross marks where it lands.
+                    cr.move_to(sx - 6.0, sy);
+                    cr.line_to(sx + 6.0, sy);
+                    cr.move_to(sx, sy - 6.0);
+                    cr.line_to(sx, sy + 6.0);
+                }
+                _ => {
+                    cr.arc(sx, sy, r, 0.0, std::f64::consts::TAU);
+                }
+            }
             cr.stroke().ok();
         }
 
@@ -1439,6 +1471,14 @@ impl FitsCanvas {
     /// Image coordinates rather than screen, because that is what an annotation
     /// is anchored in — converting at the edge means the viewer never handles a
     /// screen coordinate it might forget to transform.
+    /// Tell the canvas where to ask what shape is being drawn.
+    pub fn set_preview_kind_source(
+        &self,
+        f: impl Fn() -> crate::models::annotation::AnnotationKind + 'static,
+    ) {
+        *self.preview_kind.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn set_on_left_click(&self, f: impl Fn(f64, f64, f64) + 'static) {
         *self.on_left_click.borrow_mut() = Some(Box::new(f));
         // Say so. A mode that changes what a click does and looks identical is

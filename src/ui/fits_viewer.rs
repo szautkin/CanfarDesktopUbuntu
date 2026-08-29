@@ -2009,6 +2009,17 @@ impl FitsViewer {
             canvas.clear_on_left_click();
             return;
         }
+        {
+            // One source for both the preview and the mark it becomes: the
+            // picker itself, asked each time.
+            let viewer = Rc::downgrade(self);
+            canvas.set_preview_kind_source(move || {
+                viewer
+                    .upgrade()
+                    .map(|v| v.selected_draw_kind())
+                    .unwrap_or(crate::models::annotation::AnnotationKind::Circle)
+            });
+        }
         let viewer = Rc::downgrade(self);
         canvas.set_on_left_click(move |img_x, img_y, half| {
             let Some(v) = viewer.upgrade() else { return };
