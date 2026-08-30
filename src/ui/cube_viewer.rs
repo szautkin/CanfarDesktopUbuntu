@@ -1360,6 +1360,7 @@ impl CubeViewer {
             &marks,
             &surface,
             editing.as_deref(),
+            self.marks_section.draw_mode().is_active(),
             px,
             py,
         ) {
@@ -1373,13 +1374,9 @@ impl CubeViewer {
             crate::helpers::annotation_render::MarkGrab::Resize { id } => {
                 Some(VolumeGrab::Resize { id })
             }
-            // An empty press only means something while drawing is armed;
-            // otherwise it belongs to the camera.
-            crate::helpers::annotation_render::MarkGrab::None => self
-                .marks_section
-                .draw_mode()
-                .is_active()
-                .then_some(VolumeGrab::Place),
+            crate::helpers::annotation_render::MarkGrab::Place => Some(VolumeGrab::Place),
+            // Nothing of ours: the press belongs to the camera.
+            crate::helpers::annotation_render::MarkGrab::None => None,
         }
     }
 

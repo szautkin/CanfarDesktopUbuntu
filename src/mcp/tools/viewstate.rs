@@ -223,7 +223,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                           how big it is. Works on either viewer — pass `id` from \
                           list_fits_annotations or list_cube_annotations, then any of `text`, \
                           `ra`/`dec`, `x`/`y` (`z` too on a cube, where coordinates are \
-                          voxels), `radius`. What you leave out is left alone. Correcting a \
+                          voxels), `radius`, `kind`. What you leave out is left alone. Correcting a \
                           mark this way keeps its id, so a reference you have already given \
                           someone still points at it."
                 .into(),
@@ -232,6 +232,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "id": {"type":"string","description":"The annotation id."},
                     "text": {"type":"string","description":"New label."},
+                    "kind": {
+                        "type":"string",
+                        "enum":["rect","circle","callout","text"],
+                        "description":"New shape. Turns a circle into a box or back without \
+                                       losing the id, the label or the position."
+                    },
                     "ra": {"type":"number","description":"New sky position, degrees."},
                     "dec": {"type":"number"},
                     "x": {"type":"number","description":"New image pixel position."},
@@ -697,5 +703,67 @@ mod tests {
         let payload = current_view_payload(&snap, &services, &proposals);
         assert_eq!(payload["username"], "");
         assert_eq!(payload["isAuthenticated"], false);
+    }
+
+    /// Everything a person can change about a mark, an agent can change too.
+    ///
+    /// The list is the UI's: move it, resize it, rename it, change its shape.
+    /// `kind` was the one missing — an agent could draw a box or a circle and
+    /// then never change its mind, while a person could not either, so it went
+    /// unnoticed until the two surfaces were compared deliberately.
+    ///
+    /// Asserted against the SCHEMA because that is what an agent reads. A
+    /// field the handler honours but never advertises may as well not exist.
+    #[test]
+    fn an_agent_can_change_everything_about_a_mark_that_a_person_can() {
+        let d = descriptors();
+        let update = d
+            .iter()
+            .find(|t| t.name == "update_annotation")
+            .expect("update_annotation is advertised");
+        let props = update.input_schema["properties"]
+            .as_object()
+            .expect("an object schema");
+        for field in ["id", "text", "kind", "ra", "dec", "x", "y", "z", "radius"] {
+            assert!(
+                props.contains_key(field),
+                "update_annotation cannot change `{field}`"
+            );
+        }
+        // And the shapes it accepts are the model's, not a shorter list.
+        let kinds = update.input_schema["properties"]["kind"]["enum"]
+            .as_array()
+            .expect("kind is an enum");
+        for k in ["rect", "circle", "callout", "text"] {
+            assert!(
+                kinds.iter().any(|v| v == k),
+                "update_annotation refuses the kind `{k}`"
+            );
+        }
+    }
+
+    /// The id-addressed mark tools reach either viewer.
+    ///
+    /// Each was once hardcoded to "fits", so a mark on a cube could be drawn
+    /// and listed but never corrected or pointed out. The dispatch is shared
+    /// now; this pins that they all still go through it.
+    #[test]
+    fn the_mark_tools_are_not_bound_to_one_viewer() {
+        let d = descriptors();
+        for name in [
+            "update_annotation",
+            "select_annotation",
+            "remove_annotation",
+        ] {
+            let t = d
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{name} is advertised"));
+            let text = format!("{} {}", t.description, t.input_schema);
+            assert!(
+                text.contains("list_cube_annotations"),
+                "{name} does not tell an agent it works on a cube"
+            );
+        }
     }
 }

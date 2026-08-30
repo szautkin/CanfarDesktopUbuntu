@@ -460,17 +460,31 @@ pub enum MarkGrab {
     },
     /// Resize this mark by the grip that was grabbed.
     Resize { id: String },
+    /// Nothing was under the pointer and drawing is armed: make a new mark.
+    Place,
 }
 
-/// Decide what a press at `(sx, sy)` has taken hold of.
+/// Decide what a press at `(sx, sy)` is asking for.
 ///
-/// Grips are tested before shapes because a grip sits ON the edge of its own
-/// shape: testing the shape first would mean a grip could never be grabbed,
-/// and resizing would look like it simply did not work.
+/// The order is the whole content of this function, and it is here so that two
+/// canvases cannot disagree about it:
+///
+/// 1. **A grip of the mark being edited.** Grips sit ON the outline of their
+///    own shape, so testing the shape first would mean a grip could never be
+///    grabbed and resizing would look simply broken.
+/// 2. **Any mark's shape** — take hold of it and move it.
+/// 3. **Empty space, with drawing armed** — make a new one.
+/// 4. **Empty space** — the canvas can have the press.
+///
+/// Drawing being armed is checked LAST rather than first. Checked first, every
+/// press made a new mark, so a mark could not be moved or resized without
+/// disarming the pencil — and pressing on the mark you were in the middle of
+/// editing dropped another one on top of it.
 pub fn grab_at(
     annotations: &[Annotation],
     surface: &dyn AnnotationSurface,
     editing: Option<&str>,
+    drawing: bool,
     sx: f64,
     sy: f64,
 ) -> MarkGrab {
@@ -495,6 +509,7 @@ pub fn grab_at(
                 grab_dy,
             }
         }
+        None if drawing => MarkGrab::Place,
         None => MarkGrab::None,
     }
 }
@@ -1059,11 +1074,11 @@ mod tests {
         let id = mark.id.clone();
         let marks = [mark];
         // The bottom-right grip, which is also inside the box.
-        let grab = grab_at(&marks, &Flat, Some(&id), 120.0, 120.0);
+        let grab = grab_at(&marks, &Flat, Some(&id), false, 120.0, 120.0);
         assert_eq!(grab, MarkGrab::Resize { id: id.clone() });
         // Same point, nothing being edited: no grips, so it is a move.
         assert!(matches!(
-            grab_at(&marks, &Flat, None, 120.0, 120.0),
+            grab_at(&marks, &Flat, None, false, 120.0, 120.0),
             MarkGrab::Move { .. }
         ));
     }
@@ -1075,7 +1090,10 @@ mod tests {
     #[test]
     fn a_press_on_empty_space_grabs_nothing() {
         let marks = [boxed(100.0, 100.0, 20.0)];
-        assert_eq!(grab_at(&marks, &Flat, None, 400.0, 400.0), MarkGrab::None);
+        assert_eq!(
+            grab_at(&marks, &Flat, None, false, 400.0, 400.0),
+            MarkGrab::None
+        );
     }
 
     /// A mark is taken hold of where you grabbed it, not by its centre.
@@ -1084,7 +1102,7 @@ mod tests {
         let marks = [boxed(100.0, 100.0, 20.0)];
         let MarkGrab::Move {
             grab_dx, grab_dy, ..
-        } = grab_at(&marks, &Flat, None, 110.0, 95.0)
+        } = grab_at(&marks, &Flat, None, false, 110.0, 95.0)
         else {
             panic!("expected a move");
         };
@@ -1176,6 +1194,53 @@ mod tests {
         assert_eq!(
             half_from_drag(&Dead, &Anchor::ImagePixel { x: 0.0, y: 0.0 }, 40.0),
             0.0
+        );
+    }
+
+    /// Drawing armed does not stop you grabbing a mark that is already there.
+    ///
+    /// Reported from use: with the pencil on, pressing an existing mark
+    /// dropped a NEW one on top of it, so a mark could not be moved without
+    /// disarming drawing first — and the mark you were in the middle of
+    /// editing was the easiest one to hit. Drawing is checked LAST, after
+    /// grips and shapes, and this is the test that keeps it there.
+    #[test]
+    fn drawing_does_not_steal_a_press_on_an_existing_mark() {
+        let mark = boxed(100.0, 100.0, 20.0);
+        let id = mark.id.clone();
+        let marks = [mark];
+
+        // On the shape, pencil armed: move it, do not make another.
+        assert!(
+            matches!(
+                grab_at(&marks, &Flat, None, true, 100.0, 100.0),
+                MarkGrab::Move { .. }
+            ),
+            "drawing stole a press on an existing mark"
+        );
+        // On a grip of the mark being edited, pencil armed: resize it.
+        assert_eq!(
+            grab_at(&marks, &Flat, Some(&id), true, 120.0, 120.0),
+            MarkGrab::Resize { id: id.clone() },
+            "drawing stole a press on the edited mark's grip"
+        );
+        // Empty space, pencil armed: NOW make one.
+        assert_eq!(
+            grab_at(&marks, &Flat, None, true, 400.0, 400.0),
+            MarkGrab::Place
+        );
+    }
+
+    /// With drawing off, empty space belongs to the canvas.
+    ///
+    /// Panning an image and orbiting a volume both depend on this: a press
+    /// this function claims is a press the camera never sees.
+    #[test]
+    fn empty_space_is_the_canvas_press_unless_drawing() {
+        let marks = [boxed(100.0, 100.0, 20.0)];
+        assert_eq!(
+            grab_at(&marks, &Flat, None, false, 400.0, 400.0),
+            MarkGrab::None
         );
     }
 }

@@ -367,6 +367,12 @@ impl CubeTabHost {
                 if let Some(text) = crate::mcp::tools::arg(args, "text").and_then(|t| t.as_str()) {
                     mark.text = text.trim().to_string();
                 }
+                if let Some(k) = crate::mcp::tools::arg(args, "kind").and_then(|t| t.as_str()) {
+                    mark.kind =
+                        crate::models::annotation::AnnotationKind::parse(k).ok_or_else(|| {
+                            format!("'{k}' is not a kind — use rect, circle, callout or text")
+                        })?;
+                }
                 // A voxel move keeps whichever coordinates were left out, so
                 // "shift it two channels" does not also reset x and y.
                 if num("x").is_some() || num("y").is_some() || num("z").is_some() {
@@ -393,6 +399,8 @@ impl CubeTabHost {
                     "kind": changed.kind.as_str(),
                     "text": changed.text,
                     "anchor": changed.anchor,
+                    "radius": changed.extent.map(|e| e.half_width),
+                    "radiusUnits": "voxels",
                     "viewer": "cube",
                     "persisted": saved,
                 }))
@@ -436,6 +444,12 @@ impl CubeTabHost {
                             "kind": a.kind.as_str(),
                             "text": a.text,
                             "anchor": a.anchor,
+                            // In voxels, the units `annotate_cube` and
+                            // `update_annotation` take here — so what comes
+                            // back can be passed straight back in. Reported
+                            // nowhere before, which made sizing write-only.
+                            "radius": a.extent.map(|e| e.half_width),
+                            "radiusUnits": "voxels",
                             "author": a.author.as_str(),
                             "createdAt": a.created_at,
                         })
@@ -612,6 +626,21 @@ impl CubeTabHost {
                 }
                 if let Some(x) = crate::mcp::tools::arg(args, "channel").and_then(|x| x.as_u64()) {
                     v.set_current_channel(x as usize);
+                }
+                // Which view is showing. It decides what `get_cube_image`
+                // returns, and marks draw differently in the two — the slice
+                // shows only the current channel's — so an agent that wants a
+                // particular picture has to be able to ask for it.
+                if let Some(mode) = crate::mcp::tools::arg(args, "mode").and_then(|x| x.as_str()) {
+                    match mode.trim().to_ascii_lowercase().as_str() {
+                        "slice" | "2d" => v.set_slice_mode(true),
+                        "volume" | "3d" => v.set_slice_mode(false),
+                        other => {
+                            return Err(format!(
+                                "'{other}' is not a mode — use \"volume\" or \"slice\""
+                            ))
+                        }
+                    }
                 }
                 Ok(view_json(&v))
             }
@@ -1103,6 +1132,10 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
         "windowLo": window_lo,
         "windowHi": window_hi,
         "showCaptions": v.captions_visible(),
+        // Which view is up. It decides what `get_cube_image` returns and how
+        // marks are drawn — the slice shows only the current channel's — so an
+        // agent that cannot read it is guessing at its own picture.
+        "mode": if v.is_slice_mode() { "slice" } else { "volume" },
         "showSlicePlane": v.slice_plane_visible(),
         // The renderer's own settings, which the comment above has always
         // promised and this payload did not carry: an agent could set density,

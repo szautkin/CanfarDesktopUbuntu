@@ -1249,6 +1249,12 @@ impl FitsViewer {
                 if let Some(text) = crate::mcp::tools::arg(args, "text").and_then(|v| v.as_str()) {
                     mark.text = text.trim().to_string();
                 }
+                if let Some(k) = crate::mcp::tools::arg(args, "kind").and_then(|v| v.as_str()) {
+                    mark.kind =
+                        crate::models::annotation::AnnotationKind::parse(k).ok_or_else(|| {
+                            format!("'{k}' is not a kind — use rect, circle, callout or text")
+                        })?;
+                }
                 if let (Some(ra), Some(dec)) = (num("ra"), num("dec")) {
                     mark.anchor = Anchor::Sky {
                         ra_deg: ra,
@@ -1314,17 +1320,34 @@ impl FitsViewer {
                 let tab = self
                     .current_tab()
                     .ok_or_else(|| "no FITS open".to_string())?;
-                let items: Vec<serde_json::Value> = tab
-                    .canvas()
+                let canvas = tab.canvas();
+                let items: Vec<serde_json::Value> = canvas
                     .annotations()
                     .iter()
                     .map(|a| {
+                        // The size, in the units `annotate_fits` and
+                        // `update_annotation` take for this anchor — so what
+                        // comes back can be passed straight back in. It was
+                        // reported nowhere at all, which made sizing
+                        // write-only: an agent could not check what it had
+                        // drawn, let alone adjust it relative to what was
+                        // there.
+                        let per_px = canvas.units_per_image_pixel(&a.anchor);
+                        let radius = a.extent.map(|e| {
+                            if per_px > 0.0 {
+                                e.half_width / per_px
+                            } else {
+                                e.half_width
+                            }
+                        });
                         json!({
                             "id": a.id,
                             "kind": a.kind.as_str(),
                             "text": a.text,
                             "anchoredIn": a.anchor.space(),
                             "anchor": a.anchor,
+                            "radius": radius,
+                            "radiusUnits": "image pixels",
                             "author": a.author.as_str(),
                             "createdAt": a.created_at,
                         })

@@ -72,11 +72,18 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                  minmax/p99), background preset. Camera: orbit az/el, dolly dist, camera reset, \
                  idle auto-orbit. Volume: quality steps, spectral (Z) stretch, opacity density, \
                  MIP / render mode. Overlays: showCaptions, showSlicePlane. Plus the slice-plane \
-                 channel. Returns the resulting view."
+                 channel and `mode` — \"volume\" or \"slice\" — which decides which view \
+                 get_cube_image returns and how marks appear, since the slice shows only the \
+                 channel it is on. Returns the resulting view."
                     .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["volume", "slice"],
+                        "description": "Which view to show. The 3D volume, or the 2D slice of the current channel. Marks on other channels are not drawn on a slice."
+                    },
                     "azimuth": { "type": "number", "description": "Camera azimuth in radians. Also accepted as `az`." },
                     "elevation": {
                         "type": "number",

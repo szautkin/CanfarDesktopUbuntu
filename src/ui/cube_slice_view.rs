@@ -711,21 +711,23 @@ impl CubeSliceView {
     /// Order matters: a grip sits ON the edge of its own shape, so testing the
     /// shape first would mean a grip could never be grabbed.
     fn intent_at(&self, px: f64, py: f64) -> DragIntent {
-        if self.placing.get() {
-            return DragIntent::Place;
-        }
         let Some(surface) = self.annotation_surface() else {
             return DragIntent::Pan;
         };
         let marks = self.annotations.borrow().clone();
         let editing = self.editing_annotation.borrow().clone();
+        // Drawing armed does NOT short-circuit this. It used to, so a press on
+        // an existing mark dropped a new one on top of it and a mark could
+        // never be moved without disarming the pencil first.
         match crate::helpers::annotation_render::grab_at(
             &marks,
             &surface,
             editing.as_deref(),
+            self.placing.get(),
             px,
             py,
         ) {
+            crate::helpers::annotation_render::MarkGrab::Place => DragIntent::Place,
             crate::helpers::annotation_render::MarkGrab::None => DragIntent::Pan,
             crate::helpers::annotation_render::MarkGrab::Move {
                 id,
