@@ -2,6 +2,119 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [1.4.1] - 2026-08-30
+
+An imaging release. You can now draw on a FITS image or a cube, an AI agent can
+see what you are looking at and point at part of it, and a wrong sky coordinate
+that had been there the whole time is fixed.
+
+Patch by instruction, not by content: this adds tools and features that would
+normally be a minor. The version scheme is patch-only until that changes.
+
+### Sky coordinates were wrong on modern FITS
+
+- **A JWST image was 40 to 90 arcseconds out.** `parse_wcs` read the CD matrix
+  and the older CDELT+CROTA2 form, and a JWST i2d header has neither — it has
+  PC + CDELT. The scale stayed right and the rotation silently became zero, so
+  the error was nil at the reference pixel and grew with distance from it. The
+  standard's `CDi_j = CDELTi * PCi_j` is read now, with CD still winning when
+  both are present.
+- **Then a one-pixel offset underneath it.** Checking the fix against astropy
+  left a residual that was CONSTANT with distance — the signature of a
+  convention error, not a projection one. `pixel_to_sky` speaks the FITS
+  convention (1-based, pixel centres, because that is what CRPIX is stated in)
+  and the canvas was feeding it corner-origin display coordinates while the MCP
+  tools fed it 0-based array indices. The other two conventions have names now,
+  each paired with its inverse so crosshair and mark sync still cancel exactly.
+- The astropy tests were passing at a tolerance eleven pixels wide, which is
+  what hid this. Tightened, and extended to the far corner of the frame where a
+  rotation error is largest.
+
+### Marks
+
+Draw on an image or a cube, say what you are pointing at, and have it still be
+there tomorrow.
+
+- Circles and boxes on the FITS canvas, the cube's 3D volume, and its 2D slice,
+  through one renderer — a shape cannot start looking different depending on
+  where you see it. Blueprint styling, with a fine leader at a fixed angle
+  carrying the label.
+- Click to place, drag to size, click to open, drag to move, drag a grip to
+  resize. The shape follows the pointer while you draw it, and it is the shape
+  you will get: the picker is asked at draw time, not remembered.
+- **A cube mark lives on a channel.** It is drawn on the slice showing that
+  channel and not on any other, because it is not at that position on any
+  other. The list carries the rest, and picking one takes you to its channel.
+- Marks persist with the file and appear in exported figures. Editing grips do
+  not: an exported figure shows what is marked, not the controls for adjusting
+  it.
+- **MCP:** `annotate_fits`, `annotate_cube`, `update_annotation`,
+  `select_annotation`, `remove_annotation`, `clear_annotations`, and the two
+  listings. An agent can draw, label, move, resize, restyle, highlight and
+  delete a mark, and read back its size in the units the tools take.
+
+### An agent can see the working area
+
+- `get_fits_image` and `get_cube_image` return what is on screen — the current
+  zoom, pan, colormap, crosshair and marks — rather than a fresh render of the
+  file. Each carries the transform needed to turn a position in the picture
+  back into a sky or voxel coordinate, which is what makes pointing possible.
+- Two settings bound the cost: the largest agent image in pixels and in MB. A
+  4000px capture costs an agent roughly sixteen times the context of a 1000px
+  one and tells it nothing more.
+
+### Opening a FITS
+
+- **It opens showing the whole frame.** An 11471x4593 mosaic opened at 100% and
+  showed about 5% of its width. It now fits the viewport on the tighter axis,
+  centred, and never enlarges — a 64x64 thumbnail stays at 100%. It happens
+  once, on the first frame with a real size, and any zoom you choose cancels it.
+- **The empty state offers the last files opened**, on the same component and
+  the same store as the cube's, which had this already.
+
+### The cube viewer
+
+- **The slice opens at the size the volume shows it.** The volume frames the box
+  so it never clips while orbiting, which is further out than fitting a plane to
+  the widget, so everything changed size when you switched modes. The default is
+  measured from both views rather than picked. The slice can also be zoomed out
+  past fit now, which it could not before.
+- Marks in the exported figure, which returned the bare render.
+- `close_cube_tab`; `get_cube_view` says which cube it describes and reports the
+  slice's own zoom and pan; the Info panel's object, telescope, instrument and
+  value range reach an agent.
+- **`cubeTabs[].path` was not a path** — it was the display name, so an agent
+  could not reopen what it listed.
+
+### MCP
+
+- **A map of the tool surface.** `list_apps`, `describe_app`, `search_tools` and
+  `man(tool)`, so an agent can find the dozen tools it needs without carrying
+  all 134.
+- **CAOM2 column guidance.** Agents were guessing column names from a sentence
+  in a tool description and getting 400s back; the schema is described now.
+- Query-path fixes from the m51 QA run, a bounded VOSpace listing, and clearer
+  errors where an agent was most likely to be wrong.
+
+### The sidebar
+
+- Header info, saved coordinates and marks are one list component: same height,
+  same filter, same selection behaviour, per-section row actions. Selecting and
+  deselecting work on one click, which they did not.
+- Bookmarks select like marks, and their button searches the archive at that
+  position.
+
+### Fixed
+
+- Segfault when choosing an extension from the HDU dropdown.
+- Stack overflow when placing a mark.
+- The zoom dropdown said 100% while the image was at 28%.
+- Sync zoom used a stale scale.
+- The image surface is built once, not once per frame.
+- A mark with no radius was invisible, on both viewers, for different reasons.
+- With the pencil armed, pressing an existing mark made another one on top
+  instead of grabbing it.
+
 ## [1.4.0] - 2026-08-27
 
 A notebook release. The subsystem could not show what a cell produced, and two

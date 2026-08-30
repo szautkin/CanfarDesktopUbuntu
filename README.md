@@ -17,6 +17,12 @@ This is the Linux counterpart of [Verbinal for Windows](https://github.com/szaut
 - **Standard & Advanced Launch** - Pick from the CANFAR image catalogue or supply a custom registry image with auth credentials
 - **Auto-Refresh** - Active sessions poll automatically while any session is pending
 - **Secure Credentials** - Tokens stored in the system keyring via Secret Service (GNOME Keyring / KDE Wallet)
+- **FITS Viewer** - Multi-tab image viewer with WCS, colormaps and stretches, an extension selector, a crosshair with sky coordinates, saved coordinates, and blink / linked-crosshair / synced-zoom comparison across tabs
+- **Cube Viewer** - GPU ray-marched 3D volume rendering with an opacity transfer function, plus a 2D slice view with a channel scrubber and per-voxel spectra
+- **Marks** - Draw circles and boxes on an image or a cube, label them, move and resize them; they persist with the file and appear in exported figures
+- **Archive Search** - CADC observation search with faceting, an ADQL editor, and previews
+- **Notebooks** - Open and run Jupyter notebooks, with rendered cell output
+- **AI Agent Access** - 134 MCP tools over a local socket, so an assistant can drive the app, read what is on screen, and point at things in it
 
 ## Screenshot
 
