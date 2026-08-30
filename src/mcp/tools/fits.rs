@@ -715,4 +715,82 @@ mod tests {
             "all FITS tools are agent-safe"
         );
     }
+
+    /// Every control in the viewer's DISPLAY section has a tool input.
+    ///
+    /// That section is where an image is made readable, and it is the one an
+    /// agent most needs: a frame at the wrong cut levels is a blank rectangle,
+    /// and an agent looking at `get_fits_image` cannot tell that from an empty
+    /// field. Asserted against the SCHEMA, because a field the handler honours
+    /// but never advertises may as well not exist.
+    #[test]
+    fn every_display_control_is_reachable_by_an_agent() {
+        let d = descriptors();
+        let set = d
+            .iter()
+            .find(|t| t.name == "set_fits_view")
+            .expect("set_fits_view is advertised");
+        let props = set.input_schema["properties"]
+            .as_object()
+            .expect("an object schema");
+        // Colormap and stretch pick the mapping; the two cut levels bound it;
+        // the preset sets both the way astronomers do; reset puts it back.
+        for field in [
+            "colormap",
+            "stretch",
+            "minCut",
+            "maxCut",
+            "minCutPercentile",
+            "maxCutPercentile",
+            "cutPreset",
+            "reset",
+        ] {
+            assert!(
+                props.contains_key(field),
+                "the DISPLAY panel can set `{field}` and an agent cannot"
+            );
+        }
+    }
+
+    /// The cut presets an agent may ask for are the ones the panel offers.
+    ///
+    /// Three names in two places drift: the dropdown gained ZScale and the
+    /// tool would have kept accepting only what it knew.
+    #[test]
+    fn the_advertised_cut_presets_are_the_ones_the_panel_offers() {
+        let d = descriptors();
+        let set = d
+            .iter()
+            .find(|t| t.name == "set_fits_view")
+            .expect("advertised");
+        let presets = set.input_schema["properties"]["cutPreset"]["enum"]
+            .as_array()
+            .expect("cutPreset is an enum");
+        for name in ["percentile", "zscale", "minmax"] {
+            assert!(
+                presets.iter().any(|v| v == name),
+                "the panel offers a cut preset `{name}` the tool refuses"
+            );
+        }
+    }
+
+    /// A cut level can be set as a percentile, which is the scale-free way.
+    ///
+    /// A data value is meaningless without the frame's range — a black point
+    /// of 30 is most of a JWST frame's useful span and nothing at all on a
+    /// MegaCam one — so an agent that has not read `dataMin`/`dataMax` cannot
+    /// pick one. The percentile inputs exist so it does not have to.
+    #[test]
+    fn a_cut_can_be_asked_for_as_a_percentile() {
+        let d = descriptors();
+        let set = d
+            .iter()
+            .find(|t| t.name == "set_fits_view")
+            .expect("advertised");
+        for field in ["minCutPercentile", "maxCutPercentile"] {
+            let p = &set.input_schema["properties"][field];
+            assert_eq!(p["minimum"], 0, "{field} should be bounded at 0");
+            assert_eq!(p["maximum"], 100, "{field} should be bounded at 100");
+        }
+    }
 }
