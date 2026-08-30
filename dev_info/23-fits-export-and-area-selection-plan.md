@@ -1,227 +1,195 @@
-# 23 — Exporting a FITS: a figure, and only the part you meant
+# 23 — Export the selected area of a FITS, with its marks, as PNG or PDF
 
-Status: plan. Measured against the tree at `9c17f7c`; nothing here is
-implemented.
+Status: plan. Measured against the tree at `9c17f7c`.
 
-Three asks, and they are not the same feature:
+**This replaces a first draft that was too big.** That version proposed porting
+the cube's whole publication *plate* — title, caption, colorbar, WCS footer —
+and splitting `cube_export::compose` to share it. None of that is needed for
+what was actually asked, and the split was the one genuinely risky step in it:
+1015 lines of working layout with no probe over its composed output.
 
-1. The FITS viewer should **export a figure** the way the cube viewer does.
-2. You should be able to **select an area** and export only that.
-3. An agent should be able to do both, and **cut a specific area** without a
-   person drawing the box.
+The ask is narrower and better: **select part of the image, export what you see
+there — marks included — as PNG or PDF.** Written down, most of the work turns
+out to be already done, and three things are quietly wrong.
 
-The first is a presentation job, the second is a framing job, and keeping them
-separate is most of the design.
+## What the ask needs that already exists
 
-## What exists
+- **Annotations come free.** `annotation_render::draw` sits *outside* the
+  `if chrome` guard in `draw_area_inner`, so every capture already contains the
+  marks. Only the resize grips are chrome. Nothing to build.
+- **PDF and PNG writing.** `helpers::pdf_writer::{write_png, write_pdf}` are
+  already generic over `(width, height, rgba)`.
+- **Format-conversion plumbing.** `cube_export::{rgba_to_surface,
+  surface_to_rgba, draw_over_rgba}`.
+- **A capture that scales rather than crops**, as of `9c17f7c`.
 
-| Piece | Where | Reusable? |
-| --- | --- | --- |
-| Export dialog — format PNG/PDF, scale 1/2/4, transparent background | `cube_export::show_cube_export` | **Yes**, with the cube-specific spec lifted out |
-| `write_png` / `write_pdf` | `helpers::pdf_writer` | **Yes**, already generic over `(w, h, rgba)` |
-| `rgba_to_surface` / `surface_to_rgba` / `draw_over_rgba` | `cube_export` | **Yes**, already the shared pixel-format layer |
-| Plate composition — title, caption, frame, colorbar, footer grid | `cube_export::PlateSpec::compose` | **Structure yes, content no** |
-| `PlateOverlay` — `view_proj`, `nz`, `spectral_scale`, `CubeMetadata` | `cube_export` | **No.** Wholly cube-specific |
-| A size-parameterised capture | `PlateSpec.capture: Rc<dyn Fn(i32,i32) -> Option<Vec<u8>>>` | **Yes** — this is already the right seam |
-| FITS capture at an arbitrary size | `FitsCanvas::capture_png_from_view` | **Yes**, and it now scales rather than crops |
+So the plate is not required, `cube_export::compose` is not touched, and the
+risk named in the first draft disappears. What remains is a region, a dialog,
+and three fixes.
 
-The `capture` closure is the important discovery: the plate already takes "give
-me RGBA at this size" as an abstraction. A FITS viewer can satisfy it today.
+## Three things that would ship wrong
 
-**The FITS viewer has no export at all.** Not a stripped-down one — none.
+These are the reason to write a plan rather than start typing.
 
-## Part 1 — the figure
+### 1. The in-progress shape leaks into exports
 
-### Split the plate
+`draw_area_inner` draws `pending_shape` — the rubber-band circle you are
+dragging out — **unconditionally**, above the `if chrome` guard. An export
+taken while a shape is being dragged would contain a half-made mark.
 
-`PlateSpec::compose` lays out title, subtitle, frame, caption, colorbar and a
-footer metadata grid. That layout is not about cubes. Two things in it are:
+The cube's equivalent *is* guarded (`if chrome` around its preview), so the two
+viewers already disagree. Move it under `chrome`.
 
-- the **overlay** painted over the frame (wireframe box, axis captions)
-- the **footer columns** (dims / RA-DEC-SPECTRAL / NaN% / mode)
+### 2. Selection and edit highlighting leak into exports
 
-So `compose` takes two injected pieces instead of a `PlateOverlay`:
+`draw` is passed `selected_annotation` and `editing_annotation`, so a mark that
+happens to be selected renders in white and one being edited renders in amber —
+**in the exported figure**. A reader of that figure sees one ring in a different
+colour from the others and has no way to know it means "this was clicked".
 
-```rust
-/// Painted over the frame, in frame coordinates.
-type FramePainter = Rc<dyn Fn(&cairo::Context, f64, f64, f64, f64)>;
-/// Footer key/value columns, already resolved to strings.
-type FooterColumns = Vec<(String, Vec<String>)>;
-```
+UI state must not survive into a deliverable. The capture and export paths pass
+`None` for both; the screen keeps them. This is the same rule as the grips, and
+it was half-applied.
 
-The cube passes what it passes today. The FITS viewer passes a painter that
-draws nothing (its overlay is already in the capture — crosshair, marks — since
-the canvas draws them) and footer columns of its own.
+### 3. Marks become hairlines at export scale
 
-**Do not** generalise `PlateOverlay` itself. It has `view_proj`, `nz` and
-`spectral_scale` in it; a shape that fits both would have half its fields unused
-on either side, which is a struct pretending to be an interface.
+`style::STROKE` is a fixed 1.0 device pixels, deliberately not scaled with zoom
+— correct on screen, where a thickening stroke turns a zoomed-out view into a
+blot. But an export at 4× draws a 1px stroke on a raster four times larger, so
+the marks come out four times finer than they look on screen, which is not what
+anyone means by "export what I selected".
 
-### The FITS footer
+The stroke scales with the **output-to-view ratio** for a capture, not with the
+zoom. On screen that ratio is 1 and nothing changes.
 
-What an astronomer needs to read a figure back:
+## The region
 
-| Column | From |
-| --- | --- |
-| Dimensions + HDU | `width`/`height`, `hduName` |
-| Sky centre | `crosshairRa/Dec` or the frame centre through the WCS |
-| Field of view + pixel scale | `pixelScaleArcsec` × dimensions |
-| Cut levels + stretch + colormap | `minCut`/`maxCut` with BUNIT, `stretch`, `colormap` |
-| Object / instrument / filter | `OBJECT`, `INSTRUME`, `FILTER` from the header |
+### What a selection is
 
-The cut levels matter more here than on a cube: a FITS figure is meaningless
-without saying what black and white were, and the panel now knows both the
-percentile and the data value.
+**Image pixels**, `(x, y, width, height)`, held on the tab.
 
-### The capture
-
-`FitsCanvas::capture_rgba(view_w, view_h, w, h)`, beside the PNG one and
-sharing `draw_scaled_into`. The PNG entry point becomes a thin wrapper, so the
-plate and `get_fits_image` cannot drift into different pictures — which is the
-same rule that already binds the screen and the capture.
-
-## Part 2 — selecting an area
-
-### The interaction
-
-Left-drag is taken three times over on the FITS canvas: pan, draw a mark, and
-move or resize one. Shift-drag is pan-while-drawing. Right-click places the
-crosshair.
-
-So selection is a **mode**, armed by a toggle, exactly as drawing is — and the
-two are mutually exclusive, which the toggles should enforce rather than the
-user remembering. Arming it:
-
-- drag draws a rubber band; release sets the selection
-- a click with no drag clears it
-- Escape clears it and disarms
-- the existing press-order rule (`grab_at`) stays first: a press on a mark is
-  still a press on a mark, because that lesson has been learned once already
-
-### What a selection IS
-
-**Image pixels**, stored as `(x, y, width, height)` in the image's own
-coordinates — not screen, and not sky.
-
-- Screen dies the moment you pan or zoom.
-- Sky cannot express a selection on an image with no WCS, and every FITS has
+- Screen coordinates die on the next pan.
+- Sky cannot express a selection on a frame with no WCS, and every FITS has
   pixels.
-- Image pixels survive zoom, pan, rotation and a window resize, and are what
-  `probe_fits_pixel` and `annotate_fits` already speak.
+- Image pixels survive zoom, pan, rotation and a window resize, and are the
+  space `probe_fits_pixel` and `annotate_fits` already speak.
 
-The **sky equivalent is reported alongside** when there is a WCS, because that
-is what makes a selection meaningful across two images of the same field — and
-it is what an agent asking for "the same region on the other frame" needs.
+On the tab rather than the canvas because a canvas is rebuilt on every HDU
+change, and the selection should not be.
 
-Held on the tab, not the canvas: it belongs to the image, survives a tab switch,
-and a canvas is rebuilt on every HDU change.
+The sky equivalent is *reported* when there is a WCS — that is what lets an
+agent cut the same region from another frame of the same field.
 
-### Drawing it
+### Rendering a region, not cropping one
 
-A rubber band while dragging, then a persistent rectangle with corner marks.
-Reuse `annotation_render::draw_handles` for the corners if the selection becomes
-resizable — but **not in the first pass**. Resizable selections need the whole
-grab/intent machinery again, and the cheap version (draw a new one) is what
-people do anyway.
+The naive version — capture the view, crop the raster — ties the export's
+resolution to the window. A small selection at 25% zoom would export as a
+handful of blurry pixels.
 
-Draw it in `draw_area_inner` under `chrome`, so it appears on screen and **not**
-in `get_fits_image` or an export. A selection is a tool for choosing a frame,
-not part of the picture.
+Instead, draw with a **substituted transform**: scale `= output_width /
+region_width`, offset placing the region's origin at the raster origin. Save the
+canvas transform, set it, draw, restore.
 
-### What "export the selection" means
+This is the payoff of having one drawing function: the image, the crosshair and
+every mark are all projected through `self.transform`, so substituting it moves
+all of them together and correctly, at any output size. A cropped raster cannot
+do that, and a second renderer would drift.
 
-The selection changes **what is captured**, not how it is presented. So the
-dialog gains one control:
+### Interaction
 
-- **Area**: `Whole view` / `Selection` / `Whole image`
-- and the existing **Format**, **Scale**, **Transparent** are unchanged
+Left-drag on this canvas is already pan, draw a mark, and move or resize one;
+Shift-drag is pan-while-drawing; right-click places the crosshair. So selection
+is a **mode with its own toggle**, mutually exclusive with drawing — enforced by
+the toggles, not by the user remembering.
 
-`Whole image` is worth having and is not the same as zooming out: it exports the
-frame at its own pixel grid, which is what you want for a finder chart.
+- drag draws a rubber band; release sets it
+- a click with no drag clears it
+- Escape clears and disarms
+- `grab_at` still runs first: a press on a mark is a press on a mark. That
+  lesson has been learned once already.
 
-Presentation stays orthogonal: **Plate** (framed, with the footer) or **Plain
-image** (the pixels, nothing else). The cube only offers a plate; a plain crop
-is most of the point of selecting an area, so the FITS viewer offers both and
-the cube can gain the choice later.
+The selection rectangle draws under `chrome`, so it appears on screen and never
+in the export. It is the tool for choosing the frame, not part of the picture.
 
-## Part 3 — the agent
+**Not resizable in the first pass.** Resize needs the whole grab/intent
+machinery again, and drawing a new box is what people do anyway.
 
-### `export_fits_figure`
+## The dialog
 
-Mirrors `export_cube_figure` — `path` writes a file, no path returns base64 —
-with the same `width`/`height`/`scale`/`transparent`/`format`.
+`cube_export::show_cube_export`'s shape, without the plate:
 
-### The region
+| Control | Values |
+| --- | --- |
+| Area | Selection (default when one exists) · Whole view · Whole image |
+| Format | PNG · PDF |
+| Scale | 1× · 2× · 4× |
+| Transparent background | off |
 
-Four ways to say it, because an agent has four different amounts of knowledge:
+"Whole image" is not the same as zooming out: it exports the frame on its own
+pixel grid, which is what a finder chart wants.
+
+No title, caption, colorbar or footer. If a framed plate is wanted later it is a
+separate presentation layer over the same capture, and can be shared with the
+cube then — with a raster probe over `compose` first, which is what the earlier
+draft should have said instead of proposing the split up front.
+
+## The agent
+
+`export_fits_figure`, mirroring `export_cube_figure`: `path` writes a file, no
+path returns base64, plus `scale` / `transparent` / `format`.
+
+`region` says what to cut:
 
 | `region` | Means |
 | --- | --- |
-| `"view"` (default) | What is on screen. The same picture `get_fits_image` returns. |
-| `"image"` | The whole frame at its own pixel grid. |
-| `"selection"` | What the user selected. **Fails clearly if nothing is selected** rather than silently exporting the view. |
-| an object | An explicit box |
+| `"view"` (default) | What is on screen — the picture `get_fits_image` returns |
+| `"selection"` | What the user selected. **Fails clearly when there is none**, rather than quietly exporting the view |
+| `"image"` | The whole frame, own pixel grid |
+| `{x, y, width, height}` | An explicit box in image pixels |
+| `{ra, dec, widthArcsec, heightArcsec}` | An explicit box on the sky; needs a WCS and says so when there is none |
 
-An explicit box in either space:
-
-```json
-{ "x": 2600, "y": 2200, "width": 400, "height": 400 }
-{ "ra": 202.4694, "dec": 47.1959, "widthArcsec": 30, "heightArcsec": 30 }
-```
-
-Sky is the one that lets an agent cut the same region from two frames of the
-same field, which is the thing this is for. It needs a WCS and says so when
-there is none.
-
-### Setting the selection
-
-`set_fits_view` gains `selection` — the same shapes as above, plus `null` to
-clear. An agent can then select and let the user see what it chose, which is the
-point of a shared workspace: it is the difference between an agent handing over
-a picture and an agent pointing at the screen.
-
-`get_fits_view` reports `selection` with both the pixel box and its sky
-equivalent, so a settable control can be read back — the guard will insist
-anyway.
+`set_fits_view` gains `selection` (the same shapes, `null` clears) and
+`get_fits_view` reports it with both boxes. An agent that can *set* the
+selection can show a person what it is about to export, which is the difference
+between handing over a picture and pointing at the screen.
 
 ## Order of work
 
-1. **`capture_rgba`** on the canvas, sharing `draw_scaled_into`. Small, and the
-   plate cannot be built without it.
-2. **Split `compose`** onto the painter + footer columns; the cube keeps working
-   and its tests keep passing. No new behaviour yet.
-3. **The FITS plate and dialog**, with `Area: Whole view` only. Shippable here:
-   the viewer gains an export it has never had.
-4. **The selection model** on the tab — set, clear, report, with the sky
-   equivalent. Unit-testable without a widget.
+1. **The three leaks** — preview under `chrome`, no selection/edit ink in a
+   capture, stroke scaled by the output ratio. Independent of everything else,
+   and they are bugs in what already ships: `get_fits_image` has them today.
+2. **`capture_region_rgba`** on the canvas — the substituted transform, with the
+   view-sized capture becoming the special case where the region is the view.
+   Unit-testable through the existing stated-view entry point.
+3. **The selection model** on the tab: set, clear, report, sky equivalent.
+   No widget needed, so it is unit-testable.
+4. **The export dialog**, Area: Whole view / Whole image only. Shippable — the
+   viewer gains an export it has never had.
 5. **The selection gesture** and its rectangle.
-6. **`Area: Selection / Whole image`** in the dialog.
-7. **`export_fits_figure`** and `selection` on `set_fits_view` / `get_fits_view`.
+6. **Area: Selection**, and `export_fits_figure` + `selection` over MCP.
 
-Steps 1–3 stand alone and are worth shipping on their own.
+Step 1 is worth doing on its own whatever happens to the rest.
 
 ## What this does not cover
 
-- **A FITS cutout.** Exporting *data* — a new FITS file with the selected pixels
-  and a corrected WCS — is a genuinely useful and completely different feature:
-  it is about the numbers, not the picture, and its correctness question is
-  CRPIX arithmetic rather than layout. Worth doing, separately.
-- **Multiple selections.** One box. A second one is a marks problem, and marks
-  already exist.
-- **Selection on the cube.** The plan above is FITS-only; the cube's slice could
-  take the same model, but its volume cannot — a box on a projected volume is
-  not a box in the data.
-- **Print / page setup.** PDF here is a single page sized to the plate, as the
-  cube's already is.
+- **A FITS cutout** — a new FITS file of the selected pixels with a corrected
+  CRPIX. Genuinely useful and a different feature: it is about the numbers, not
+  the picture, and its correctness question is WCS arithmetic rather than
+  layout.
+- **The publication plate.** Deliberately dropped; see above.
+- **Multiple selections.** One box. A second is what marks are for.
+- **Selection on the cube.** The slice could take this model; the volume cannot,
+  because a box on a projected volume is not a box in the data.
 
-## The risk worth naming
+## How it gets verified
 
-The plate work touches `cube_export`, which is 1015 lines of layout that
-currently works and has no probe over its composed output — only unit tests on
-the scale and format lists. Splitting `compose` is a refactor of working
-functionality with no pixel-level guard underneath it.
+The pixel questions are the ones that shipped wrong last time, so they get a
+probe rather than an assertion:
 
-So step 2 gets one first: a probe that composes a cube plate before and after
-the split and compares the rasters. Without it the refactor is unfalsifiable,
-and "the cube export still looks right" is not something the test suite can
-currently tell anyone.
+- a region export contains the marks that fall inside it, and none of the ones
+  that do not;
+- the same region at 1× and 4× is the same picture, by centre of mass and lit
+  fraction — the measurement that caught the capture crop;
+- a mark's stroke is the same *relative* weight at 1× and 4×;
+- a selected or edited mark exports in the same ink as any other;
+- a shape mid-drag does not appear at all.
