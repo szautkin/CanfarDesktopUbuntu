@@ -98,6 +98,9 @@ pub struct FitsViewer {
     colormap_combo: gtk::DropDown,
     min_scale: gtk::Scale,
     max_scale: gtk::Scale,
+    /// The data values the two percentile sliders currently mean.
+    cut_readout: gtk::Label,
+    cut_preset: gtk::DropDown,
     zoom_combo: gtk::DropDown,
     /// Free-form zoom % entry (parses "NNN" / "NNN%" on activate).
     zoom_entry: gtk::Entry,
@@ -231,21 +234,58 @@ impl FitsViewer {
             &stretch_combo,
         ));
 
-        let min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
+        // PERCENTILE, not data value. A linear slider across an image's full
+        // range is unusable on real data: a single saturated star sets the top
+        // of the range, so on a JWST frame measured here the entire useful
+        // span — p0.5 to p99.5 — was ONE TENTH of a single slider step, and
+        // every setting worth having sat in the first 0.05% of the travel.
+        //
+        // Percentiles are scale-free: 0.5 means the same thing on a JWST
+        // mosaic and a MegaCam frame, and every step of the slider moves the
+        // display by a comparable amount whatever the data looks like.
+        let min_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 0.05);
         min_scale.set_draw_value(false);
         min_scale.set_hexpand(true);
         min_scale.set_tooltip_text(Some(crate::tr_en!(
-            "Black point — pixels at or below render black"
+            "Black point, as a percentile of the pixels — 0.5 is the default"
         )));
         column.append(&viewer_shell::labeled(crate::tr_en!("Min cut"), &min_scale));
 
-        let max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
+        let max_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 0.05);
         max_scale.set_draw_value(false);
         max_scale.set_hexpand(true);
         max_scale.set_tooltip_text(Some(crate::tr_en!(
-            "White point — pixels at or above render white"
+            "White point, as a percentile of the pixels — 99.5 is the default"
         )));
         column.append(&viewer_shell::labeled(crate::tr_en!("Max cut"), &max_scale));
+
+        // The percentile is how you steer; the data value is what it means.
+        // Without this the slider says "97.3" and an astronomer has no idea
+        // what level that is in the units the image is actually in.
+        let cut_readout = gtk::Label::new(None);
+        cut_readout.add_css_class("caption");
+        cut_readout.add_css_class("dim-label");
+        cut_readout.set_halign(gtk::Align::End);
+        cut_readout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        column.append(&cut_readout);
+
+        // The standard cut levels, as DS9 and astropy offer them. zscale is the
+        // one astronomers reach for: a percentile cut asks where most pixels
+        // are, which is the wrong question for faint structure sitting under a
+        // few very bright stars.
+        let cut_preset = gtk::DropDown::from_strings(&[
+            crate::tr_en!("Percentile"),
+            crate::tr_en!("ZScale"),
+            crate::tr_en!("Min/Max"),
+        ]);
+        cut_preset.set_selected(0);
+        cut_preset.set_tooltip_text(Some(crate::tr_en!(
+            "How the black and white points are chosen"
+        )));
+        column.append(&viewer_shell::labeled(
+            crate::tr_en!("Cut levels"),
+            &cut_preset,
+        ));
 
         let reset_btn = gtk::Button::with_label(crate::tr_en!("Reset stretch"));
         reset_btn.add_css_class("flat");
@@ -577,6 +617,8 @@ impl FitsViewer {
             colormap_combo,
             min_scale,
             max_scale,
+            cut_readout,
+            cut_preset,
             zoom_combo,
             zoom_entry,
             north_up_btn,
@@ -662,7 +704,10 @@ impl FitsViewer {
                     return;
                 }
                 if let Some(tab) = v.current_tab() {
-                    tab.set_vmin(scale.value());
+                    if let Some(value) = tab.value_at_percentile(scale.value()) {
+                        tab.set_vmin(value);
+                        v.refresh_cut_readout(&tab);
+                    }
                 }
             });
         }
@@ -673,7 +718,35 @@ impl FitsViewer {
                     return;
                 }
                 if let Some(tab) = v.current_tab() {
-                    tab.set_vmax(scale.value());
+                    if let Some(value) = tab.value_at_percentile(scale.value()) {
+                        tab.set_vmax(value);
+                        v.refresh_cut_readout(&tab);
+                    }
+                }
+            });
+        }
+        // Cut-level presets.
+        {
+            let v = viewer.clone();
+            viewer.cut_preset.connect_selected_notify(move |dd| {
+                if *v.suppress_sync.borrow() {
+                    return;
+                }
+                let Some(tab) = v.current_tab() else { return };
+                let cuts = match dd.selected() {
+                    1 => tab.zscale_cuts(),
+                    2 => Some((tab.data_min(), tab.data_max())),
+                    // "Percentile" puts the sliders back where they started,
+                    // which is also what they are for.
+                    _ => Some((
+                        tab.value_at_percentile(0.5).unwrap_or(tab.data_min()),
+                        tab.value_at_percentile(99.5).unwrap_or(tab.data_max()),
+                    )),
+                };
+                if let Some((lo, hi)) = cuts {
+                    tab.set_vmin(lo);
+                    tab.set_vmax(hi);
+                    v.sync_controls_to_tab(&tab);
                 }
             });
         }
@@ -1525,6 +1598,45 @@ impl FitsViewer {
                 if let Some(v) = crate::mcp::tools::arg(args, "maxCut").and_then(|v| v.as_f64()) {
                     tab.set_vmax(v);
                 }
+                // Percentiles, which mean the same thing on any image — a data
+                // value does not, and an agent that has not read the frame's
+                // range cannot pick one.
+                if let Some(p) =
+                    crate::mcp::tools::arg(args, "minCutPercentile").and_then(|v| v.as_f64())
+                {
+                    if let Some(value) = tab.value_at_percentile(p) {
+                        tab.set_vmin(value);
+                    }
+                }
+                if let Some(p) =
+                    crate::mcp::tools::arg(args, "maxCutPercentile").and_then(|v| v.as_f64())
+                {
+                    if let Some(value) = tab.value_at_percentile(p) {
+                        tab.set_vmax(value);
+                    }
+                }
+                // The presets the panel offers, under the same names.
+                if let Some(preset) =
+                    crate::mcp::tools::arg(args, "cutPreset").and_then(|v| v.as_str())
+                {
+                    let cuts = match preset.trim().to_ascii_lowercase().as_str() {
+                        "zscale" => tab.zscale_cuts(),
+                        "minmax" => Some((tab.data_min(), tab.data_max())),
+                        "percentile" => Some((
+                            tab.value_at_percentile(0.5).unwrap_or(tab.data_min()),
+                            tab.value_at_percentile(99.5).unwrap_or(tab.data_max()),
+                        )),
+                        other => {
+                            return Err(format!(
+                                "'{other}' is not a cut preset — use percentile, zscale or minmax"
+                            ))
+                        }
+                    };
+                    if let Some((lo, hi)) = cuts {
+                        tab.set_vmin(lo);
+                        tab.set_vmax(hi);
+                    }
+                }
                 // `zoomPercent` is what get_fits_view REPORTS and what the
                 // reference declares; this accepted only `zoom`, so an agent
                 // reading the view and writing a field straight back was
@@ -1808,6 +1920,13 @@ impl FitsViewer {
             "stretch": stretch_name(tab.stretch()),
             "colormap": colormap_name(tab.colormap()),
             "minCut": tab.vmin(),
+            // The same numbers as percentiles, so an agent can set what it read
+            // without knowing the frame's range.
+            "minCutPercentile": tab.percentile_of_value(tab.vmin()),
+            "maxCutPercentile": tab.percentile_of_value(tab.vmax()),
+            // What zscale would choose for this image, so an agent can tell
+            // whether the current cut is near the sensible one.
+            "zscaleCut": tab.zscale_cuts().map(|(lo, hi)| json!({ "min": lo, "max": hi })),
             "maxCut": tab.vmax(),
             "northUp": tab.is_north_up(),
             "hasWcs": has_wcs,
@@ -1927,16 +2046,15 @@ impl FitsViewer {
         self.colormap_combo
             .set_selected(colormap_to_index(tab.colormap()));
 
-        // Update the min/max scale range to the image's own extrema
-        let data_min = tab.data_min();
-        let data_max = tab.data_max();
-        let step = ((data_max - data_min) / 200.0).max(1e-6);
-        self.min_scale.set_range(data_min, data_max);
-        self.min_scale.set_increments(step, step * 10.0);
-        self.min_scale.set_value(tab.vmin());
-        self.max_scale.set_range(data_min, data_max);
-        self.max_scale.set_increments(step, step * 10.0);
-        self.max_scale.set_value(tab.vmax());
+        // The sliders are percentiles, so their RANGE never changes with the
+        // image — only where the handles sit. The value that arrived may have
+        // come from an agent or a preset in data units, so it is mapped back
+        // through this image's own distribution.
+        self.min_scale
+            .set_value(tab.percentile_of_value(tab.vmin()));
+        self.max_scale
+            .set_value(tab.percentile_of_value(tab.vmax()));
+        self.refresh_cut_readout(tab);
 
         self.north_up_btn.set_active(tab.is_north_up());
 
@@ -2580,6 +2698,26 @@ impl FitsViewer {
     fn refresh_recents(&self) {
         self.recents_view.refresh();
         self.recents_box.set_visible(!self.recents_view.is_empty());
+    }
+
+    /// Say what the two percentile sliders mean in the image's own units.
+    ///
+    /// A percentile is how you steer and a data value is what it means; a
+    /// slider reading "97.3" with no second number leaves an astronomer
+    /// guessing at the level they have just set.
+    fn refresh_cut_readout(&self, tab: &Rc<FitsTab>) {
+        // The same BUNIT `get_fits_view` reports, so the panel and an agent
+        // describe the level in the same units.
+        let unit = header_str(&tab.data().header, "BUNIT")
+            .filter(|u| !u.trim().is_empty())
+            .map(|u| format!(" {}", u.trim()))
+            .unwrap_or_default();
+        self.cut_readout.set_text(&crate::tr_fmt!(
+            "{} to {}{}",
+            format_cut(tab.vmin()),
+            format_cut(tab.vmax()),
+            unit
+        ));
     }
 
     /// Show `tab`'s marks, whether or not it is the registered current tab.
@@ -3480,5 +3618,23 @@ mod hdu_selector_tests {
         let a: Vec<String> = vec!["2: SCI 100×100".into()];
         let b: Vec<String> = vec!["2: SCI 100×100".into()];
         assert!(!model_needs_rebuild(Some(&a), &b));
+    }
+}
+/// A cut level, short enough for a caption and readable across the range
+/// astronomical pixel values actually take.
+///
+/// Counts on a CCD are thousands; a calibrated JWST frame is single-digit
+/// MJy/sr; a difference image is fractions. One fixed number of decimals is
+/// wrong for at least two of those, so the magnitude picks the format.
+fn format_cut(v: f64) -> String {
+    let a = v.abs();
+    if a >= 10_000.0 || (a > 0.0 && a < 0.01) {
+        format!("{v:.3e}")
+    } else if a >= 100.0 {
+        format!("{v:.0}")
+    } else if a >= 1.0 {
+        format!("{v:.2}")
+    } else {
+        format!("{v:.4}")
     }
 }

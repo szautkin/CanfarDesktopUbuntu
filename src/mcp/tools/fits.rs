@@ -84,8 +84,15 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "centerY": { "type":"number", "description":"Image y-pixel to centre the viewport on" },
                     "stretch": { "type":"string", "enum": crate::ui::fits_viewer::STRETCH_NAMES },
                     "colormap": { "type":"string", "enum": crate::ui::fits_viewer::COLORMAP_NAMES },
-                    "minCut": { "type":"number" },
-                    "maxCut": { "type":"number" },
+                    "minCut": { "type":"number", "description":"Black point, in the image's own pixel units (BUNIT). Use cutPercentile instead to say it as a percentile, which is scale-free." },
+                    "maxCut": { "type":"number", "description":"White point, in the image's own pixel units." },
+                    "cutPreset": {
+                        "type":"string",
+                        "enum":["percentile","zscale","minmax"],
+                        "description":"Set both cut levels the way astronomers do. \"zscale\" is the IRAF/DS9 default and usually the right choice: a percentile cut asks where most pixels are, which is the wrong question for faint structure under a few bright stars. \"percentile\" is p0.5-p99.5. \"minmax\" uses the full data range and on a frame with one saturated star shows almost nothing."
+                    },
+                    "minCutPercentile": { "type":"number", "minimum":0, "maximum":100, "description":"Black point as a percentile of this image's pixels (0.5 is the default). Scale-free: it means the same thing on any image." },
+                    "maxCutPercentile": { "type":"number", "minimum":0, "maximum":100, "description":"White point as a percentile (99.5 is the default)." },
                     "northUp": { "type":"boolean" },
                     "reset": { "type":"boolean", "description":"Reset stretch + zoom/pan to defaults" },
                     "hdu": { "type":"integer", "minimum":0, "description":"Switch the displayed HDU/extension (image HDUs only; get_fits_view lists them)" },

@@ -22,6 +22,9 @@ pub struct FitsTab {
     colormap: RefCell<ColorMap>,
     vmin: RefCell<f64>,
     vmax: RefCell<f64>,
+    /// The image's sorted pixel sample, so a cut level can be asked for by
+    /// percentile while the pointer is moving.
+    distribution: crate::helpers::fits_renderer::PixelDistribution,
     /// Percentile-cut defaults (for Reset Stretch).
     auto_vmin: f64,
     auto_vmax: f64,
@@ -48,6 +51,7 @@ impl FitsTab {
         let data = Rc::new(data);
 
         // Compute percentile cuts for a good initial display
+        let distribution = fits_renderer::PixelDistribution::build(&data.pixels);
         let (vmin, vmax) = fits_renderer::auto_cut(&data.pixels, 0.5, 99.5);
 
         // Initial render with auto-cut values
@@ -84,6 +88,7 @@ impl FitsTab {
             colormap: RefCell::new(ColorMap::Grayscale),
             vmin: RefCell::new(vmin),
             vmax: RefCell::new(vmax),
+            distribution,
             auto_vmin: vmin,
             auto_vmax: vmax,
             source_file,
@@ -127,6 +132,22 @@ impl FitsTab {
 
     pub fn vmax(&self) -> f64 {
         *self.vmax.borrow()
+    }
+
+    /// The cut value at a percentile of this image's pixels.
+    pub fn value_at_percentile(&self, pct: f64) -> Option<f64> {
+        self.distribution.value_at(pct)
+    }
+
+    /// Where a cut value sits in this image's distribution, as a percentile —
+    /// for putting a slider where a value that arrived in data units belongs.
+    pub fn percentile_of_value(&self, value: f64) -> f64 {
+        self.distribution.percentile_of(value)
+    }
+
+    /// IRAF zscale limits for this image.
+    pub fn zscale_cuts(&self) -> Option<(f64, f64)> {
+        self.distribution.zscale(0.25)
     }
 
     pub fn data_min(&self) -> f64 {

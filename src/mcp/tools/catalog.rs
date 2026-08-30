@@ -469,6 +469,10 @@ mod read_back_tests {
         "resetSlice",
         "clearCrosshair",
         "windowPreset",
+        // The FITS equivalent: it computes a pair of cut levels and applies
+        // them. What comes back afterwards is the levels, not the preset — and
+        // they can then be moved, so there is nothing to read back.
+        "cutPreset",
         "runSearch",
     ];
 
