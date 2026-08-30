@@ -1,9 +1,17 @@
-//! Persists the list of recently opened FITS cubes as JSON under the app data
+//! Persists the list of recently opened files as JSON under the app data
 //! directory, capped at 8 entries. Ported one-to-one from
 //! `Services/CubeViewer/RecentCubesService.cs` and modelled on the sibling
 //! [`crate::services::recent_launch_service::RecentLaunchService`] (stateless:
 //! each call reads/mutates/writes the file, no in-memory cache). Entries whose
 //! file no longer exists are dropped on load.
+//!
+//! One implementation, one file per [`RecentKind`]. The cube viewer had this
+//! and the FITS viewer wanted the same thing; the alternative was a second copy
+//! that would drift, since this one already holds the cap and the
+//! move-to-the-top rule the other would have had to re-derive. The lists stay
+//! separate on disk so neither viewer's recents are polluted by the other's —
+//! and the cube keeps its original file name, so nothing a user already has is
+//! lost.
 
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -12,10 +20,28 @@ use std::path::{Path, PathBuf};
 /// Maximum number of recent cubes retained (matches Windows `MaxRecent`).
 const MAX_RECENT: usize = 8;
 
-/// One recently opened cube: full path, display name (file name), last-opened time.
-/// Mirrors the Windows `RecentCubeEntry` record.
+/// What kind of file a list holds, which is also its file name on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecentKind {
+    Cube,
+    Fits,
+}
+
+impl RecentKind {
+    /// The store's file name. `recent_cubes.json` is what the cube viewer has
+    /// always written, and it keeps it.
+    fn file_name(self) -> &'static str {
+        match self {
+            RecentKind::Cube => "recent_cubes.json",
+            RecentKind::Fits => "recent_fits.json",
+        }
+    }
+}
+
+/// One recently opened file: full path, display name (file name), last-opened
+/// time. Mirrors the Windows `RecentCubeEntry` record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecentCubeEntry {
+pub struct RecentFileEntry {
     pub path: String,
     #[serde(default)]
     pub name: String,
@@ -23,34 +49,35 @@ pub struct RecentCubeEntry {
     pub opened_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// JSON-backed store of recently opened cubes at
-/// `ProjectDirs("net","canfar","Verbinal").data_dir()/recent_cubes.json`.
-pub struct RecentCubesService {
+/// JSON-backed store of recently opened files, under
+/// `ProjectDirs("net","canfar","Verbinal").data_dir()`.
+pub struct RecentFilesService {
     file_path: PathBuf,
 }
 
-impl RecentCubesService {
-    pub fn new() -> Self {
+impl RecentFilesService {
+    pub fn new(kind: RecentKind) -> Self {
+        let name = kind.file_name();
         let file_path = ProjectDirs::from("net", "canfar", "Verbinal")
-            .map(|dirs| dirs.data_dir().join("recent_cubes.json"))
-            .unwrap_or_else(|| PathBuf::from("recent_cubes.json"));
-        RecentCubesService { file_path }
+            .map(|dirs| dirs.data_dir().join(name))
+            .unwrap_or_else(|| PathBuf::from(name));
+        RecentFilesService { file_path }
     }
 
     /// Test-only constructor pointing at an explicit JSON file.
     #[cfg(test)]
     fn with_file(file_path: PathBuf) -> Self {
-        RecentCubesService { file_path }
+        RecentFilesService { file_path }
     }
 
     /// Read + deserialize the store, dropping entries whose file no longer exists.
-    fn load_entries(&self) -> Vec<RecentCubeEntry> {
+    fn load_entries(&self) -> Vec<RecentFileEntry> {
         if !self.file_path.exists() {
             return Vec::new();
         }
         match std::fs::read_to_string(&self.file_path) {
             Ok(contents) => {
-                let loaded: Vec<RecentCubeEntry> =
+                let loaded: Vec<RecentFileEntry> =
                     serde_json::from_str(&contents).unwrap_or_default();
                 // Files deleted/moved since the last session would just produce
                 // dead entries — drop them (same as the Windows Load()).
@@ -63,7 +90,7 @@ impl RecentCubesService {
         }
     }
 
-    fn save_entries(&self, entries: &[RecentCubeEntry]) -> Result<(), String> {
+    fn save_entries(&self, entries: &[RecentFileEntry]) -> Result<(), String> {
         if let Some(parent) = self.file_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -91,7 +118,7 @@ impl RecentCubesService {
             .unwrap_or_else(|| path_str.clone());
         entries.insert(
             0,
-            RecentCubeEntry {
+            RecentFileEntry {
                 path: path_str,
                 name,
                 opened_at: Some(chrono::Utc::now()),
@@ -101,8 +128,10 @@ impl RecentCubesService {
         let _ = self.save_entries(&entries);
     }
 
-    #[cfg(test)]
-    /// Drop a specific cube path from the store.
+    /// Drop one path from the store.
+    ///
+    /// Was test-only: nothing in the app ever forgot a recent, because neither
+    /// empty state offered it. The shared recents list does.
     pub fn remove(&self, p: &Path) {
         let path_str = p.to_string_lossy().into_owned();
         let mut entries = self.load_entries();
@@ -114,7 +143,7 @@ impl RecentCubesService {
     }
 
     #[cfg(test)]
-    /// Forget every recent cube.
+    /// Forget everything in this store.
     pub fn clear(&self) {
         if self.file_path.exists() {
             let _ = std::fs::remove_file(&self.file_path);
@@ -122,9 +151,10 @@ impl RecentCubesService {
     }
 }
 
-impl Default for RecentCubesService {
+impl Default for RecentFilesService {
+    /// The cube list, which is the one that existed before there were two.
     fn default() -> Self {
-        Self::new()
+        Self::new(RecentKind::Cube)
     }
 }
 
@@ -157,7 +187,7 @@ mod tests {
     #[test]
     fn add_then_list_most_recent_first() {
         let dir = temp_dir();
-        let svc = RecentCubesService::with_file(dir.join("recent.json"));
+        let svc = RecentFilesService::with_file(dir.join("recent.json"));
         let a = touch(&dir, "a.fits");
         let b = touch(&dir, "b.fits");
 
@@ -171,7 +201,7 @@ mod tests {
     #[test]
     fn re_adding_moves_to_top_without_duplicates() {
         let dir = temp_dir();
-        let svc = RecentCubesService::with_file(dir.join("recent.json"));
+        let svc = RecentFilesService::with_file(dir.join("recent.json"));
         let a = touch(&dir, "a.fits");
         let b = touch(&dir, "b.fits");
 
@@ -186,7 +216,7 @@ mod tests {
     #[test]
     fn capped_at_eight() {
         let dir = temp_dir();
-        let svc = RecentCubesService::with_file(dir.join("recent.json"));
+        let svc = RecentFilesService::with_file(dir.join("recent.json"));
         let mut paths = Vec::new();
         for i in 0..12 {
             let p = touch(&dir, &format!("cube{i}.fits"));
@@ -203,7 +233,7 @@ mod tests {
     #[test]
     fn missing_files_dropped_on_list() {
         let dir = temp_dir();
-        let svc = RecentCubesService::with_file(dir.join("recent.json"));
+        let svc = RecentFilesService::with_file(dir.join("recent.json"));
         let a = touch(&dir, "a.fits");
         let b = touch(&dir, "b.fits");
         svc.add(&a);
@@ -218,7 +248,7 @@ mod tests {
     #[test]
     fn remove_and_clear() {
         let dir = temp_dir();
-        let svc = RecentCubesService::with_file(dir.join("recent.json"));
+        let svc = RecentFilesService::with_file(dir.join("recent.json"));
         let a = touch(&dir, "a.fits");
         let b = touch(&dir, "b.fits");
         svc.add(&a);
@@ -234,7 +264,7 @@ mod tests {
     #[test]
     fn list_on_empty_store() {
         let dir = temp_dir();
-        let svc = RecentCubesService::with_file(dir.join("does_not_exist.json"));
+        let svc = RecentFilesService::with_file(dir.join("does_not_exist.json"));
         assert!(svc.list().is_empty());
     }
 }

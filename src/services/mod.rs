@@ -24,7 +24,7 @@ pub mod observation_download;
 pub mod observation_note_store;
 pub mod observation_store;
 pub mod platform_service;
-pub mod recent_cubes_service;
+pub mod recent_files_service;
 pub mod recent_launch_service;
 pub mod search_store_service;
 pub mod service_health_probe;

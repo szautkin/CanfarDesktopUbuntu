@@ -4,14 +4,14 @@
 //! self-contained [`CubeViewer`] (its own GL ray-marcher + slice fallback +
 //! controls). Cubes open into new [`adw::TabView`] pages, close with the per-tab
 //! ✕, and an empty-state prompt — with a persisted "recent cubes" list from
-//! [`RecentCubesService`] — is shown whenever no tab is open. Mirrors the FITS
+//! [`RecentFilesService`] — is shown whenever no tab is open. Mirrors the FITS
 //! viewer's tabbed approach ([`crate::ui::fits_viewer`]) but uses libadwaita's
 //! `TabView`/`TabBar` for the tab strip.
 
 use crate::helpers::cube_loader;
 use crate::helpers::cube_wcs::CubeWcs;
 use crate::models::volume_data::VolumeData;
-use crate::services::recent_cubes_service::RecentCubesService;
+use crate::services::recent_files_service::{RecentFilesService, RecentKind};
 use crate::ui::cube_viewer::CubeViewer;
 use base64::Engine as _;
 use gtk4::glib;
@@ -19,7 +19,7 @@ use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 /// Top-level widget owning the toolbar, the tab strip, and every open cube.
@@ -32,17 +32,15 @@ pub struct CubeTabHost {
     /// self-referential signal closures don't drop while the tab is open).
     viewers: Rc<RefCell<Vec<Rc<CubeViewer>>>>,
     /// Persistent recent-cubes store (surfaced in the empty state).
-    recents: RecentCubesService,
+    recents: RecentFilesService,
     /// Stack switching between the empty state and the tab strip.
     content_stack: gtk::Stack,
     /// Toast overlay for load/other errors.
     toast_overlay: adw::ToastOverlay,
     /// The recents section container (hidden when there are no recents).
-    recents_section: gtk::Box,
+    recents_box: gtk::Box,
     /// The list box the recents rows live in.
-    recents_list: gtk::ListBox,
-    /// Paths backing the recents rows (row index → path).
-    recents_paths: RefCell<Vec<PathBuf>>,
+    recents_view: Rc<crate::ui::recents_section::RecentsSection>,
 }
 
 /// Push the open cube tabs + active index into the MCP view state.
@@ -113,7 +111,7 @@ impl CubeTabHost {
         content_stack.set_hexpand(true);
 
         // Empty state
-        let (empty_page, empty_open_btn, recents_section, recents_list) = build_empty_state();
+        let (empty_page, empty_open_btn, recents_box, recents_view) = build_empty_state();
         content_stack.add_named(&empty_page, Some("empty"));
 
         // Tab strip: an adw::TabBar above the adw::TabView.
@@ -145,12 +143,11 @@ impl CubeTabHost {
             widget,
             tab_view,
             viewers: Rc::new(RefCell::new(Vec::new())),
-            recents: RecentCubesService::new(),
+            recents: RecentFilesService::new(RecentKind::Cube),
             content_stack,
             toast_overlay,
-            recents_section,
-            recents_list,
-            recents_paths: RefCell::new(Vec::new()),
+            recents_box,
+            recents_view,
         });
 
         // ── Wire signals ─────────────────────────────────────────────────────
@@ -179,13 +176,8 @@ impl CubeTabHost {
         // Recents row → open
         {
             let h = host.clone();
-            host.recents_list.connect_row_activated(move |_, row| {
-                let idx = row.index() as usize;
-                let path = h.recents_paths.borrow().get(idx).cloned();
-                if let Some(path) = path {
-                    h.open_path(&path);
-                }
-            });
+            host.recents_view
+                .set_on_open(move |path| h.open_path(&path));
         }
         // Per-tab ✕ → clean up the backing viewer and finish the close.
         {
@@ -1138,43 +1130,12 @@ impl CubeTabHost {
     }
 
     /// Rebuild the empty-state recents list from the persisted store. Entries
-    /// whose file no longer exists are already filtered out by [`RecentCubesService::list`].
+    /// whose file no longer exists are already filtered out by [`RecentFilesService::list`].
     fn refresh_recents(&self) {
-        while let Some(child) = self.recents_list.first_child() {
-            self.recents_list.remove(&child);
-        }
-
-        let paths = self.recents.list();
-        self.recents_section.set_visible(!paths.is_empty());
-
-        for path in &paths {
-            let name = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.display().to_string());
-
-            let row = gtk::ListBoxRow::new();
-            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row_box.set_margin_start(8);
-            row_box.set_margin_end(8);
-            row_box.set_margin_top(6);
-            row_box.set_margin_bottom(6);
-
-            let icon = gtk::Image::from_icon_name("image-x-generic-symbolic");
-            row_box.append(&icon);
-
-            let label = gtk::Label::new(Some(&name));
-            label.set_halign(gtk::Align::Start);
-            label.set_hexpand(true);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-            row_box.append(&label);
-
-            row.set_child(Some(&row_box));
-            row.set_tooltip_text(Some(&path.display().to_string()));
-            self.recents_list.append(&row);
-        }
-
-        *self.recents_paths.borrow_mut() = paths;
+        self.recents_view.refresh();
+        // The heading is hidden with the list rather than left standing over
+        // an empty box.
+        self.recents_box.set_visible(!self.recents_view.is_empty());
     }
 }
 
@@ -1256,7 +1217,12 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
 
 /// Build the "no cube open" placeholder. Returns the page plus the open button,
 /// the recents section container, and the recents list box (wired by the host).
-fn build_empty_state() -> (gtk::Box, gtk::Button, gtk::Box, gtk::ListBox) {
+fn build_empty_state() -> (
+    gtk::Box,
+    gtk::Button,
+    gtk::Box,
+    Rc<crate::ui::recents_section::RecentsSection>,
+) {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
     page.set_vexpand(true);
     page.set_valign(gtk::Align::Center);
@@ -1290,23 +1256,26 @@ fn build_empty_state() -> (gtk::Box, gtk::Button, gtk::Box, gtk::ListBox) {
     open_btn.set_halign(gtk::Align::Center);
     page.append(&open_btn);
 
-    // Recents section (hidden until populated).
-    let recents_section = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    recents_section.set_margin_top(12);
-    recents_section.set_visible(false);
+    // Recents (hidden until populated), on the component the FITS viewer's
+    // empty state uses too — this was a hand-rolled ListBox with its own rows,
+    // its own icon and its own ellipsizing, which is exactly the copy that
+    // drifts once a second viewer wants the same list.
+    let recents_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    recents_box.set_margin_top(12);
+    recents_box.set_visible(false);
+    recents_box.set_width_request(460);
 
     let recents_header = gtk::Label::new(Some(crate::tr_en!("Recent cubes")));
     recents_header.add_css_class("heading");
     recents_header.set_halign(gtk::Align::Center);
-    recents_section.append(&recents_header);
+    recents_box.append(&recents_header);
 
-    let recents_list = gtk::ListBox::new();
-    recents_list.add_css_class("boxed-list");
-    recents_list.set_selection_mode(gtk::SelectionMode::None);
-    recents_list.set_width_request(420);
-    recents_section.append(&recents_list);
+    let recents = crate::ui::recents_section::RecentsSection::new(
+        crate::services::recent_files_service::RecentKind::Cube,
+        crate::tr_en!("No cubes opened yet."),
+    );
+    recents_box.append(recents.widget());
+    page.append(&recents_box);
 
-    page.append(&recents_section);
-
-    (page, open_btn, recents_section, recents_list)
+    (page, open_btn, recents_box, recents)
 }

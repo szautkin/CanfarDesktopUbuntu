@@ -39,6 +39,7 @@ pub mod notebook_page;
 pub mod observation_detail_page;
 pub mod platform_load;
 pub mod recent_launches;
+pub mod recents_section;
 pub mod rename_dialog;
 pub mod research_page;
 pub mod resource_selector;

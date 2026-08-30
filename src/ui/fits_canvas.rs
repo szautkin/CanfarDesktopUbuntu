@@ -180,6 +180,25 @@ enum Grab {
     Body,
 }
 
+/// The scale that shows the WHOLE image in a viewport of `viewport`.
+///
+/// Never above 1.0. A 64x64 thumbnail blown up to fill a 1600px viewport is a
+/// wall of fat pixels and tells you nothing an honest 64 pixels would not;
+/// small images open at 100% with space around them, which is what they look
+/// like. The limit is the tighter axis, so the whole frame fits both ways.
+///
+/// Returns 1.0 for a degenerate image or viewport rather than dividing by zero
+/// — the caller cannot fit to a viewport that does not exist yet, and 100% is
+/// the honest thing to show until it does.
+pub fn fit_scale(image: (f64, f64), viewport: (f64, f64)) -> f64 {
+    let (iw, ih) = image;
+    let (vw, vh) = viewport;
+    if !(iw > 0.0 && ih > 0.0 && vw > 0.0 && vh > 0.0) {
+        return 1.0;
+    }
+    (vw / iw).min(vh / ih).min(1.0)
+}
+
 /// Whether a capture of `width` x `height` can be drawn at all.
 ///
 /// Split out of [`FitsCanvas::capture_png`] because everything else in this
@@ -208,6 +227,17 @@ pub struct FitsCanvas {
     pixel_data: Rc<RefCell<Vec<u8>>>,
     img_width: usize,
     img_height: usize,
+    /// Fit the whole image into the viewport on the first REAL allocation.
+    ///
+    /// Not at load: a `DrawingArea` reports 0x0 until it is allocated and
+    /// `viewport_size` falls back to the REQUESTED size, which has nothing to
+    /// do with the window the user has — fitting then fits to a guess.
+    ///
+    /// Cleared the first time it fires, so resizing the window later never
+    /// re-fits. A viewer that re-fits on resize throws away the zoom you chose
+    /// every time you drag the window edge. A canvas is built per image, so a
+    /// new file or a different HDU gets a fresh fit without asking.
+    needs_fit: Cell<bool>,
     transform: Rc<RefCell<ViewTransform>>,
     /// Cross-tab shared crosshair/hover state (linked by sky).
     shared: SharedSkyRef,
@@ -339,6 +369,7 @@ impl FitsCanvas {
             shared,
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
+            needs_fit: Cell::new(true),
             image_overlay,
             surface_cache: RefCell::new(None),
             on_left_click: Rc::new(RefCell::new(None)),
@@ -406,7 +437,75 @@ impl FitsCanvas {
     ///
     /// Same anchor rule as the wheel — the crosshair if one is placed, else the
     /// centre of the view — so the two ways of zooming now agree.
+    /// Fit the whole image in the viewport, once, on the first real allocation.
+    ///
+    /// Returns whether it fitted, so the caller can tell a fit from a no-op.
+    fn apply_fit(&self) -> bool {
+        if !self.needs_fit.get() {
+            return false;
+        }
+        // The ALLOCATION, not `viewport_size` — that falls back to the
+        // requested size, and fitting to that is fitting to a guess.
+        let (vw, vh) = (
+            self.drawing_area.width() as f64,
+            self.drawing_area.height() as f64,
+        );
+        if vw <= 0.0 || vh <= 0.0 {
+            return false;
+        }
+        let (iw, ih) = (self.img_width as f64, self.img_height as f64);
+        let scale = fit_scale((iw, ih), (vw, vh));
+        {
+            let mut t = self.transform.borrow_mut();
+            t.scale = scale;
+            // Centred, so an image smaller than the viewport sits in the
+            // middle rather than in the top-left corner with the rest empty.
+            t.offset_x = (vw - iw * scale) / 2.0;
+            t.offset_y = (vh - ih * scale) / 2.0;
+        }
+        self.needs_fit.set(false);
+        self.view_changed();
+        true
+    }
+
+    /// Whether a fit is still pending. For the probe, and for asking whether a
+    /// deliberate zoom has already cancelled it.
+    pub fn fit_pending(&self) -> bool {
+        self.needs_fit.get()
+    }
+
+    /// Fit now, against a stated viewport, for a probe that has no allocation.
+    ///
+    /// The real path reads the widget's size, which GTK never gives a headless
+    /// process; this takes the number so the arithmetic and the one-shot rule
+    /// can still be exercised.
+    pub fn fit_to_viewport_for_probe(&self, vw: f64, vh: f64) -> bool {
+        if !self.needs_fit.get() || vw <= 0.0 || vh <= 0.0 {
+            return false;
+        }
+        let (iw, ih) = (self.img_width as f64, self.img_height as f64);
+        let scale = fit_scale((iw, ih), (vw, vh));
+        {
+            let mut t = self.transform.borrow_mut();
+            t.scale = scale;
+            t.offset_x = (vw - iw * scale) / 2.0;
+            t.offset_y = (vh - ih * scale) / 2.0;
+        }
+        self.needs_fit.set(false);
+        self.view_changed();
+        true
+    }
+
+    /// Stop the pending fit. Anything that sets a zoom deliberately calls this.
+    pub fn cancel_fit(&self) {
+        self.needs_fit.set(false);
+    }
+
     pub fn set_zoom(&self, scale: f64) {
+        // Someone has chosen a zoom — the box, the wheel, sync-zoom across
+        // tabs, or an agent. Whatever it is, it is more specific than "fit",
+        // so the pending fit must not arrive afterwards and overwrite it.
+        self.needs_fit.set(false);
         let target = scale.clamp(ZOOM_SCALE_RANGE.0, ZOOM_SCALE_RANGE.1);
         let anchor = (*self.crosshair_placed.borrow()).unwrap_or_else(|| {
             let (vw, vh) = self.viewport_size();
@@ -1254,6 +1353,13 @@ impl FitsCanvas {
                 // Weak, so the closure the widget owns does not keep the canvas
                 // alive after the tab holding it is closed.
                 if let Some(canvas) = canvas.upgrade() {
+                    // The first frame with a real size is the first moment the
+                    // viewport is known, so it is where a fit belongs. Doing it
+                    // here rather than in `connect_resize` also covers the case
+                    // where the area is allocated once and never resized again,
+                    // which is what happens when a tab opens into a window
+                    // nobody then drags.
+                    canvas.apply_fit();
                     canvas.draw_working_area(cr, widget_w, widget_h);
                 }
             });
@@ -1782,5 +1888,65 @@ impl crate::helpers::annotation_render::AnnotationSurface for FitsCanvas {
 
     fn units_to_pixels(&self, anchor: &crate::models::annotation::Anchor) -> f64 {
         self.annotation_scale(anchor)
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::fit_scale;
+
+    /// A frame far wider than the viewport is limited by its width.
+    ///
+    /// The case this exists for: an 11471x4593 NIRCam mosaic opened at 100%
+    /// and showed about 5% of its width, so the first thing anyone saw was a
+    /// patch of sky with no way to tell what they were looking at.
+    #[test]
+    fn a_wide_frame_is_limited_by_the_tighter_axis() {
+        let s = fit_scale((11471.0, 4593.0), (900.0, 700.0));
+        assert!((s - 900.0 / 11471.0).abs() < 1e-12, "scale {s}");
+        // And the whole frame really does fit, both ways.
+        assert!(11471.0 * s <= 900.0 + 1e-9);
+        assert!(4593.0 * s <= 700.0 + 1e-9);
+    }
+
+    /// A tall frame is limited by its height, not always by width.
+    #[test]
+    fn a_tall_frame_is_limited_by_its_height() {
+        let s = fit_scale((400.0, 4000.0), (900.0, 700.0));
+        assert!((s - 700.0 / 4000.0).abs() < 1e-12, "scale {s}");
+    }
+
+    /// A small image opens at 100%, not blown up to fill the window.
+    ///
+    /// A 64x64 thumbnail stretched across a 1600px viewport is a wall of fat
+    /// pixels that tells you nothing an honest 64 pixels would not.
+    #[test]
+    fn a_small_image_is_never_enlarged() {
+        assert_eq!(fit_scale((64.0, 64.0), (1600.0, 1200.0)), 1.0);
+        assert_eq!(fit_scale((899.0, 699.0), (900.0, 700.0)), 1.0);
+    }
+
+    /// An image exactly the viewport's size sits at 100%.
+    #[test]
+    fn an_exact_fit_is_one_to_one() {
+        assert_eq!(fit_scale((900.0, 700.0), (900.0, 700.0)), 1.0);
+    }
+
+    /// No viewport yet, or no image: 100%, not a division by zero.
+    ///
+    /// A `DrawingArea` reports 0x0 until it is allocated, and this is called
+    /// from the draw function, so the degenerate case is the FIRST one that
+    /// happens rather than a hypothetical.
+    #[test]
+    fn a_missing_viewport_or_image_does_not_divide_by_zero() {
+        for (image, viewport) in [
+            ((1000.0, 1000.0), (0.0, 0.0)),
+            ((1000.0, 1000.0), (900.0, 0.0)),
+            ((0.0, 0.0), (900.0, 700.0)),
+            ((-5.0, 10.0), (900.0, 700.0)),
+        ] {
+            let s = fit_scale(image, viewport);
+            assert_eq!(s, 1.0, "image {image:?} viewport {viewport:?} gave {s}");
+        }
     }
 }

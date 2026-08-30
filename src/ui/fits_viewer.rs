@@ -84,6 +84,10 @@ pub struct FitsViewer {
     /// while it is dragged.
     open_label_editor: RefCell<Option<(String, gtk::Box)>>,
     /// On while the next click places a mark.
+    /// The empty state's recents list, and the box that hides its heading with
+    /// it when there is nothing to list.
+    recents_view: Rc<crate::ui::recents_section::RecentsSection>,
+    recents_box: gtk::Box,
     /// The Marks section, shared with the cube viewer. Held for the shape
     /// picker, which is read at click time rather than remembered.
     marks_section: Rc<crate::ui::annotations_panel::MarksSection>,
@@ -503,7 +507,30 @@ impl FitsViewer {
         empty_status.set_icon_name(Some("image-x-generic-symbolic"));
         empty_status.set_title(crate::tr_en!("No FITS File Open"));
         empty_status.set_description(Some(crate::tr_en!("Open a FITS file to get started")));
-        empty_status.set_child(Some(&empty_open_btn));
+        // The button and the recents under it. The cube viewer's empty state
+        // has offered the last files opened for a while; this one offered a
+        // button and nothing else, so reopening the frame you were looking at
+        // yesterday meant remembering where it lived.
+        let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        empty_box.set_halign(gtk::Align::Center);
+        empty_box.append(&empty_open_btn);
+
+        let recents_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        recents_box.set_margin_top(12);
+        recents_box.set_visible(false);
+        recents_box.set_width_request(460);
+        let recents_header = gtk::Label::new(Some(crate::tr_en!("Recent images")));
+        recents_header.add_css_class("heading");
+        recents_header.set_halign(gtk::Align::Center);
+        recents_box.append(&recents_header);
+        let recents_view = crate::ui::recents_section::RecentsSection::new(
+            crate::services::recent_files_service::RecentKind::Fits,
+            crate::tr_en!("No images opened yet."),
+        );
+        recents_box.append(recents_view.widget());
+        empty_box.append(&recents_box);
+
+        empty_status.set_child(Some(&empty_box));
 
         let content_stack = gtk::Stack::new();
         content_stack.set_vexpand(true);
@@ -541,6 +568,8 @@ impl FitsViewer {
             coords_panel,
             annotations_panel,
             open_label_editor: RefCell::new(None),
+            recents_view,
+            recents_box,
             marks_section,
             draw_mode,
             search_here_btn,
@@ -582,6 +611,18 @@ impl FitsViewer {
                 });
             });
         }
+        // A recent row's open button loads that file.
+        {
+            let v = viewer.clone();
+            viewer.recents_view.set_on_open(move |path| {
+                // The same entry point the file picker uses, so a recent and a
+                // freshly chosen file open identically — including the error
+                // going to the status label.
+                let _ = v.load_file(&path);
+            });
+        }
+        // Whatever is in the store when the viewer is built.
+        viewer.refresh_recents();
         {
             let v = viewer.clone();
             empty_open_btn.connect_clicked(move |btn| {
@@ -1959,6 +2000,9 @@ impl FitsViewer {
                 self.status_label.set_text(&summary);
 
                 let tab = FitsTab::new(data, self.shared.clone(), source);
+                // One call, at the point a file becomes "viewed". Recording it
+                // anywhere earlier would list files that failed to load.
+                self.recents_view.record(path);
 
                 // Wire crosshair callback (coords readout + go-to/right-click recenter)
                 self.wire_tab_callbacks(&tab);
@@ -2523,11 +2567,19 @@ impl FitsViewer {
     /// Everything that describes a FILE is cleared in one place, so the next
     /// thing that describes one cannot be forgotten here.
     fn show_no_file_open(&self) {
+        self.refresh_recents();
         self.hdu_bar.set_visible(false);
         self.hdu_infos.borrow_mut().clear();
         self.close_label_editor();
         self.annotations_panel.set_annotations(&[], None);
         self.draw_mode.set_active(false);
+    }
+
+    /// Rebuild the empty state's recents, and hide its heading with the list
+    /// when there is nothing to show.
+    fn refresh_recents(&self) {
+        self.recents_view.refresh();
+        self.recents_box.set_visible(!self.recents_view.is_empty());
     }
 
     /// Show `tab`'s marks, whether or not it is the registered current tab.
