@@ -537,12 +537,64 @@ impl CubeViewer {
             .stack
             .visible_child_name()
             .is_none_or(|n| n == "volume");
-        if is_3d {
-            self.gl.render_to_rgba(w, h, transparent)
+        let base = if is_3d {
+            self.gl.render_to_rgba(w, h, transparent)?
         } else {
             let (sw, sh, rgba) = self.slice.export_rgba();
-            Some(scale_rgba(&rgba, sw, sh, w, h))
+            scale_rgba(&rgba, sw, sh, w, h)
+        };
+        Some(self.draw_marks_on_plate(w, h, base, is_3d))
+    }
+
+    /// Composite the marks onto an export plate.
+    ///
+    /// A mark is something a person put there to say "look at this", so a
+    /// figure exported without them says nothing — which is the whole reason
+    /// the feature exists. The wireframe box and axis captions stay out of the
+    /// export on purpose; those are furniture for reading the view on screen,
+    /// and a mark is not.
+    ///
+    /// Grips are excluded too, for the same reason a capture leaves them out:
+    /// an exported figure should show what is marked, not the controls for
+    /// adjusting it.
+    fn draw_marks_on_plate(&self, w: i32, h: i32, base: Vec<u8>, is_3d: bool) -> Vec<u8> {
+        let marks = self.annotations.borrow().clone();
+        if marks.is_empty() {
+            return base;
         }
+        let selected = self.selected_annotation.borrow().clone();
+        crate::ui::cube_export::draw_over_rgba(w, h, base, |cr| {
+            // The surface is built for the PLATE size, not the widget's, so
+            // marks land correctly at any export resolution rather than only
+            // when the plate happens to match the window.
+            if is_3d {
+                let surface = self.annotation_surface(w, h);
+                crate::helpers::annotation_render::draw(
+                    &marks,
+                    &surface,
+                    selected.as_deref(),
+                    None,
+                    cr,
+                    w as f64,
+                    h as f64,
+                );
+            } else {
+                let surface = SlicePlateSurface::new(
+                    (self.vol.nx, self.vol.ny),
+                    (w, h),
+                    self.current_channel.get(),
+                );
+                crate::helpers::annotation_render::draw(
+                    &marks,
+                    &surface,
+                    selected.as_deref(),
+                    None,
+                    cr,
+                    w as f64,
+                    h as f64,
+                );
+            }
+        })
     }
 
     // ── Annotations ─────────────────────────────────────────────────────────
@@ -826,6 +878,26 @@ impl CubeViewer {
             }
             glib::ControlFlow::Continue
         });
+    }
+
+    /// Show the 2-D slice, or the volume.
+    ///
+    /// Drives the toggle rather than the stack, so the same handler runs as
+    /// when a person clicks it — one path into the change instead of two that
+    /// can disagree about the VOLUME control group's visibility.
+    pub fn set_slice_mode(&self, slice: bool) {
+        if slice {
+            self.mode_slice.set_active(true);
+        } else {
+            self.mode_3d.set_active(true);
+        }
+    }
+
+    /// Whether the 2-D slice is the visible mode.
+    pub fn is_slice_mode(&self) -> bool {
+        self.stack
+            .visible_child_name()
+            .is_some_and(|n| n == "slice")
     }
 
     fn force_slice_only(&self) {
@@ -1528,19 +1600,13 @@ impl CubeViewer {
 
     /// Snapshot the currently displayed view (3D volume or 2D slice) as straight
     /// RGBA at the requested size — the capture callback the export plate rasterizes.
+    /// The plate the Export dialog composes onto.
+    ///
+    /// Was a second copy of `render_figure` differing only in the transparency
+    /// flag, which is how marks came to be missing from the exported figure in
+    /// one place and would have had to be fixed in two.
     fn capture_plate(&self, w: i32, h: i32) -> Option<Vec<u8>> {
-        let is_3d = self
-            .stack
-            .visible_child_name()
-            .is_none_or(|n| n == "volume");
-        if is_3d {
-            self.gl.render_to_rgba(w, h, true)
-        } else {
-            // The slice view renders the current channel through the shared
-            // window/stretch/colormap; scale it to the requested plate size.
-            let (sw, sh, rgba) = self.slice.export_rgba();
-            Some(scale_rgba(&rgba, sw, sh, w, h))
-        }
+        self.render_figure(w, h, true)
     }
 
     /// A WCS caption for the export plate: cube name + current channel label.
@@ -2271,6 +2337,47 @@ mod working_area_tests {
     }
 }
 
+/// Where a mark lands on an exported 2-D slice plate.
+///
+/// The plate is the whole plane scaled to the requested size — no pan, no
+/// zoom, unlike the on-screen slice — so a voxel maps by a straight scale.
+struct SlicePlateSurface {
+    sx: f64,
+    sy: f64,
+    /// The channel the plate was rendered from. A mark on any other one is not
+    /// on this picture.
+    z: usize,
+}
+
+impl SlicePlateSurface {
+    fn new(vol: (usize, usize), plate: (i32, i32), z: usize) -> Self {
+        Self {
+            sx: plate.0.max(1) as f64 / vol.0.max(1) as f64,
+            sy: plate.1.max(1) as f64 / vol.1.max(1) as f64,
+            z,
+        }
+    }
+}
+
+impl crate::helpers::annotation_render::AnnotationSurface for SlicePlateSurface {
+    fn project(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
+        let crate::models::annotation::Anchor::Data { x, y, z } = *anchor else {
+            return None;
+        };
+        (z.round() as i64 == self.z as i64).then_some((x * self.sx, y * self.sy))
+    }
+
+    fn units_to_pixels(&self, _anchor: &crate::models::annotation::Anchor) -> f64 {
+        // The export stretches the plane to the requested plate size without
+        // preserving its aspect, so the two axes can scale differently and a
+        // single number cannot describe both. The geometric mean splits the
+        // difference: exact whenever the plate keeps the plane's aspect, which
+        // is the case worth being exact for, and never wrong by more than the
+        // distortion the picture itself already has.
+        (self.sx * self.sy).sqrt().max(0.01)
+    }
+}
+
 /// What a press on the volume panel took hold of.
 #[derive(Clone, Debug, PartialEq)]
 enum VolumeGrab {
@@ -2349,5 +2456,82 @@ impl crate::helpers::annotation_render::AnnotationSurface for CubeAnnotationSurf
             }
             _ => 1.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod slice_plate_tests {
+    use super::SlicePlateSurface;
+    use crate::helpers::annotation_render::AnnotationSurface;
+    use crate::models::annotation::Anchor;
+
+    fn data(x: f64, y: f64, z: f64) -> Anchor {
+        Anchor::Data { x, y, z }
+    }
+
+    /// A voxel lands at the same fraction across the plate as across the plane.
+    ///
+    /// The export scales the whole plane to the plate, so this is the only
+    /// thing that has to hold — and it is what puts a mark on the feature it
+    /// was drawn on rather than beside it.
+    #[test]
+    fn a_voxel_lands_at_the_same_fraction_of_the_plate() {
+        let s = SlicePlateSurface::new((64, 32), (1024, 768), 5);
+        assert_eq!(s.project(&data(0.0, 0.0, 5.0)), Some((0.0, 0.0)));
+        assert_eq!(s.project(&data(32.0, 16.0, 5.0)), Some((512.0, 384.0)));
+        assert_eq!(s.project(&data(64.0, 32.0, 5.0)), Some((1024.0, 768.0)));
+    }
+
+    /// Only the channel the plate was rendered from appears on it.
+    ///
+    /// The plate is one plane. A mark from another channel is not at that
+    /// position in this picture, and exporting it there would put a claim in a
+    /// figure that someone then publishes.
+    #[test]
+    fn a_mark_from_another_channel_is_not_on_the_plate() {
+        let s = SlicePlateSurface::new((64, 32), (1024, 768), 5);
+        assert!(s.project(&data(10.0, 10.0, 5.0)).is_some());
+        assert!(s.project(&data(10.0, 10.0, 4.0)).is_none());
+        assert!(s.project(&data(10.0, 10.0, 6.0)).is_none());
+    }
+
+    /// Anchors from another viewer's space are skipped, not guessed at.
+    #[test]
+    fn only_voxel_anchors_reach_the_plate() {
+        let s = SlicePlateSurface::new((64, 32), (1024, 768), 0);
+        assert!(s
+            .project(&Anchor::Sky {
+                ra_deg: 202.0,
+                dec_deg: 47.0
+            })
+            .is_none());
+        assert!(s.project(&Anchor::ImagePixel { x: 1.0, y: 1.0 }).is_none());
+    }
+
+    /// A mark scales with the plate, so exporting bigger does not shrink it.
+    ///
+    /// The size is in voxels; at 16x the plate, a mark is 16x the pixels. A
+    /// scale that ignored the plate size would draw a ring the same number of
+    /// pixels across on a 4096px plate as on a 256px one, which on the big one
+    /// is a speck.
+    #[test]
+    fn a_mark_grows_with_the_plate() {
+        let small = SlicePlateSurface::new((64, 64), (64, 64), 0);
+        let big = SlicePlateSurface::new((64, 64), (1024, 1024), 0);
+        let a = data(0.0, 0.0, 0.0);
+        assert!((small.units_to_pixels(&a) - 1.0).abs() < 1e-9);
+        assert!((big.units_to_pixels(&a) - 16.0).abs() < 1e-9);
+    }
+
+    /// A stretched plate takes the middle of the two scales, and never zero.
+    #[test]
+    fn a_stretched_plate_splits_the_difference() {
+        // 4x across, 1x down: the geometric mean is 2.
+        let s = SlicePlateSurface::new((64, 64), (256, 64), 0);
+        let a = data(0.0, 0.0, 0.0);
+        assert!((s.units_to_pixels(&a) - 2.0).abs() < 1e-9);
+        // A degenerate plate must not give a zero-size mark.
+        let d = SlicePlateSurface::new((64, 64), (0, 0), 0);
+        assert!(d.units_to_pixels(&a) > 0.0);
     }
 }

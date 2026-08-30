@@ -128,6 +128,36 @@ fn surface_to_rgba(surface: &mut ImageSurface) -> (i32, i32, Vec<u8>) {
     (w, h, out)
 }
 
+/// Draw over a straight-RGBA raster with cairo, and hand it back in the same
+/// format.
+///
+/// Exists so callers can composite onto an exported plate without learning
+/// that Cairo wants premultiplied BGRA and the exporters want straight RGBA.
+/// That conversion is this module's business, and it is the kind of detail
+/// that is silently wrong rather than loudly wrong when a second copy of it
+/// gets the rounding a shade different.
+///
+/// Returns the raster unchanged if it cannot be wrapped in a surface, so a
+/// composite that fails costs the overlay rather than the picture.
+pub fn draw_over_rgba(
+    width: i32,
+    height: i32,
+    rgba: Vec<u8>,
+    paint: impl FnOnce(&cairo::Context),
+) -> Vec<u8> {
+    let Some(mut surface) = rgba_to_surface(width, height, &rgba) else {
+        return rgba;
+    };
+    {
+        let Ok(cr) = cairo::Context::new(&surface) else {
+            return rgba;
+        };
+        paint(&cr);
+    }
+    let (_, _, out) = surface_to_rgba(&mut surface);
+    out
+}
+
 /// Live-overlay + metadata inputs the plate needs to draw the WCS wireframe box,
 /// the axis captions, and the expanded metadata footer. The Rust analogue of the
 /// Windows `CubeExportPlate.PlateData` overlay/metadata block, populated by the
@@ -896,7 +926,7 @@ pub fn show_cube_export(
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_EXPORT_SCALE, EXPORT_FORMATS, EXPORT_SCALES};
+    use super::{draw_over_rgba, DEFAULT_EXPORT_SCALE, EXPORT_FORMATS, EXPORT_SCALES};
 
     #[test]
     fn the_default_scale_is_a_real_choice() {
@@ -933,5 +963,53 @@ mod tests {
         // list therefore cannot turn a PNG export into a PDF one.
         assert!(EXPORT_FORMATS.contains(&"PDF"));
         assert!(EXPORT_FORMATS.contains(&"PNG"));
+    }
+
+    /// Drawing over a plate changes it, and hands back the format it was given.
+    ///
+    /// The reason exported figures had no marks was never the drawing — it was
+    /// that nothing drew. This pins the compositing step itself: opaque pixels
+    /// survive the round trip through premultiplied BGRA unchanged, and what
+    /// is painted actually lands.
+    #[test]
+    fn painting_over_a_plate_lands_and_keeps_straight_rgba() {
+        let (w, h) = (8i32, 4i32);
+        // A known opaque colour that is NOT grey, so a channel swap shows up.
+        let mut rgba = Vec::new();
+        for _ in 0..(w * h) {
+            rgba.extend_from_slice(&[10, 120, 240, 255]);
+        }
+        let untouched = draw_over_rgba(w, h, rgba.clone(), |_| {});
+        assert_eq!(untouched, rgba, "an empty paint must not alter the plate");
+
+        let painted = draw_over_rgba(w, h, rgba.clone(), |cr| {
+            cr.set_source_rgb(1.0, 0.0, 0.0);
+            cr.rectangle(0.0, 0.0, 1.0, 1.0);
+            let _ = cr.fill();
+        });
+        assert_eq!(&painted[0..4], &[255, 0, 0, 255], "the paint did not land");
+        // Everything outside the paint is byte-identical.
+        assert_eq!(&painted[4..], &rgba[4..], "the rest of the plate moved");
+    }
+
+    /// A transparent plate stays transparent where nothing was drawn.
+    ///
+    /// `export_cube_figure` offers a transparent background, and
+    /// un-premultiplying a fully transparent pixel is the classic place to
+    /// divide by zero or to resurrect black.
+    #[test]
+    fn a_transparent_plate_survives_the_round_trip() {
+        let (w, h) = (4i32, 2i32);
+        let rgba = vec![0u8; (w * h * 4) as usize];
+        let out = draw_over_rgba(w, h, rgba.clone(), |_| {});
+        assert_eq!(out, rgba, "transparent pixels were altered");
+    }
+
+    /// A plate that cannot be wrapped costs the overlay, not the picture.
+    #[test]
+    fn a_malformed_plate_comes_back_unchanged() {
+        let short = vec![1u8, 2, 3, 4];
+        assert_eq!(draw_over_rgba(64, 64, short.clone(), |_| {}), short);
+        assert_eq!(draw_over_rgba(0, 0, short.clone(), |_| {}), short);
     }
 }
