@@ -190,6 +190,77 @@ fn main() {
         }
     }
 
+    // ── A smaller capture is the same picture, not a corner of it ──────────
+    //
+    // The view transform is in absolute screen pixels, so drawing it into a
+    // smaller raster used to clip rather than shrink: a capture asked for at
+    // 1024 from a 1400px canvas returned the top-left 1024px and reported
+    // `scale: 0.73`. The default limit IS 1024, so any maximised window was
+    // handing an agent a crop labelled as a faithful downscale — the exact
+    // failure the whole feature exists to avoid.
+    //
+    // Measured through the centre of mass of the lit pixels: under a true
+    // scale it stays in the middle of the frame at every size, and the lit
+    // area keeps the same FRACTION of the raster.
+    {
+        let (iw, ih) = (200usize, 200usize);
+        let mut rgba = vec![0u8; iw * ih * 4];
+        for y in 80..120 {
+            for x in 80..120 {
+                let i = (y * iw + x) * 4;
+                rgba[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        let c = FitsCanvas::new(
+            iw,
+            ih,
+            rgba,
+            std::rc::Rc::new(std::cell::RefCell::new(Default::default())),
+            None,
+        );
+        c.cancel_fit();
+        for (cw, ch) in [(400, 400), (200, 200), (100, 100)] {
+            let png = c.capture_png_from_view(200, 200, cw, ch).expect("capture");
+            let mut surf =
+                gtk4::cairo::ImageSurface::create_from_png(&mut png.as_slice()).expect("decode");
+            let stride = surf.stride() as usize;
+            surf.flush();
+            let data = surf.data().expect("pixels");
+            let (mut lit, mut sx, mut sy) = (0usize, 0f64, 0f64);
+            for y in 0..ch as usize {
+                for x in 0..cw as usize {
+                    // Premultiplied BGRA; red is byte 2.
+                    if data[y * stride + x * 4 + 2] > 128 {
+                        lit += 1;
+                        sx += x as f64;
+                        sy += y as f64;
+                    }
+                }
+            }
+            let frac = lit as f64 / (cw * ch) as f64;
+            let (mx, my) = (
+                sx / lit.max(1) as f64 / cw as f64,
+                sy / lit.max(1) as f64 / ch as f64,
+            );
+            // The square is 40x40 in a 200x200 view: 4% of it, dead centre.
+            let ok =
+                (frac - 0.04).abs() < 0.005 && (mx - 0.5).abs() < 0.02 && (my - 0.5).abs() < 0.02;
+            if ok {
+                println!(
+                    "capture {cw}x{ch}: {:.1}% lit, centred at ({mx:.2}, {my:.2})",
+                    100.0 * frac
+                );
+            } else {
+                println!(
+                    "  !! capture {cw}x{ch} is a CROP, not a scale: {:.1}% lit at ({mx:.2}, {my:.2}) \
+                     — expected 4.0% at (0.50, 0.50)",
+                    100.0 * frac
+                );
+                failures += 1;
+            }
+        }
+    }
+
     let out = std::env::temp_dir().join("fits_capture_probe.png");
     std::fs::write(&out, &annotated).expect("write");
     println!(

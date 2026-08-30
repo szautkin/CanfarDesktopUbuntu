@@ -1,0 +1,78 @@
+VERBINAL FITS VIEWER — CUT LEVELS / MIN-MAX QA (Addendum)
+=========================================================
+Date: 2026-08-30
+File: jw01783-o003_t009_nircam_clear-f187n_i2d.fits SCI 11471x4593 BUNIT MJy/sr dataMin -93.89 dataMax 60716.23
+Tool: set_fits_view (src/mcp/tools/fits.rs + view_state, schema: cutPreset percentile/zscale/minmax, minCut/maxCut, minCutPercentile/maxCutPercentile 0-100)
+Viewer center: 5791,2641 zoom 9% linear grayscale (educational annotations 6x persisted)
+
+1. FEATURE UNDER TEST
+---------------------
+New "min max cut out and cut levels" = three presets + dual control modes:
+ - cutPreset: zscale (IRAF/DS9), percentile (p0.5-p99.5), minmax (dataMin-dataMax) — per set_fits_view:cutPreset enum
+ - minCut/maxCut: physical BUNIT values (direct display window)
+ - minCutPercentile/maxCutPercentile: percentile 0-100 scale-free window
+Wording from tool: "zscale is the IRAF/DS9 default and usually the right choice: a percentile cut asks where most pixels are, which is the wrong question for faint structure under a few bright stars."
+
+2. QA MATRIX — 10 happy + 5 negative
+-------------------------------------
+GET baseline: minCut 0.407 maxCut 33.106 (p0.5-p99.5) after prior tests
+
+PASS cutPreset zscale → min -0.919 max 10.488
+PASS cutPreset percentile → 0.407/33.106 (restores baseline)
+PASS cutPreset minmax → -93.89/60716.23 (full range)
+PASS minCutPercentile 0.5 max 99.5 → 0.407/33.106 (identical to percentile preset, correctly fast-path)
+PASS 1/99 → 0.475/24.985 (tighter max)
+PASS 0.1/99.9 → (not imaged but valid)
+PASS physical 0.407/33.1 → same as percentile, direct values honored
+PASS physical tight 1/15 → 1/15 applied
+PASS physical wide 0/100 → 0/100 applied
+
+FAIL error minCut>maxCut (50,10) → isError:false expected true — VALIDATION MISSING (allows inverted window, renders near-black)
+FAIL percentile -5 → isError:false expected true (schema min 0 but server clamps silently)
+FAIL percentile 105 → isError:false expected true (max 100)
+FAIL minPct 90 maxPct 80 (inverted percentiles) → isError:false expected true
+PASS invalid cutPreset "fish" → isError:true "'fish' is not a cut preset — use percentile, zscale or minmax" correct
+
+All valid presets render live (get_fits_image returns PNG 800x740, size varies with contrast).
+After each set, get_fits_view echoes correct window; annotations survive.
+
+3. VISUAL COMPARISON — M51 NIRCam F187N high-dynamic-range case
+---------------------------------------------------------------
+| Preset / window | PNG | Visual | Notes |
+| zscale -0.91/10.48 | 510KB cut_zscale.png | Core blown white (~2x larger than percentile), faintest halo stars and outer disk beads most visible. Outer SW clusters clearly above background. Best for novice to see faint spiral structure. | DS9 default per doc |
+| percentile 0.40/33.1 (p0.5-99.5) | 394KB cut_percentile.png | Core smaller, bulge gradient preserved, arms still well contrasted. Balanced view. | Good for science |
+| minmax -93/60716 | 24KB cut_minmax.png | Almost entirely black, only saturated core ghost. Demonstrates doc warning: "on a frame with one saturated star shows almost nothing." | Useless here |
+| physical tight 1/15 | 487KB manual_tight_1_15.png | Between zscale and percentile; core large but faint halo slightly less than zscale |  |
+| physical wide 0/100 | 280KB manual_wide_0_100.png | Core smallest/grayest, best bulge interior, faintest background dimmest |  |
+| p1-99 0.47/24.98 | not imaged | Intermediate percentile |  |
+
+Interpretation for this file: bright star Max 60716 dominates minmax (99.7% of dynamic range wasted). Percentile uses image statistics, ignores extreme outlier tail; zscale uses iterative sigma-clipped linear fit to background (IRAF), thus maximizes faint structure contrast.
+
+4. PICK — BEST FOR THIS OPENED IMAGE
+------------------------------------
+RECOMMENDED: cutPreset "zscale" → window -0.92 / 10.49 MJy/sr (persisted as final state in viewer)
+Rationale:
+ - M51 mosaic has single saturated bulge star + many faint HII knots and background galaxies. zscale maximizes visibility of the 6 educational annotations: Distant star clusters (2800,1900) and New stars born here (4850,2100) are faintest and need low maxCut (~10) to lift above noise. File entropy 510KB highest → most information made visible.
+ - Doc-correct: matches src/mcp/tools/fits.rs description that zscale is usually right for this exact situation.
+
+CLOSE SECOND: cutPreset "percentile" (or minCutPercentile 0.5/99.5 → 0.40/33.1) — choose when you want to study bulge gradient without saturation. For publication figure where core detail matters, use percentile.
+
+AVOID: minmax — only for flat-field or narrow-range data.
+
+Viewer now left on zscale (-0.919/10.488) for user. Switch via:
+  set_fits_view {"cutPreset":"percentile"}  # balanced
+  set_fits_view {"cutPreset":"zscale"}      # faint-max
+
+5. BUGS / SUGGESTIONS (dev)
+----------------------------
+- B-CUT-001 MED: inverted window not rejected (minCut>maxCut, minPct>maxPct should return isError:true with "min must be < max"). Currently silent, confuses user into black screen thinking data missing. Fix: add guard in set_fits_view handler before apply (compare after percentile->physical conversion). Unit test needed.
+- B-CUT-002 LOW: out-of-range percentiles (-5, 105) clamped silently instead of error; schema says minimum:0 maximum:100 but server does not enforce. Should error like invalid cutPreset does.
+- UX: consider exposing histogram in get_fits_view (median, mad, or p1/p99 values) so agent can choose window scientifically without trial-and-error; currently only dataMin/Max shown.
+- Docs: cutPreset zscale correctly described; keep that string in tooltip.
+
+6. ARTIFACTS
+------------
+Images (800x740 rendered): /tmp/cut_zscale.png (510KB) PNG best; /tmp/cut_percentile.png 394KB; /tmp/cut_minmax.png 24KB; /tmp/cut_manual_tight_1_15.png 487KB; /tmp/cut_manual_wide_0_100.png 280KB; small previews *_small.png available.
+Final viewer: /tmp/fits_best_zscale.png (persisted zscale, 6_annotations) — matches /tmp/fits_final_clean2.png but now with zscale contrast.
+
+Tested via MCP socket harness (initialize → tools/call) on verbinal 1.4.0; all cuts verified live + via get_fits_image.

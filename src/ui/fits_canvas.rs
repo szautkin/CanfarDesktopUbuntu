@@ -1325,6 +1325,57 @@ impl FitsCanvas {
     /// drawn by the function that draws them on screen.
     ///
     /// A size of zero or less is refused rather than allocated.
+    /// Draw the view at `view_w` x `view_h`, scaled to fill `width` x `height`.
+    ///
+    /// Split out with the view size as an argument because `view_size()` is a
+    /// widget allocation, and GTK never gives a headless process one — so the
+    /// scaling could not otherwise be exercised by a probe, which is precisely
+    /// how it shipped wrong.
+    fn draw_scaled_into(
+        &self,
+        cr: &cairo::Context,
+        view_w: i32,
+        view_h: i32,
+        width: i32,
+        height: i32,
+    ) {
+        if view_w > 0 && view_h > 0 {
+            cr.scale(
+                f64::from(width) / f64::from(view_w),
+                f64::from(height) / f64::from(view_h),
+            );
+            self.draw_area_inner(cr, view_w, view_h, false);
+        } else {
+            // No allocation to scale from — a tab that has never been shown.
+            // The requested size IS the view here.
+            self.draw_area_inner(cr, width, height, false);
+        }
+    }
+
+    /// `capture_png` against a stated view size, for a probe with no
+    /// allocation.
+    pub fn capture_png_from_view(
+        &self,
+        view_w: i32,
+        view_h: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<Vec<u8>, String> {
+        validate_capture_size(width, height)?;
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)
+            .map_err(|e| format!("cairo surface error: {e}"))?;
+        {
+            let cr =
+                cairo::Context::new(&surface).map_err(|e| format!("cairo context error: {e}"))?;
+            self.draw_scaled_into(&cr, view_w, view_h, width, height);
+        }
+        let mut png: Vec<u8> = Vec::new();
+        surface
+            .write_to_png(&mut png)
+            .map_err(|e| format!("PNG encode failed: {e}"))?;
+        Ok(png)
+    }
+
     pub fn capture_png(&self, width: i32, height: i32) -> Result<Vec<u8>, String> {
         validate_capture_size(width, height)?;
         let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)
@@ -1332,7 +1383,18 @@ impl FitsCanvas {
         {
             let cr =
                 cairo::Context::new(&surface).map_err(|e| format!("cairo context error: {e}"))?;
-            self.draw_area_inner(&cr, width, height, false);
+            // Draw the VIEW, scaled into the requested raster — not the view
+            // clipped to it.
+            //
+            // The view transform is in absolute screen pixels, so handing
+            // `draw_area_inner` a smaller size did not shrink anything: it drew
+            // at the same scale and the raster simply ran out. A capture asked
+            // for at 1024 from a 1400px-wide canvas returned the top-left
+            // 1024px and reported `scale: 0.73`, so an agent got a crop
+            // labelled as a faithful downscale — and the default limit is 1024,
+            // which any maximised window exceeds.
+            let (view_w, view_h) = self.view_size();
+            self.draw_scaled_into(&cr, view_w, view_h, width, height);
         }
         let mut png: Vec<u8> = Vec::new();
         surface
