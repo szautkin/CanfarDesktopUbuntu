@@ -84,9 +84,11 @@ pub struct FitsViewer {
     /// while it is dragged.
     open_label_editor: RefCell<Option<(String, gtk::Box)>>,
     /// On while the next click places a mark.
+    /// The Marks section, shared with the cube viewer. Held for the shape
+    /// picker, which is read at click time rather than remembered.
+    marks_section: Rc<crate::ui::annotations_panel::MarksSection>,
     draw_mode: gtk::ToggleButton,
     /// Which shape that click makes.
-    draw_kind: gtk::DropDown,
     // Toolbar widgets (for tab-switch sync)
     stretch_combo: gtk::DropDown,
     colormap_combo: gtk::DropDown,
@@ -273,26 +275,12 @@ impl FitsViewer {
             &north_up_btn,
         ));
 
-        // The drawing controls are built here — the viewer owns them and reads
-        // the picker at click time — but they live inside the Marks section,
-        // beside the list of what they produce.
-        let draw_mode = gtk::ToggleButton::new();
-        draw_mode.set_icon_name("document-edit-symbolic");
-        draw_mode.set_tooltip_text(Some(crate::tr_en!(
+        // The Marks section — collapsible, list, pencil and shape picker —
+        // built by the component both viewers share.
+        let marks_section = crate::ui::annotations_panel::MarksSection::new(crate::tr_en!(
             "Draw a mark on the image. Click where you mean, Shift-drag to move the image, \
              Escape to stop."
-        )));
-        // Two shapes. A "callout" was a small circle with a leader, and every
-        // shape has a leader now; a "text" was a label with nothing to point
-        // at. Both kinds still exist in the model and over MCP — stored marks
-        // and an agent's calls keep working — they are simply not choices a
-        // person has to make here.
-        let kind_items = gtk::StringList::new(&[crate::tr_en!("Circle"), crate::tr_en!("Box")]);
-        let draw_kind = gtk::DropDown::new(Some(kind_items), gtk::Expression::NONE);
-        draw_kind.set_selected(0);
-        let draw_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        draw_box.append(&draw_mode);
-        draw_box.append(&draw_kind);
+        ));
 
         // ── CROSSHAIR ───────────────────────────────────────────────────────
         column.append(&viewer_shell::section_header(crate::tr_en!("CROSSHAIR")));
@@ -348,11 +336,9 @@ impl FitsViewer {
         column.append(&coords_expander);
 
         // ── ANNOTATIONS ─────────────────────────────────────────────────────
-        let annotations_panel = crate::ui::annotations_panel::AnnotationsPanel::new();
-        annotations_panel.set_draw_controls(&draw_box);
-        let annotations_expander = gtk::Expander::new(Some(crate::tr_en!("Marks")));
-        annotations_expander.set_child(Some(annotations_panel.widget()));
-        column.append(&annotations_expander);
+        let annotations_panel = marks_section.panel().clone();
+        let draw_mode = marks_section.draw_mode().clone();
+        column.append(marks_section.widget());
 
         // ── COMPARE ─────────────────────────────────────────────────────────
         // Everything that acts across tabs, together.
@@ -555,8 +541,8 @@ impl FitsViewer {
             coords_panel,
             annotations_panel,
             open_label_editor: RefCell::new(None),
+            marks_section,
             draw_mode,
-            draw_kind,
             search_here_btn,
             stretch_combo,
             colormap_combo,
@@ -2276,11 +2262,7 @@ impl FitsViewer {
     }
 
     fn selected_draw_kind(&self) -> crate::models::annotation::AnnotationKind {
-        use crate::models::annotation::AnnotationKind::*;
-        match self.draw_kind.selected() {
-            1 => Rect,
-            _ => Circle,
-        }
+        self.marks_section.kind()
     }
 
     /// Add a mark where the user clicked.

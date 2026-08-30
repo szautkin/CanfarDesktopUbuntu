@@ -66,9 +66,8 @@ pub struct CubeViewer {
     /// Marks drawn on this cube, by the user or an agent.
     annotations: RefCell<Vec<crate::models::annotation::Annotation>>,
     selected_annotation: RefCell<Option<String>>,
-    /// The sidebar list of those marks, and the controls that make them.
-    annotations_panel: Rc<crate::ui::annotations_panel::AnnotationsPanel>,
-    draw_kind: gtk::DropDown,
+    /// The sidebar Marks section — list, pencil and shape picker.
+    marks_section: Rc<crate::ui::annotations_panel::MarksSection>,
     // Handles the overlay / colorbar methods read back.
     window_lo: gtk::Scale,
     window_hi: gtk::Scale,
@@ -193,8 +192,7 @@ impl CubeViewer {
             source_path: RefCell::new(String::new()),
             annotations: RefCell::new(Vec::new()),
             selected_annotation: RefCell::new(None),
-            annotations_panel: ctl.annotations_panel.clone(),
-            draw_kind: ctl.draw_kind.clone(),
+            marks_section: ctl.marks_section.clone(),
             window_lo: ctl.window_lo.clone(),
             window_hi: ctl.window_hi.clone(),
             colormap: ctl.colormap.clone(),
@@ -620,7 +618,7 @@ impl CubeViewer {
     /// its own change, so no path — MCP, a click, a file load — can move the
     /// marks and leave the list showing the old set.
     pub fn refresh_annotations_panel(&self) {
-        self.annotations_panel.set_annotations(
+        self.marks_section.panel().set_annotations(
             &self.annotations.borrow(),
             self.selected_annotation.borrow().as_deref(),
         );
@@ -974,7 +972,7 @@ impl CubeViewer {
         // would light up nothing. Clicking the lit row again clears it.
         {
             let this = self.clone();
-            ctl.annotations_panel.set_on_select(move |id| {
+            ctl.marks_section.panel().set_on_select(move |id| {
                 if id.is_empty() {
                     this.set_editing_annotation(None);
                     this.set_selected_annotation(None);
@@ -999,7 +997,7 @@ impl CubeViewer {
         }
         {
             let this = self.clone();
-            ctl.annotations_panel.set_on_delete(move |id| {
+            ctl.marks_section.panel().set_on_delete(move |id| {
                 let mut all = this.annotations();
                 all.retain(|a| a.id != id);
                 this.set_annotations(all);
@@ -1008,14 +1006,14 @@ impl CubeViewer {
         }
         {
             let this = self.clone();
-            ctl.annotations_panel.set_on_edit(move |id| {
+            ctl.marks_section.panel().set_on_edit(move |id| {
                 this.set_selected_annotation(Some(id.to_string()));
                 this.ask_for_mark_text(id);
             });
         }
         {
             let this = self.clone();
-            ctl.annotations_panel.set_on_clear(move |_| {
+            ctl.marks_section.panel().set_on_clear(move |_| {
                 this.set_annotations(Vec::new());
                 this.persist_annotations();
             });
@@ -1026,7 +1024,7 @@ impl CubeViewer {
         // is a ray through it rather than a point — see `place_mark`.
         {
             let this = self.clone();
-            ctl.draw_mode.connect_toggled(move |btn| {
+            ctl.marks_section.draw_mode().connect_toggled(move |btn| {
                 let on = btn.is_active();
                 this.slice.set_placing(on);
                 if !on {
@@ -1069,7 +1067,7 @@ impl CubeViewer {
         // the button cannot end up pressed while nothing is armed.
         {
             let key = gtk::EventControllerKey::new();
-            let draw_mode = ctl.draw_mode.clone();
+            let draw_mode = ctl.marks_section.draw_mode().clone();
             let this = self.clone();
             key.connect_key_pressed(move |_, keyval, _code, _modifier| {
                 if keyval != gtk::gdk::Key::Escape {
@@ -1106,12 +1104,9 @@ impl CubeViewer {
     ///
     /// `radius` of zero means the click was not dragged.
     fn place_mark(self: &Rc<Self>, vx: f64, vy: f64, radius: f64) {
-        use crate::models::annotation::{Anchor, Annotation, AnnotationKind, Author, Extent};
-        let kind = if self.draw_kind.selected() == 1 {
-            AnnotationKind::Rect
-        } else {
-            AnnotationKind::Circle
-        };
+        use crate::models::annotation::{Anchor, Annotation, Author, Extent};
+        // Read at CLICK time, not when drawing was armed.
+        let kind = self.marks_section.kind();
         let half = if radius > 0.0 {
             radius
         } else {
@@ -1581,12 +1576,8 @@ struct Controls {
     transfer_reset: gtk::Button,
     info_grid: gtk::Grid,
     export: gtk::Button,
-    /// The marks list, and the two controls that produce marks. Same panel the
-    /// FITS viewer uses — it takes `&[Annotation]` and callbacks, so nothing
-    /// about it was FITS-specific except who had mounted it.
-    annotations_panel: Rc<crate::ui::annotations_panel::AnnotationsPanel>,
-    draw_mode: gtk::ToggleButton,
-    draw_kind: gtk::DropDown,
+    /// The Marks section, shared with the FITS viewer.
+    marks_section: Rc<crate::ui::annotations_panel::MarksSection>,
 }
 
 fn build_controls(_name: &str) -> (Controls, Controls) {
@@ -1730,26 +1721,12 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
     column.append(&volume_section);
 
     // ── Marks ───────────────────────────────────────────────────────────────
-    // The drawing controls are built here and live inside the Marks section,
-    // beside the list of what they produce — the same arrangement as the FITS
-    // viewer, because it is the same job.
-    let draw_mode = gtk::ToggleButton::new();
-    draw_mode.set_icon_name("document-edit-symbolic");
-    draw_mode.set_tooltip_text(Some(crate::tr_en!(
+    // The same section the FITS viewer mounts, from the same component: one
+    // collapsible, one list, one pencil, one shape picker.
+    let marks_section = crate::ui::annotations_panel::MarksSection::new(crate::tr_en!(
         "Draw a mark on the cube. Click where you mean, Escape to stop."
-    )));
-    let kind_items = gtk::StringList::new(&[crate::tr_en!("Circle"), crate::tr_en!("Box")]);
-    let draw_kind = gtk::DropDown::new(Some(kind_items), gtk::Expression::NONE);
-    draw_kind.set_selected(0);
-    let draw_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    draw_box.append(&draw_mode);
-    draw_box.append(&draw_kind);
-
-    let annotations_panel = crate::ui::annotations_panel::AnnotationsPanel::new();
-    annotations_panel.set_draw_controls(&draw_box);
-    let annotations_expander = gtk::Expander::new(Some(crate::tr_en!("Marks")));
-    annotations_expander.set_child(Some(annotations_panel.widget()));
-    column.append(&annotations_expander);
+    ));
+    column.append(marks_section.widget());
 
     // ── Info expander ───────────────────────────────────────────────────────
     let info_grid = gtk::Grid::new();
@@ -1790,9 +1767,7 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
         transfer_reset,
         info_grid,
         export,
-        annotations_panel,
-        draw_mode,
-        draw_kind,
+        marks_section,
     };
     (controls.clone(), controls)
 }

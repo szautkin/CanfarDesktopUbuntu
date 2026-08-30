@@ -187,6 +187,90 @@ fn describe(a: &Annotation) -> String {
     }
 }
 
+/// The whole Marks section: the collapsible, the list inside it, and the two
+/// controls that produce marks.
+///
+/// [`AnnotationsPanel`] was already shared between the two viewers, but each
+/// one assembled the section around it — the same expander, the same pencil
+/// toggle, the same Circle/Box picker, built twice. That is the copy that
+/// drifts: the section is where a person looks for marks, and two viewers
+/// whose Marks section is subtly different is a worse bug than either being
+/// wrong, because it teaches that the thing behaves differently depending on
+/// what you have open.
+///
+/// One argument, because one thing genuinely differs: the FITS viewer can pan
+/// with Shift-drag while drawing and the cube cannot, so their tooltips say
+/// different things about it.
+pub struct MarksSection {
+    expander: gtk::Expander,
+    panel: Rc<AnnotationsPanel>,
+    draw_mode: gtk::ToggleButton,
+    draw_kind: gtk::DropDown,
+}
+
+impl MarksSection {
+    pub fn new(draw_tooltip: &str) -> Rc<Self> {
+        // The drawing controls belong INSIDE the section, beside the list of
+        // what they produce, rather than in a toolbar elsewhere.
+        let draw_mode = gtk::ToggleButton::new();
+        draw_mode.set_icon_name("document-edit-symbolic");
+        draw_mode.set_tooltip_text(Some(draw_tooltip));
+
+        // Two shapes. A "callout" was a small circle with a leader, and every
+        // shape has a leader now; a "text" was a label with nothing to point
+        // at. Both kinds still exist in the model and over MCP — stored marks
+        // and an agent's calls keep working — they are simply not choices a
+        // person has to make here.
+        let kind_items = gtk::StringList::new(&[crate::tr_en!("Circle"), crate::tr_en!("Box")]);
+        let draw_kind = gtk::DropDown::new(Some(kind_items), gtk::Expression::NONE);
+        draw_kind.set_selected(0);
+
+        let draw_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        draw_box.append(&draw_mode);
+        draw_box.append(&draw_kind);
+
+        let panel = AnnotationsPanel::new();
+        panel.set_draw_controls(&draw_box);
+        let expander = gtk::Expander::new(Some(crate::tr_en!("Marks")));
+        expander.set_child(Some(panel.widget()));
+
+        Rc::new(Self {
+            expander,
+            panel,
+            draw_mode,
+            draw_kind,
+        })
+    }
+
+    /// The collapsible, to append to a control column.
+    pub fn widget(&self) -> &gtk::Expander {
+        &self.expander
+    }
+
+    /// The list, for its selection and row-action callbacks.
+    pub fn panel(&self) -> &Rc<AnnotationsPanel> {
+        &self.panel
+    }
+
+    /// The pencil. Owned by the section so both viewers drive drawing through
+    /// the same widget rather than each holding their own.
+    pub fn draw_mode(&self) -> &gtk::ToggleButton {
+        &self.draw_mode
+    }
+
+    /// The shape the picker is on, read at click time rather than remembered —
+    /// what is drawn is whatever the picker says when you click, not what it
+    /// said when drawing was armed.
+    pub fn kind(&self) -> crate::models::annotation::AnnotationKind {
+        use crate::models::annotation::AnnotationKind;
+        if self.draw_kind.selected() == 1 {
+            AnnotationKind::Rect
+        } else {
+            AnnotationKind::Circle
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

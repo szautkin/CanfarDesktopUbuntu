@@ -435,6 +435,131 @@ fn fmt_g3(v: f64) -> String {
     }
 }
 
+/// Turn a point on the panel back into a voxel on the plane `z`.
+///
+/// A click on a volume is a RAY, not a point — which is why placing a mark
+/// there needs a plane to land on, and the plane you are looking at is the one
+/// the slice marker already draws. Every mark is on some channel anyway, so
+/// resolving to one is not a compromise: it is the same thing `annotate_cube`
+/// means when it defaults `z` to the channel on screen.
+///
+/// Built FROM [`project_voxel`] rather than derived alongside it. For a fixed
+/// `z` the forward map is exactly a 2-D homography — voxel to box is affine,
+/// box to clip is linear, clip to panel is a perspective divide — so fitting
+/// one through four projected corners is exact, not an approximation. The
+/// payoff is that the inverse cannot drift from the forward transform when the
+/// camera code changes: it is not a second derivation of the same maths, it is
+/// a measurement of the first one.
+///
+/// `None` when the plane is edge-on or behind the camera, where a click does
+/// not identify a point on it at all.
+pub fn unproject_to_plane(
+    view_proj: &Mat4,
+    dims: (usize, usize, usize),
+    spectral_scale: f32,
+    z: f64,
+    panel: (f32, f32),
+    point: (f64, f64),
+) -> Option<(f64, f64)> {
+    // The FAR corner is voxel `n - 1`, not `n`: `voxel_to_box` divides by
+    // `n - 1` and clamps past it, so corners at `n` would all fold onto the
+    // same clamped edge and the fit would be measured over a plane one voxel
+    // wider than the one that exists.
+    if dims.0 <= 1 || dims.1 <= 1 {
+        return None;
+    }
+    let (nx, ny) = ((dims.0 - 1) as f64, (dims.1 - 1) as f64);
+    // Four corners of the plane, in the order the unit-square fit expects:
+    // (0,0), (1,0), (1,1), (0,1).
+    let corners = [(0.0, 0.0), (nx, 0.0), (nx, ny), (0.0, ny)];
+    let mut q = [(0.0f64, 0.0f64); 4];
+    for (i, (vx, vy)) in corners.iter().enumerate() {
+        let (px, py) = project_voxel(view_proj, dims, spectral_scale, (*vx, *vy, z), panel)?;
+        q[i] = (px as f64, py as f64);
+    }
+    let h = unit_square_to_quad(&q)?;
+    let inv = invert3(&h)?;
+    let (u, v) = apply3(&inv, point)?;
+    Some((u * nx, v * ny))
+}
+
+/// The homography taking the unit square to `q`, corners in the order
+/// (0,0), (1,0), (1,1), (0,1). `None` if the quad is degenerate.
+fn unit_square_to_quad(q: &[(f64, f64); 4]) -> Option<[[f64; 3]; 3]> {
+    let (x0, y0) = q[0];
+    let (x1, y1) = q[1];
+    let (x2, y2) = q[2];
+    let (x3, y3) = q[3];
+    let sx = x0 - x1 + x2 - x3;
+    let sy = y0 - y1 + y2 - y3;
+    // An affine quad (a parallelogram) is the no-perspective case, and the
+    // general formula divides by zero there.
+    if sx.abs() < 1e-12 && sy.abs() < 1e-12 {
+        return Some([
+            [x1 - x0, x3 - x0, x0],
+            [y1 - y0, y3 - y0, y0],
+            [0.0, 0.0, 1.0],
+        ]);
+    }
+    let dx1 = x1 - x2;
+    let dx2 = x3 - x2;
+    let dy1 = y1 - y2;
+    let dy2 = y3 - y2;
+    let den = dx1 * dy2 - dx2 * dy1;
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let g = (sx * dy2 - dx2 * sy) / den;
+    let h = (dx1 * sy - sx * dy1) / den;
+    Some([
+        [x1 - x0 + g * x1, x3 - x0 + h * x3, x0],
+        [y1 - y0 + g * y1, y3 - y0 + h * y3, y0],
+        [g, h, 1.0],
+    ])
+}
+
+fn invert3(m: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let c = [
+        [
+            m[1][1] * m[2][2] - m[1][2] * m[2][1],
+            m[0][2] * m[2][1] - m[0][1] * m[2][2],
+            m[0][1] * m[1][2] - m[0][2] * m[1][1],
+        ],
+        [
+            m[1][2] * m[2][0] - m[1][0] * m[2][2],
+            m[0][0] * m[2][2] - m[0][2] * m[2][0],
+            m[0][2] * m[1][0] - m[0][0] * m[1][2],
+        ],
+        [
+            m[1][0] * m[2][1] - m[1][1] * m[2][0],
+            m[0][1] * m[2][0] - m[0][0] * m[2][1],
+            m[0][0] * m[1][1] - m[0][1] * m[1][0],
+        ],
+    ];
+    let det = m[0][0] * c[0][0] + m[0][1] * c[1][0] + m[0][2] * c[2][0];
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let mut out = [[0.0; 3]; 3];
+    for (r, row) in out.iter_mut().enumerate() {
+        for (col, v) in row.iter_mut().enumerate() {
+            *v = c[r][col] / det;
+        }
+    }
+    Some(out)
+}
+
+fn apply3(m: &[[f64; 3]; 3], p: (f64, f64)) -> Option<(f64, f64)> {
+    let w = m[2][0] * p.0 + m[2][1] * p.1 + m[2][2];
+    if w.abs() < 1e-12 {
+        return None;
+    }
+    Some((
+        (m[0][0] * p.0 + m[0][1] * p.1 + m[0][2]) / w,
+        (m[1][0] * p.0 + m[1][1] * p.1 + m[1][2]) / w,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,5 +769,128 @@ mod voxel_projection_tests {
         );
         // A degenerate cube must not produce a NaN scale.
         assert!(box_scale((0, 0, 0), 1.0).iter().all(|c| c.is_finite()));
+    }
+
+    // ── Unprojection ────────────────────────────────────────────────────────
+
+    const IDENTITY: Mat4 = [
+        1.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ];
+
+    /// A camera with real perspective and an oblique view, so the plane a
+    /// click lands on is a genuine quadrilateral rather than a rectangle. An
+    /// affine-only test would pass with the perspective terms dropped.
+    fn oblique() -> Mat4 {
+        // Column-major. Rotation about Y mixed with a perspective w-row.
+        let (c, s) = (0.8f32, 0.6f32);
+        [
+            c, 0.15, 0.0, 0.10, //
+            0.0, 1.0, 0.0, 0.05, //
+            -s, 0.0, 1.0, 0.20, //
+            0.0, 0.0, 0.0, 2.0,
+        ]
+    }
+
+    /// Where you click is the voxel you get back.
+    ///
+    /// This is the whole contract of placing a mark in the volume view. The
+    /// inverse is FITTED to `project_voxel` rather than derived beside it, so
+    /// this test is also what proves the fit is exact: a homography through
+    /// four corners reproduces the forward map everywhere on the plane, or it
+    /// reproduces it nowhere.
+    #[test]
+    fn a_click_on_the_volume_comes_back_as_the_voxel_it_projected_from() {
+        let dims = (64usize, 48usize, 20usize);
+        let panel = (900.0f32, 700.0f32);
+        for vp in [IDENTITY, oblique()] {
+            for z in [0.0, 9.5, 19.0] {
+                for (vx, vy) in [(0.0, 0.0), (12.0, 5.0), (31.5, 24.25), (63.0, 47.0)] {
+                    let Some((px, py)) = project_voxel(&vp, dims, 1.5, (vx, vy, z), panel) else {
+                        continue;
+                    };
+                    let back = unproject_to_plane(&vp, dims, 1.5, z, panel, (px as f64, py as f64))
+                        .expect("the plane faces the camera");
+                    assert!(
+                        (back.0 - vx).abs() < 1e-3 && (back.1 - vy).abs() < 1e-3,
+                        "z {z}: voxel ({vx},{vy}) projected to ({px},{py}) and came back as {back:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Perspective is actually being inverted, not approximated away.
+    ///
+    /// Under the oblique camera the plane's centre does NOT project to the
+    /// midpoint of its corners — that is what perspective means. If the fit
+    /// silently fell back to an affine map this would still round-trip the
+    /// corners and miss the middle, so the middle is what is checked.
+    #[test]
+    fn the_centre_of_a_foreshortened_plane_is_not_the_middle_of_its_corners() {
+        let dims = (64usize, 48usize, 20usize);
+        let panel = (900.0f32, 700.0f32);
+        let vp = oblique();
+        let c = project_voxel(&vp, dims, 1.5, (31.5, 23.5, 10.0), panel).unwrap();
+        let corners: Vec<(f32, f32)> = [(0.0, 0.0), (63.0, 0.0), (63.0, 47.0), (0.0, 47.0)]
+            .iter()
+            .map(|(x, y)| project_voxel(&vp, dims, 1.5, (*x, *y, 10.0), panel).unwrap())
+            .collect();
+        let mid = (
+            corners.iter().map(|p| p.0).sum::<f32>() / 4.0,
+            corners.iter().map(|p| p.1).sum::<f32>() / 4.0,
+        );
+        assert!(
+            (c.0 - mid.0).abs() > 1e-3 || (c.1 - mid.1).abs() > 1e-3,
+            "this camera has no perspective, so the test proves nothing"
+        );
+        let back = unproject_to_plane(&vp, dims, 1.5, 10.0, panel, (c.0 as f64, c.1 as f64))
+            .expect("faces the camera");
+        assert!(
+            (back.0 - 31.5).abs() < 1e-3 && (back.1 - 23.5).abs() < 1e-3,
+            "the plane centre came back as {back:?}"
+        );
+    }
+
+    /// A plane the camera cannot see gives no point, rather than a wrong one.
+    #[test]
+    fn a_plane_behind_the_camera_places_nothing() {
+        let dims = (64usize, 48usize, 20usize);
+        let mut vp = IDENTITY;
+        vp[15] = -1.0; // clip w goes non-positive: everything is culled
+        assert!(unproject_to_plane(&vp, dims, 1.5, 5.0, (900.0, 700.0), (450.0, 350.0)).is_none());
+    }
+
+    /// A collapsed plane yields no inverse rather than a division by zero.
+    ///
+    /// A plane seen exactly edge-on projects to a line or a point. The fit
+    /// itself still produces a matrix — the affine branch does, since the
+    /// corners are a degenerate parallelogram — so the refusal has to come
+    /// from the inversion, and this records where.
+    #[test]
+    fn an_edge_on_plane_places_nothing() {
+        let collapsed = [(10.0, 10.0); 4];
+        let h = unit_square_to_quad(&collapsed).expect("the affine branch still fits");
+        assert!(invert3(&h).is_none(), "a collapsed plane has no inverse");
+
+        let line = [(0.0, 0.0), (50.0, 0.0), (50.0, 0.0), (0.0, 0.0)];
+        let h = unit_square_to_quad(&line).expect("fits");
+        assert!(invert3(&h).is_none(), "a plane seen edge-on has no inverse");
+    }
+
+    /// A cube one voxel wide has no plane to click on, and says so.
+    #[test]
+    fn a_degenerate_cube_places_nothing() {
+        assert!(unproject_to_plane(
+            &IDENTITY,
+            (1, 48, 20),
+            1.5,
+            5.0,
+            (900.0, 700.0),
+            (450.0, 350.0)
+        )
+        .is_none());
     }
 }
