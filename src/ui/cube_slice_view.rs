@@ -33,6 +33,14 @@ use std::time::Duration;
 
 const PLAYBACK_FPS: u64 = 12;
 const MAX_ZOOM: f64 = 20.0;
+/// How far out the slice can be pulled, as a fraction of fit-to-widget.
+///
+/// The floor used to be 1.0 — fit — so the wheel simply stopped and the plane
+/// could not be pulled back at all. That is wrong on its own, and it is also
+/// what made switching from the volume jarring: the volume frames the box so
+/// it never clips while orbiting, which is further out than fit, and the
+/// slice had no way to sit at the same distance.
+const MIN_ZOOM: f64 = 0.2;
 const PAN_THRESHOLD: f64 = 6.0;
 /// Cap the on-screen native slice bitmap's longest axis (mirrors `SliceDisplayCap`).
 const SLICE_DISPLAY_CAP: usize = 2048;
@@ -119,6 +127,13 @@ pub struct CubeSliceView {
     /// True while the viewer is in draw mode: a click places a mark instead of
     /// probing, and a drag sizes it instead of panning.
     placing: Cell<bool>,
+    /// The zoom a fresh view — and a double-click reset — lands on.
+    ///
+    /// Not always 1.0 (fit): the viewer measures what the VOLUME shows a voxel
+    /// at and matches it, so switching modes does not change the size of
+    /// anything. Fit-to-widget is the obvious default for a 2-D image and the
+    /// wrong one here, because this view has a sibling showing the same data.
+    default_zoom: Cell<f64>,
     /// What the preview should look like, ASKED at draw time rather than
     /// remembered — the picker can change while drawing is armed, and a
     /// preview that showed a ring and released a box teaches people not to
@@ -298,6 +313,7 @@ impl CubeSliceView {
             suppress: Cell::new(false),
             play_gen: Cell::new(0),
             placing: Cell::new(false),
+            default_zoom: Cell::new(1.0),
             preview_kind: RefCell::new(None),
             pending_shape: RefCell::new(None),
             editing_annotation: RefCell::new(None),
@@ -573,6 +589,48 @@ impl CubeSliceView {
 
     /// Where a mark sits on this view, in widget coordinates. `None` when it
     /// is not on the plane being shown.
+    /// How many screen pixels one VOLUME voxel spans at fit-to-widget, for a
+    /// panel of `w` x `h`. The denominator when matching another view's scale.
+    pub fn voxel_pixels_at_fit(&self, w: i32, h: i32) -> f64 {
+        let (dnx, dny) = (self.disp_nx.get() as f64, self.disp_ny.get() as f64);
+        if dnx <= 0.0 || dny <= 0.0 || w <= 0 || h <= 0 {
+            return 0.0;
+        }
+        let fit = (w as f64 / dnx).min(h as f64 / dny);
+        // Displayed pixels per volume voxel, times screen pixels per displayed
+        // pixel — the slice may be showing a native-resolution plane with more
+        // pixels than the cube has voxels.
+        (dnx / self.vol.nx.max(1) as f64) * fit
+    }
+
+    /// The current zoom. For `cube_slice_zoom_probe`.
+    pub fn probe_zoom(&self) -> f64 {
+        self.state.borrow().zoom
+    }
+
+    /// Zoom about the centre, as the wheel does — including its clamps, which
+    /// is the point: the probe checks how far out the wheel can actually go.
+    pub fn probe_scroll(&self, factor: f64) {
+        let (aw, ah) = (
+            self.slice_area.width().max(1) as f64,
+            self.slice_area.height().max(1) as f64,
+        );
+        self.zoom_toward(aw / 2.0, ah / 2.0, factor);
+    }
+
+    /// Set the zoom a fresh view and a reset land on, and apply it if the
+    /// user has not already zoomed away from the old default.
+    pub fn set_default_zoom(&self, zoom: f64) {
+        let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        let previous = self.default_zoom.replace(zoom);
+        let mut s = self.state.borrow_mut();
+        if default_is_welcome(s.zoom, previous) {
+            s.zoom = zoom;
+            drop(s);
+            self.slice_area.queue_draw();
+        }
+    }
+
     pub fn project_mark(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
         self.annotation_surface()?.project(anchor)
     }
@@ -1381,7 +1439,7 @@ impl CubeSliceView {
                 if n >= 2 {
                     {
                         let mut s = this.state.borrow_mut();
-                        s.zoom = 1.0;
+                        s.zoom = this.default_zoom.get();
                         s.pan_x = 0.0;
                         s.pan_y = 0.0;
                     }
@@ -1421,7 +1479,7 @@ impl CubeSliceView {
         };
         let (cx, cy) = (aw / 2.0, ah / 2.0);
         let mut s = self.state.borrow_mut();
-        let new_zoom = (s.zoom * factor).clamp(1.0, MAX_ZOOM);
+        let new_zoom = zoom_after(s.zoom, factor);
         if (new_zoom - s.zoom).abs() < f64::EPSILON {
             return;
         }
@@ -1546,6 +1604,27 @@ impl crate::helpers::annotation_render::AnnotationSurface for SliceAnnotationSur
         let b = self.voxel_to_screen(1.0, 0.0);
         ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt().max(0.25)
     }
+}
+
+/// Whether a newly measured default should move a view sitting at `current`.
+///
+/// Only if it is still where the last default put it. Someone who has scrolled
+/// has said what they want to look at, and a default arriving later — the
+/// match is recomputed on every switch back to the slice — must not take it
+/// away from them. Without this, zooming in on the slice and glancing at the
+/// volume would silently undo the zoom.
+fn default_is_welcome(current: f64, previous_default: f64) -> bool {
+    (current - previous_default).abs() < 1e-9
+}
+
+/// The zoom a scroll step lands on, clamped to what the view allows.
+///
+/// A named function because the range is the interesting part and it is
+/// otherwise buried in a widget that only allocates under a real display: the
+/// floor used to be 1.0, so the wheel refused to pull the plane back from
+/// fit-to-widget at all.
+fn zoom_after(current: f64, factor: f64) -> f64 {
+    (current * factor).clamp(MIN_ZOOM, MAX_ZOOM)
 }
 
 /// Map a displayed-slice pixel to the matching index in a `target_n`-wide axis
@@ -1793,5 +1872,73 @@ mod slice_placement_tests {
         assert!(s.screen_to_voxel(sx, sy - 1.0).is_none(), "above the plane");
         let (ex, ey) = s.voxel_to_screen(64.0, 64.0);
         assert!(s.screen_to_voxel(ex, ey).is_none(), "past the far corner");
+    }
+}
+
+#[cfg(test)]
+mod slice_zoom_tests {
+    use super::{default_is_welcome, zoom_after, MAX_ZOOM, MIN_ZOOM};
+
+    /// The plane can be pulled back from fit.
+    ///
+    /// The floor was 1.0 — fit-to-widget — so scrolling out simply stopped,
+    /// and the slice could not be put at the same distance the volume frames
+    /// the box at. Everything, marks included, changed size when you switched
+    /// modes and there was no way to correct it.
+    #[test]
+    fn the_wheel_can_pull_back_past_fit() {
+        let out = zoom_after(1.0, 0.8);
+        assert!(out < 1.0, "scrolling out from fit went to {out}");
+        // And keeps going, rather than stopping one step below.
+        assert!(zoom_after(out, 0.8) < out, "the wheel stalled at {out}");
+    }
+
+    /// The range is bounded at both ends.
+    #[test]
+    fn zoom_stops_at_both_ends() {
+        assert_eq!(
+            zoom_after(MIN_ZOOM, 0.1),
+            MIN_ZOOM,
+            "zoomed out past the floor"
+        );
+        assert_eq!(
+            zoom_after(MAX_ZOOM, 10.0),
+            MAX_ZOOM,
+            "zoomed in past the ceiling"
+        );
+    }
+
+    /// A default only moves a view nobody has touched.
+    #[test]
+    fn a_zoom_the_user_chose_is_left_alone() {
+        // Untouched: sitting exactly where the last default put it.
+        assert!(default_is_welcome(1.0, 1.0));
+        assert!(default_is_welcome(0.465, 0.465));
+        // Scrolled away from it: theirs now.
+        assert!(
+            !default_is_welcome(2.5, 1.0),
+            "a scrolled-in view was reset"
+        );
+        assert!(
+            !default_is_welcome(0.3, 0.465),
+            "a scrolled-out view was reset"
+        );
+    }
+
+    /// The default the volume match produces is inside the range.
+    ///
+    /// Measured at about 0.47 across cube shapes. A floor above that would
+    /// clamp the match away silently and put fit back.
+    #[test]
+    fn the_measured_match_is_reachable() {
+        // The probe measures about 0.47 across cube shapes. A floor above it
+        // would clamp the match away and silently put fit back.
+        for measured in [0.479, 0.465, 0.45] {
+            assert_eq!(
+                zoom_after(measured, 1.0),
+                measured,
+                "a measured match of {measured} is clamped away"
+            );
+        }
     }
 }

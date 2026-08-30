@@ -957,6 +957,13 @@ impl CubeViewer {
                 .set_visible_child_name(if slice { "slice" } else { "volume" });
             // The VOLUME control group only applies to the 3D ray-march.
             this.volume_section.set_visible(!slice);
+            if slice {
+                // Recomputed on each switch rather than once at construction:
+                // the panel has a real size by now, and attaching a
+                // native-resolution plane changes what a voxel is worth. It
+                // leaves a view the user has already zoomed alone.
+                this.match_slice_zoom_to_volume();
+            }
         });
     }
 
@@ -1002,6 +1009,7 @@ impl CubeViewer {
     }
 
     fn force_slice_only(&self) {
+        self.match_slice_zoom_to_volume();
         self.mode_slice.set_active(true);
         self.stack.set_visible_child_name("slice");
         self.volume_section.set_visible(false);
@@ -1509,6 +1517,74 @@ impl CubeViewer {
                 self.persist_annotations();
             }
         }
+    }
+
+    /// Put the slice at the same apparent scale as the volume.
+    ///
+    /// Measured, not assumed: ask both surfaces what one voxel is worth in
+    /// screen pixels at the same panel size, and take the ratio. The two views
+    /// frame the data differently on purpose — the volume keeps the whole box
+    /// on screen at every orbit angle, which is further out than fitting a
+    /// plane to the widget — so fit-to-widget made everything, marks included,
+    /// jump by about a factor of two when you switched modes.
+    ///
+    /// A ratio rather than a constant because it is not one number: it depends
+    /// on the cube's shape and on the camera's defaults, and measuring keeps it
+    /// right when either changes.
+    fn match_slice_zoom_to_volume(&self) {
+        use crate::helpers::annotation_render::AnnotationSurface;
+        // The STACK's size, not the volume overlay's: both views live in it, so
+        // it has a real allocation whichever one is showing. Reading the
+        // volume's own overlay gave zero while the slice was up, and the match
+        // silently did nothing.
+        //
+        // Before the first allocation, a nominal panel. Both terms of the
+        // ratio scale with the panel, so it barely depends on the number — and
+        // a slightly-off match is far better than the factor-of-two jump that
+        // doing nothing leaves.
+        let (w, h) = match (self.stack.width(), self.stack.height()) {
+            (w, h) if w > 0 && h > 0 => (w, h),
+            _ => (800, 800),
+        };
+        // The middle of the cube, on the middle channel: the volume has
+        // perspective, so a voxel is worth different amounts at the front and
+        // the back, and the centre is the honest average.
+        let anchor = crate::models::annotation::Anchor::Data {
+            x: self.vol.nx as f64 / 2.0,
+            y: self.vol.ny as f64 / 2.0,
+            z: self.vol.nz as f64 / 2.0,
+        };
+        let in_volume = self.annotation_surface(w, h).units_to_pixels(&anchor);
+        let at_fit = self.slice.voxel_pixels_at_fit(w, h);
+        if in_volume > 0.0 && at_fit > 0.0 {
+            self.slice.set_default_zoom(in_volume / at_fit);
+        }
+    }
+
+    /// The slice's current zoom, and what one voxel is worth on screen in
+    /// each view. For `cube_slice_zoom_probe`, which checks that the two views
+    /// agree — something no unit test can see, because both numbers come from
+    /// live widgets.
+    pub fn probe_scales(&self) -> (f64, f64, f64) {
+        use crate::helpers::annotation_render::AnnotationSurface;
+        let (w, h) = match (self.stack.width(), self.stack.height()) {
+            (w, h) if w > 0 && h > 0 => (w, h),
+            _ => (800, 800),
+        };
+        let anchor = crate::models::annotation::Anchor::Data {
+            x: self.vol.nx as f64 / 2.0,
+            y: self.vol.ny as f64 / 2.0,
+            z: self.vol.nz as f64 / 2.0,
+        };
+        let in_volume = self.annotation_surface(w, h).units_to_pixels(&anchor);
+        let zoom = self.slice.probe_zoom();
+        let on_slice = self.slice.voxel_pixels_at_fit(w, h) * zoom;
+        (zoom, in_volume, on_slice)
+    }
+
+    /// Scroll the slice, as the wheel does. For the zoom probe.
+    pub fn probe_scroll_slice(&self, factor: f64) {
+        self.slice.probe_scroll(factor);
     }
 
     /// A mark size that is visible on THIS cube.
