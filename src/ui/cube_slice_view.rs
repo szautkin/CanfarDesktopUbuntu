@@ -17,6 +17,7 @@
 //! [`set_colormap`](CubeSliceView::set_colormap) re-render, so the slice shares the
 //! window/stretch/colormap with the 3D volume.
 
+use crate::helpers::annotation_render::AnnotationSurface;
 use crate::helpers::cube_colormaps;
 use crate::helpers::cube_native_slice::NativeSliceSource;
 use crate::helpers::cube_slice::{extract_spectrum, render_plane_bgra, StretchMode};
@@ -118,6 +119,16 @@ pub struct CubeSliceView {
     /// True while the viewer is in draw mode: a click places a mark instead of
     /// probing, and a drag sizes it instead of panning.
     placing: Cell<bool>,
+    /// What the preview should look like, ASKED at draw time rather than
+    /// remembered — the picker can change while drawing is armed, and a
+    /// preview that showed a ring and released a box teaches people not to
+    /// trust it.
+    preview_kind: RefCell<Option<Box<dyn Fn() -> crate::models::annotation::AnnotationKind>>>,
+    /// The shape a placing drag is about to create: `(voxel x, voxel y, half
+    /// in voxels)`. Drawn while the button is down so the size is chosen by
+    /// eye rather than guessed — without it you draw blind and find out what
+    /// you got on release.
+    pending_shape: RefCell<Option<(f64, f64, f64)>>,
     /// The mark being edited: grips out, and a drag moves or resizes it.
     editing_annotation: RefCell<Option<String>>,
     /// What the drag in progress is doing. Decided once at drag-begin, so a
@@ -287,6 +298,8 @@ impl CubeSliceView {
             suppress: Cell::new(false),
             play_gen: Cell::new(0),
             placing: Cell::new(false),
+            preview_kind: RefCell::new(None),
+            pending_shape: RefCell::new(None),
             editing_annotation: RefCell::new(None),
             drag_intent: RefCell::new(DragIntent::Pan),
             on_marks_changed: RefCell::new(None),
@@ -558,6 +571,19 @@ impl CubeSliceView {
         self.editing_annotation.borrow().clone()
     }
 
+    /// Where a mark sits on this view, in widget coordinates. `None` when it
+    /// is not on the plane being shown.
+    pub fn project_mark(&self, anchor: &crate::models::annotation::Anchor) -> Option<(f64, f64)> {
+        self.annotation_surface()?.project(anchor)
+    }
+
+    pub fn set_preview_kind_source(
+        &self,
+        f: impl Fn() -> crate::models::annotation::AnnotationKind + 'static,
+    ) {
+        *self.preview_kind.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn set_on_marks_changed(
         &self,
         cb: impl Fn(Vec<crate::models::annotation::Annotation>) + 'static,
@@ -712,20 +738,43 @@ impl CubeSliceView {
     /// FITS viewer follows, and the reason a mark does not swell when you zoom
     /// in on it.
     fn place_at(&self, px: f64, py: f64, dx: f64, dy: f64) {
-        let Some((vx, vy)) = self.screen_to_voxel(px, py) else {
+        // Size it once more from the same function the preview used, then
+        // place exactly what was on screen. Computing the radius a second way
+        // here is how a preview and the mark it becomes drift apart.
+        self.size_pending(px, py, dx, dy);
+        let pending = self.pending_shape.borrow_mut().take();
+        self.slice_area.queue_draw();
+        let Some((vx, vy, half)) = pending else {
             return;
-        };
-        let radius = match self.screen_to_voxel(px + dx, py + dy) {
-            // A drag of a few pixels is a click that wobbled, not a size.
-            Some((ex, ey)) if dx.hypot(dy) > PAN_THRESHOLD => {
-                ((ex - vx).powi(2) + (ey - vy).powi(2)).sqrt()
-            }
-            _ => 0.0,
         };
         let cb = self.on_place.borrow().clone();
         if let Some(cb) = cb {
-            cb(vx, vy, radius);
+            cb(vx, vy, half);
         }
+    }
+
+    /// Update the shape the placing drag is drawing.
+    fn size_pending(&self, px: f64, py: f64, dx: f64, dy: f64) {
+        let Some(surface) = self.annotation_surface() else {
+            return;
+        };
+        let Some((vx, vy)) = surface.screen_to_voxel(px, py) else {
+            return;
+        };
+        // A drag of a few pixels is a click that wobbled, not a size; zero
+        // tells the viewer to use its default.
+        let half = if dx.hypot(dy) > PAN_THRESHOLD {
+            let anchor = crate::models::annotation::Anchor::Data {
+                x: vx,
+                y: vy,
+                z: self.state.borrow().z as f64,
+            };
+            crate::helpers::annotation_render::half_from_drag(&surface, &anchor, dx.hypot(dy))
+        } else {
+            0.0
+        };
+        *self.pending_shape.borrow_mut() = Some((vx, vy, half));
+        self.slice_area.queue_draw();
     }
 
     fn map_to_pixel(&self, px: f64, py: f64) -> Option<(usize, usize)> {
@@ -1048,6 +1097,26 @@ impl CubeSliceView {
                 );
             }
 
+            // The shape being drawn right now, under the finished ones.
+            if let (Some((vx, vy, half)), Some(surface)) =
+                (*this.pending_shape.borrow(), this.annotation_surface())
+            {
+                let (sx, sy) = surface.voxel_to_screen(vx, vy);
+                let r = half
+                    * surface.units_to_pixels(&crate::models::annotation::Anchor::Data {
+                        x: vx,
+                        y: vy,
+                        z: 0.0,
+                    });
+                let kind = this
+                    .preview_kind
+                    .borrow()
+                    .as_ref()
+                    .map(|f| f())
+                    .unwrap_or(crate::models::annotation::AnnotationKind::Circle);
+                crate::helpers::annotation_render::draw_preview(kind, sx, sy, r, cr);
+            }
+
             // Marks last, so they sit over the image — and through the same
             // renderer the volume view and the FITS canvas use, so one shape
             // cannot start looking different depending on where you see it.
@@ -1210,6 +1279,11 @@ impl CubeSliceView {
                 // While placing, a drag sizes the mark; panning would drag the
                 // image out from under the shape being drawn.
                 let intent = this.drag_intent.borrow().clone();
+                if intent == DragIntent::Place {
+                    let st = *start.borrow();
+                    this.size_pending(st.0, st.1, dx, dy);
+                    return;
+                }
                 if intent != DragIntent::Pan {
                     let st = *start.borrow();
                     this.drag_mark(&intent, st.0 + dx, st.1 + dy);

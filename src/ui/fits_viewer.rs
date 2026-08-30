@@ -2358,86 +2358,47 @@ impl FitsViewer {
             return;
         };
 
-        // An overlay child, not a popover. A popover is its own surface: with
-        // autohide on it dismissed itself the moment the pointer went back to
-        // the image, and with autohide off one was seen floating above an
-        // unrelated application's window. This is clipped to the canvas, moves
-        // with the window, and can follow the mark while it is dragged.
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        row.add_css_class("osd");
-        row.add_css_class("toolbar");
-        row.set_margin_end(6);
-
-        let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
-        entry.set_width_chars(16);
-        row.append(&entry);
-        if !mark.text.is_empty() {
-            entry.set_text(&mark.text);
-            entry.select_region(0, -1);
-        }
-
-        let done = gtk::Button::from_icon_name("object-select-symbolic");
-        done.add_css_class("suggested-action");
-        done.set_tooltip_text(Some(crate::tr_en!("Done")));
-        row.append(&done);
-
-        let bin = gtk::Button::from_icon_name("user-trash-symbolic");
-        bin.add_css_class("destructive-action");
-        bin.set_tooltip_text(Some(crate::tr_en!("Delete this mark")));
-        row.append(&bin);
+        // The editor itself is `ui::mark_label_editor`, shared with the cube
+        // viewer — only WHERE it goes is this canvas's business.
+        let id_owned = id.to_string();
+        let editor = crate::ui::mark_label_editor::MarkLabelEditor::new(
+            &mark.text,
+            {
+                let viewer = Rc::downgrade(self);
+                let id = id_owned.clone();
+                move |text| {
+                    if let Some(v) = viewer.upgrade() {
+                        v.set_mark_text(&id, &text);
+                        v.leave_edit_mode();
+                    }
+                }
+            },
+            {
+                let viewer = Rc::downgrade(self);
+                let id = id_owned.clone();
+                move || {
+                    if let Some(v) = viewer.upgrade() {
+                        v.delete_mark(&id);
+                        v.leave_edit_mode();
+                    }
+                }
+            },
+            {
+                let viewer = Rc::downgrade(self);
+                move || {
+                    if let Some(v) = viewer.upgrade() {
+                        v.leave_edit_mode();
+                    }
+                }
+            },
+        );
+        let row = editor.widget().clone();
 
         // One editor at a time.
         self.close_label_editor();
         canvas.place_over_image(&row, rect.x() as f64, (rect.y() - 26).max(0) as f64);
-        *self.open_label_editor.borrow_mut() = Some((id.to_string(), row.clone()));
-
-        let id = id.to_string();
-        let commit = {
-            let viewer = Rc::downgrade(self);
-            let entry = entry.clone();
-            let id = id.clone();
-            move || {
-                let text = entry.text().to_string();
-                if let Some(v) = viewer.upgrade() {
-                    v.set_mark_text(&id, &text);
-                    v.leave_edit_mode();
-                }
-            }
-        };
-        {
-            let commit = commit.clone();
-            entry.connect_activate(move |_| commit());
-        }
-        {
-            let commit = commit.clone();
-            done.connect_clicked(move |_| commit());
-        }
-        {
-            let viewer = Rc::downgrade(self);
-            let id = id.clone();
-            bin.connect_clicked(move |_| {
-                if let Some(v) = viewer.upgrade() {
-                    v.delete_mark(&id);
-                    v.leave_edit_mode();
-                }
-            });
-        }
-        {
-            let viewer = Rc::downgrade(self);
-            let keys = gtk::EventControllerKey::new();
-            keys.connect_key_pressed(move |_, key, _, _| {
-                if key == gtk::gdk::Key::Escape {
-                    if let Some(v) = viewer.upgrade() {
-                        v.leave_edit_mode();
-                    }
-                    return gtk::glib::Propagation::Stop;
-                }
-                gtk::glib::Propagation::Proceed
-            });
-            entry.add_controller(keys);
-        }
-        entry.grab_focus();
+        *self.open_label_editor.borrow_mut() = Some((id_owned, row));
+        editor.focus();
     }
 
     /// Take the label editor off the image, if one is up.

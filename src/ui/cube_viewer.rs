@@ -22,8 +22,6 @@ use crate::ui::viewer_shell::{self, labeled};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
-use libadwaita as adw;
-use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -66,6 +64,15 @@ pub struct CubeViewer {
     /// Marks drawn on this cube, by the user or an agent.
     annotations: RefCell<Vec<crate::models::annotation::Annotation>>,
     selected_annotation: RefCell<Option<String>>,
+    /// Hosts the label editor, over whichever view is showing.
+    view_overlay: gtk::Overlay,
+    /// The editor currently on the view, and the mark it belongs to.
+    open_label_editor: RefCell<Option<(String, gtk::Box)>>,
+    /// The shape a placing drag in the VOLUME is about to create: `(voxel x,
+    /// voxel y, half in voxels)` on the current channel. The slice keeps its
+    /// own; a drag happens in one view at a time, and a shape being born
+    /// belongs to the drag making it.
+    pending_shape: RefCell<Option<(f64, f64, f64)>>,
     /// The sidebar Marks section — list, pencil and shape picker.
     marks_section: Rc<crate::ui::annotations_panel::MarksSection>,
     // Handles the overlay / colorbar methods read back.
@@ -149,7 +156,16 @@ impl CubeViewer {
         stack.add_named(&gl_overlay, Some("volume"));
         stack.add_named(slice.widget(), Some("slice"));
         stack.set_visible_child_name("volume");
-        left.append(&stack);
+
+        // An overlay over the WHOLE stack, not over one view: a mark can be
+        // named in either mode, and the label editor is the same widget in
+        // both. Wrapping each view separately would mean two hosts and two
+        // ways for the editor to be positioned.
+        let view_overlay = gtk::Overlay::new();
+        view_overlay.set_hexpand(true);
+        view_overlay.set_vexpand(true);
+        view_overlay.set_child(Some(&stack));
+        left.append(&view_overlay);
 
         // The channel scrubber sits UNDER the mode stack, not inside the slice
         // view, so it is on screen in both modes — the reference is explicit
@@ -192,6 +208,9 @@ impl CubeViewer {
             source_path: RefCell::new(String::new()),
             annotations: RefCell::new(Vec::new()),
             selected_annotation: RefCell::new(None),
+            view_overlay,
+            open_label_editor: RefCell::new(None),
+            pending_shape: RefCell::new(None),
             marks_section: ctl.marks_section.clone(),
             window_lo: ctl.window_lo.clone(),
             window_hi: ctl.window_hi.clone(),
@@ -607,64 +626,146 @@ impl CubeViewer {
         self.refresh_annotations_panel();
     }
 
-    /// Ask for a mark's label.
+    /// Open the label editor on a mark, at the end of its leader.
     ///
-    /// A dialog rather than the FITS viewer's in-place overlay: that one sits
-    /// at the end of the mark's leader, which needs a stable 2D geometry to
-    /// point at. In a volume the mark moves whenever the camera does, so an
-    /// editor pinned to it would chase the mark around the panel while you
-    /// typed in it.
-    fn ask_for_mark_text(self: &Rc<Self>, id: &str) {
+    /// The same widget and the same gestures as the FITS viewer: type, Enter
+    /// or the tick to confirm, the bin to delete, Escape to back out. It was a
+    /// modal dialog here, which stopped everything to ask one question and put
+    /// the answer somewhere other than where you were looking.
+    fn open_label_editor(self: &Rc<Self>, id: &str) {
         let Some(mark) = self.annotations().into_iter().find(|a| a.id == id) else {
             return;
         };
-        let root = self
-            .widget
-            .root()
-            .and_then(|r| r.downcast::<gtk::Window>().ok());
-        let dialog =
-            adw::MessageDialog::new(root.as_ref(), Some(crate::tr_en!("Label this mark")), None);
-        let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some(crate::tr_en!("What is this?")));
-        entry.set_text(&mark.text);
-        entry.select_region(0, -1);
-        entry.set_margin_top(6);
-        entry.set_margin_bottom(6);
-        entry.set_margin_start(6);
-        entry.set_margin_end(6);
-        dialog.set_extra_child(Some(&entry));
-        dialog.add_response("cancel", crate::tr_en!("Cancel"));
-        dialog.add_response("save", crate::tr_en!("Save"));
-        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("save"));
-        dialog.set_close_response("cancel");
+        let Some((sx, sy)) = self.project_for_editor(&mark) else {
+            return;
+        };
 
-        // Enter in the field is the same as pressing Save — typing a label and
-        // hitting return is what a person does without thinking about it.
-        {
-            let dialog = dialog.clone();
-            entry.connect_activate(move |_| dialog.response("save"));
-        }
-        let this = self.clone();
-        let id = id.to_string();
-        let entry_ref = entry.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response != "save" {
-                return;
-            }
-            let text = entry_ref.text().trim().to_string();
-            let mut all = this.annotations();
-            if let Some(m) = all.iter_mut().find(|a| a.id == id) {
-                m.text = text;
-            }
-            this.set_annotations(all);
-            this.persist_annotations();
-        });
-        dialog.present();
-        entry.grab_focus();
+        let id_owned = id.to_string();
+        let editor = crate::ui::mark_label_editor::MarkLabelEditor::new(
+            &mark.text,
+            {
+                let this = Rc::downgrade(self);
+                let id = id_owned.clone();
+                move |text| {
+                    if let Some(v) = this.upgrade() {
+                        v.set_mark_text(&id, &text);
+                        v.leave_edit_mode();
+                    }
+                }
+            },
+            {
+                let this = Rc::downgrade(self);
+                let id = id_owned.clone();
+                move || {
+                    if let Some(v) = this.upgrade() {
+                        v.delete_mark(&id);
+                        v.leave_edit_mode();
+                    }
+                }
+            },
+            {
+                let this = Rc::downgrade(self);
+                move || {
+                    if let Some(v) = this.upgrade() {
+                        v.leave_edit_mode();
+                    }
+                }
+            },
+        );
+        let row = editor.widget().clone();
+        self.close_label_editor();
+        self.place_over_view(&row, sx, sy);
+        *self.open_label_editor.borrow_mut() = Some((id_owned, row));
+        editor.focus();
     }
 
-    /// Refill the sidebar list from what is actually stored.
+    /// Where the editor should sit for `mark`, in view coordinates.
+    ///
+    /// Beside the shape rather than on it, so the field does not cover the
+    /// thing being named. Whichever view is showing does the projecting, so
+    /// the editor lands correctly in both.
+    fn project_for_editor(
+        &self,
+        mark: &crate::models::annotation::Annotation,
+    ) -> Option<(f64, f64)> {
+        use crate::helpers::annotation_render::AnnotationSurface;
+        let (w, h) = self.working_area_size();
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let (cx, cy) = if self.is_slice_mode() {
+            self.slice.project_mark(&mark.anchor)?
+        } else {
+            self.annotation_surface(w, h).project(&mark.anchor)?
+        };
+        Some((cx + 12.0, (cy - 34.0).max(0.0)))
+    }
+
+    /// Put `child` over the view, its top-left near `(x, y)`.
+    fn place_over_view(&self, child: &impl IsA<gtk::Widget>, x: f64, y: f64) {
+        let child = child.as_ref();
+        if child.parent().is_none() {
+            self.view_overlay.add_overlay(child);
+        }
+        child.set_halign(gtk::Align::Start);
+        child.set_valign(gtk::Align::Start);
+        child.set_margin_start(x.max(0.0) as i32);
+        child.set_margin_top(y.max(0.0) as i32);
+    }
+
+    /// Take the editor off the view, if one is up.
+    fn close_label_editor(&self) {
+        if let Some((_, row)) = self.open_label_editor.borrow_mut().take() {
+            self.view_overlay.remove_overlay(&row);
+        }
+    }
+
+    /// Re-aim the open editor at its mark's current position.
+    ///
+    /// Without this, dragging a mark leaves the field hanging over where the
+    /// shape used to be — which is exactly the complaint the FITS viewer had
+    /// before it followed its own.
+    fn follow_label_editor(&self) {
+        let open = self.open_label_editor.borrow().clone();
+        let Some((id, row)) = open else {
+            return;
+        };
+        let Some(mark) = self.annotations().into_iter().find(|a| a.id == id) else {
+            return;
+        };
+        if let Some((x, y)) = self.project_for_editor(&mark) {
+            self.place_over_view(&row, x, y);
+        }
+    }
+
+    /// Leave edit mode: close the field, drop the grips and the selection.
+    ///
+    /// Edit mode IS a mark being open — the grips and the field are two faces
+    /// of one state, so they end together or the view shows a mark half in and
+    /// half out of being edited.
+    fn leave_edit_mode(&self) {
+        self.close_label_editor();
+        self.set_editing_annotation(None);
+        self.set_selected_annotation(None);
+    }
+
+    fn set_mark_text(&self, id: &str, text: &str) {
+        let mut all = self.annotations();
+        if let Some(m) = all.iter_mut().find(|a| a.id == id) {
+            m.text = text.trim().to_string();
+        }
+        self.set_annotations(all);
+        self.persist_annotations();
+    }
+
+    fn delete_mark(&self, id: &str) {
+        let mut all = self.annotations();
+        all.retain(|a| a.id != id);
+        self.set_annotations(all);
+        self.persist_annotations();
+    }
+
+    /// Refill the sidebar list from what is actually stored.    /// Refill the sidebar list from what is actually stored.
     ///
     /// Called by the setters rather than by their callers: the owner announces
     /// its own change, so no path — MCP, a click, a file load — can move the
@@ -1046,8 +1147,7 @@ impl CubeViewer {
             let this = self.clone();
             ctl.marks_section.panel().set_on_select(move |id| {
                 if id.is_empty() {
-                    this.set_editing_annotation(None);
-                    this.set_selected_annotation(None);
+                    this.leave_edit_mode();
                     return;
                 }
                 let channel = this
@@ -1063,6 +1163,7 @@ impl CubeViewer {
                 }
                 // Pointed out, not opened up: the list picks a mark, the image
                 // is where you edit one.
+                this.close_label_editor();
                 this.set_editing_annotation(None);
                 this.set_selected_annotation(Some(id.to_string()));
             });
@@ -1070,25 +1171,33 @@ impl CubeViewer {
         {
             let this = self.clone();
             ctl.marks_section.panel().set_on_delete(move |id| {
-                let mut all = this.annotations();
-                all.retain(|a| a.id != id);
-                this.set_annotations(all);
-                this.persist_annotations();
+                // An open field on the mark being deleted would be left
+                // pointing at a mark that no longer exists.
+                this.leave_edit_mode();
+                this.delete_mark(id);
             });
         }
         {
             let this = self.clone();
             ctl.marks_section.panel().set_on_edit(move |id| {
                 this.set_selected_annotation(Some(id.to_string()));
-                this.ask_for_mark_text(id);
+                this.set_editing_annotation(Some(id.to_string()));
+                this.open_label_editor(id);
             });
         }
         {
             let this = self.clone();
             ctl.marks_section.panel().set_on_clear(move |_| {
+                this.leave_edit_mode();
                 this.set_annotations(Vec::new());
                 this.persist_annotations();
             });
+        }
+
+        // One picker, asked by both previews at draw time.
+        {
+            let section = ctl.marks_section.clone();
+            self.slice.set_preview_kind_source(move || section.kind());
         }
 
         // Draw mode arms the slice: a click there places a mark instead of
@@ -1121,14 +1230,22 @@ impl CubeViewer {
             self.slice.set_on_marks_changed(move |marks| {
                 this.set_annotations(marks);
                 this.persist_annotations();
+                this.follow_label_editor();
             });
         }
         // Clicking a mark on the image opens it; clicking away closes it.
         {
             let this = self.clone();
-            self.slice.set_on_mark_selected(move |id| {
-                this.set_selected_annotation(id.clone());
-                this.set_editing_annotation(id);
+            self.slice.set_on_mark_selected(move |id| match id {
+                // Opening a mark shows its field straight away — naming it is
+                // the reason you opened it, and a second click to get a cursor
+                // is a click nobody wants to make.
+                Some(id) => {
+                    this.set_selected_annotation(Some(id.clone()));
+                    this.set_editing_annotation(Some(id.clone()));
+                    this.open_label_editor(&id);
+                }
+                None => this.leave_edit_mode(),
             });
         }
 
@@ -1173,7 +1290,7 @@ impl CubeViewer {
                     let Some((sx, sy)) = g.start_point() else {
                         return;
                     };
-                    this.volume_drag(&grab, sx + dx, sy + dy);
+                    this.volume_drag(&grab, sx, sy, dx, dy);
                 });
             }
             {
@@ -1205,7 +1322,7 @@ impl CubeViewer {
                 // Closing an open mark first: Escape means "stop what I am in
                 // the middle of", and editing is the more immediate of the two.
                 if this.slice.editing_annotation().is_some() {
-                    this.set_editing_annotation(None);
+                    this.leave_edit_mode();
                     return glib::Propagation::Stop;
                 }
                 if draw_mode.is_active() {
@@ -1258,6 +1375,37 @@ impl CubeViewer {
         }
     }
 
+    /// Update the shape a placing drag in the volume is drawing.
+    ///
+    /// Sized from the SCREEN drag divided by the local scale, not from
+    /// unprojecting the drag's two ends. The plane is foreshortened, so a drag
+    /// along the receding axis covers far more voxels than the same drag
+    /// across it — measuring between the unprojected ends made a mark much
+    /// bigger than the one you dragged out, and with no preview to show it you
+    /// only found out on release.
+    fn size_pending(self: &Rc<Self>, sx: f64, sy: f64, dx: f64, dy: f64) {
+        const CLICK_SLOP: f64 = 4.0;
+        let (w, h) = self.working_area_size();
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let z = self.current_channel.get() as f64;
+        let Some((vx, vy)) = self.volume_voxel_at(sx, sy, z) else {
+            return;
+        };
+        let half = if dx.hypot(dy) > CLICK_SLOP {
+            crate::helpers::annotation_render::half_from_drag(
+                &self.annotation_surface(w, h),
+                &crate::models::annotation::Anchor::Data { x: vx, y: vy, z },
+                dx.hypot(dy),
+            )
+        } else {
+            0.0
+        };
+        *self.pending_shape.borrow_mut() = Some((vx, vy, half));
+        self.overlay_area.queue_draw();
+    }
+
     /// The voxel under `(px, py)` on plane `z`, or `None` if the plane is not
     /// facing the camera there.
     fn volume_voxel_at(&self, px: f64, py: f64, z: f64) -> Option<(f64, f64)> {
@@ -1286,18 +1434,21 @@ impl CubeViewer {
             })
     }
 
-    /// Live feedback while dragging a mark in the volume.
-    fn volume_drag(self: &Rc<Self>, grab: &VolumeGrab, px: f64, py: f64) {
+    /// Live feedback while dragging in the volume. `(sx, sy)` is where the
+    /// press started; `(dx, dy)` is how far it has moved.
+    fn volume_drag(self: &Rc<Self>, grab: &VolumeGrab, sx: f64, sy: f64, dx: f64, dy: f64) {
         let (w, h) = self.working_area_size();
         if w <= 0 || h <= 0 {
             return;
         }
+        let (px, py) = (sx + dx, sy + dy);
         let surface = self.annotation_surface(w, h);
         let mut marks = self.annotations.borrow().clone();
         match grab {
-            // Placing draws nothing until the button comes up: the size is the
-            // drag itself, so there is no shape to show yet.
-            VolumeGrab::Place => return,
+            VolumeGrab::Place => {
+                self.size_pending(sx, sy, dx, dy);
+                return;
+            }
             VolumeGrab::Move { id } => {
                 let Some(z) = self.mark_channel(id) else {
                     return;
@@ -1326,6 +1477,7 @@ impl CubeViewer {
         }
         *self.annotations.borrow_mut() = marks;
         self.overlay_area.queue_draw();
+        self.follow_label_editor();
     }
 
     /// Commit a volume drag.
@@ -1333,25 +1485,23 @@ impl CubeViewer {
         const CLICK_SLOP: f64 = 4.0;
         match grab {
             VolumeGrab::Place => {
-                let z = self.current_channel.get() as f64;
-                let Some((vx, vy)) = self.volume_voxel_at(sx, sy, z) else {
-                    return;
-                };
-                // Drag-to-size, measured on the PLANE rather than on screen,
-                // so a mark drawn at an oblique angle is the size it looked.
-                let radius = match self.volume_voxel_at(sx + dx, sy + dy, z) {
-                    Some((ex, ey)) if dx.hypot(dy) > CLICK_SLOP => {
-                        ((ex - vx).powi(2) + (ey - vy).powi(2)).sqrt()
-                    }
-                    _ => 0.0,
-                };
-                self.place_mark(vx, vy, radius);
+                // Size it once more through the same function the preview
+                // used, then place exactly what was on screen. Computing the
+                // radius a second way here is how a preview and the mark it
+                // becomes drift apart.
+                self.size_pending(sx, sy, dx, dy);
+                let pending = self.pending_shape.borrow_mut().take();
+                self.overlay_area.queue_draw();
+                if let Some((vx, vy, half)) = pending {
+                    self.place_mark(vx, vy, half);
+                }
             }
             // A press that never moved is a click on the mark: point it out
             // and open it, the same as on the slice.
             VolumeGrab::Move { id } | VolumeGrab::Resize { id } if dx.hypot(dy) <= CLICK_SLOP => {
                 self.set_selected_annotation(Some(id.clone()));
                 self.set_editing_annotation(Some(id.clone()));
+                self.open_label_editor(id);
             }
             VolumeGrab::Move { .. } | VolumeGrab::Resize { .. } => {
                 let marks = self.annotations.borrow().clone();
@@ -1404,7 +1554,7 @@ impl CubeViewer {
         // nothing, and the point of drawing one is to say what it is.
         self.set_selected_annotation(Some(id.clone()));
         self.set_editing_annotation(Some(id.clone()));
-        self.ask_for_mark_text(&id);
+        self.open_label_editor(&id);
     }
 
     // ── Wireframe box + WCS caption overlay ──────────────────────────────────
@@ -1493,6 +1643,28 @@ impl CubeViewer {
         // Marks over the axes, inside the same function a capture replays, so
         // the user's screen and an agent's picture cannot show different sets.
         let surface = self.annotation_surface(w, h);
+        // The shape being drawn right now, under the finished ones. Chrome
+        // only: a capture or an export should show marks, not a half-made one.
+        if chrome {
+            if let Some((vx, vy, half)) = *self.pending_shape.borrow() {
+                let z = self.current_channel.get() as f64;
+                let anchor = crate::models::annotation::Anchor::Data { x: vx, y: vy, z };
+                if let Some((sx, sy)) = {
+                    use crate::helpers::annotation_render::AnnotationSurface;
+                    surface.project(&anchor)
+                } {
+                    use crate::helpers::annotation_render::AnnotationSurface;
+                    let r = half * surface.units_to_pixels(&anchor);
+                    crate::helpers::annotation_render::draw_preview(
+                        self.marks_section.kind(),
+                        sx,
+                        sy,
+                        r,
+                        cr,
+                    );
+                }
+            }
+        }
         let editing = self.slice.editing_annotation();
         crate::helpers::annotation_render::draw(
             &self.annotations.borrow(),

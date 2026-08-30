@@ -31,6 +31,7 @@ pub mod launch_dialog;
 pub mod launch_form;
 pub mod login_dialog;
 pub mod main_window;
+pub mod mark_label_editor;
 pub mod metric_bar;
 pub mod notebook_cell;
 pub mod notebook_host;

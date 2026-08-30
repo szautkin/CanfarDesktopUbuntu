@@ -796,34 +796,15 @@ impl FitsCanvas {
             use crate::models::annotation::AnnotationKind;
             let (sx, sy) = self.image_to_screen_point(ix, iy);
             let r = (half * self.transform.borrow().scale).max(1.0);
-            let (ink_r, ink_g, ink_b) = crate::helpers::annotation_render::style::INK;
-            cr.set_source_rgba(ink_r, ink_g, ink_b, 0.9);
-            cr.set_line_width(crate::helpers::annotation_render::style::STROKE);
-            cr.new_path();
-            // The preview is the shape you will get. It was always a circle,
-            // so drawing a box showed a ring that turned square on release.
+            // Asked at draw time, not remembered: the picker can change while
+            // drawing is armed, and the preview must be the shape you get.
             let kind = self
                 .preview_kind
                 .borrow()
                 .as_ref()
                 .map(|f| f())
                 .unwrap_or(AnnotationKind::Circle);
-            match kind {
-                AnnotationKind::Rect => {
-                    cr.rectangle(sx - r, sy - r, r * 2.0, r * 2.0);
-                }
-                AnnotationKind::Text => {
-                    // Text has no outline; a small cross marks where it lands.
-                    cr.move_to(sx - 6.0, sy);
-                    cr.line_to(sx + 6.0, sy);
-                    cr.move_to(sx, sy - 6.0);
-                    cr.line_to(sx, sy + 6.0);
-                }
-                _ => {
-                    cr.arc(sx, sy, r, 0.0, std::f64::consts::TAU);
-                }
-            }
-            cr.stroke().ok();
+            crate::helpers::annotation_render::draw_preview(kind, sx, sy, r, cr);
         }
 
         // Marks last, over everything, and drawn HERE — inside the function the

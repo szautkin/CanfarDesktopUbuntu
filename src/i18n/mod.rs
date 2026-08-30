@@ -105,7 +105,6 @@ static HAND_PAIRS: &[(&str, &str)] = &[
      "Aucun repère pour l'instant. Activez Dessin dans la barre d'outils, puis cliquez sur l'image."),
     ("Draw a mark on the cube, in either view. Click where you mean, drag to size it, Escape to stop. In the 3D view the mark lands on the channel you are on.",
      "Dessiner un repère sur le cube, dans l'une ou l'autre vue. Cliquez à l'endroit voulu, glissez pour le dimensionner, Échap pour arrêter. Dans la vue 3D, le repère se place sur le canal affiché."),
-    ("Label this mark",                             "Nommer ce repère"),
     ("Clear all marks",                             "Effacer tous les repères"),
     ("Add Mark",                                    "Ajouter un repère"),
     ("Delete every mark?",                          "Supprimer tous les repères ?"),

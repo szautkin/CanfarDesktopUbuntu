@@ -413,6 +413,35 @@ pub fn annotation_at(
     None
 }
 
+/// Draw the shape a drag is about to create.
+///
+/// The preview is the shape you will GET, which is the whole reason it is
+/// drawn from the same kind the finished mark will use rather than from a
+/// remembered one: a preview that showed a ring and released a box taught
+/// people not to trust it.
+///
+/// Screen coordinates, because a preview lives for one drag and every canvas
+/// already knows where the pointer is. `r` is the half-size in device pixels.
+pub fn draw_preview(kind: AnnotationKind, cx: f64, cy: f64, r: f64, cr: &cairo::Context) {
+    let (ink_r, ink_g, ink_b) = style::INK;
+    cr.set_source_rgba(ink_r, ink_g, ink_b, 0.9);
+    cr.set_line_width(style::STROKE);
+    cr.new_path();
+    let r = r.max(1.0);
+    match kind {
+        AnnotationKind::Rect => cr.rectangle(cx - r, cy - r, r * 2.0, r * 2.0),
+        // Text has no outline; a small cross marks where it lands.
+        AnnotationKind::Text => {
+            cr.move_to(cx - 6.0, cy);
+            cr.line_to(cx + 6.0, cy);
+            cr.move_to(cx, cy - 6.0);
+            cr.line_to(cx, cy + 6.0);
+        }
+        _ => cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU),
+    }
+    cr.stroke().ok();
+}
+
 /// What a press on a canvas of marks is asking to do.
 ///
 /// The decision is the same on every canvas — grips first, then shapes, then
@@ -468,6 +497,31 @@ pub fn grab_at(
         }
         None => MarkGrab::None,
     }
+}
+
+/// The half-size, in the anchor's own units, that a drag of `screen_px` device
+/// pixels away from the anchor is asking for.
+///
+/// Measured on SCREEN and divided by the local scale, rather than by
+/// unprojecting the two ends of the drag and measuring between them. On a
+/// foreshortened plane — a cube's slice seen at an angle in the volume view —
+/// a drag of an inch covers far more data along the receding axis than across
+/// it, so an unprojected drag produces a mark much larger than the one you
+/// dragged out. The preview shows what you dragged; the mark has to BE what
+/// you dragged.
+///
+/// (The FITS canvas has no perspective, so measuring either way agrees there;
+/// it converts through `units_per_image_pixel` for the same reason.)
+pub fn half_from_drag(
+    surface: &dyn AnnotationSurface,
+    anchor: &crate::models::annotation::Anchor,
+    screen_px: f64,
+) -> f64 {
+    let scale = surface.units_to_pixels(anchor);
+    if !scale.is_finite() || scale <= 0.0 {
+        return 0.0;
+    }
+    screen_px / scale
 }
 
 /// The half-size a resize drag to `(sx, sy)` is asking for, in the anchor's
@@ -1050,6 +1104,78 @@ mod tests {
         assert!(
             tiny >= 0.5,
             "a mark dragged to zero is unrecoverable: {tiny}"
+        );
+    }
+
+    /// The preview draws the shape you will get, and it is visible.
+    ///
+    /// The reported symptom was that no shape edges appeared while drawing in
+    /// the cube's two views — nothing drew at all. So the first thing to pin
+    /// is that a preview marks the canvas, and that the two kinds differ:
+    /// a preview that showed a ring and released a box taught people not to
+    /// trust it.
+    #[test]
+    fn a_preview_marks_the_canvas_with_the_kind_it_was_given() {
+        let ink = |kind| {
+            let surface =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, 60, 60).expect("surface");
+            {
+                let cr = cairo::Context::new(&surface).expect("cr");
+                draw_preview(kind, 30.0, 30.0, 12.0, &cr);
+            }
+            let mut s = surface;
+            s.flush();
+            let n = s.data().expect("data").iter().filter(|b| **b != 0).count();
+            n
+        };
+        let circle = ink(AnnotationKind::Circle);
+        let rect = ink(AnnotationKind::Rect);
+        assert!(circle > 0, "a circle preview drew nothing");
+        assert!(rect > 0, "a box preview drew nothing");
+        assert_ne!(circle, rect, "the two kinds preview identically");
+    }
+
+    /// A drag is sized on screen, so what you dragged is what you get.
+    ///
+    /// The cube's volume view looks at the slice plane at an angle, so
+    /// unprojecting the two ends of a drag and measuring between them gives a
+    /// far bigger number along the receding axis than across it — the mark
+    /// came out much larger than the ring the pointer traced.
+    #[test]
+    fn a_drag_is_sized_by_what_it_covered_on_screen() {
+        struct Tenx;
+        impl AnnotationSurface for Tenx {
+            fn project(&self, _: &Anchor) -> Option<(f64, f64)> {
+                Some((0.0, 0.0))
+            }
+            fn units_to_pixels(&self, _: &Anchor) -> f64 {
+                10.0
+            }
+        }
+        let a = Anchor::ImagePixel { x: 0.0, y: 0.0 };
+        // 40 screen pixels at 10 px per unit is 4 units, whatever the geometry
+        // between the drag's two ends happened to be.
+        assert!((half_from_drag(&Tenx, &a, 40.0) - 4.0).abs() < 1e-9);
+        // And the drawn radius comes back to the drag: 4 units x 10 = 40 px.
+        assert!((half_from_drag(&Tenx, &a, 40.0) * 10.0 - 40.0).abs() < 1e-9);
+    }
+
+    /// A surface with no scale cannot size a drag, and says so rather than
+    /// returning an infinity that becomes a mark the size of the sky.
+    #[test]
+    fn a_degenerate_surface_sizes_nothing() {
+        struct Dead;
+        impl AnnotationSurface for Dead {
+            fn project(&self, _: &Anchor) -> Option<(f64, f64)> {
+                Some((0.0, 0.0))
+            }
+            fn units_to_pixels(&self, _: &Anchor) -> f64 {
+                0.0
+            }
+        }
+        assert_eq!(
+            half_from_drag(&Dead, &Anchor::ImagePixel { x: 0.0, y: 0.0 }, 40.0),
+            0.0
         );
     }
 }
