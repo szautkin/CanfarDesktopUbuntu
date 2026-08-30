@@ -413,6 +413,83 @@ pub fn annotation_at(
     None
 }
 
+/// What a press on a canvas of marks is asking to do.
+///
+/// The decision is the same on every canvas — grips first, then shapes, then
+/// nothing — so it is made once here. What differs between viewers is only how
+/// a screen point becomes an anchor, which is the one thing they each keep.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkGrab {
+    /// Nothing of ours is under the pointer; the canvas can have the event.
+    None,
+    /// Move this mark. `grab_dx`/`grab_dy` are where in the shape it was
+    /// taken hold of, so it does not jump to centre itself under the pointer.
+    Move {
+        id: String,
+        grab_dx: f64,
+        grab_dy: f64,
+    },
+    /// Resize this mark by the grip that was grabbed.
+    Resize { id: String },
+}
+
+/// Decide what a press at `(sx, sy)` has taken hold of.
+///
+/// Grips are tested before shapes because a grip sits ON the edge of its own
+/// shape: testing the shape first would mean a grip could never be grabbed,
+/// and resizing would look like it simply did not work.
+pub fn grab_at(
+    annotations: &[Annotation],
+    surface: &dyn AnnotationSurface,
+    editing: Option<&str>,
+    sx: f64,
+    sy: f64,
+) -> MarkGrab {
+    if let Some(mark) = editing.and_then(|id| annotations.iter().find(|a| a.id == id)) {
+        if handle_at(mark, surface, sx, sy) {
+            return MarkGrab::Resize {
+                id: mark.id.clone(),
+            };
+        }
+    }
+    match annotation_at(annotations, surface, sx, sy) {
+        Some(id) => {
+            let (grab_dx, grab_dy) = annotations
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| surface.project(&a.anchor))
+                .map(|(cx, cy)| (sx - cx, sy - cy))
+                .unwrap_or((0.0, 0.0));
+            MarkGrab::Move {
+                id,
+                grab_dx,
+                grab_dy,
+            }
+        }
+        None => MarkGrab::None,
+    }
+}
+
+/// The half-size a resize drag to `(sx, sy)` is asking for, in the anchor's
+/// own units.
+///
+/// The grip is a corner, so the half-size is the LARGER of the two offsets —
+/// dragging away from the centre grows the shape whichever way you go, rather
+/// than only along the axis you happened to move furthest on.
+pub fn resize_half(
+    mark: &Annotation,
+    surface: &dyn AnnotationSurface,
+    sx: f64,
+    sy: f64,
+) -> Option<f64> {
+    let (cx, cy) = surface.project(&mark.anchor)?;
+    let scale = surface.units_to_pixels(&mark.anchor);
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    Some(((sx - cx).abs().max((sy - cy).abs()) / scale).max(0.5))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,5 +991,65 @@ mod tests {
     fn a_hairline_mark_still_has_a_hit_box() {
         let tiny = boxed(100.0, 100.0, 0.5);
         assert!(annotation_at(&[tiny], &Flat, 104.0, 104.0).is_some());
+    }
+
+    /// A grip wins over the shape it sits on.
+    ///
+    /// The grips are ON the outline of their own mark, so a press there is
+    /// inside the shape too. Testing the shape first would mean a grip could
+    /// never be grabbed and resizing would look simply broken — which is why
+    /// the order is asserted rather than left to the reading.
+    #[test]
+    fn a_grip_wins_over_the_shape_it_sits_on() {
+        let mark = boxed(100.0, 100.0, 20.0);
+        let id = mark.id.clone();
+        let marks = [mark];
+        // The bottom-right grip, which is also inside the box.
+        let grab = grab_at(&marks, &Flat, Some(&id), 120.0, 120.0);
+        assert_eq!(grab, MarkGrab::Resize { id: id.clone() });
+        // Same point, nothing being edited: no grips, so it is a move.
+        assert!(matches!(
+            grab_at(&marks, &Flat, None, 120.0, 120.0),
+            MarkGrab::Move { .. }
+        ));
+    }
+
+    /// A press on nothing is a press on nothing.
+    ///
+    /// The canvas underneath gets the event — panning an image, orbiting a
+    /// volume — so this must not claim a press it has no use for.
+    #[test]
+    fn a_press_on_empty_space_grabs_nothing() {
+        let marks = [boxed(100.0, 100.0, 20.0)];
+        assert_eq!(grab_at(&marks, &Flat, None, 400.0, 400.0), MarkGrab::None);
+    }
+
+    /// A mark is taken hold of where you grabbed it, not by its centre.
+    #[test]
+    fn a_move_remembers_where_the_shape_was_grabbed() {
+        let marks = [boxed(100.0, 100.0, 20.0)];
+        let MarkGrab::Move {
+            grab_dx, grab_dy, ..
+        } = grab_at(&marks, &Flat, None, 110.0, 95.0)
+        else {
+            panic!("expected a move");
+        };
+        assert!((grab_dx - 10.0).abs() < 1e-9, "dx {grab_dx}");
+        assert!((grab_dy + 5.0).abs() < 1e-9, "dy {grab_dy}");
+    }
+
+    /// A resize takes the larger offset, so dragging any direction grows it.
+    #[test]
+    fn a_resize_grows_whichever_way_you_drag() {
+        let mark = boxed(100.0, 100.0, 20.0);
+        // Further in y than x: the half-size follows y.
+        let half = resize_half(&mark, &Flat, 130.0, 160.0).expect("sized");
+        assert!((half - 60.0).abs() < 1e-9, "half {half}");
+        // And it never collapses to nothing.
+        let tiny = resize_half(&mark, &Flat, 100.0, 100.0).expect("sized");
+        assert!(
+            tiny >= 0.5,
+            "a mark dragged to zero is unrecoverable: {tiny}"
+        );
     }
 }

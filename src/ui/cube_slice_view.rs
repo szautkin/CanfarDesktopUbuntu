@@ -17,7 +17,6 @@
 //! [`set_colormap`](CubeSliceView::set_colormap) re-render, so the slice shares the
 //! window/stretch/colormap with the 3D volume.
 
-use crate::helpers::annotation_render::AnnotationSurface;
 use crate::helpers::cube_colormaps;
 use crate::helpers::cube_native_slice::NativeSliceSource;
 use crate::helpers::cube_slice::{extract_spectrum, render_plane_bgra, StretchMode};
@@ -635,35 +634,25 @@ impl CubeSliceView {
             return DragIntent::Pan;
         };
         let marks = self.annotations.borrow().clone();
-        if let Some(mark) = self
-            .editing_annotation
-            .borrow()
-            .as_ref()
-            .and_then(|id| marks.iter().find(|a| &a.id == id))
-        {
-            if crate::helpers::annotation_render::handle_at(mark, &surface, px, py) {
-                return DragIntent::Resize {
-                    id: mark.id.clone(),
-                };
-            }
-        }
-        match crate::helpers::annotation_render::annotation_at(&marks, &surface, px, py) {
-            Some(id) => {
-                // Remember where in the shape it was grabbed, so it does not
-                // jump to centre itself under the pointer.
-                let (gx, gy) = marks
-                    .iter()
-                    .find(|a| a.id == id)
-                    .and_then(|a| surface.project(&a.anchor))
-                    .map(|(cx, cy)| (px - cx, py - cy))
-                    .unwrap_or((0.0, 0.0));
-                DragIntent::Move {
-                    id,
-                    grab_dx: gx,
-                    grab_dy: gy,
-                }
-            }
-            None => DragIntent::Pan,
+        let editing = self.editing_annotation.borrow().clone();
+        match crate::helpers::annotation_render::grab_at(
+            &marks,
+            &surface,
+            editing.as_deref(),
+            px,
+            py,
+        ) {
+            crate::helpers::annotation_render::MarkGrab::None => DragIntent::Pan,
+            crate::helpers::annotation_render::MarkGrab::Move {
+                id,
+                grab_dx,
+                grab_dy,
+            } => DragIntent::Move {
+                id,
+                grab_dx,
+                grab_dy,
+            },
+            crate::helpers::annotation_render::MarkGrab::Resize { id } => DragIntent::Resize { id },
         }
     }
 
@@ -695,14 +684,11 @@ impl CubeSliceView {
                 let Some(m) = marks.iter_mut().find(|a| &a.id == id) else {
                     return;
                 };
-                let Some((cx, cy)) = surface.project(&m.anchor) else {
+                let Some(half) =
+                    crate::helpers::annotation_render::resize_half(m, &surface, px, py)
+                else {
                     return;
                 };
-                let scale = surface.units_to_pixels(&m.anchor).max(f64::EPSILON);
-                // The grip is a corner, so the half-size is the larger of the
-                // two offsets — dragging away from the centre grows the shape
-                // whichever way you go.
-                let half = ((px - cx).abs().max((py - cy).abs()) / scale).max(0.5);
                 m.extent = Some(crate::models::annotation::Extent::square(half));
             }
             _ => return,

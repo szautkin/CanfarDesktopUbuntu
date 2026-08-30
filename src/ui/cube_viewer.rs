@@ -772,7 +772,7 @@ impl CubeViewer {
             cr.set_source_surface(&base, 0.0, 0.0)
                 .map_err(|e| format!("cairo source error: {e}"))?;
             cr.paint().map_err(|e| format!("cairo paint error: {e}"))?;
-            self.draw_axes_overlay(&cr, w, h);
+            self.draw_axes_overlay(&cr, w, h, false);
         }
         let mut out: Vec<u8> = Vec::new();
         surface
@@ -1030,12 +1030,10 @@ impl CubeViewer {
                 if !on {
                     this.set_editing_annotation(None);
                 }
-                if on {
-                    // Placing happens on the plane you are looking at, so show
-                    // it. Arming while the volume is up would leave the click
-                    // target invisible.
-                    this.mode_slice.set_active(true);
-                }
+                // No mode switch. Placing works in BOTH views now — on the
+                // slice directly, and in the volume by landing the click on
+                // the plane the slice marker draws — so arming drawing must
+                // not decide for the user which one they meant to draw on.
             });
         }
         {
@@ -1062,6 +1060,65 @@ impl CubeViewer {
             });
         }
 
+        // ── Marks in the VOLUME view ────────────────────────────────────────
+        //
+        // A click on a volume is a RAY, not a point, so it needs a plane to
+        // land on — and the plane you are looking at is the one the slice
+        // marker already draws. Every mark is on some channel anyway, so
+        // resolving to one is not a compromise; it is what `annotate_cube`
+        // already means when it defaults `z` to the channel on screen.
+        //
+        // Capture phase, and it claims the sequence only when it has actually
+        // taken hold of something. Anything else falls through to the orbit
+        // drag underneath, so the camera still works exactly as before —
+        // marks are not allowed to make the volume harder to look at.
+        {
+            let this = self.clone();
+            let drag = gtk::GestureDrag::new();
+            drag.set_button(1);
+            drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let grabbed: Rc<RefCell<Option<VolumeGrab>>> = Rc::new(RefCell::new(None));
+            {
+                let this = this.clone();
+                let grabbed = grabbed.clone();
+                drag.connect_drag_begin(move |g, x, y| {
+                    let grab = this.volume_grab_at(x, y);
+                    if grab.is_none() {
+                        *grabbed.borrow_mut() = None;
+                        return;
+                    }
+                    *grabbed.borrow_mut() = grab;
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                });
+            }
+            {
+                let this = this.clone();
+                let grabbed = grabbed.clone();
+                drag.connect_drag_update(move |g, dx, dy| {
+                    let Some(grab) = grabbed.borrow().clone() else {
+                        return;
+                    };
+                    let Some((sx, sy)) = g.start_point() else {
+                        return;
+                    };
+                    this.volume_drag(&grab, sx + dx, sy + dy);
+                });
+            }
+            {
+                let this = this.clone();
+                drag.connect_drag_end(move |g, dx, dy| {
+                    let Some(grab) = grabbed.borrow_mut().take() else {
+                        return;
+                    };
+                    let Some((sx, sy)) = g.start_point() else {
+                        return;
+                    };
+                    this.volume_drag_end(&grab, sx, sy, dx, dy);
+                });
+            }
+            self.gl.widget().add_controller(drag);
+        }
+
         // Escape leaves draw mode, as it does in the FITS viewer. Driven
         // through the toggle rather than by disarming the slice directly, so
         // the button cannot end up pressed while nothing is armed.
@@ -1086,6 +1143,149 @@ impl CubeViewer {
                 glib::Propagation::Proceed
             });
             self.widget.add_controller(key);
+        }
+    }
+
+    /// What a press on the volume panel has taken hold of.
+    ///
+    /// Placing is separate from the shared [`MarkGrab`] because it is not a
+    /// grab at all: nothing is under the pointer, and the press is going to
+    /// create something rather than take hold of it.
+    fn volume_grab_at(self: &Rc<Self>, px: f64, py: f64) -> Option<VolumeGrab> {
+        let (w, h) = self.working_area_size();
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let surface = self.annotation_surface(w, h);
+        let marks = self.annotations.borrow().clone();
+        let editing = self.slice.editing_annotation();
+        match crate::helpers::annotation_render::grab_at(
+            &marks,
+            &surface,
+            editing.as_deref(),
+            px,
+            py,
+        ) {
+            crate::helpers::annotation_render::MarkGrab::Move { id, .. } => {
+                // The grab offset is deliberately dropped here. On a
+                // foreshortened plane a screen offset is not a constant voxel
+                // offset, so carrying it would drag the mark away from the
+                // pointer as the perspective changed across the plane.
+                Some(VolumeGrab::Move { id })
+            }
+            crate::helpers::annotation_render::MarkGrab::Resize { id } => {
+                Some(VolumeGrab::Resize { id })
+            }
+            // An empty press only means something while drawing is armed;
+            // otherwise it belongs to the camera.
+            crate::helpers::annotation_render::MarkGrab::None => self
+                .marks_section
+                .draw_mode()
+                .is_active()
+                .then_some(VolumeGrab::Place),
+        }
+    }
+
+    /// The voxel under `(px, py)` on plane `z`, or `None` if the plane is not
+    /// facing the camera there.
+    fn volume_voxel_at(&self, px: f64, py: f64, z: f64) -> Option<(f64, f64)> {
+        let (w, h) = self.working_area_size();
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        crate::helpers::cube_axes::unproject_to_plane(
+            &self.gl.view_proj(w, h),
+            (self.vol.nx, self.vol.ny, self.vol.nz),
+            self.gl.spectral_scale(),
+            z,
+            (w as f32, h as f32),
+            (px, py),
+        )
+    }
+
+    /// The channel a mark sits on.
+    fn mark_channel(&self, id: &str) -> Option<f64> {
+        self.annotations()
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| match a.anchor {
+                crate::models::annotation::Anchor::Data { z, .. } => Some(z),
+                _ => None,
+            })
+    }
+
+    /// Live feedback while dragging a mark in the volume.
+    fn volume_drag(self: &Rc<Self>, grab: &VolumeGrab, px: f64, py: f64) {
+        let (w, h) = self.working_area_size();
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let surface = self.annotation_surface(w, h);
+        let mut marks = self.annotations.borrow().clone();
+        match grab {
+            // Placing draws nothing until the button comes up: the size is the
+            // drag itself, so there is no shape to show yet.
+            VolumeGrab::Place => return,
+            VolumeGrab::Move { id } => {
+                let Some(z) = self.mark_channel(id) else {
+                    return;
+                };
+                // A mark moves within its OWN plane, not the one on screen.
+                // Dragging a mark on channel 40 while looking at channel 12
+                // must not quietly haul it to 12.
+                let Some((vx, vy)) = self.volume_voxel_at(px, py, z) else {
+                    return;
+                };
+                if let Some(m) = marks.iter_mut().find(|a| &a.id == id) {
+                    m.anchor = crate::models::annotation::Anchor::Data { x: vx, y: vy, z };
+                }
+            }
+            VolumeGrab::Resize { id } => {
+                let Some(m) = marks.iter_mut().find(|a| &a.id == id) else {
+                    return;
+                };
+                let Some(half) =
+                    crate::helpers::annotation_render::resize_half(m, &surface, px, py)
+                else {
+                    return;
+                };
+                m.extent = Some(crate::models::annotation::Extent::square(half));
+            }
+        }
+        *self.annotations.borrow_mut() = marks;
+        self.overlay_area.queue_draw();
+    }
+
+    /// Commit a volume drag.
+    fn volume_drag_end(self: &Rc<Self>, grab: &VolumeGrab, sx: f64, sy: f64, dx: f64, dy: f64) {
+        const CLICK_SLOP: f64 = 4.0;
+        match grab {
+            VolumeGrab::Place => {
+                let z = self.current_channel.get() as f64;
+                let Some((vx, vy)) = self.volume_voxel_at(sx, sy, z) else {
+                    return;
+                };
+                // Drag-to-size, measured on the PLANE rather than on screen,
+                // so a mark drawn at an oblique angle is the size it looked.
+                let radius = match self.volume_voxel_at(sx + dx, sy + dy, z) {
+                    Some((ex, ey)) if dx.hypot(dy) > CLICK_SLOP => {
+                        ((ex - vx).powi(2) + (ey - vy).powi(2)).sqrt()
+                    }
+                    _ => 0.0,
+                };
+                self.place_mark(vx, vy, radius);
+            }
+            // A press that never moved is a click on the mark: point it out
+            // and open it, the same as on the slice.
+            VolumeGrab::Move { id } | VolumeGrab::Resize { id } if dx.hypot(dy) <= CLICK_SLOP => {
+                self.set_selected_annotation(Some(id.clone()));
+                self.set_editing_annotation(Some(id.clone()));
+            }
+            VolumeGrab::Move { .. } | VolumeGrab::Resize { .. } => {
+                let marks = self.annotations.borrow().clone();
+                self.set_annotations(marks);
+                self.persist_annotations();
+            }
         }
     }
 
@@ -1151,7 +1351,11 @@ impl CubeViewer {
     /// The projection is derived from `w` and `h`, so the overlay aligns with
     /// the volume only when both are rendered at the same size. That is the
     /// shape of the HiDPI bug these two layers already had once.
-    pub fn draw_axes_overlay(&self, cr: &cairo::Context, w: i32, h: i32) {
+    /// `chrome` draws the editing grips as well as the marks. Off for a
+    /// capture: an agent's picture should show what is marked, not the
+    /// controls a person uses to adjust it — the same split the FITS canvas
+    /// makes.
+    pub fn draw_axes_overlay(&self, cr: &cairo::Context, w: i32, h: i32, chrome: bool) {
         if w < 1 || h < 1 {
             return;
         }
@@ -1217,15 +1421,30 @@ impl CubeViewer {
         // Marks over the axes, inside the same function a capture replays, so
         // the user's screen and an agent's picture cannot show different sets.
         let surface = self.annotation_surface(w, h);
+        let editing = self.slice.editing_annotation();
         crate::helpers::annotation_render::draw(
             &self.annotations.borrow(),
             &surface,
             self.selected_annotation.borrow().as_deref(),
-            None,
+            editing.as_deref(),
             cr,
             w as f64,
             h as f64,
         );
+        // Grips on the edited mark, so it can be resized here as well as on
+        // the slice. Skipped for a capture: an agent's picture should show the
+        // marks, not the controls for editing them.
+        if chrome {
+            if let Some(mark) = editing.and_then(|id| {
+                self.annotations
+                    .borrow()
+                    .iter()
+                    .find(|a| a.id == id)
+                    .cloned()
+            }) {
+                crate::helpers::annotation_render::draw_handles(&mark, &surface, cr);
+            }
+        }
     }
 
     /// The projection annotations use, for a given panel size.
@@ -1245,7 +1464,7 @@ impl CubeViewer {
     fn setup_overlay(self: &Rc<Self>) {
         let this = self.clone();
         self.overlay_area.set_draw_func(move |_area, cr, w, h| {
-            this.draw_axes_overlay(cr, w, h);
+            this.draw_axes_overlay(cr, w, h, true);
         });
 
         // Track the camera: any orbit/zoom/auto-orbit move repaints the overlay.
@@ -1724,7 +1943,8 @@ fn build_controls(_name: &str) -> (Controls, Controls) {
     // The same section the FITS viewer mounts, from the same component: one
     // collapsible, one list, one pencil, one shape picker.
     let marks_section = crate::ui::annotations_panel::MarksSection::new(crate::tr_en!(
-        "Draw a mark on the cube. Click where you mean, Escape to stop."
+        "Draw a mark on the cube, in either view. Click where you mean, drag to size it, \
+         Escape to stop. In the 3D view the mark lands on the channel you are on."
     ));
     column.append(marks_section.widget());
 
@@ -2049,6 +2269,19 @@ mod working_area_tests {
              being visible, which would silently drop it in volume mode:\n{body}"
         );
     }
+}
+
+/// What a press on the volume panel took hold of.
+#[derive(Clone, Debug, PartialEq)]
+enum VolumeGrab {
+    /// Drawing is armed and the press was on empty space.
+    Place,
+    Move {
+        id: String,
+    },
+    Resize {
+        id: String,
+    },
 }
 
 /// The cube's volume as a place to draw marks.
