@@ -466,6 +466,7 @@ mod read_back_tests {
     const ACTIONS: &[&str] = &[
         "reset",
         "resetCamera",
+        "resetSlice",
         "clearCrosshair",
         "windowPreset",
         "runSearch",

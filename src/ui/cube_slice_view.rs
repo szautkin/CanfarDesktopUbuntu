@@ -603,6 +603,35 @@ impl CubeSliceView {
         (dnx / self.vol.nx.max(1) as f64) * fit
     }
 
+    /// Zoom and pan together, for `get_cube_view`.
+    pub fn probe_view(&self) -> (f64, f64, f64) {
+        let s = self.state.borrow();
+        (s.zoom, s.pan_x, s.pan_y)
+    }
+
+    /// Set the zoom and pan directly, as `set_cube_view` does.
+    ///
+    /// `reset` puts both back to the default — the same thing a double-click
+    /// on the view does, so an agent and a person have one way back.
+    pub fn set_view(&self, zoom: Option<f64>, pan: Option<(f64, f64)>, reset: bool) {
+        {
+            let mut s = self.state.borrow_mut();
+            if reset {
+                s.zoom = self.default_zoom.get();
+                s.pan_x = 0.0;
+                s.pan_y = 0.0;
+            }
+            if let Some(z) = zoom {
+                s.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
+            }
+            if let Some((px, py)) = pan {
+                s.pan_x = px;
+                s.pan_y = py;
+            }
+        }
+        self.slice_area.queue_draw();
+    }
+
     /// The current zoom. For `cube_slice_zoom_probe`.
     pub fn probe_zoom(&self) -> f64 {
         self.state.borrow().zoom

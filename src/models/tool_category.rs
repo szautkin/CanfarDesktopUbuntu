@@ -237,6 +237,7 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         "switch_fits_tab" | "close_fits_tab" | "blink_fits_tabs" => "fits",
         // Cube viewer.
         "switch_cube_tab"
+        | "close_cube_tab"
         | "list_recent_cubes"
         | "set_cube_transfer"
         | "show_cube_spectrum"

@@ -50,10 +50,22 @@ pub struct CubeTabHost {
 /// See `fits_viewer::publish_fits_tabs` — `list_open_tabs` had no publisher at
 /// all, so it reported nothing regardless of what was open.
 fn publish_cube_tabs(tab_view: &adw::TabView, viewers: &Rc<RefCell<Vec<Rc<CubeViewer>>>>) {
+    // The PATH, not the display name. `open_tabs_payload` reports these under
+    // `path` and an agent reopens a tab with them, so publishing the name
+    // handed back something that could not be opened — the same shape of bug
+    // as the annotation target that was read out of a payload with no `path`
+    // key. The FITS side has always published `source_file()`; this did not.
     let paths: Vec<String> = viewers
         .borrow()
         .iter()
-        .map(|v| v.name().to_string())
+        .map(|v| {
+            let p = v.source_file();
+            if p.is_empty() {
+                v.name().to_string()
+            } else {
+                p
+            }
+        })
         .collect();
     let active = tab_view
         .selected_page()
@@ -248,7 +260,54 @@ impl CubeTabHost {
                 let v = self
                     .active_viewer()
                     .ok_or_else(|| "no cube open".to_string())?;
-                Ok(view_json(&v))
+                let mut out = view_json(&v);
+                // Which tab, and how many — the FITS payload has always
+                // carried these, and without them an agent cannot tell whether
+                // switch_cube_tab has anywhere to go.
+                out["tabIndex"] = json!(self
+                    .tab_view
+                    .selected_page()
+                    .map(|p| self.tab_view.page_position(&p))
+                    .unwrap_or(0));
+                out["tabCount"] = json!(self.tab_view.n_pages());
+                Ok(out)
+            }
+
+            // Close a cube tab. The FITS viewer has had this; the cube could
+            // be opened and switched but never closed, so an agent working
+            // through a list of cubes accumulated tabs it could not clear.
+            "close_cube_tab" => {
+                let count = self.tab_view.n_pages() as usize;
+                if count == 0 {
+                    return Err("no cubes are open".to_string());
+                }
+                let index = crate::mcp::tools::arg(args, "index")
+                    .and_then(|v| v.as_u64())
+                    .map(|i| i as usize)
+                    .unwrap_or_else(|| {
+                        self.tab_view
+                            .selected_page()
+                            .map(|p| self.tab_view.page_position(&p) as usize)
+                            .unwrap_or(0)
+                    });
+                if index >= count {
+                    return Err(format!(
+                        "no cube tab at index {index} ({count} open) — list_open_tabs shows them"
+                    ));
+                }
+                let page = self.tab_view.nth_page(index as i32);
+                let closed = self
+                    .viewers
+                    .borrow()
+                    .get(index)
+                    .map(|v| v.name().to_string())
+                    .unwrap_or_default();
+                self.tab_view.close_page(&page);
+                Ok(json!({
+                    "closed": closed,
+                    "index": index,
+                    "remaining": self.tab_view.n_pages(),
+                }))
             }
 
             // ── Annotations ─────────────────────────────────────────────
@@ -631,6 +690,25 @@ impl CubeTabHost {
                 // returns, and marks draw differently in the two — the slice
                 // shows only the current channel's — so an agent that wants a
                 // particular picture has to be able to ask for it.
+                // The slice's own zoom and pan. Separate from the camera
+                // because they are a different view of the same cube, and
+                // nothing could read or set them.
+                {
+                    let zoom = crate::mcp::tools::arg(args, "sliceZoom").and_then(|x| x.as_f64());
+                    let pan = match (
+                        crate::mcp::tools::arg(args, "slicePanX").and_then(|x| x.as_f64()),
+                        crate::mcp::tools::arg(args, "slicePanY").and_then(|x| x.as_f64()),
+                    ) {
+                        (Some(px), Some(py)) => Some((px, py)),
+                        _ => None,
+                    };
+                    let reset = crate::mcp::tools::arg(args, "resetSlice")
+                        .and_then(|x| x.as_bool())
+                        .unwrap_or(false);
+                    if zoom.is_some() || pan.is_some() || reset {
+                        v.set_slice_view(zoom, pan, reset);
+                    }
+                }
                 if let Some(mode) = crate::mcp::tools::arg(args, "mode").and_then(|x| x.as_str()) {
                     match mode.trim().to_ascii_lowercase().as_str() {
                         "slice" | "2d" => v.set_slice_mode(true),
@@ -1136,6 +1214,21 @@ fn view_json(v: &CubeViewer) -> serde_json::Value {
         // marks are drawn — the slice shows only the current channel's — so an
         // agent that cannot read it is guessing at its own picture.
         "mode": if v.is_slice_mode() { "slice" } else { "volume" },
+        // WHICH cube. The payload described the camera in detail and never
+        // said what it was looking at, so an agent driving two tabs could not
+        // tell them apart — and nothing here could be reopened.
+        "name": v.name(),
+        "path": v.source_file(),
+        // The slice's own zoom and pan, which the volume's camera does not
+        // describe. Reported under the names `set_cube_view` TAKES, not nested
+        // under a tidier `slice` object: a control an agent sets by one name
+        // and reads by another is one it cannot reliably put back.
+        "sliceZoom": v.slice_view_json()["zoom"],
+        "slicePanX": v.slice_view_json()["panX"],
+        "slicePanY": v.slice_view_json()["panY"],
+        // What the Info panel shows: object, telescope, instrument, unit,
+        // value range. Null for a synthetic volume, which has none.
+        "metadata": v.metadata_json(),
         "showSlicePlane": v.slice_plane_visible(),
         // The renderer's own settings, which the comment above has always
         // promised and this payload did not carry: an agent could set density,

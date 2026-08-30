@@ -32,6 +32,7 @@ const TOOLS: &[&str] = &[
     "show_cube_spectrum",
     "get_cube_channel_profile",
     "switch_cube_tab",
+    "close_cube_tab",
     "list_recent_cubes",
 ];
 
@@ -40,7 +41,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "open_cube".into(),
             description:
-                "Open a FITS spectral cube (NAXIS≥3) from a local path in the 3D Cube Viewer."
+                "Open a FITS spectral cube (NAXIS≥3) from a local path in the 3D Cube Viewer. \
+                 A cube is a FITS file, so get_fits_header and get_fits_wcs read one directly \
+                 from the same path — there is no separate cube-header tool because there does \
+                 not need to be."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -74,11 +78,20 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                  MIP / render mode. Overlays: showCaptions, showSlicePlane. Plus the slice-plane \
                  channel and `mode` — \"volume\" or \"slice\" — which decides which view \
                  get_cube_image returns and how marks appear, since the slice shows only the \
-                 channel it is on. Returns the resulting view."
+                 channel it is on. The 2D slice has its own zoom and pan (sliceZoom, \
+                 slicePanX/Y, resetSlice), separate from the camera. Returns the resulting \
+                 view."
                     .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "sliceZoom": {
+                        "type": "number",
+                        "description": "The 2D slice's zoom. 1.0 fits the plane to the panel; it opens further out than that, matched to what the volume shows, so switching modes does not resize anything. Range 0.2 to 20."
+                    },
+                    "slicePanX": { "type": "number", "description": "The 2D slice's pan, in panel pixels. Pass both slicePanX and slicePanY." },
+                    "slicePanY": { "type": "number" },
+                    "resetSlice": { "type": "boolean", "description": "Put the slice's zoom and pan back to their defaults — what a double-click on the view does." },
                     "mode": {
                         "type": "string",
                         "enum": ["volume", "slice"],
@@ -252,6 +265,23 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             verb: VerbClass::Write,
             agent_safe: true,
         },        ToolDescriptor {
+            name: "close_cube_tab".into(),
+            description: "Close a cube tab — `index` from list_open_tabs, or omit it for the \
+                          one showing. The FITS viewer has had this; without it an agent \
+                          working through a list of cubes piled up tabs it could not clear. \
+                          Returns what was closed and how many are left."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "index": { "type": "integer", "minimum": 0, "description": "0-based tab index. Omit for the active tab." }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "switch_cube_tab".into(),
             description: "Bring one of the open cube tabs to the front by its 0-based index (see \
                           list_open_tabs). Every other cube tool acts on the ACTIVE tab, so this is how \

@@ -310,6 +310,13 @@ mod tests {
          Observation on obsID.",
     ),
     (
+        "close_cube_tab",
+        "The same hole as `close_fits_tab`, left open on the other viewer. A cube could be \
+         opened and switched to and never closed, so an agent working through a list of cubes \
+         piled up tabs it had no way to clear — and each one holds a decoded volume in memory. \
+         The FITS side gained this and the cube was not revisited.",
+    ),
+    (
         "close_fits_tab",
         "The reference closes tabs only through the window chrome. `close_active_tab` is \
          app-level and never reached a module's own tabs — it answered `closed: false` for \

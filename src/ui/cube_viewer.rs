@@ -1516,6 +1516,44 @@ impl CubeViewer {
         }
     }
 
+    /// The cube's Info-panel facts, for `get_cube_view`.
+    ///
+    /// The panel shows object, telescope, instrument, unit and the value
+    /// range, and none of it reached an agent — so a tool could describe a
+    /// cube's camera angle in detail and not say what object it was pointed
+    /// at. `None` for a synthetic volume, which genuinely has no metadata.
+    pub fn metadata_json(&self) -> serde_json::Value {
+        let Some(m) = self.vol.meta.as_ref() else {
+            return serde_json::Value::Null;
+        };
+        serde_json::json!({
+            "object": m.object,
+            "telescope": m.telescope,
+            "instrument": m.instrument,
+            "unit": m.bunit,
+            "dataMin": m.data_min,
+            "dataMax": m.data_max,
+            "median": m.median,
+            "nanFraction": m.nan_fraction,
+            // The cube as it is on disk, which is not what is in RAM: a large
+            // cube is decimated to load, and an agent converting voxels to
+            // anything else needs to know which grid it is on.
+            "nativeDims": { "nx": m.nx, "ny": m.ny, "nz": m.nz },
+        })
+    }
+
+    /// The 2-D slice's own view state — the zoom and pan of that view, which
+    /// are nowhere in the volume's camera.
+    pub fn slice_view_json(&self) -> serde_json::Value {
+        let (zoom, pan_x, pan_y) = self.slice.probe_view();
+        serde_json::json!({ "zoom": zoom, "panX": pan_x, "panY": pan_y })
+    }
+
+    /// Set the 2-D slice's zoom and pan.
+    pub fn set_slice_view(&self, zoom: Option<f64>, pan: Option<(f64, f64)>, reset: bool) {
+        self.slice.set_view(zoom, pan, reset);
+    }
+
     /// Put the slice at the same apparent scale as the volume.
     ///
     /// Measured, not assumed: ask both surfaces what one voxel is worth in
