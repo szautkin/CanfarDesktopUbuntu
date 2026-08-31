@@ -15,7 +15,7 @@
 //!
 //! A capture that silently ignored the view state would pass neither, and would
 //! otherwise reach an agent as a confident description of the wrong picture.
-use verbinal::ui::fits_canvas::FitsCanvas;
+use verbinal::ui::fits_canvas::{FitsCanvas, ViewRegion};
 
 /// A synthetic image, so the probe runs with no data files present.
 fn synthetic_rgba(width: usize, height: usize) -> Vec<u8> {
@@ -220,7 +220,9 @@ fn main() {
         );
         c.cancel_fit();
         for (cw, ch) in [(400, 400), (200, 200), (100, 100)] {
-            let png = c.capture_png_from_view(200, 200, cw, ch).expect("capture");
+            let png = c
+                .capture_region_png(200, 200, ViewRegion::whole(200, 200), cw, ch)
+                .expect("capture");
             let mut surf =
                 gtk4::cairo::ImageSurface::create_from_png(&mut png.as_slice()).expect("decode");
             let stride = surf.stride() as usize;
@@ -293,13 +295,13 @@ fn main() {
 
         let (plain, _) = mk();
         let reference = plain
-            .capture_png_from_view(120, 120, 120, 120)
+            .capture_region_png(120, 120, ViewRegion::whole(120, 120), 120, 120)
             .expect("capture");
 
         let (selected, id) = mk();
         selected.set_selected_annotation(Some(id.clone()));
         let with_selection = selected
-            .capture_png_from_view(120, 120, 120, 120)
+            .capture_region_png(120, 120, ViewRegion::whole(120, 120), 120, 120)
             .expect("capture");
         if with_selection == reference {
             println!("a selected mark exports in the ordinary ink");
@@ -312,13 +314,131 @@ fn main() {
         editing.set_selected_annotation(Some(id.clone()));
         editing.set_editing_annotation(Some(id));
         let with_editing = editing
-            .capture_png_from_view(120, 120, 120, 120)
+            .capture_region_png(120, 120, ViewRegion::whole(120, 120), 120, 120)
             .expect("capture");
         if with_editing == reference {
             println!("an edited mark exports in the ordinary ink, without grips");
         } else {
             println!("  !! edit highlighting or grips leaked into the capture");
             failures += 1;
+        }
+    }
+
+    // ── A region exports what is inside it, and nothing else ───────────────
+    //
+    // Two marks, far apart. A region around one must contain that one and not
+    // the other — and must magnify it, since the region is a quarter of the
+    // view and the raster is the same size.
+    {
+        let (iw, ih) = (200usize, 200usize);
+        let c = FitsCanvas::new(
+            iw,
+            ih,
+            vec![0u8; iw * ih * 4],
+            std::rc::Rc::new(std::cell::RefCell::new(Default::default())),
+            None,
+        );
+        c.cancel_fit();
+        let mark_at = |x: f64, y: f64| {
+            let mut m = Annotation::new(
+                AnnotationKind::Circle,
+                Anchor::ImagePixel { x, y },
+                "",
+                Author::User,
+            );
+            m.extent = Some(Extent::square(12.0));
+            m
+        };
+        c.set_annotations(vec![mark_at(50.0, 50.0), mark_at(150.0, 150.0)]);
+
+        // Ink inside a stated box of the raster.
+        //
+        // Not a diagonal split of the frame: a region centred on a mark puts
+        // that mark's ring across the diagonal, so half of its own ink lands
+        // on the far side and the test accuses the code of leaking. Boxes are
+        // derived from where each mark must project to.
+        let ink_in = |png: &[u8], n: i32, x0: usize, y0: usize, x1: usize, y1: usize| -> usize {
+            let mut surf =
+                gtk4::cairo::ImageSurface::create_from_png(&mut &png[..]).expect("decode");
+            let stride = surf.stride() as usize;
+            surf.flush();
+            let d = surf.data().expect("px");
+            let _ = n;
+            let mut n_lit = 0usize;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    if d[y * stride + x * 4 + 2] > 60 {
+                        n_lit += 1;
+                    }
+                }
+            }
+            n_lit
+        };
+
+        // At 1:1 the whole view holds both: rings of radius 12 about (50,50)
+        // and (150,150).
+        let whole = c
+            .capture_region_png(200, 200, ViewRegion::whole(200, 200), 200, 200)
+            .expect("capture");
+        let near = ink_in(&whole, 200, 30, 30, 70, 70);
+        let far = ink_in(&whole, 200, 130, 130, 170, 170);
+        if near == 0 || far == 0 {
+            println!("  !! the whole view is missing a mark: near {near}, far {far}");
+            failures += 1;
+        }
+
+        // The top-left quadrant, magnified 2x into the same raster. The near
+        // mark becomes a ring of radius 24 about (100,100); the far one
+        // projects to (300,300), off a 200px raster entirely — so ANY ink past
+        // x,y > 170 is something that should not be there.
+        let quadrant = ViewRegion {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let cropped = c
+            .capture_region_png(200, 200, quadrant, 200, 200)
+            .expect("capture");
+        let outside = ink_in(&cropped, 200, 170, 170, 200, 200);
+        let inside = ink_in(&cropped, 200, 70, 70, 130, 130);
+        if outside > 0 {
+            println!("  !! a region export contains ink from outside it ({outside} px)");
+            failures += 1;
+        } else if inside <= near {
+            println!("  !! a region was cropped, not magnified: {inside} px against {near}");
+            failures += 1;
+        } else {
+            println!(
+                "region export: the enclosed mark only, magnified {:.1}x in ink",
+                inside as f64 / near as f64
+            );
+        }
+
+        // And the OTHER quadrant, which is the half of the arithmetic the
+        // first one cannot reach: a region at the origin makes
+        // `offset - region.x` a no-op, so dropping that term passes it. This
+        // one starts at (100,100), where the far mark projects to the centre
+        // of the raster and the near mark falls off it entirely.
+        let far_quadrant = ViewRegion {
+            x: 100.0,
+            y: 100.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let shifted = c
+            .capture_region_png(200, 200, far_quadrant, 200, 200)
+            .expect("capture");
+        let centre = ink_in(&shifted, 200, 70, 70, 130, 130);
+        let corner = ink_in(&shifted, 200, 0, 0, 30, 30);
+        if centre == 0 {
+            println!("  !! an offset region lost the mark inside it");
+            failures += 1;
+        } else if corner > 0 {
+            println!("  !! an offset region kept ink from outside it ({corner} px)");
+            failures += 1;
+        } else {
+            println!("an offset region is centred on what it encloses");
         }
     }
 

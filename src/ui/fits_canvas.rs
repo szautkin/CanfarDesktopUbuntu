@@ -15,7 +15,7 @@ use std::rc::Rc;
 pub const ZOOM_SCALE_RANGE: (f64, f64) = (0.01, 100.0);
 
 /// View transform for zoom and pan
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct ViewTransform {
     scale: f64,
     offset_x: f64,
@@ -178,6 +178,36 @@ enum Grab {
     Handle,
     /// Inside the shape: the drag moves it.
     Body,
+}
+
+/// A rectangle of the canvas, in its own screen coordinates.
+///
+/// Screen rather than image pixels because that is what a drag produces, and
+/// because on a north-up rotated frame a screen-aligned drag is not a rectangle
+/// in image pixels at all — converting it would export a different region from
+/// the one that was drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewRegion {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl ViewRegion {
+    /// The whole of a view.
+    pub fn whole(view_w: i32, view_h: i32) -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: f64::from(view_w),
+            height: f64::from(view_h),
+        }
+    }
+
+    pub fn is_usable(&self) -> bool {
+        self.width > 0.0 && self.height > 0.0
+    }
 }
 
 /// The scale that shows the WHOLE image in a viewport of `viewport`.
@@ -1343,49 +1373,71 @@ impl FitsCanvas {
     /// drawn by the function that draws them on screen.
     ///
     /// A size of zero or less is refused rather than allocated.
-    /// Draw the view at `view_w` x `view_h`, scaled to fill `width` x `height`.
+    /// Draw `region` of the view into a raster of `out_w` x `out_h`.
     ///
-    /// Split out with the view size as an argument because `view_size()` is a
-    /// widget allocation, and GTK never gives a headless process one — so the
-    /// scaling could not otherwise be exercised by a probe, which is precisely
-    /// how it shipped wrong.
-    fn draw_scaled_into(
-        &self,
-        cr: &cairo::Context,
-        view_w: i32,
-        view_h: i32,
-        width: i32,
-        height: i32,
-    ) {
-        if view_w > 0 && view_h > 0 {
-            cr.scale(
-                f64::from(width) / f64::from(view_w),
-                f64::from(height) / f64::from(view_h),
-            );
-            self.draw_area_inner(cr, view_w, view_h, false);
-        } else {
-            // No allocation to scale from — a tab that has never been shown.
-            // The requested size IS the view here.
-            self.draw_area_inner(cr, width, height, false);
+    /// By SUBSTITUTING the view transform, not by cropping a raster. The image,
+    /// the crosshair and every mark are all projected through `self.transform`,
+    /// so replacing it moves them together and correctly at any output size —
+    /// which is the payoff of having one drawing function, and what a second
+    /// renderer would lose. Cropping instead would tie an export's resolution
+    /// to the window: a small region at 25% zoom would come out as a handful of
+    /// blurry pixels.
+    ///
+    /// The transform maps image to screen as `screen = image * scale + offset`.
+    /// Mapping `region` onto the raster is `out = (screen - region.origin) * k`,
+    /// so composing gives `scale * k` and `(offset - origin) * k`.
+    ///
+    /// `k` is uniform — `ViewTransform` has one scale, and a non-uniform one
+    /// would stretch the image — so a raster whose aspect differs from the
+    /// region's gets the region fitted inside it and centred rather than
+    /// distorted.
+    fn draw_region_into(&self, cr: &cairo::Context, region: ViewRegion, out_w: i32, out_h: i32) {
+        if !region.is_usable() {
+            self.draw_area_inner(cr, out_w, out_h, false);
+            return;
         }
+        let saved = *self.transform.borrow();
+        let k = (f64::from(out_w) / region.width).min(f64::from(out_h) / region.height);
+        {
+            let mut t = self.transform.borrow_mut();
+            t.scale = saved.scale * k;
+            // Centre whatever the fit leaves over.
+            t.offset_x =
+                (saved.offset_x - region.x) * k + (f64::from(out_w) - region.width * k) / 2.0;
+            t.offset_y =
+                (saved.offset_y - region.y) * k + (f64::from(out_h) - region.height * k) / 2.0;
+        }
+        self.draw_area_inner(cr, out_w, out_h, false);
+        *self.transform.borrow_mut() = saved;
     }
 
-    /// `capture_png` against a stated view size, for a probe with no
-    /// allocation.
-    pub fn capture_png_from_view(
+    /// A region of the working area, as a PNG.
+    ///
+    /// `region` is in the coordinates of a view of `view_w` x `view_h` — the
+    /// widget's own, normally. Taking the view size as an argument is what
+    /// makes this reachable from a probe: `view_size()` is a widget allocation
+    /// and GTK gives a headless process none, which is exactly how a capture
+    /// that cropped instead of scaling shipped unnoticed.
+    pub fn capture_region_png(
         &self,
         view_w: i32,
         view_h: i32,
-        width: i32,
-        height: i32,
+        region: ViewRegion,
+        out_w: i32,
+        out_h: i32,
     ) -> Result<Vec<u8>, String> {
-        validate_capture_size(width, height)?;
-        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)
+        validate_capture_size(out_w, out_h)?;
+        let region = if region.is_usable() {
+            region
+        } else {
+            ViewRegion::whole(view_w, view_h)
+        };
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, out_w, out_h)
             .map_err(|e| format!("cairo surface error: {e}"))?;
         {
             let cr =
                 cairo::Context::new(&surface).map_err(|e| format!("cairo context error: {e}"))?;
-            self.draw_scaled_into(&cr, view_w, view_h, width, height);
+            self.draw_region_into(&cr, region, out_w, out_h);
         }
         let mut png: Vec<u8> = Vec::new();
         surface
@@ -1412,7 +1464,7 @@ impl FitsCanvas {
             // labelled as a faithful downscale — and the default limit is 1024,
             // which any maximised window exceeds.
             let (view_w, view_h) = self.view_size();
-            self.draw_scaled_into(&cr, view_w, view_h, width, height);
+            self.draw_region_into(&cr, ViewRegion::whole(view_w, view_h), width, height);
         }
         let mut png: Vec<u8> = Vec::new();
         surface
