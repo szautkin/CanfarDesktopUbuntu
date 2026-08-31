@@ -180,6 +180,44 @@ enum Grab {
     Body,
 }
 
+/// What a draw includes beyond the picture itself.
+///
+/// A bare `chrome: bool` was fine while there was one choice; a second one —
+/// whether to lay down the ground — makes two positional booleans at every call
+/// site, which is the point at which nobody can read `draw(cr, w, h, false,
+/// true)` and say what it does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawOpts {
+    /// Editing chrome: the grips, the shape being dragged out, and the ink that
+    /// says which mark is selected. On screen only — none of it means anything
+    /// to someone reading an exported figure.
+    pub chrome: bool,
+    /// Lay down the dark ground. Off for a transparent export, where the
+    /// letterboxing around the image should keep its alpha.
+    pub background: bool,
+}
+
+impl DrawOpts {
+    /// What the user is looking at.
+    pub const SCREEN: Self = Self {
+        chrome: true,
+        background: true,
+    };
+    /// What an agent is shown, and what an opaque export writes.
+    pub const CAPTURE: Self = Self {
+        chrome: false,
+        background: true,
+    };
+
+    /// An export, with or without a ground.
+    pub fn export(transparent: bool) -> Self {
+        Self {
+            chrome: false,
+            background: !transparent,
+        }
+    }
+}
+
 /// A rectangle of the canvas, in its own screen coordinates.
 ///
 /// Screen rather than image pixels because that is what a drag produces, and
@@ -771,7 +809,7 @@ impl FitsCanvas {
     /// Knows nothing about its destination: a widget's context or an
     /// `ImageSurface` are the same to it.
     pub fn draw_working_area(&self, cr: &cairo::Context, widget_w: i32, widget_h: i32) {
-        self.draw_area_inner(cr, widget_w, widget_h, true)
+        self.draw_area_inner(cr, widget_w, widget_h, DrawOpts::SCREEN)
     }
 
     /// The working area, with or without editing chrome.
@@ -781,7 +819,7 @@ impl FitsCanvas {
     /// are the grips you drag to resize one, and an agent looking at
     /// `get_fits_image` should see what was drawn, not the tools for drawing
     /// it. So the destination decides the chrome and nothing else.
-    fn draw_area_inner(&self, cr: &cairo::Context, widget_w: i32, widget_h: i32, chrome: bool) {
+    fn draw_area_inner(&self, cr: &cairo::Context, widget_w: i32, widget_h: i32, opts: DrawOpts) {
         let pixel_data = &self.pixel_data;
         let transform = &self.transform;
         let rotation = &self.rotation;
@@ -794,9 +832,10 @@ impl FitsCanvas {
         let blink_opacity = &self.blink_opacity;
         let wcs = &self.wcs;
 
-        // Black background
-        cr.set_source_rgb(0.1, 0.1, 0.1);
-        let _ = cr.paint();
+        if opts.background {
+            cr.set_source_rgb(0.1, 0.1, 0.1);
+            let _ = cr.paint();
+        }
 
         let data = pixel_data.borrow();
         if data.is_empty() || w == 0 || h == 0 {
@@ -923,7 +962,7 @@ impl FitsCanvas {
         // what you release is what you saw. Chrome: it is a shape that does not
         // exist yet, and a capture or an export taken mid-drag should not
         // contain a half-made mark. The cube guards its preview the same way.
-        if chrome {
+        if opts.chrome {
             if let Some((ix, iy, half)) = *self.pending_shape.borrow() {
                 use crate::models::annotation::AnnotationKind;
                 let (sx, sy) = self.image_to_screen_point(ix, iy);
@@ -949,7 +988,7 @@ impl FitsCanvas {
         // say "this is the one you clicked"; in an exported figure they say
         // nothing to a reader except that one mark is inexplicably a different
         // colour. Same rule as the grips, which was only half applied.
-        let (selected, editing) = if chrome {
+        let (selected, editing) = if opts.chrome {
             (
                 self.selected_annotation.borrow().clone(),
                 self.editing_annotation.borrow().clone(),
@@ -967,7 +1006,7 @@ impl FitsCanvas {
             widget_h as f64,
         );
 
-        if chrome {
+        if opts.chrome {
             self.draw_handles(cr);
         }
     }
@@ -1391,9 +1430,16 @@ impl FitsCanvas {
     /// would stretch the image — so a raster whose aspect differs from the
     /// region's gets the region fitted inside it and centred rather than
     /// distorted.
-    fn draw_region_into(&self, cr: &cairo::Context, region: ViewRegion, out_w: i32, out_h: i32) {
+    fn draw_region_into(
+        &self,
+        cr: &cairo::Context,
+        region: ViewRegion,
+        out_w: i32,
+        out_h: i32,
+        opts: DrawOpts,
+    ) {
         if !region.is_usable() {
-            self.draw_area_inner(cr, out_w, out_h, false);
+            self.draw_area_inner(cr, out_w, out_h, opts);
             return;
         }
         let saved = *self.transform.borrow();
@@ -1407,7 +1453,7 @@ impl FitsCanvas {
             t.offset_y =
                 (saved.offset_y - region.y) * k + (f64::from(out_h) - region.height * k) / 2.0;
         }
-        self.draw_area_inner(cr, out_w, out_h, false);
+        self.draw_area_inner(cr, out_w, out_h, opts);
         *self.transform.borrow_mut() = saved;
     }
 
@@ -1418,14 +1464,15 @@ impl FitsCanvas {
     /// makes this reachable from a probe: `view_size()` is a widget allocation
     /// and GTK gives a headless process none, which is exactly how a capture
     /// that cropped instead of scaling shipped unnoticed.
-    pub fn capture_region_png(
+    pub fn capture_region_surface(
         &self,
         view_w: i32,
         view_h: i32,
         region: ViewRegion,
         out_w: i32,
         out_h: i32,
-    ) -> Result<Vec<u8>, String> {
+        opts: DrawOpts,
+    ) -> Result<cairo::ImageSurface, String> {
         validate_capture_size(out_w, out_h)?;
         let region = if region.is_usable() {
             region
@@ -1437,8 +1484,22 @@ impl FitsCanvas {
         {
             let cr =
                 cairo::Context::new(&surface).map_err(|e| format!("cairo context error: {e}"))?;
-            self.draw_region_into(&cr, region, out_w, out_h);
+            self.draw_region_into(&cr, region, out_w, out_h, opts);
         }
+        Ok(surface)
+    }
+
+    /// The same region, encoded as a PNG.
+    pub fn capture_region_png(
+        &self,
+        view_w: i32,
+        view_h: i32,
+        region: ViewRegion,
+        out_w: i32,
+        out_h: i32,
+    ) -> Result<Vec<u8>, String> {
+        let surface =
+            self.capture_region_surface(view_w, view_h, region, out_w, out_h, DrawOpts::CAPTURE)?;
         let mut png: Vec<u8> = Vec::new();
         surface
             .write_to_png(&mut png)
@@ -1464,7 +1525,13 @@ impl FitsCanvas {
             // labelled as a faithful downscale — and the default limit is 1024,
             // which any maximised window exceeds.
             let (view_w, view_h) = self.view_size();
-            self.draw_region_into(&cr, ViewRegion::whole(view_w, view_h), width, height);
+            self.draw_region_into(
+                &cr,
+                ViewRegion::whole(view_w, view_h),
+                width,
+                height,
+                DrawOpts::CAPTURE,
+            );
         }
         let mut png: Vec<u8> = Vec::new();
         surface

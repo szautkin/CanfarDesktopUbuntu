@@ -384,6 +384,15 @@ impl FitsViewer {
         let draw_mode = marks_section.draw_mode().clone();
         column.append(marks_section.widget());
 
+        // ── EXPORT ──────────────────────────────────────────────────────────
+        let export_btn = gtk::Button::with_label(crate::tr_en!("Export…"));
+        export_btn.add_css_class("suggested-action");
+        export_btn.set_hexpand(true);
+        export_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Save what you are looking at, marks and all, as a PNG or a PDF"
+        )));
+        column.append(&export_btn);
+
         // ── COMPARE ─────────────────────────────────────────────────────────
         // Everything that acts across tabs, together.
         column.append(&viewer_shell::section_header(crate::tr_en!("COMPARE")));
@@ -748,6 +757,14 @@ impl FitsViewer {
                     tab.set_vmax(hi);
                     v.sync_controls_to_tab(&tab);
                 }
+            });
+        }
+        // Export what is on screen.
+        {
+            let v = viewer.clone();
+            export_btn.connect_clicked(move |btn| {
+                let Some(tab) = v.current_tab() else { return };
+                crate::ui::fits_export::show(btn, &tab, None);
             });
         }
         {

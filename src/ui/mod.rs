@@ -23,6 +23,7 @@ pub mod file_panel;
 pub mod fit;
 pub mod fits_canvas;
 pub mod fits_coords_panel;
+pub mod fits_export;
 pub mod fits_header_panel;
 pub mod fits_tab;
 pub mod fits_viewer;
