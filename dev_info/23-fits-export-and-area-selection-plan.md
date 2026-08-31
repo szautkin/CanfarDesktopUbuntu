@@ -1,6 +1,7 @@
 # 23 — Drag a region of a FITS, get a figure
 
-Status: plan. Measured against the tree at `9c17f7c`.
+Status: **done**, `1011b43`..`a66822e`. Kept for the reasoning, and for the
+two claims it got wrong — see §3 of the bug list and the note under step 1.
 
 **Third draft.** The first proposed porting the cube's publication plate and
 splitting `cube_export::compose` to share it — answering "the same as the cube
@@ -150,15 +151,17 @@ visible to the user in a way a transient rubber band is not.
 1. ~~**The three bugs.**~~ **Two bugs** — the third was measured away. Done at
    `9c17f7c`+: the preview is under `chrome`, and selection/edit ink no longer
    reaches a capture. Both were wrong in what shipped.
-2. **`capture_region_rgba`** — the substituted transform, with the whole-view
-   capture as the case where the region is the view. Testable through the
-   stated-view entry point that already exists.
-3. **The export dialog**, driven by the whole view. Shippable on its own: the
-   viewer gains an export it has never had.
-4. **The select-area toggle and gesture**, with the rubber band drawn under
-   `chrome` so it never lands in the picture.
-5. **Release opens the dialog** with the dragged region.
-6. **`export_fits_figure`** with its four region forms.
+2. ~~**`capture_region_rgba`**~~ — done as `capture_region_surface`, with the
+   whole-view capture becoming the case where the region is the view, so there
+   is one mechanism rather than two.
+3. ~~**The export dialog**~~ — done, and extracted from `cube_export` into
+   `ui::export_dialog` rather than written twice. That took `cube_export.rs`
+   from 1015 lines to 567 and off the hand-rolled-dialog list.
+4. ~~**The select-area toggle and gesture**~~ — done. The arbitration between
+   pan, draw and select is one function, `press_owner`, because two of them
+   fighting over the left button is a bug that has already shipped once.
+5. ~~**Release opens the dialog**~~ — done.
+6. ~~**`export_fits_figure`**~~ — done, with all four region forms.
 
 ## What this does not cover
 
