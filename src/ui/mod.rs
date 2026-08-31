@@ -17,6 +17,7 @@ pub mod dashboard;
 pub mod datalink_file_dialog;
 pub mod delete_dialog;
 pub mod dialog;
+pub mod export_dialog;
 pub mod failure_detail;
 pub mod file_panel;
 pub mod fit;
@@ -54,6 +55,7 @@ pub mod share_dialog;
 pub mod space;
 pub mod storage_quota;
 pub mod text_viewer_dialog;
+pub mod toast;
 pub mod vospace_browser;
 pub mod workflows_page;
 

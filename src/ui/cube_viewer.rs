@@ -582,7 +582,7 @@ impl CubeViewer {
             return base;
         }
         let selected = self.selected_annotation.borrow().clone();
-        crate::ui::cube_export::draw_over_rgba(w, h, base, |cr| {
+        crate::helpers::image_bytes::draw_over_rgba(w, h, base, |cr| {
             // The surface is built for the PLATE size, not the widget's, so
             // marks land correctly at any export resolution rather than only
             // when the plate happens to match the window.

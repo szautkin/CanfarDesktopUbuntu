@@ -32,6 +32,7 @@ pub mod fits_container;
 pub mod fits_loader;
 pub mod fits_renderer;
 pub mod fits_sniff;
+pub mod image_bytes;
 pub mod image_parser;
 pub mod job_diagnostics;
 pub mod legal_terms;

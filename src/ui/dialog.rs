@@ -151,7 +151,6 @@ mod tests {
             "agent_proposals_dialog.rs",
             "ai_guide_page.rs",
             "batch_jobs_dialog.rs",
-            "cube_export.rs",
             "datalink_file_dialog.rs",
             "image_discovery_dialog.rs",
             "main_window.rs",
