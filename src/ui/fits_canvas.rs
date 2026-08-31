@@ -890,30 +890,48 @@ impl FitsCanvas {
         }
 
         // The shape being dragged out, in the same ink as a finished one so
-        // what you release is what you saw.
-        if let Some((ix, iy, half)) = *self.pending_shape.borrow() {
-            use crate::models::annotation::AnnotationKind;
-            let (sx, sy) = self.image_to_screen_point(ix, iy);
-            let r = (half * self.transform.borrow().scale).max(1.0);
-            // Asked at draw time, not remembered: the picker can change while
-            // drawing is armed, and the preview must be the shape you get.
-            let kind = self
-                .preview_kind
-                .borrow()
-                .as_ref()
-                .map(|f| f())
-                .unwrap_or(AnnotationKind::Circle);
-            crate::helpers::annotation_render::draw_preview(kind, sx, sy, r, cr);
+        // what you release is what you saw. Chrome: it is a shape that does not
+        // exist yet, and a capture or an export taken mid-drag should not
+        // contain a half-made mark. The cube guards its preview the same way.
+        if chrome {
+            if let Some((ix, iy, half)) = *self.pending_shape.borrow() {
+                use crate::models::annotation::AnnotationKind;
+                let (sx, sy) = self.image_to_screen_point(ix, iy);
+                let r = (half * self.transform.borrow().scale).max(1.0);
+                // Asked at draw time, not remembered: the picker can change while
+                // drawing is armed, and the preview must be the shape you get.
+                let kind = self
+                    .preview_kind
+                    .borrow()
+                    .as_ref()
+                    .map(|f| f())
+                    .unwrap_or(AnnotationKind::Circle);
+                crate::helpers::annotation_render::draw_preview(kind, sx, sy, r, cr);
+            }
         }
 
         // Marks last, over everything, and drawn HERE — inside the function the
         // capture replays — so an agent's picture and the user's screen show
         // the same annotations without either path knowing about the other.
+        //
+        // Which mark is SELECTED or being EDITED is chrome, though the marks
+        // themselves are not. Those two states colour a ring white or amber to
+        // say "this is the one you clicked"; in an exported figure they say
+        // nothing to a reader except that one mark is inexplicably a different
+        // colour. Same rule as the grips, which was only half applied.
+        let (selected, editing) = if chrome {
+            (
+                self.selected_annotation.borrow().clone(),
+                self.editing_annotation.borrow().clone(),
+            )
+        } else {
+            (None, None)
+        };
         crate::helpers::annotation_render::draw(
             &self.annotations.borrow(),
             self,
-            self.selected_annotation.borrow().as_deref(),
-            self.editing_annotation.borrow().as_deref(),
+            selected.as_deref(),
+            editing.as_deref(),
             cr,
             widget_w as f64,
             widget_h as f64,

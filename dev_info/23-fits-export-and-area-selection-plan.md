@@ -103,16 +103,30 @@ exported figure. A reader sees one ring in a different colour from the rest and
 no way to know it means "this was selected". UI state must not survive into a
 deliverable: the same rule as the grips, half-applied.
 
-### 3. Marks become hairlines at scale
+### 3. Marks become hairlines at scale — **wrong, measured**
 
-`style::STROKE` is a fixed 1.0 device pixels, correctly not scaled with zoom. But
-a 4× export draws a 1px stroke on a raster four times larger, so marks come out
-four times finer than they look on screen — not what "export what I selected"
-means. The stroke scales with the **output-to-view ratio**, which is 1 on screen
-and changes nothing there.
+This draft claimed `style::STROKE`'s fixed 1.0 would leave marks four times
+finer in a 4× export. It does not. Cairo's line width is in **user space**, and
+`draw_scaled_into` applies `cr.scale()`, so strokes follow the export like
+everything else.
 
-Annotations otherwise need no work at all: `annotation_render::draw` sits outside
-the `chrome` guard, so every capture already contains the marks.
+Measured on a ring at four output sizes, by the run length where a scanline
+crosses it:
+
+| output | 1× | 2× | 4× | 8× |
+| --- | --- | --- | --- | --- |
+| stroke | 2 px | 2 px | 4 px | 8 px |
+
+The 1× and 2× both read 2 because antialiasing spreads a 1 px stroke over two
+partially-covered pixels; from 2× on, the doubling is exact. Total ink grows
+12.4× between 1× and 4×, against 4× for a true hairline and 16× for a stroke
+that scales in both width and length.
+
+No work, and the claim is struck rather than left standing. Writing a plan is
+worth it partly for the items it deletes.
+
+Annotations otherwise need no work either: `annotation_render::draw` sits
+outside the `chrome` guard, so every capture already contains the marks.
 
 ## The agent
 
@@ -133,7 +147,9 @@ visible to the user in a way a transient rubber band is not.
 
 ## Order of work
 
-1. **The three bugs.** Independent, and they are wrong in what ships today.
+1. ~~**The three bugs.**~~ **Two bugs** — the third was measured away. Done at
+   `9c17f7c`+: the preview is under `chrome`, and selection/edit ink no longer
+   reaches a capture. Both were wrong in what shipped.
 2. **`capture_region_rgba`** — the substituted transform, with the whole-view
    capture as the case where the region is the view. Testable through the
    stated-view entry point that already exists.
@@ -163,7 +179,6 @@ probe rather than an assertion:
 - a region export contains the marks inside it and none of those outside;
 - the same region at 1× and 4× is the same picture — by centre of mass and lit
   fraction, the measurement that caught the capture crop;
-- a mark's stroke keeps its relative weight between 1× and 4×;
 - a selected or edited mark exports in the ordinary ink;
 - a shape mid-drag does not appear at all;
 - on a north-up rotated frame, a screen-aligned region exports what was on

@@ -261,6 +261,67 @@ fn main() {
         }
     }
 
+    // ── A capture is a picture, not a screenshot of a UI state ─────────────
+    //
+    // Marks belong in a capture; which one you happen to have CLICKED does
+    // not. A selected ring draws white and an edited one amber, and in an
+    // exported figure those say nothing to a reader except that one mark is
+    // inexplicably a different colour. Same rule as the grips, which was
+    // applied and these two were not.
+    {
+        let (iw, ih) = (120usize, 120usize);
+        let mk = || {
+            let c = FitsCanvas::new(
+                iw,
+                ih,
+                vec![0u8; iw * ih * 4],
+                std::rc::Rc::new(std::cell::RefCell::new(Default::default())),
+                None,
+            );
+            c.cancel_fit();
+            let mut m = Annotation::new(
+                AnnotationKind::Circle,
+                Anchor::ImagePixel { x: 60.0, y: 60.0 },
+                "",
+                Author::User,
+            );
+            m.extent = Some(Extent::square(30.0));
+            let id = m.id.clone();
+            c.set_annotations(vec![m]);
+            (c, id)
+        };
+
+        let (plain, _) = mk();
+        let reference = plain
+            .capture_png_from_view(120, 120, 120, 120)
+            .expect("capture");
+
+        let (selected, id) = mk();
+        selected.set_selected_annotation(Some(id.clone()));
+        let with_selection = selected
+            .capture_png_from_view(120, 120, 120, 120)
+            .expect("capture");
+        if with_selection == reference {
+            println!("a selected mark exports in the ordinary ink");
+        } else {
+            println!("  !! selection highlighting leaked into the capture");
+            failures += 1;
+        }
+
+        let (editing, id) = mk();
+        editing.set_selected_annotation(Some(id.clone()));
+        editing.set_editing_annotation(Some(id));
+        let with_editing = editing
+            .capture_png_from_view(120, 120, 120, 120)
+            .expect("capture");
+        if with_editing == reference {
+            println!("an edited mark exports in the ordinary ink, without grips");
+        } else {
+            println!("  !! edit highlighting or grips leaked into the capture");
+            failures += 1;
+        }
+    }
+
     let out = std::env::temp_dir().join("fits_capture_probe.png");
     std::fs::write(&out, &annotated).expect("write");
     println!(
