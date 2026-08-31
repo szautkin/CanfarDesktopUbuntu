@@ -135,6 +135,7 @@ mod tests {
         const LOCAL: &[(&str, &str)] = &[
             ("download_vospace_file", "localPath"),
             ("export_cube_figure", "path"),
+            ("export_fits_figure", "path"),
             ("export_research_bundle", "path"),
             ("export_search_results", "path"),
             ("get_fits_header", "localPath"),

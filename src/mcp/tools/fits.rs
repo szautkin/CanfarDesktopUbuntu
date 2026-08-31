@@ -290,6 +290,54 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "export_fits_figure".into(),
+            description: "Save what the FITS viewer is showing — or part of it — as a PNG or a \
+                          PDF. The marks are in it, because they are drawn by the same function \
+                          that draws the screen; the editing grips are not, and neither is the \
+                          ink that says which mark happens to be selected. With `path` it writes \
+                          a file and returns where; without one it returns the image, which \
+                          costs an agent context, so prefer a path when a person wants the file."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "description": "What to export. \"view\" (default) is what is on screen — the picture get_fits_image returns. \"image\" is the whole frame. A box in image pixels is {x, y, width, height}. A box on the sky is {ra, dec, widthArcsec, heightArcsec}, which needs a WCS and is the form that cuts the same region from another frame of the same field.",
+                        "oneOf": [
+                            { "type": "string", "enum": ["view", "image"] },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "x": {"type":"number"}, "y": {"type":"number"},
+                                    "width": {"type":"number","exclusiveMinimum":0},
+                                    "height": {"type":"number","exclusiveMinimum":0}
+                                },
+                                "required": ["x","y","width","height"],
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "ra": {"type":"number"}, "dec": {"type":"number"},
+                                    "widthArcsec": {"type":"number","exclusiveMinimum":0},
+                                    "heightArcsec": {"type":"number","exclusiveMinimum":0}
+                                },
+                                "required": ["ra","dec","widthArcsec","heightArcsec"],
+                                "additionalProperties": false
+                            }
+                        ]
+                    },
+                    "scale": {"type":"integer","minimum":1,"maximum":4,"description":"Pixel multiplier, as the Export dialog offers. The output keeps the region's shape."},
+                    "transparent": {"type":"boolean","description":"Leave the ground unpainted, so anything the image does not cover keeps its alpha. PNG only."},
+                    "format": {"type":"string","enum":["png","pdf"],"description":"Defaults to png, or to the extension of `path`."},
+                    "path": {"type":"string","description":"Absolute local path to write. Omit to get the image back instead."}
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "get_fits_header".into(),
             description: "Read the FITS header cards (keyword/value/comment) of one HDU in a local FITS file on \
                           disk. Stateless — no open viewer required."
@@ -330,7 +378,8 @@ pub async fn dispatch(
         | "delete_fits_bookmark"
         | "switch_fits_tab"
         | "close_fits_tab"
-        | "blink_fits_tabs" => Some(to_tool_result(
+        | "blink_fits_tabs"
+        | "export_fits_figure" => Some(to_tool_result(
             viewer_command("fits", name, args.clone()).await,
         )),
         // Stateless ops — read the file directly, NOT through the bridge.
@@ -792,5 +841,71 @@ mod tests {
             assert_eq!(p["minimum"], 0, "{field} should be bounded at 0");
             assert_eq!(p["maximum"], 100, "{field} should be bounded at 100");
         }
+    }
+
+    /// Every region form an agent can ask in is advertised.
+    ///
+    /// The four are not interchangeable: a dragged box is screen-space, an
+    /// agent's is image pixels or sky, and the sky one is the only form that
+    /// cuts the same field out of a second frame. A schema that offered only
+    /// some of them would quietly remove the reason the tool exists.
+    #[test]
+    fn every_region_form_is_advertised() {
+        let d = descriptors();
+        let t = d
+            .iter()
+            .find(|t| t.name == "export_fits_figure")
+            .expect("export_fits_figure is advertised");
+        let forms = t.input_schema["properties"]["region"]["oneOf"]
+            .as_array()
+            .expect("region is a oneOf");
+        let named = forms
+            .iter()
+            .find_map(|f| f["enum"].as_array())
+            .expect("a named form");
+        for name in ["view", "image"] {
+            assert!(named.iter().any(|v| v == name), "no `{name}` region");
+        }
+        let has_required = |fields: &[&str]| {
+            forms.iter().any(|f| {
+                f["required"]
+                    .as_array()
+                    .map(|r| fields.iter().all(|k| r.iter().any(|v| v == k)))
+                    .unwrap_or(false)
+            })
+        };
+        assert!(
+            has_required(&["x", "y", "width", "height"]),
+            "no image-pixel region form"
+        );
+        assert!(
+            has_required(&["ra", "dec", "widthArcsec", "heightArcsec"]),
+            "no sky region form"
+        );
+    }
+
+    /// The scale an agent may ask for is the scale the panel offers.
+    ///
+    /// Two lists in two places drift, and the failure is quiet: the same export
+    /// would succeed from the dialog and come back smaller for an agent.
+    #[test]
+    fn the_advertised_scale_matches_the_dialog() {
+        let d = descriptors();
+        let t = d
+            .iter()
+            .find(|t| t.name == "export_fits_figure")
+            .expect("advertised");
+        let max = t.input_schema["properties"]["scale"]["maximum"]
+            .as_i64()
+            .expect("a stated maximum");
+        let ui_max = crate::ui::export_dialog::EXPORT_SCALES
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(1) as i64;
+        assert_eq!(
+            max, ui_max,
+            "the tool caps scale at {max}, the dialog offers {ui_max}"
+        );
     }
 }

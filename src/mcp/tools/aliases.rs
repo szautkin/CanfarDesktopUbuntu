@@ -310,6 +310,15 @@ mod tests {
          Observation on obsID.",
     ),
     (
+        "export_fits_figure",
+        "The reference exports a cube figure and nothing else; the FITS viewer had no export \
+         at all, in either app. An astronomer who has marked up a frame wants that frame in a \
+         slide, and an agent that has drawn on one wants to hand over a picture rather than a \
+         description of it. The region forms — a box in image pixels or on the sky — are what \
+         make it more than a screenshot: the sky form cuts the same field out of a second \
+         frame.",
+    ),
+    (
         "close_cube_tab",
         "The same hole as `close_fits_tab`, left open on the other viewer. A cube could be \
          opened and switched to and never closed, so an agent working through a list of cubes \

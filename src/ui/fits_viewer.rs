@@ -1540,6 +1540,109 @@ impl FitsViewer {
             // a re-render of the file. The view state travels with it under
             // `view`, because an agent that will be asked to point at something
             // needs the frame the app shares, and pixels alone cannot carry it.
+            // Save the working area, or part of it, the way the panel does.
+            "export_fits_figure" => {
+                let tab = self
+                    .current_tab()
+                    .ok_or_else(|| "no FITS open".to_string())?;
+                let canvas = tab.canvas();
+                let (view_w, view_h) = match canvas.view_size() {
+                    (w, h) if w > 0 && h > 0 => (w, h),
+                    // A tab that has never been shown has no allocation, and a
+                    // region measured against nothing is not a region. Same
+                    // fallback the agent captures use, so the two agree.
+                    _ => (1024, 768),
+                };
+                let region = crate::ui::fits_export::resolve_region(
+                    &tab,
+                    crate::mcp::tools::arg(args, "region"),
+                    view_w,
+                    view_h,
+                )?;
+                let scale = crate::mcp::tools::arg(args, "scale")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(1)
+                    .clamp(1, 4) as i32;
+                let transparent = crate::mcp::tools::arg(args, "transparent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let path = crate::mcp::tools::arg(args, "path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string);
+                let format = crate::mcp::tools::arg(args, "format")
+                    .and_then(|v| v.as_str())
+                    .map(|f| f.trim().to_ascii_lowercase());
+                let pdf = match format.as_deref() {
+                    Some("pdf") => true,
+                    Some("png") => false,
+                    Some(other) => return Err(format!("'{other}' is not a format — png or pdf")),
+                    // No format stated: follow the path's extension, so
+                    // `…/m51.pdf` writes a PDF without being told twice.
+                    None => path
+                        .as_deref()
+                        .map(|p| p.to_ascii_lowercase().ends_with(".pdf"))
+                        .unwrap_or(false),
+                };
+
+                let out_w = (region.width.round() as i32).saturating_mul(scale).max(1);
+                let out_h = (region.height.round() as i32).saturating_mul(scale).max(1);
+                let mut surface = canvas.capture_region_surface(
+                    view_w,
+                    view_h,
+                    region,
+                    out_w,
+                    out_h,
+                    crate::ui::fits_canvas::DrawOpts::export(transparent),
+                )?;
+                let (w, h, rgba) = crate::helpers::image_bytes::surface_to_rgba(&mut surface);
+
+                match path {
+                    Some(path_str) => {
+                        crate::helpers::local_path::reject_remote(
+                            &path_str,
+                            crate::helpers::local_path::SAVE_THEN_UPLOAD,
+                        )?;
+                        let p = std::path::Path::new(&path_str);
+                        if !p.is_absolute() {
+                            return Err("path must be a full (absolute) file path".to_string());
+                        }
+                        if pdf {
+                            crate::helpers::pdf_writer::write_pdf(p, w, h, &rgba)?;
+                        } else {
+                            crate::helpers::pdf_writer::write_png(p, w, h, &rgba)?;
+                        }
+                        Ok(json!({
+                            "path": path_str,
+                            "format": if pdf { "pdf" } else { "png" },
+                            "width": w,
+                            "height": h,
+                            "scale": scale,
+                            "transparent": transparent,
+                        }))
+                    }
+                    None => {
+                        if pdf {
+                            return Err("a PDF has to go to a file — give `path`, or ask for png"
+                                .to_string());
+                        }
+                        let mut png: Vec<u8> = Vec::new();
+                        surface
+                            .write_to_png(&mut png)
+                            .map_err(|e| format!("PNG encode failed: {e}"))?;
+                        use base64::Engine as _;
+                        Ok(json!({
+                            "imageBase64": base64::engine::general_purpose::STANDARD.encode(&png),
+                            "imageMime": "image/png",
+                            "width": w,
+                            "height": h,
+                            "scale": scale,
+                            "transparent": transparent,
+                        }))
+                    }
+                }
+            }
+
             "get_fits_image" => {
                 let tab = self
                     .current_tab()

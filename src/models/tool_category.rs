@@ -234,7 +234,9 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "clear_recent_searches"
         | "describe_tap_schema" => "search",
         // FITS viewer tabs.
-        "switch_fits_tab" | "close_fits_tab" | "blink_fits_tabs" => "fits",
+        "switch_fits_tab" | "close_fits_tab" | "blink_fits_tabs" | "export_fits_figure" => {
+            "fits"
+        }
         // Cube viewer.
         "switch_cube_tab"
         | "close_cube_tab"
