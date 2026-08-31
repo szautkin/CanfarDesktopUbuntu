@@ -40,22 +40,7 @@ pub fn show(parent: &impl IsA<gtk::Widget>, tab: &Rc<FitsTab>, region: Option<Vi
         .unwrap_or_else(|| ViewRegion::whole(view_w, view_h));
 
     let compose: Compose = Rc::new(move |scale, transparent| {
-        // The output keeps the REGION's aspect, so a tall selection exports
-        // tall. Deriving the height rather than taking it means the region is
-        // never letterboxed into a frame of the wrong shape.
-        let scale = scale.max(1);
-        let out_w = (region.width.round() as i32).saturating_mul(scale).max(1);
-        let out_h = (region.height.round() as i32).saturating_mul(scale).max(1);
-        canvas
-            .capture_region_surface(
-                view_w,
-                view_h,
-                region,
-                out_w,
-                out_h,
-                DrawOpts::export(transparent),
-            )
-            .ok()
+        compose_region(&canvas, view_w, view_h, region, scale, transparent)
     });
 
     // The file's own name seeds the suggested one, so a save lands as
@@ -65,6 +50,37 @@ pub fn show(parent: &impl IsA<gtk::Widget>, tab: &Rc<FitsTab>, region: Option<Vi
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     export_dialog::show(parent, &title, compose);
+}
+
+/// Render `region` at `scale`, as the dialog's Save does.
+///
+/// Separate from the dialog wiring so it can be exercised without one: the
+/// question "is the exported area the area that was dragged?" is about this
+/// function, and nothing that needs a modal on screen.
+pub fn compose_region(
+    canvas: &Rc<crate::ui::fits_canvas::FitsCanvas>,
+    view_w: i32,
+    view_h: i32,
+    region: ViewRegion,
+    scale: i32,
+    transparent: bool,
+) -> Option<gtk4::cairo::ImageSurface> {
+    // The output keeps the REGION's aspect, so a tall selection exports tall.
+    // Deriving the height rather than taking it means the region is never
+    // letterboxed into a frame of the wrong shape.
+    let scale = scale.max(1);
+    let out_w = (region.width.round() as i32).saturating_mul(scale).max(1);
+    let out_h = (region.height.round() as i32).saturating_mul(scale).max(1);
+    canvas
+        .capture_region_surface(
+            view_w,
+            view_h,
+            region,
+            out_w,
+            out_h,
+            DrawOpts::export(transparent),
+        )
+        .ok()
 }
 
 /// Turn a `region` argument into a rectangle of the view.

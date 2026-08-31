@@ -19,6 +19,7 @@ pub mod delete_dialog;
 pub mod dialog;
 pub mod export_dialog;
 pub mod failure_detail;
+pub mod figure_plate;
 pub mod file_panel;
 pub mod fit;
 pub mod fits_canvas;

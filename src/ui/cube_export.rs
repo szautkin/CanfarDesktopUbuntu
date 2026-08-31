@@ -8,12 +8,11 @@
 //! [`adw::Toast`] on the nearest [`adw::ToastOverlay`] ancestor, falling back to
 //! stderr when the widget tree has no overlay.
 
+use crate::helpers::cube_axes;
 use crate::helpers::cube_math::Mat4;
 use crate::helpers::cube_wcs::CubeWcs;
-use crate::helpers::image_bytes::rgba_to_surface;
-use crate::helpers::{cube_axes, cube_colormaps};
 use crate::models::volume_data::CubeMetadata;
-use gtk4::cairo::{Context, Format, ImageSurface};
+use gtk4::cairo::ImageSurface;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use std::rc::Rc;
@@ -30,22 +29,11 @@ use std::rc::Rc;
 // that gets written out through [`pdf_writer`].
 // ===========================================================================
 
-/// Natural (1×) frame size for the captured render, in px. The plate scales
-/// everything (text, padding, colorbar) as a fraction of the frame width, so a
-/// 2×/4× export stays crisp and proportional — the Windows plate does the same.
-const FRAME_W: f64 = 720.0;
-const FRAME_H: f64 = 540.0;
-
-/// Journal-dark palette (mirrors `CubeExportPlate.PlateStyle.Default`, Dark=true).
-const BG: (f64, f64, f64) = (0.05, 0.05, 0.06);
-const MAIN: (f64, f64, f64) = (0.94, 0.94, 0.95);
-const DIM: (f64, f64, f64) = (0.60, 0.62, 0.66);
-const LINE: (f64, f64, f64) = (0.30, 0.30, 0.33);
-
 /// Live-overlay + metadata inputs the plate needs to draw the WCS wireframe box,
 /// the axis captions, and the expanded metadata footer. The Rust analogue of the
 /// Windows `CubeExportPlate.PlateData` overlay/metadata block, populated by the
 /// cube viewer's export path (mirroring `CubeViewerPage.BuildPlateData`).
+#[derive(Clone)]
 pub struct PlateOverlay {
     /// Draw the box + captions (true only over the 3D volume, not the flat slice).
     pub captions_on: bool,
@@ -82,191 +70,37 @@ struct PlateSpec {
 impl PlateSpec {
     /// Compose the full plate at `scale` (1/2/4). `transparent` skips the
     /// background fill so the exported PNG keeps an alpha channel.
-    fn compose(&self, scale: i32, transparent: bool) -> Option<ImageSurface> {
-        let s = scale.max(1) as f64;
-        let fw = (FRAME_W * s).round() as i32;
-        let fh = (FRAME_H * s).round() as i32;
-        let (fwf, fhf) = (fw as f64, fh as f64);
-
-        let pad = (fwf * 0.03).max(18.0 * s);
-        let title_f = fwf * 0.026;
-        let small_f = fwf * 0.013;
-        let line = small_f * 1.6;
-        let cb_h = (fwf * 0.012).max(9.0 * s);
-
-        // Vertical layout (baselines / band tops top-to-bottom).
-        let title_base = pad + title_f;
-        let sub_base = title_base + line;
-        let div1 = sub_base + small_f * 0.7;
-        let frame_y = div1 + line * 0.6;
-        let cap_base = frame_y + fhf + line;
-        let div2 = cap_base + small_f * 0.4;
-        let cb_y = div2 + line * 0.6;
-        let cb_row_h = cb_h.max(small_f * 1.5);
-
-        // ── Footer metadata columns (Dims / RA-DEC-SPECTRAL / NaN% / Mode) ──
-        // Measured + wrapped up-front, because the plate height depends on how many
-        // rows the columns fold into. Mirrors Windows `BuildMetaGrid`.
-        let meta_cols = self.meta_columns();
-        let meta_key_f = small_f * 0.86;
-        let meta_val_f = small_f;
-        let meta_col_gap = small_f * 1.8;
-        let meta_row_gap = small_f * 0.9;
-        let meta_line_gap = small_f * 0.25;
-        let meta_row_h = meta_key_f + meta_line_gap + meta_val_f;
-        let mut meta_placed: Vec<(usize, f64, String, String)> = Vec::new();
-        let mut meta_rows = 0usize;
-        if !meta_cols.is_empty() {
-            let scratch = ImageSurface::create(Format::ARgb32, 1, 1).ok()?;
-            let mcr = Context::new(&scratch).ok()?;
-            let measure = |mono: bool, size: f64, t: &str| -> f64 {
-                mcr.select_font_face(
-                    if mono { "monospace" } else { "sans" },
-                    gtk4::cairo::FontSlant::Normal,
-                    gtk4::cairo::FontWeight::Normal,
-                );
-                mcr.set_font_size(size);
-                mcr.text_extents(t).map(|e| e.width()).unwrap_or(0.0)
-            };
-            let mut row = 0usize;
-            let mut mx = 0.0f64;
-            for (k, v) in &meta_cols {
-                let colw = measure(false, meta_key_f, k).max(measure(true, meta_val_f, v));
-                // Wrap to a new row when the column would spill past the frame width.
-                if mx > 0.0 && mx + colw > fwf {
-                    row += 1;
-                    mx = 0.0;
-                }
-                meta_placed.push((row, mx, k.clone(), v.clone()));
-                mx += colw + meta_col_gap;
-            }
-            meta_rows = row + 1;
-        }
-        let meta_block_h = if meta_rows == 0 {
-            0.0
-        } else {
-            meta_rows as f64 * meta_row_h + (meta_rows - 1) as f64 * meta_row_gap
-        };
-
-        let meta_top = cb_y + cb_row_h + small_f * 1.2;
-        let foot_bottom = if meta_rows == 0 {
-            cb_y + cb_row_h + small_f * 0.4
-        } else {
-            meta_top + meta_block_h
-        };
-
-        let total_h = (foot_bottom + pad).round() as i32;
-        let total_w = (fwf + 2.0 * pad).round() as i32;
-        let frame_x = pad;
-        let right_edge = frame_x + fwf;
-
-        let surface = ImageSurface::create(Format::ARgb32, total_w, total_h).ok()?;
-        {
-            let cr = Context::new(&surface).ok()?;
-
-            if !transparent {
-                cr.set_source_rgb(BG.0, BG.1, BG.2);
-                let _ = cr.paint();
-            }
-
-            let font = |mono: bool, bold: bool| {
-                cr.select_font_face(
-                    if mono { "monospace" } else { "sans" },
-                    gtk4::cairo::FontSlant::Normal,
-                    if bold {
-                        gtk4::cairo::FontWeight::Bold
-                    } else {
-                        gtk4::cairo::FontWeight::Normal
-                    },
-                );
-            };
-            let width_of = |t: &str| cr.text_extents(t).map(|e| e.width()).unwrap_or(0.0);
-            let rgb = |c: (f64, f64, f64)| cr.set_source_rgb(c.0, c.1, c.2);
-
-            // ── Header ──────────────────────────────────────────────────────
-            font(false, true);
-            cr.set_font_size(title_f);
-            rgb(MAIN);
-            cr.move_to(frame_x, title_base);
-            let _ = cr.show_text(&self.title);
-
-            font(false, false);
-            cr.set_font_size(small_f);
-            rgb(DIM);
-            cr.move_to(frame_x, sub_base);
-            let _ = cr.show_text(crate::tr_en!("3D volume render"));
-
-            // Brand + date, right-aligned.
-            let brand = "\u{25C8} VERBINAL";
-            let bw = width_of(brand);
-            cr.move_to((right_edge - bw).max(frame_x), pad + small_f * 1.1);
-            let _ = cr.show_text(brand);
-            font(true, false);
-            let dw = width_of(&self.date);
-            cr.move_to((right_edge - dw).max(frame_x), pad + small_f * 1.1 + line);
-            let _ = cr.show_text(&self.date);
-
-            // Divider under the header.
-            rgb(LINE);
-            cr.set_line_width((small_f * 0.06).max(1.0));
-            cr.move_to(frame_x, div1);
-            cr.line_to(right_edge, div1);
-            let _ = cr.stroke();
-
-            // ── Framed render ───────────────────────────────────────────────
-            let frame = (self.capture)(fw, fh).and_then(|rgba| rgba_to_surface(fw, fh, &rgba));
-            match &frame {
-                Some(fs) => {
-                    let _ = cr.save();
-                    cr.rectangle(frame_x, frame_y, fwf, fhf);
-                    cr.clip();
-                    let _ = cr.set_source_surface(fs, frame_x, frame_y);
-                    let _ = cr.paint();
-                    let _ = cr.restore();
-                }
-                None => {
-                    // Placeholder box when no GPU snapshot is available.
-                    cr.set_source_rgb(0.10, 0.10, 0.12);
-                    cr.rectangle(frame_x, frame_y, fwf, fhf);
-                    let _ = cr.fill();
-                    font(false, false);
-                    cr.set_font_size(small_f * 1.4);
-                    rgb(DIM);
-                    let msg = crate::tr_en!("Render unavailable");
-                    let mw = width_of(msg);
-                    cr.move_to(frame_x + (fwf - mw) / 2.0, frame_y + fhf / 2.0);
-                    let _ = cr.show_text(msg);
-                }
-            }
-            // Frame border.
-            rgb(LINE);
-            cr.set_line_width((small_f * 0.09).max(1.0));
-            cr.rectangle(frame_x, frame_y, fwf, fhf);
-            let _ = cr.stroke();
-
-            // ── WCS wireframe box + axis captions (matches the live overlay) ─
-            // Reuses cube_axes geometry with the SAME camera the capture used, so
-            // edges/captions register onto the rendered volume. Port of Windows
-            // CubeExportPlate.BuildCaptionOverlay; re-themed for the dark plate.
-            if self.overlay.captions_on {
-                let vp = (self.overlay.view_proj)(fw, fh);
+    /// The plate this spec describes.
+    ///
+    /// The layout lives in [`crate::ui::figure_plate`]; what a cube adds is the
+    /// wireframe over the picture and the facts along the bottom.
+    fn content(&self) -> crate::ui::figure_plate::PlateContent {
+        let ov_data = self.overlay.clone();
+        let painter: crate::ui::figure_plate::FramePainter =
+            Rc::new(move |cr, frame_x, frame_y, frame_w, frame_h| {
+                // The WCS wireframe box and axis captions, over the rendered volume.
+                // Built from `cube_axes` with the SAME camera the capture used, so the
+                // edges register on the render rather than floating near it. Port of
+                // Windows `CubeExportPlate.BuildCaptionOverlay`, re-themed for the
+                // dark plate.
+                let vp = (ov_data.view_proj)(frame_w as i32, frame_h as i32);
                 let ov = cube_axes::build(&cube_axes::AxesRequest {
-                    dims: (self.overlay.nx, self.overlay.ny, self.overlay.nz),
-                    wcs: &self.overlay.wcs,
+                    dims: (ov_data.nx, ov_data.ny, ov_data.nz),
+                    wcs: &ov_data.wcs,
                     view_proj: &vp,
-                    panel: (fwf as f32, fhf as f32),
+                    panel: (frame_w as f32, frame_h as f32),
                     slice_z: 0, // slice-plane marker unused in the export overlay
-                    spectral_scale: self.overlay.spectral_scale,
+                    spectral_scale: ov_data.spectral_scale,
                 });
 
                 let _ = cr.save();
-                cr.rectangle(frame_x, frame_y, fwf, fhf);
+                cr.rectangle(frame_x, frame_y, frame_w, frame_h);
                 cr.clip();
                 cr.translate(frame_x, frame_y);
 
                 // Box wireframe: faint cool-blue lines (same tone as the live view).
                 cr.set_source_rgba(0.62, 0.77, 0.91, 0.40);
-                cr.set_line_width((fwf / 1600.0).max(1.0));
+                cr.set_line_width((frame_w / 1600.0).max(1.0));
                 for (a, b) in &ov.edges {
                     cr.move_to(a.0 as f64, a.1 as f64);
                     cr.line_to(b.0 as f64, b.1 as f64);
@@ -274,16 +108,24 @@ impl PlateSpec {
                 let _ = cr.stroke();
 
                 // Axis captions: centered monospace, 1px shadow for legibility.
-                font(true, false);
-                let cap_f = (fwf * 0.013).max(9.0);
+                // The face is set here rather than inherited: a painter is handed a
+                // context whose font is whatever the plate last used, and captions
+                // in the title's face would be a different bug every time the
+                // layout above them changed.
+                cr.select_font_face(
+                    "monospace",
+                    gtk4::cairo::FontSlant::Normal,
+                    gtk4::cairo::FontWeight::Normal,
+                );
+                let cap_f = (frame_w * 0.013).max(9.0);
                 cr.set_font_size(cap_f);
                 for (x, y, text) in &ov.captions {
                     let (mut cx, cy) = (*x as f64, *y as f64);
                     if let Ok(ext) = cr.text_extents(text) {
                         cx -= ext.width() / 2.0;
                     }
-                    let cx = cx.clamp(2.0, (fwf - 2.0).max(2.0));
-                    let cy = cy.clamp(cap_f, (fhf - 2.0).max(cap_f));
+                    let cx = cx.clamp(2.0, (frame_w - 2.0).max(2.0));
+                    let cy = cy.clamp(cap_f, (frame_h - 2.0).max(cap_f));
                     cr.set_source_rgba(0.0, 0.0, 0.0, 0.70);
                     cr.move_to(cx + 1.0, cy + 1.0);
                     let _ = cr.show_text(text);
@@ -292,97 +134,25 @@ impl PlateSpec {
                     let _ = cr.show_text(text);
                 }
                 let _ = cr.restore();
-            }
-
-            // ── WCS caption line (centered) ─────────────────────────────────
-            if !self.caption.is_empty() {
-                font(true, false);
-                cr.set_font_size(small_f);
-                rgb(DIM);
-                let cw = width_of(&self.caption);
-                cr.move_to((frame_x + (fwf - cw) / 2.0).max(frame_x), cap_base);
-                let _ = cr.show_text(&self.caption);
-            }
-
-            // Divider above the footer.
-            rgb(LINE);
-            cr.set_line_width((small_f * 0.06).max(1.0));
-            cr.move_to(frame_x, div2);
-            cr.line_to(right_edge, div2);
-            let _ = cr.stroke();
-
-            // ── Footer: labeled colorbar + colormap name ────────────────────
-            let lbl_base = cb_y + cb_row_h / 2.0 + small_f * 0.35;
-            let gap = small_f;
-            let mut x = frame_x;
-
-            font(true, false);
-            cr.set_font_size(small_f);
-            rgb(DIM);
-            cr.move_to(x, lbl_base);
-            let _ = cr.show_text(&self.lo_label);
-            x += width_of(&self.lo_label) + gap;
-
-            // Colorbar: sampled strips of the colormap LUT.
-            let cb_w = (fwf * 0.22).max(120.0);
-            let lut = cube_colormaps::lut_rgba(&self.colormap);
-            let steps = 128usize;
-            let bar_x = x;
-            for i in 0..steps {
-                let t = i as f64 / (steps - 1) as f64;
-                let o = ((t * 255.0).round() as usize).min(255) * 4;
-                cr.set_source_rgb(
-                    lut[o] as f64 / 255.0,
-                    lut[o + 1] as f64 / 255.0,
-                    lut[o + 2] as f64 / 255.0,
-                );
-                let sx = bar_x + (i as f64 / steps as f64) * cb_w;
-                cr.rectangle(sx, cb_y, cb_w / steps as f64 + 1.0, cb_h);
-                let _ = cr.fill();
-            }
-            rgb(LINE);
-            cr.set_line_width(1.0);
-            cr.rectangle(bar_x, cb_y, cb_w, cb_h);
-            let _ = cr.stroke();
-            x = bar_x + cb_w + gap;
-
-            font(true, false);
-            rgb(DIM);
-            cr.move_to(x, lbl_base);
-            let _ = cr.show_text(&self.hi_label);
-            x += width_of(&self.hi_label) + gap * 1.6;
-
-            font(false, false);
-            rgb(DIM);
-            let cmap = format!("{} \u{00B7} {}", crate::tr_en!("Colormap"), self.colormap);
-            cr.move_to(x, lbl_base);
-            let _ = cr.show_text(&cmap);
-
-            // ── Footer: metadata columns (Dims / RA-DEC-SPECTRAL / NaN% / Mode) ──
-            // Each column stacks a dim key over a monospaced value. Port of Windows
-            // CubeExportPlate.BuildMetaGrid / AddMetaColumn.
-            for (r, mx, key, val) in &meta_placed {
-                let base_y = meta_top + *r as f64 * (meta_row_h + meta_row_gap);
-                let col_x = frame_x + *mx;
-                font(false, false);
-                cr.set_font_size(meta_key_f);
-                rgb(DIM);
-                cr.move_to(col_x, base_y + meta_key_f);
-                let _ = cr.show_text(key);
-                font(true, false);
-                cr.set_font_size(meta_val_f);
-                rgb(MAIN);
-                cr.move_to(col_x, base_y + meta_key_f + meta_line_gap + meta_val_f);
-                let _ = cr.show_text(val);
-            }
+            });
+        crate::ui::figure_plate::PlateContent {
+            capture: self.capture.clone(),
+            title: self.title.clone(),
+            subtitle: crate::tr_en!("3D volume render").to_string(),
+            caption: self.caption.clone(),
+            colormap: self.colormap.clone(),
+            lo_label: self.lo_label.clone(),
+            hi_label: self.hi_label.clone(),
+            date: self.date.clone(),
+            footer: self.meta_columns(),
+            overlay: self.overlay.captions_on.then_some(painter),
         }
-        Some(surface)
     }
 
-    /// The footer metadata columns as `(key, value)` pairs, mirroring Windows
-    /// `CubeViewerPage.BuildPlateData` + `BuildMetaGrid`: Dimensions, per-axis WCS
-    /// ranges (RA/DEC/SPECTRAL), NaN%, and Mode. Reads from [`CubeMetadata`]; axis
-    /// ranges are emitted only when the corresponding WCS solution is present.
+    fn compose(&self, scale: i32, transparent: bool) -> Option<ImageSurface> {
+        self.content().compose(scale, transparent)
+    }
+
     fn meta_columns(&self) -> Vec<(String, String)> {
         let o = &self.overlay;
         let mut cols: Vec<(String, String)> = Vec::new();
