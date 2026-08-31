@@ -371,7 +371,13 @@ fn compute_cdf(pixels: &[f64], vmin: f64, vmax: f64, nbins: usize) -> Vec<f64> {
     cdf
 }
 
-fn build_lut(colormap: ColorMap) -> [(u8, u8, u8); 256] {
+/// The 256-entry colour ramp for a colormap.
+///
+/// Public so an exported figure's colorbar shows the ramp the image was drawn
+/// with. The plate must not reach into a viewer's colormap registry to guess:
+/// the cube's names are capitalised and the FITS ones are not, so a lookup by
+/// name silently fell back and printed "grayscale" under an inferno bar.
+pub fn build_lut(colormap: ColorMap) -> [(u8, u8, u8); 256] {
     let mut lut = [(0u8, 0u8, 0u8); 256];
     for (i, entry) in lut.iter_mut().enumerate() {
         let v = i as f64 / 255.0;

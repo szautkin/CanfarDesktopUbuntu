@@ -40,6 +40,15 @@ fn main() {
         subtitle: "a subtitle".into(),
         caption: "a caption line".into(),
         colormap: "Inferno".into(),
+        // A ramp the probe supplies itself, which is the point of the plate not
+        // owning one: red rising to white.
+        ramp: {
+            let mut r = [(0u8, 0u8, 0u8); 256];
+            for (i, e) in r.iter_mut().enumerate() {
+                *e = (255, i as u8, i as u8);
+            }
+            r
+        },
         lo_label: "1.0e-3".into(),
         hi_label: "0.5".into(),
         date: "2026-01-01".into(),

@@ -16,7 +16,6 @@
 //! Everything is sized as a fraction of the frame width, so a 2x or 4x export
 //! stays proportional rather than growing a picture inside fixed furniture.
 
-use crate::helpers::cube_colormaps;
 use crate::helpers::image_bytes::rgba_to_surface;
 use gtk4::cairo::{Context, Format, ImageSurface};
 use std::rc::Rc;
@@ -48,7 +47,13 @@ pub struct PlateContent {
     pub subtitle: String,
     /// Under the frame: what it shows.
     pub caption: String,
+    /// The colormap's NAME, for the label beside the bar.
     pub colormap: String,
+    /// Its 256 colours, so the bar shows the ramp the picture was drawn with.
+    /// Supplied rather than looked up: the plate has no business knowing either
+    /// viewer's colormap registry, and a lookup by name silently fell back when
+    /// the two spelled their names differently.
+    pub ramp: [(u8, u8, u8); 256],
     pub lo_label: String,
     pub hi_label: String,
     pub date: String,
@@ -258,16 +263,16 @@ impl PlateContent {
 
             // Colorbar: sampled strips of the colormap LUT.
             let cb_w = (fwf * 0.22).max(120.0);
-            let lut = cube_colormaps::lut_rgba(&self.colormap);
+            let lut = &self.ramp;
             let steps = 128usize;
             let bar_x = x;
             for i in 0..steps {
                 let t = i as f64 / (steps - 1) as f64;
-                let o = ((t * 255.0).round() as usize).min(255) * 4;
+                let (r, g, b) = lut[((t * 255.0).round() as usize).min(255)];
                 cr.set_source_rgb(
-                    lut[o] as f64 / 255.0,
-                    lut[o + 1] as f64 / 255.0,
-                    lut[o + 2] as f64 / 255.0,
+                    f64::from(r) / 255.0,
+                    f64::from(g) / 255.0,
+                    f64::from(b) / 255.0,
                 );
                 let sx = bar_x + (i as f64 / steps as f64) * cb_w;
                 cr.rectangle(sx, cb_y, cb_w / steps as f64 + 1.0, cb_h);

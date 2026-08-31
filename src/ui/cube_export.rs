@@ -141,6 +141,7 @@ impl PlateSpec {
             subtitle: crate::tr_en!("3D volume render").to_string(),
             caption: self.caption.clone(),
             colormap: self.colormap.clone(),
+            ramp: ramp_from_flat(&crate::helpers::cube_colormaps::lut_rgba(&self.colormap)),
             lo_label: self.lo_label.clone(),
             hi_label: self.hi_label.clone(),
             date: self.date.clone(),
@@ -302,6 +303,22 @@ fn wrap360(v: f64) -> f64 {
 /// plate plus scale (1×/2×/4×), transparent-background and format (PNG/PDF)
 /// options. On Save the render is re-captured at the chosen scale, the plate is
 /// re-composed and written through [`pdf_writer`] via a [`gtk::FileDialog`].
+/// The cube's flat RGBA colour run as the triples the plate wants.
+///
+/// `cube_colormaps` hands back 256 RGBA bytes; the plate takes 256 triples.
+/// The conversion lives here, on the side that knows the layout, rather than
+/// the plate learning about either viewer's byte order.
+fn ramp_from_flat(flat: &[u8]) -> [(u8, u8, u8); 256] {
+    let mut ramp = [(0u8, 0u8, 0u8); 256];
+    for (i, e) in ramp.iter_mut().enumerate() {
+        let o = i * 4;
+        if o + 2 < flat.len() {
+            *e = (flat[o], flat[o + 1], flat[o + 2]);
+        }
+    }
+    ramp
+}
+
 pub fn show_cube_export(
     parent: &impl IsA<gtk::Widget>,
     capture: Rc<dyn Fn(i32, i32) -> Option<Vec<u8>>>,
@@ -334,4 +351,40 @@ pub fn show_cube_export(
         Rc::new(move |scale, transparent| spec.compose(scale, transparent))
     };
     crate::ui::export_dialog::show(parent, &spec.title, compose);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ramp_from_flat;
+
+    /// The colour the plate draws is the colour the cube draws.
+    ///
+    /// The bar used to be looked up by NAME inside the plate, which fell back
+    /// silently when the cube spelled its colormaps "Grayscale" and the FITS
+    /// viewer spelled them "grayscale" — a grayscale image with an inferno bar
+    /// under it, labelled "grayscale". The ramp is handed over now, so the only
+    /// thing that can go wrong is this conversion.
+    #[test]
+    fn the_ramp_keeps_every_colour_the_lut_had() {
+        for name in crate::helpers::cube_colormaps::NAMES {
+            let flat = crate::helpers::cube_colormaps::lut_rgba(name);
+            let ramp = ramp_from_flat(&flat);
+            for (i, entry) in ramp.iter().enumerate() {
+                let o = i * 4;
+                assert_eq!(
+                    *entry,
+                    (flat[o], flat[o + 1], flat[o + 2]),
+                    "{name} entry {i} changed on the way to the plate"
+                );
+            }
+        }
+    }
+
+    /// A short or empty run leaves black rather than reading past the end.
+    #[test]
+    fn a_truncated_lut_does_not_read_past_its_end() {
+        assert_eq!(ramp_from_flat(&[])[0], (0, 0, 0));
+        assert_eq!(ramp_from_flat(&[1, 2, 3, 4])[0], (1, 2, 3));
+        assert_eq!(ramp_from_flat(&[1, 2, 3, 4])[1], (0, 0, 0));
+    }
 }

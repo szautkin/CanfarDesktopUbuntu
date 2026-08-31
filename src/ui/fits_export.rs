@@ -9,6 +9,7 @@
 
 use crate::models::fits_image::WcsInfo;
 use crate::ui::export_dialog::{self, Compose};
+use crate::ui::figure_plate::PlateContent;
 use crate::ui::fits_canvas::{DrawOpts, ViewRegion};
 use crate::ui::fits_tab::FitsTab;
 use gtk4::prelude::*;
@@ -39,17 +40,186 @@ pub fn show(parent: &impl IsA<gtk::Widget>, tab: &Rc<FitsTab>, region: Option<Vi
         .filter(ViewRegion::is_usable)
         .unwrap_or_else(|| ViewRegion::whole(view_w, view_h));
 
+    // A plate, not a bare crop: a figure that does not say what it shows or
+    // where it points is a picture of some sky.
+    let tab_for_plate = tab.clone();
     let compose: Compose = Rc::new(move |scale, transparent| {
-        compose_region(&canvas, view_w, view_h, region, scale, transparent)
+        plate_content(&tab_for_plate, view_w, view_h, region).compose(scale, transparent)
     });
+    let _ = &canvas;
 
     // The file's own name seeds the suggested one, so a save lands as
     // `jw01783-o003_t009_nircam_clear-f187n_i2d.png` rather than `figure.png`.
-    let title = std::path::Path::new(tab.source_file())
+    export_dialog::show(parent, &file_title(tab), compose);
+}
+
+/// The plate for a region of a FITS image.
+///
+/// The cube's export has carried a title, a caption, a colour ramp and a footer
+/// of facts since it was written; the FITS one came out as a bare crop with
+/// none of it, so a figure could not say what it showed or where it pointed.
+/// This is that plate, with what a FITS frame knows rather than what a cube
+/// knows.
+pub fn plate_content(
+    tab: &Rc<FitsTab>,
+    view_w: i32,
+    view_h: i32,
+    region: ViewRegion,
+) -> PlateContent {
+    use crate::ui::fits_viewer::{colormap_name, header_str, stretch_name};
+
+    let data = tab.data();
+    let header = &data.header;
+    let sky = region_sky(tab, region);
+    let unit = header_str(header, "BUNIT").unwrap_or_default();
+    let with_unit = |v: f64| {
+        if unit.is_empty() {
+            format!("{v:.4}")
+        } else {
+            format!("{v:.4} {unit}")
+        }
+    };
+
+    // What the figure is OF, on one line under the picture. Coordinates first,
+    // because that is the question a reader asks of an astronomical image.
+    let caption = match &sky {
+        Some(s) => format!("{} \u{00B7} {}", s.centre, s.extent),
+        None => crate::tr_en!("No WCS — pixel coordinates only").to_string(),
+    };
+
+    let mut footer: Vec<(String, String)> = vec![(
+        crate::tr_en!("DIMENSIONS").to_string(),
+        format!("{}\u{00D7}{}", data.width, data.height),
+    )];
+    if let Some(s) = &sky {
+        footer.push((crate::tr_en!("RA").to_string(), s.ra_range.clone()));
+        footer.push((crate::tr_en!("DEC").to_string(), s.dec_range.clone()));
+        footer.push((crate::tr_en!("FIELD").to_string(), s.extent.clone()));
+    }
+    footer.push((
+        crate::tr_en!("CUT LEVELS").to_string(),
+        format!("{} … {}", with_unit(tab.vmin()), with_unit(tab.vmax())),
+    ));
+    footer.push((
+        crate::tr_en!("STRETCH").to_string(),
+        stretch_name(tab.stretch()).to_string(),
+    ));
+    for (key, card) in [
+        (crate::tr_en!("OBJECT"), "OBJECT"),
+        (crate::tr_en!("INSTRUMENT"), "INSTRUME"),
+        (crate::tr_en!("FILTER"), "FILTER"),
+    ] {
+        if let Some(v) = header_str(header, card) {
+            footer.push((key.to_string(), v));
+        }
+    }
+
+    let canvas = tab.canvas().clone();
+    PlateContent {
+        capture: Rc::new(move |w, h| {
+            let mut surf = canvas
+                .capture_region_surface(view_w, view_h, region, w, h, DrawOpts::export(false))
+                .ok()?;
+            let (_, _, rgba) = crate::helpers::image_bytes::surface_to_rgba(&mut surf);
+            Some(rgba)
+        }),
+        title: file_title(tab),
+        subtitle: crate::tr_en!("FITS image").to_string(),
+        caption,
+        colormap: colormap_name(tab.colormap()).to_string(),
+        ramp: crate::helpers::fits_renderer::build_lut(tab.colormap()),
+        lo_label: with_unit(tab.vmin()),
+        hi_label: with_unit(tab.vmax()),
+        date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        footer,
+        // None: a FITS frame's overlay — its marks and crosshair — is already in
+        // the capture, drawn by the same function that draws the screen.
+        overlay: None,
+    }
+}
+
+/// The file's own name, which is what a figure should be called.
+fn file_title(tab: &Rc<FitsTab>) -> String {
+    std::path::Path::new(tab.source_file())
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    export_dialog::show(parent, &title, compose);
+        .unwrap_or_default()
+}
+
+/// What a plate says about the region it shows.
+///
+/// The point of the caption: an exported figure that does not say where it is
+/// pointing is a picture of some sky. These are read back through the same WCS
+/// the crosshair uses, so the figure and the readout agree.
+struct RegionSky {
+    centre: String,
+    extent: String,
+    ra_range: String,
+    dec_range: String,
+}
+
+/// Where `region` is on the sky, or `None` without a usable WCS.
+fn region_sky(tab: &Rc<FitsTab>, region: ViewRegion) -> Option<RegionSky> {
+    let data = tab.data();
+    let wcs = data.wcs.as_ref().filter(|w| w.is_valid())?;
+    let canvas = tab.canvas();
+    // The region's four corners in IMAGE pixels, which is where the WCS lives.
+    // Going through the canvas keeps North Up in the answer: a rotated view's
+    // screen box is not an image-aligned box, and the corners are what say so.
+    let corners = [
+        canvas.screen_to_image_point_public(region.x, region.y),
+        canvas.screen_to_image_point_public(region.x + region.width, region.y),
+        canvas.screen_to_image_point_public(region.x + region.width, region.y + region.height),
+        canvas.screen_to_image_point_public(region.x, region.y + region.height),
+    ];
+    let skies: Vec<(f64, f64)> = corners
+        .iter()
+        .map(|(x, y)| wcs.display_to_sky(*x, *y))
+        .collect();
+    let (cx, cy) = canvas.screen_to_image_point_public(
+        region.x + region.width / 2.0,
+        region.y + region.height / 2.0,
+    );
+    let (ra, dec) = wcs.display_to_sky(cx, cy);
+    let (ra_s, dec_s) = WcsInfo::format_coords(ra, dec);
+
+    let ras: Vec<f64> = skies.iter().map(|s| s.0).collect();
+    let decs: Vec<f64> = skies.iter().map(|s| s.1).collect();
+    let lo = |v: &[f64]| v.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = |v: &[f64]| v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    // The angular size of what is shown, from the region's size in image
+    // pixels and this image's own scale.
+    let per_px = wcs.pixel_scale_arcsec();
+    let img_w = (corners[1].0 - corners[0].0).hypot(corners[1].1 - corners[0].1);
+    let img_h = (corners[3].0 - corners[0].0).hypot(corners[3].1 - corners[0].1);
+    let extent = if per_px.is_finite() && per_px > 0.0 {
+        format!(
+            "{} × {}",
+            arcsec_text(img_w * per_px),
+            arcsec_text(img_h * per_px)
+        )
+    } else {
+        format!("{:.0} × {:.0} px", img_w, img_h)
+    };
+
+    Some(RegionSky {
+        centre: format!("{ra_s} {dec_s}"),
+        extent,
+        ra_range: format!("{:.5}° … {:.5}°", lo(&ras), hi(&ras)),
+        dec_range: format!("{:.5}° … {:.5}°", lo(&decs), hi(&decs)),
+    })
+}
+
+/// An angle in the unit an astronomer would say it in.
+fn arcsec_text(arcsec: f64) -> String {
+    if arcsec >= 3600.0 {
+        format!("{:.2}°", arcsec / 3600.0)
+    } else if arcsec >= 60.0 {
+        format!("{:.2}′", arcsec / 60.0)
+    } else {
+        format!("{arcsec:.2}″")
+    }
 }
 
 /// Render `region` at `scale`, as the dialog's Save does.

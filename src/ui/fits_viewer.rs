@@ -3477,7 +3477,7 @@ pub const COLORMAP_NAMES: [&str; 8] = [
     "coolwarm",
 ];
 
-fn stretch_name(s: Stretch) -> &'static str {
+pub(crate) fn stretch_name(s: Stretch) -> &'static str {
     match s {
         Stretch::Linear => "linear",
         Stretch::Log => "log",
@@ -3500,7 +3500,7 @@ fn stretch_from_str(s: &str) -> Option<Stretch> {
     }
 }
 
-fn colormap_name(c: ColorMap) -> &'static str {
+pub(crate) fn colormap_name(c: ColorMap) -> &'static str {
     match c {
         ColorMap::Grayscale => "grayscale",
         ColorMap::Inverted => "inverted",
@@ -3529,7 +3529,10 @@ fn colormap_from_str(c: &str) -> Option<ColorMap> {
 
 /// Read a FITS header keyword, trimming FITS string quoting/whitespace; `None`
 /// when absent or blank.
-fn header_str(header: &std::collections::HashMap<String, String>, key: &str) -> Option<String> {
+pub(crate) fn header_str(
+    header: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> Option<String> {
     let v = header.get(key)?.trim().trim_matches('\'').trim();
     if v.is_empty() {
         None
