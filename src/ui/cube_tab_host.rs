@@ -945,6 +945,24 @@ impl CubeTabHost {
                 let transparent = crate::mcp::tools::arg(args, "transparent")
                     .and_then(|x| x.as_bool())
                     .unwrap_or(false);
+                // The captioned figure the Export button produces, or the bare
+                // render. Defaults to the bare render, because that is what
+                // this tool has always returned and what the reference app's
+                // export is for — composing into a document that supplies its
+                // own caption. `plate: true` is the figure.
+                let plate = crate::mcp::tools::arg(args, "plate")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                let render = |w: i32, h: i32| -> Option<(i32, i32, Vec<u8>)> {
+                    if plate {
+                        let mut surf = v.plate_content().compose(scale, transparent)?;
+                        let (pw, ph, rgba) =
+                            crate::helpers::image_bytes::surface_to_rgba(&mut surf);
+                        Some((pw, ph, rgba))
+                    } else {
+                        v.render_figure(w, h, transparent).map(|rgba| (w, h, rgba))
+                    }
+                };
 
                 // ── File-path export (PNG / PDF) ──────────────────────────────────
                 if let Some(path_str) = crate::mcp::tools::arg(args, "path")
@@ -979,7 +997,7 @@ impl CubeTabHost {
                     if !pdf && ext.as_deref() != Some("png") {
                         return Err("path must end in .png for a PNG export".to_string());
                     }
-                    let rgba = v.render_figure(width, height, transparent).ok_or_else(|| {
+                    let (width, height, rgba) = render(width, height).ok_or_else(|| {
                         "cube figure could not be rendered (GL unavailable)".to_string()
                     })?;
                     let res = if pdf {
@@ -999,7 +1017,7 @@ impl CubeTabHost {
                 }
 
                 // ── Base64 export (no path) ───────────────────────────────────────
-                let rgba = v.render_figure(width, height, transparent).ok_or_else(|| {
+                let (width, height, rgba) = render(width, height).ok_or_else(|| {
                     "cube figure could not be rendered (GL unavailable)".to_string()
                 })?;
                 let png = crate::helpers::png::encode_rgba(width, height, &rgba)?;

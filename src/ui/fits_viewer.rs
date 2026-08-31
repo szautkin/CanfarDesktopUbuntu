@@ -1585,16 +1585,31 @@ impl FitsViewer {
                         .unwrap_or(false),
                 };
 
-                let out_w = (region.width.round() as i32).saturating_mul(scale).max(1);
-                let out_h = (region.height.round() as i32).saturating_mul(scale).max(1);
-                let mut surface = canvas.capture_region_surface(
-                    view_w,
-                    view_h,
-                    region,
-                    out_w,
-                    out_h,
-                    crate::ui::fits_canvas::DrawOpts::export(transparent),
-                )?;
+                // A figure by default, because that is what the tool is called
+                // and what the Export button produces: a framed picture with
+                // the region's real sky coordinates under it, a colorbar in the
+                // image's own units, and the cut levels it was drawn at. An
+                // agent that wants the bare pixels has `get_fits_image`, or
+                // `plate: false` here.
+                let plate = crate::mcp::tools::arg(args, "plate")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let mut surface = if plate {
+                    crate::ui::fits_export::plate_content(&tab, view_w, view_h, region)
+                        .compose(scale, transparent)
+                        .ok_or_else(|| "could not compose the figure".to_string())?
+                } else {
+                    let out_w = (region.width.round() as i32).saturating_mul(scale).max(1);
+                    let out_h = (region.height.round() as i32).saturating_mul(scale).max(1);
+                    canvas.capture_region_surface(
+                        view_w,
+                        view_h,
+                        region,
+                        out_w,
+                        out_h,
+                        crate::ui::fits_canvas::DrawOpts::export(transparent),
+                    )?
+                };
                 let (w, h, rgba) = crate::helpers::image_bytes::surface_to_rgba(&mut surface);
 
                 match path {
@@ -1619,6 +1634,7 @@ impl FitsViewer {
                             "height": h,
                             "scale": scale,
                             "transparent": transparent,
+                            "plate": plate,
                         }))
                     }
                     None => {
@@ -1638,6 +1654,7 @@ impl FitsViewer {
                             "height": h,
                             "scale": scale,
                             "transparent": transparent,
+                            "plate": plate,
                         }))
                     }
                 }

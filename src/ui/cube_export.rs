@@ -319,6 +319,37 @@ fn ramp_from_flat(flat: &[u8]) -> [(u8, u8, u8); 256] {
     ramp
 }
 
+/// The plate a cube export composes.
+///
+/// Public so the MCP tool can compose the same figure the Export button does,
+/// rather than a bare render with no caption and no colorbar under it.
+#[allow(clippy::too_many_arguments)]
+pub fn plate_content(
+    capture: Rc<dyn Fn(i32, i32) -> Option<Vec<u8>>>,
+    plate_title: String,
+    caption: String,
+    colormap: String,
+    lo_label: String,
+    hi_label: String,
+    overlay: PlateOverlay,
+) -> crate::ui::figure_plate::PlateContent {
+    PlateSpec {
+        capture,
+        title: if plate_title.trim().is_empty() {
+            crate::tr_en!("Cube").to_string()
+        } else {
+            plate_title
+        },
+        caption,
+        colormap,
+        lo_label,
+        hi_label,
+        date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        overlay,
+    }
+    .content()
+}
+
 pub fn show_cube_export(
     parent: &impl IsA<gtk::Widget>,
     capture: Rc<dyn Fn(i32, i32) -> Option<Vec<u8>>>,

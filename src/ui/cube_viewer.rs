@@ -1902,7 +1902,12 @@ impl CubeViewer {
         }
     }
 
-    fn show_export(self: &Rc<Self>) {
+    /// The plate this cube would export, for the dialog and for the MCP tool.
+    ///
+    /// One builder, so an agent's figure and a person's are the same figure —
+    /// the tool used to return a bare render while the button produced a
+    /// captioned plate, and neither said so.
+    pub fn plate_content(self: &Rc<Self>) -> crate::ui::figure_plate::PlateContent {
         let this = self.clone();
         let capture: Rc<dyn Fn(i32, i32) -> Option<Vec<u8>>> =
             Rc::new(move |w, h| this.capture_plate(w, h));
@@ -1913,14 +1918,10 @@ impl CubeViewer {
             .to_string();
         let (lo_label, hi_label) = self.colorbar_labels();
 
-        // Live box + caption overlay + metadata footer inputs (mirrors Windows
-        // CubeViewerPage.BuildPlateData). Captions render only over the 3D volume;
-        // the export overlay shares the GL camera via `view_proj`, so it aligns
-        // with the captured render at any plate scale.
-        let is_3d = self
-            .stack
-            .visible_child_name()
-            .is_none_or(|n| n == "volume");
+        // Captions render only over the 3D volume; the export overlay shares
+        // the GL camera through `view_proj`, so it aligns with the captured
+        // render at any plate scale.
+        let is_3d = !self.is_slice_mode();
         let gl = self.gl.clone();
         let overlay = crate::ui::cube_export::PlateOverlay {
             captions_on: is_3d && self.captions_toggle.is_active(),
@@ -1932,9 +1933,7 @@ impl CubeViewer {
             spectral_scale: self.gl.spectral_scale(),
             meta: self.vol.meta.clone(),
         };
-
-        crate::ui::cube_export::show_cube_export(
-            &self.widget,
+        crate::ui::cube_export::plate_content(
             capture,
             self.name.clone(),
             self.wcs_caption(),
@@ -1942,7 +1941,14 @@ impl CubeViewer {
             lo_label,
             hi_label,
             overlay,
-        );
+        )
+    }
+
+    fn show_export(self: &Rc<Self>) {
+        let this = self.clone();
+        let compose: crate::ui::export_dialog::Compose =
+            Rc::new(move |scale, transparent| this.plate_content().compose(scale, transparent));
+        crate::ui::export_dialog::show(&self.widget, &self.name, compose);
     }
 
     // ── Opacity transfer-function editor ─────────────────────────────────────

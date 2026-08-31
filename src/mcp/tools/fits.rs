@@ -296,7 +296,9 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                           that draws the screen; the editing grips are not, and neither is the \
                           ink that says which mark happens to be selected. With `path` it writes \
                           a file and returns where; without one it returns the image, which \
-                          costs an agent context, so prefer a path when a person wants the file."
+                          costs an agent context, so prefer a path when a person wants the file. \
+                          The result is a captioned figure unless you pass `plate: false`, so a \
+                          person opening it can see where on the sky it points."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -326,6 +328,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                                 "additionalProperties": false
                             }
                         ]
+                    },
+                    "plate": {
+                        "type":"boolean",
+                        "description":"A publication figure (default): the picture framed, with the region's real sky coordinates captioned under it, a colorbar in the image's own units, and the cut levels and stretch it was drawn at — what the Export button produces. Set false for the bare pixels with nothing around them."
                     },
                     "scale": {"type":"integer","minimum":1,"maximum":4,"description":"Pixel multiplier, as the Export dialog offers. The output keeps the region's shape."},
                     "transparent": {"type":"boolean","description":"Leave the ground unpainted, so anything the image does not cover keeps its alpha. PNG only."},
@@ -907,5 +913,35 @@ mod tests {
             max, ui_max,
             "the tool caps scale at {max}, the dialog offers {ui_max}"
         );
+    }
+
+    /// An agent can ask for the figure a person gets, and knows which it got.
+    ///
+    /// The tool returned a bare crop while the Export button produced a
+    /// captioned plate, and nothing in either surface said so — an agent
+    /// handing a file to someone had no idea it carried no coordinates. Both
+    /// tools take `plate` now, both say what their default is, and both echo
+    /// which one they produced.
+    #[test]
+    fn both_export_tools_can_produce_the_figure_the_button_does() {
+        let fits = descriptors();
+        let cube = crate::mcp::tools::cube::descriptors();
+        for (name, d) in [("export_fits_figure", &fits), ("export_cube_figure", &cube)] {
+            let t = d
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{name} is advertised"));
+            let plate = &t.input_schema["properties"]["plate"];
+            assert_eq!(
+                plate["type"], "boolean",
+                "{name} cannot be asked for the figure"
+            );
+            let desc = plate["description"].as_str().unwrap_or_default();
+            assert!(
+                desc.to_lowercase().contains("default"),
+                "{name}'s `plate` does not say which way it defaults, and the two \
+                 tools default differently"
+            );
+        }
     }
 }
