@@ -71,3 +71,10 @@ jobs:
       # code behind it is unreachable and says so.
       - name: Check the build without cfitsio
         run: cargo check --no-default-features --all-targets
+      # The desktop entry and the AppStream metainfo are what a software centre
+      # reads. Neither is compiled, so nothing else would notice them breaking.
+      - name: Validate the desktop entry and AppStream metainfo
+        run: |
+          sudo apt-get install -y --no-install-recommends appstream desktop-file-utils
+          desktop-file-validate data/net.canfar.Verbinal.desktop
+          appstreamcli validate data/net.canfar.Verbinal.metainfo.xml

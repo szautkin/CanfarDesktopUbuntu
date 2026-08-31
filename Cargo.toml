@@ -69,6 +69,7 @@ depends = "libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.4), libglib2.0-0 (>= 2.76)
 assets = [
     ["target/release/verbinal", "usr/bin/", "755"],
     ["data/net.canfar.Verbinal.desktop", "usr/share/applications/", "644"],
+    ["data/net.canfar.Verbinal.metainfo.xml", "usr/share/metainfo/", "644"],
     ["assets/icons/hicolor/16x16/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
     ["assets/icons/hicolor/24x24/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/24x24/apps/", "644"],
     ["assets/icons/hicolor/32x32/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/32x32/apps/", "644"],

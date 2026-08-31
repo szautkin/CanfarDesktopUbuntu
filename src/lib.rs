@@ -7,6 +7,7 @@
 //! tree. Now they can just use it.
 
 pub mod config;
+pub mod desktop_entry;
 pub mod helpers;
 pub mod i18n;
 pub mod mcp;
@@ -67,14 +68,30 @@ pub fn run() {
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
-        // Register the Verbinal icon so GTK can find it by name
-        let display = gtk4::gdk::Display::default().expect("Could not get default display");
-        let theme = gtk4::IconTheme::for_display(&display);
-        theme.add_search_path(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets")
-                .join("icons"),
-        );
+        // Let GTK find our own icons by name when running from the source
+        // tree, so a development build shows the app's icon in its About
+        // window rather than a placeholder.
+        //
+        // Debug only. `CARGO_MANIFEST_DIR` is baked in at COMPILE time, so in
+        // a released binary it names a directory on the machine that built it:
+        // absent on a user's, silently ignored, and dead weight that publishes
+        // the build layout for no benefit. An installed package puts the icons
+        // in the system theme, where they are found without any of this.
+        //
+        // Note this never fixes the WINDOW's icon: on Wayland the shell
+        // resolves that by matching the window's app_id to an installed
+        // desktop entry, which no amount of in-process theme search can stand
+        // in for. See `dev-install.sh`.
+        #[cfg(debug_assertions)]
+        {
+            let display = gtk4::gdk::Display::default().expect("Could not get default display");
+            let theme = gtk4::IconTheme::for_display(&display);
+            theme.add_search_path(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("assets")
+                    .join("icons"),
+            );
+        }
 
         let (services, toast_rx) = AppServices::new(handle.clone());
 

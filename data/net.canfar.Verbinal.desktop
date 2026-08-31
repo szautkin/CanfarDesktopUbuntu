@@ -5,6 +5,6 @@ Exec=verbinal
 Icon=net.canfar.Verbinal
 Terminal=false
 Type=Application
-Categories=Science;Education;Network;
+Categories=Science;Astronomy;
 Keywords=CANFAR;astronomy;science;sessions;notebook;desktop;
 StartupNotify=true

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>net.canfar.Verbinal</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+
+  <name>Verbinal</name>
+  <summary>A CANFAR Science Portal companion</summary>
+
+  <description>
+    <p>
+      Verbinal is a native Linux companion for the CANFAR Science Portal: launch
+      and manage science sessions, browse VOSpace, search the CADC archive, and
+      look at the data without leaving the desktop.
+    </p>
+    <p>Its two viewers are built for astronomical data rather than for pictures:</p>
+    <ul>
+      <li>A FITS viewer with WCS, colormaps and stretches, percentile and zscale cut levels, an extension selector, a crosshair reading sky coordinates, and blink, linked-crosshair and synced-zoom comparison across tabs.</li>
+      <li>A cube viewer with GPU volume rendering and an opacity transfer function, plus a 2D slice view with a channel scrubber and per-voxel spectra.</li>
+    </ul>
+    <p>
+      Marks can be drawn on an image or a cube, labelled, moved and resized. They
+      persist with the file and appear in exported figures, which carry the
+      region's real sky coordinates, the cut levels and a colorbar.
+    </p>
+    <p>
+      An AI assistant can drive the whole application over a local MCP socket:
+      read what is on screen, point at part of it, and hand back a figure.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">net.canfar.Verbinal.desktop</launchable>
+
+  <url type="homepage">https://www.canfar.net</url>
+  <url type="bugtracker">https://github.com/szautkin/CanfarDesktopUbuntu/issues</url>
+
+  <developer id="net.canfar">
+    <name>Serhii Zautkin</name>
+  </developer>
+
+  <content_rating type="oars-1.1" />
+
+  <categories>
+    <category>Science</category>
+    <category>Astronomy</category>
+    <category>Education</category>
+  </categories>
+
+  <keywords>
+    <keyword>CANFAR</keyword>
+    <keyword>astronomy</keyword>
+    <keyword>FITS</keyword>
+    <keyword>VOSpace</keyword>
+    <keyword>CADC</keyword>
+  </keywords>
+
+  <provides>
+    <binary>verbinal</binary>
+  </provides>
+
+  <releases>
+    <release version="1.4.1" date="2026-08-30">
+      <description>
+        <p>
+          An imaging release. Marks can be drawn on a FITS image or a cube; an
+          agent can see the working area and point at part of it; and sky
+          coordinates on modern FITS headers, which were 40 to 90 arcseconds
+          out, are fixed.
+        </p>
+      </description>
+    </release>
+    <release version="1.4.0" date="2026-08-27">
+      <description>
+        <p>
+          A notebook release: cell output is rendered for every MIME type the
+          parser models, figures can be fetched as images, and two file formats
+          that were destroyed by saving them no longer are.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>
