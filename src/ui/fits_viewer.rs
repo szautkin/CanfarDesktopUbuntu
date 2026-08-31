@@ -84,6 +84,10 @@ pub struct FitsViewer {
     /// while it is dragged.
     open_label_editor: RefCell<Option<(String, gtk::Box)>>,
     /// On while the next click places a mark.
+    /// The select-area toggle, held so switching tabs and Escape can turn it
+    /// off — an armed mode that outlives the thing it was armed on is a mode
+    /// nobody asked for.
+    select_area_btn: gtk::ToggleButton,
     /// The empty state's recents list, and the box that hides its heading with
     /// it when there is nothing to list.
     recents_view: Rc<crate::ui::recents_section::RecentsSection>,
@@ -385,6 +389,17 @@ impl FitsViewer {
         column.append(marks_section.widget());
 
         // ── EXPORT ──────────────────────────────────────────────────────────
+        // The dashed marquee, from Adwaita rather than Yaru: Yaru is Ubuntu's,
+        // and the app should hold up on other distributions.
+        let select_area_btn = icon_toggle(
+            "edit-select-symbolic",
+            crate::tr_en!("Select an area to export. Drag a box; releasing opens the dialog."),
+        );
+        column.append(&viewer_shell::labeled_row(
+            crate::tr_en!("Select area"),
+            &select_area_btn,
+        ));
+
         let export_btn = gtk::Button::with_label(crate::tr_en!("Export…"));
         export_btn.add_css_class("suggested-action");
         export_btn.set_hexpand(true);
@@ -617,6 +632,7 @@ impl FitsViewer {
             coords_panel,
             annotations_panel,
             open_label_editor: RefCell::new(None),
+            select_area_btn: select_area_btn.clone(),
             recents_view,
             recents_box,
             marks_section,
@@ -766,6 +782,32 @@ impl FitsViewer {
                 let Some(tab) = v.current_tab() else { return };
                 crate::ui::fits_export::show(btn, &tab, None);
             });
+        }
+        // Select-area arms the canvas. It and drawing are mutually exclusive,
+        // enforced here rather than left to the user to remember — the two
+        // want the same button and the same drag.
+        {
+            let v = viewer.clone();
+            select_area_btn.connect_toggled(move |btn| {
+                let on = btn.is_active();
+                if on {
+                    v.marks_section.draw_mode().set_active(false);
+                }
+                v.set_select_area(on);
+            });
+        }
+        {
+            let v = viewer.clone();
+            let select_area_btn = select_area_btn.clone();
+            viewer
+                .marks_section
+                .draw_mode()
+                .connect_toggled(move |btn| {
+                    if btn.is_active() {
+                        select_area_btn.set_active(false);
+                    }
+                    let _ = &v;
+                });
         }
         {
             let v = viewer.clone();
@@ -2433,6 +2475,32 @@ impl FitsViewer {
     }
 
     /// Arm or disarm click-to-place on the active tab.
+    /// Arm or disarm select-area on the current tab.
+    ///
+    /// Releasing the drag opens the export dialog on what was dragged: the
+    /// release IS the capture, so nothing has to store a selection, report one,
+    /// or ask about one later.
+    fn set_select_area(self: &Rc<Self>, on: bool) {
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        canvas.set_selecting(on);
+        if !on {
+            return;
+        }
+        let viewer = Rc::downgrade(self);
+        canvas.set_on_region_selected(move |region| {
+            let Some(v) = viewer.upgrade() else { return };
+            let Some(tab) = v.current_tab() else { return };
+            crate::ui::fits_export::show(&v.widget, &tab, Some(region));
+            // One region per arming: leaving it armed after the dialog opens
+            // means the next click inside a modal-adjacent window starts
+            // another drag nobody asked for.
+            v.select_area_btn.set_active(false);
+        });
+    }
+
     fn set_draw_mode(self: &Rc<Self>, on: bool) {
         let Some(tab) = self.current_tab() else {
             return;

@@ -243,9 +243,35 @@ impl ViewRegion {
         }
     }
 
+    /// The rectangle between two corners, whichever way round they were
+    /// dragged. Dragging up-and-left is as natural as down-and-right, and a
+    /// negative width is not a rectangle.
+    pub fn between(a: (f64, f64), b: (f64, f64)) -> Self {
+        Self {
+            x: a.0.min(b.0),
+            y: a.1.min(b.1),
+            width: (b.0 - a.0).abs(),
+            height: (b.1 - a.1).abs(),
+        }
+    }
+
     pub fn is_usable(&self) -> bool {
         self.width > 0.0 && self.height > 0.0
     }
+}
+
+/// Told the region a select-area drag produced.
+type RegionCallback = RefCell<Option<Rc<dyn Fn(ViewRegion)>>>;
+
+/// Which mode owns a press on the canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PressOwner {
+    /// Pan, or pick up a mark — the canvas's own behaviour.
+    Canvas,
+    /// Draw mode is armed and the press is on empty image.
+    Drawing,
+    /// Select-area is armed.
+    Selecting,
 }
 
 /// The scale that shows the WHOLE image in a viewport of `viewport`.
@@ -295,6 +321,12 @@ pub struct FitsCanvas {
     pixel_data: Rc<RefCell<Vec<u8>>>,
     img_width: usize,
     img_height: usize,
+    /// True while the export's select-area mode is armed.
+    selecting: Cell<bool>,
+    /// The rectangle being dragged out right now, in screen coordinates.
+    pending_region: RefCell<Option<ViewRegion>>,
+    /// Told the region when the drag ends.
+    on_region_selected: RegionCallback,
     /// Fit the whole image into the viewport on the first REAL allocation.
     ///
     /// Not at load: a `DrawingArea` reports 0x0 until it is allocated and
@@ -437,6 +469,9 @@ impl FitsCanvas {
             shared,
             local_hover: Rc::new(RefCell::new(None)),
             crosshair_placed: Rc::new(RefCell::new(None)),
+            selecting: Cell::new(false),
+            pending_region: RefCell::new(None),
+            on_region_selected: RefCell::new(None),
             needs_fit: Cell::new(true),
             image_overlay,
             surface_cache: RefCell::new(None),
@@ -464,6 +499,7 @@ impl FitsCanvas {
         canvas.setup_drag_pan();
         canvas.setup_motion_tracking();
         canvas.setup_left_click();
+        canvas.setup_select_region();
         canvas.setup_right_click_crosshair();
 
         canvas
@@ -1008,7 +1044,28 @@ impl FitsCanvas {
 
         if opts.chrome {
             self.draw_handles(cr);
+            self.draw_pending_region(cr);
         }
+    }
+
+    /// The rectangle being dragged out for an export.
+    ///
+    /// Chrome, and firmly so: it is the tool for choosing a frame, not part of
+    /// the picture. A dashed outline rather than the mark ink, because it is
+    /// not a mark and should not read as one.
+    fn draw_pending_region(&self, cr: &cairo::Context) {
+        let Some(r) = *self.pending_region.borrow() else {
+            return;
+        };
+        if !r.is_usable() {
+            return;
+        }
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+        cr.set_line_width(1.0);
+        cr.set_dash(&[4.0, 4.0], 0.0);
+        cr.rectangle(r.x, r.y, r.width, r.height);
+        cr.stroke().ok();
+        cr.set_dash(&[], 0.0);
     }
 
     /// The four grips on the mark being edited.
@@ -1621,7 +1678,6 @@ impl FitsCanvas {
         // button 1, and the drag claimed the sequence first — so a click meant
         // to place a mark panned the image instead, and nothing was ever
         // placed.
-        let drawing = self.on_left_click.clone();
         let pick = Rc::downgrade(self);
         let pan_pick = Rc::downgrade(self);
         let pan_notify = Rc::downgrade(self);
@@ -1629,17 +1685,17 @@ impl FitsCanvas {
 
         let so = start_offset.clone();
         let t = transform.clone();
-        let d = drawing.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
             let shifted = gesture
                 .current_event_state()
                 .contains(gtk::gdk::ModifierType::SHIFT_MASK);
-            let on_a_mark = pick
+            // Whoever owns the press gets it; the canvas pans only when
+            // nothing else has a claim.
+            let owner = pick
                 .upgrade()
-                .map(|c| c.annotation_at(x, y).is_some() || c.label_at(x, y).is_some())
-                .unwrap_or(false);
-            // Draw mode owns empty space; a mark is still selectable through it.
-            if d.borrow().is_some() && !shifted && !on_a_mark {
+                .map(|c| c.press_owner(x, y, shifted))
+                .unwrap_or(PressOwner::Canvas);
+            if owner != PressOwner::Canvas {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
             }
@@ -1707,11 +1763,15 @@ impl FitsCanvas {
                     return;
                 }
             }
+            // Belt and braces: drag_begin already denies a press it does not
+            // own, but a mode armed mid-drag would otherwise pan underneath it.
             let shifted = gesture
                 .current_event_state()
                 .contains(gtk::gdk::ModifierType::SHIFT_MASK);
-            if drawing.borrow().is_some() && !shifted {
-                return;
+            if let (Some(canvas), Some((sx, sy))) = (pan_pick.upgrade(), gesture.start_point()) {
+                if canvas.press_owner(sx, sy, shifted) != PressOwner::Canvas {
+                    return;
+                }
             }
             {
                 let start = so.borrow();
@@ -1838,6 +1898,128 @@ impl FitsCanvas {
         self.drawing_area.set_cursor_from_name(Some("default"));
     }
 
+    /// Which mode owns a press at `(x, y)`.
+    ///
+    /// Three gestures want the left button — pan, draw, and select-area — and
+    /// the first time two of them wanted it, the pan drag claimed the sequence
+    /// and marks could not be placed at all. So the question is answered once,
+    /// here, and each gesture asks rather than deciding for itself.
+    fn press_owner(&self, x: f64, y: f64, shifted: bool) -> PressOwner {
+        // Shift always means "move the image, not the contents".
+        if shifted {
+            return PressOwner::Canvas;
+        }
+        // Select-area owns EVERY press while it is armed, marks included.
+        // Draw mode stands aside on a mark so you can still pick one up; a
+        // selection cannot, because the region you want almost always starts
+        // on top of something interesting, and marks are what you put on the
+        // interesting things.
+        if self.selecting.get() {
+            return PressOwner::Selecting;
+        }
+        if self.on_left_click.borrow().is_some()
+            && self.annotation_at(x, y).is_none()
+            && self.label_at(x, y).is_none()
+        {
+            return PressOwner::Drawing;
+        }
+        PressOwner::Canvas
+    }
+
+    /// Who owns a press, by name, for `fits_gesture_probe`.
+    ///
+    /// The enum stays private — it is an implementation detail of three
+    /// gestures — but the DECISION is the thing that broke once and is worth a
+    /// test, and it needs a real canvas to ask about marks.
+    pub fn press_owner_name(&self, x: f64, y: f64, shifted: bool) -> &'static str {
+        match self.press_owner(x, y, shifted) {
+            PressOwner::Canvas => "canvas",
+            PressOwner::Drawing => "drawing",
+            PressOwner::Selecting => "selecting",
+        }
+    }
+
+    /// Arm or disarm select-area mode.
+    pub fn set_selecting(&self, on: bool) {
+        self.selecting.set(on);
+        self.pending_region.borrow_mut().take();
+        self.drawing_area
+            .set_cursor_from_name(Some(if on { "crosshair" } else { "default" }));
+        self.drawing_area.queue_draw();
+    }
+
+    pub fn is_selecting(&self) -> bool {
+        self.selecting.get()
+    }
+
+    /// Called with the region when a select drag finishes.
+    pub fn set_on_region_selected(&self, f: impl Fn(ViewRegion) + 'static) {
+        *self.on_region_selected.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// The drag that picks a region to export.
+    ///
+    /// Capture phase and its own gesture, like the drawing one: the pan drag
+    /// underneath would otherwise claim the sequence first.
+    fn setup_select_region(self: &Rc<Self>) {
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(1);
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let anchor = Rc::new(RefCell::new(None::<(f64, f64)>));
+
+        {
+            let canvas = Rc::downgrade(self);
+            let anchor = anchor.clone();
+            drag.connect_drag_begin(move |gesture, x, y| {
+                let Some(canvas) = canvas.upgrade() else {
+                    return;
+                };
+                let shifted = gesture
+                    .current_event_state()
+                    .contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                if canvas.press_owner(x, y, shifted) != PressOwner::Selecting {
+                    return;
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                *anchor.borrow_mut() = Some((x, y));
+            });
+        }
+        {
+            let canvas = Rc::downgrade(self);
+            let anchor = anchor.clone();
+            drag.connect_drag_update(move |_, dx, dy| {
+                let (Some(canvas), Some(start)) = (canvas.upgrade(), *anchor.borrow()) else {
+                    return;
+                };
+                *canvas.pending_region.borrow_mut() =
+                    Some(ViewRegion::between(start, (start.0 + dx, start.1 + dy)));
+                canvas.drawing_area.queue_draw();
+            });
+        }
+        {
+            let canvas = Rc::downgrade(self);
+            drag.connect_drag_end(move |_, dx, dy| {
+                let (Some(canvas), Some(start)) = (canvas.upgrade(), anchor.borrow_mut().take())
+                else {
+                    return;
+                };
+                let region = ViewRegion::between(start, (start.0 + dx, start.1 + dy));
+                canvas.pending_region.borrow_mut().take();
+                canvas.drawing_area.queue_draw();
+                // A tap is not a region. Without a floor, a click that wobbled
+                // would open the dialog on a two-pixel box.
+                if !region.is_usable() || region.width < 8.0 || region.height < 8.0 {
+                    return;
+                }
+                let cb = canvas.on_region_selected.borrow().clone();
+                if let Some(cb) = cb {
+                    cb(region);
+                }
+            });
+        }
+        self.drawing_area.add_controller(drag);
+    }
+
     fn setup_left_click(self: &Rc<Self>) {
         let drag = gtk::GestureDrag::new();
         drag.set_button(1);
@@ -1853,24 +2035,16 @@ impl FitsCanvas {
                 let Some(canvas) = canvas.upgrade() else {
                     return;
                 };
-                if canvas.on_left_click.borrow().is_none() {
-                    return;
-                }
-                // Shift means "move the image, not the marks".
-                if gesture
+                // Shift means "move the image, not the marks"; a press on an
+                // existing mark means "that one", not "another on top of it";
+                // and select-area outranks both. All three live in
+                // `press_owner`, so the modes cannot disagree about who has
+                // the button — which is how marks once could not be placed at
+                // all.
+                let shifted = gesture
                     .current_event_state()
-                    .contains(gtk::gdk::ModifierType::SHIFT_MASK)
-                {
-                    return;
-                }
-                // A press on a mark that is already there means "that one",
-                // not "another one on top of it". Draw mode makes NEW marks in
-                // empty space; on an existing mark it stands aside and lets the
-                // select-and-edit path have the press. Without this, clicking a
-                // mark while Draw was still on quietly stacked a second mark
-                // over the first, which looks exactly like selection doing
-                // nothing.
-                if canvas.annotation_at(x, y).is_some() || canvas.label_at(x, y).is_some() {
+                    .contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                if canvas.press_owner(x, y, shifted) != PressOwner::Drawing {
                     return;
                 }
                 let (ix, iy) = canvas.screen_to_image_point(x, y);
