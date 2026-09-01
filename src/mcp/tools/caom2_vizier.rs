@@ -91,6 +91,30 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "validate_adql_query".to_string(),
+            description: "Check an ADQL query against the service's own schema WITHOUT running \
+                it: unknown tables, columns a table does not have, and the ambiguity CADC \
+                refuses — `FROM caom2.Observation JOIN caom2.Plane ON Plane.obsID=…` fails with \
+                \"Column [obsID] is ambiguous\", because a bare table name only works while the \
+                column belongs to one of the joined tables; write an alias or the full \
+                caom2.Plane.obsID. Each problem carries the text it objects to and, where there \
+                is one obvious answer, what to write instead. `valid: true` means nothing was \
+                found, not that the query is guaranteed to run — a subquery or a function is \
+                left alone rather than guessed at. execute_adql_query runs the same check \
+                before it sends, so this is for composing a query without spending a query."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "adql": { "type": "string", "description": "The query to check." }
+                },
+                "required": ["adql"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "describe_tap_schema".to_string(),
             description: "What the CADC TAP service's tables actually contain — read from the \
                 service itself, so it matches the archive you are querying. With no arguments: \
@@ -191,9 +215,44 @@ pub async fn dispatch(
         "get_data_links" => get_data_links(services, args).await,
         "vizier_cone_search" => vizier_cone_search(services, args).await,
         "describe_tap_schema" => describe_tap_schema(services, args).await,
+        "validate_adql_query" => validate_adql_query(services, args).await,
         _ => return None,
     };
     Some(result)
+}
+
+/// Check a query against the schema, and run nothing.
+///
+/// Reads the same `helpers::adql_validate` the editor and `execute_adql_query`
+/// use, so the three cannot disagree about whether a query is acceptable. It
+/// does not touch the ADQL editor: checking a draft should not replace what
+/// someone has open.
+async fn validate_adql_query(services: &AppServices, args: &Value) -> ToolResult {
+    let adql = str_arg(args, "adql");
+    if adql.trim().is_empty() {
+        return ToolResult::Failed("adql is required".to_string());
+    }
+    // Fetched rather than read from cache: this is the one caller that can
+    // afford to wait, and an empty schema would answer "valid" for everything.
+    let schema = match services.tap_schema.schema().await {
+        Ok(s) => s,
+        Err(e) => return ToolResult::Failed(format!("could not read the service's schema: {e}")),
+    };
+    let problems = crate::helpers::adql_validate::problems(&adql, &schema);
+    ToolResult::Data(json!({
+        "adql": adql,
+        "valid": problems.is_empty(),
+        "problems": problems
+            .iter()
+            .map(|p| json!({
+                "message": p.message,
+                "text": adql.get(p.start..p.end).unwrap_or_default(),
+                "fix": p.fix,
+                "start": p.start,
+                "end": p.end,
+            }))
+            .collect::<Vec<_>>(),
+    }))
 }
 
 async fn get_observation_caom2(services: &AppServices, args: &Value) -> ToolResult {
@@ -645,7 +704,7 @@ mod tests {
     #[test]
     fn descriptor_names_unique_read_and_agent_safe() {
         let ds = descriptors();
-        assert_eq!(ds.len(), 4);
+        assert_eq!(ds.len(), 5);
         let mut seen = HashSet::new();
         for d in &ds {
             assert!(!d.name.is_empty());

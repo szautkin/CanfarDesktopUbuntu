@@ -4,6 +4,14 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### `validate_adql_query` — check a query without spending one
+
+- The same check the editor and `execute_adql_query` run, offered on its own, so
+  an agent composing a query can ask whether it is acceptable instead of finding
+  out by running it. It returns each problem with the text it objects to and,
+  where there is one obvious answer, what to write instead. It does not touch
+  the ADQL editor: checking a draft should not replace what someone has open.
+
 ### An ADQL query is checked against the service's own schema before it is sent
 
 - **The mistake that prompted it**: `FROM caom2.Observation JOIN caom2.Plane ON

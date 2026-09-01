@@ -310,6 +310,16 @@ mod tests {
          Observation on obsID.",
     ),
     (
+        "validate_adql_query",
+        "The service refuses `FROM caom2.Observation JOIN caom2.Plane ON Plane.obsID=…` with \
+         \"Column [obsID] is ambiguous\", and until now the only way to find that out was to \
+         run it — a round trip, and on a broad query a slow one. describe_tap_schema tells an \
+         agent what the columns ARE; this tells it whether the query it wrote uses them in a \
+         way the service accepts. Neither reference app has it because neither validates \
+         before sending; ours does, in the editor and in execute_adql_query, and this is the \
+         same check offered on its own.",
+    ),
+    (
         "show_search_row_detail",
         "Clicking a row in the results table opens a dialog with every column of it — the \
          forty-one a query returns, not the dozen the grid shows. An agent could read those \
