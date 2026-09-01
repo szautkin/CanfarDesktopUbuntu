@@ -231,3 +231,89 @@ fails it, and deleting the cube's `set_on_style_changed` fails
 - `annotation_style_probe` grew a styled row, because whether four numbers a
   person picked still read as one set of annotations is not a thing a test can
   answer.
+
+---
+
+## The bug the style work exposed (and the fix)
+
+Asked where the export scale applies, I measured instead of reading, and the
+answer had a defect in it.
+
+`1x / 2x / 4x` multiplies the output raster AND the plate's whole typographic
+layout — frame, padding, title, caption, colorbar, footer are all proportional
+to the frame width. The selected area never changes; `fits_region_probe`
+confirms the same image region at all three. So the scale is resolution, not
+crop.
+
+**But the marks did not scale.** Measured on the FITS plate, same mark at three
+scales:
+
+| | 1x | 2x | 4x |
+| --- | --- | --- | --- |
+| Raster | 763x705 | — | 3053x2821 |
+| Ring stroke | 2px | 2px | **2px** |
+| Label ink | 15x10px | 15x10px | **15x10px** |
+
+A mark's stroke, label and leader are in device pixels deliberately — a stroke
+that thickened as you zoomed out would turn the view into a blot — but "device
+pixels" means the SCREEN's. The image blit sits inside a `cr.save()/restore()`,
+so `annotation_render::draw` runs on an identity CTM and its numbers land in
+OUTPUT pixels. `draw_region_into` scaled the transform, so mark positions and
+radii grew; nothing scaled the ink. At 4x the annotations were the one thing in
+the figure that shrank, and they became unreadable at exactly the resolution
+someone chose for publication.
+
+### The fix: one factor, one place to read it
+
+`AnnotationSurface::ink_scale() -> f64`, defaulting to 1.0 — the screen. Every
+surface that renders bigger than the screen answers with its factor:
+
+| | |
+| --- | --- |
+| `FitsCanvas` | the `k` `region_view` already computes |
+| `CubeAnnotationSurface`, `SlicePlateSurface` | `plate_ink(plate_w, screen_w)` |
+| everything else, and every test surface | the default |
+
+`draw` reads it once — `MarkStyle::usable_ink(surface.ink_scale())` — and every
+length is multiplied by it: stroke, font, leader, rule, overhang, text lift,
+text shadow. Missing one is not cosmetic: at ink 0 a mark drew a full-size ring
+with no leader at all, which is how the guard ended up in ONE place rather than
+five.
+
+Two decisions worth writing down:
+
+- **`scaled` is applied after `sane`, never before.** Those ceilings — 72px
+  label, 20px stroke — are what a person may pick ON SCREEN. Re-clamping after
+  multiplying by 4 would hold a 22px label at 72 instead of 88, shrinking
+  exactly the marks made large on purpose, and only in the export.
+- **A downscale is a factor too.** `get_fits_image` renders a 1400px view into
+  a 1024px raster; marks that kept their screen numbers there came out
+  relatively fatter than the screen. Same unfaithfulness, other direction.
+
+### What holds it
+
+`region_view` and `plate_ink` were extracted as pure functions for one reason:
+GTK gives a headless process no allocation, so anything reachable only through a
+widget cannot be checked in CI — which is how a capture that cropped instead of
+scaling shipped once, and how this shipped again.
+
+- `the_ink_grows_with_the_raster`, `a_downscaled_capture_thins_the_ink_too`,
+  `a_nested_capture_compounds_the_factor`
+- `a_mark_keeps_its_proportions_when_the_rendering_is_bigger` — a real raster at
+  1x/2x/4x, measuring the ring's stroke AND the label's ink area, because a fix
+  that scaled the ring and forgot the label passes any single-number check
+- `the_leader_scales_with_the_rendering` — a 4x label on a 1x leader reads as
+  the text having come loose from its mark
+- `a_rendering_that_cannot_size_itself_draws_the_screens_look` — 0, negative,
+  NaN and infinity each draw byte-for-byte what the screen draws
+- `a_large_label_is_not_clamped_back_down_by_the_export`
+- `every_plate_surface_is_told_how_big_the_plate_is` — the arithmetic being
+  right is worth nothing if a construction site leaves the field at a literal,
+  which is the shape the bug actually had
+- `examples/export_scale_probe.rs` — end to end through `compose_region`, the
+  same function Save calls, and it writes the plates to look at
+
+Seven mutations, seven caught: dropping the ink from `region_view`; ignoring it
+in the renderer; scaling the stroke but not the label; leaving the leader at its
+screen length; making `plate_ink` return 1.0; removing the headless guard; and
+building a plate surface with a literal factor.

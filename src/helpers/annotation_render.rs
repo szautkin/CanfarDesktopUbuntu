@@ -31,6 +31,26 @@ pub trait AnnotationSurface {
     /// view the way a circle drawn on a photograph does. The viewer knows the
     /// scale; the renderer only knows it needs one.
     fn units_to_pixels(&self, anchor: &crate::models::annotation::Anchor) -> f64;
+
+    /// How much bigger this rendering is than the screen. 1.0 IS the screen.
+    ///
+    /// A mark's stroke, label and leader are in DEVICE pixels, deliberately:
+    /// a stroke that thickened as you zoomed out would turn the view into a
+    /// blot. But "device pixels" means the SCREEN's, and an export at 4x has
+    /// four times as many of them.
+    ///
+    /// Left at 1.0 everywhere, that is a measured bug rather than a
+    /// hypothetical one: at 4x a 2px ring stayed 2px and a 12px label stayed a
+    /// 15x10px smudge, on a plate whose own title, caption and colorbar DID
+    /// scale — so the annotations were the only thing in the figure that
+    /// shrank, and the marks became unreadable exactly at the resolution
+    /// someone chose for publication.
+    ///
+    /// Every surface that renders bigger than the screen answers with its
+    /// factor. The default is the screen.
+    fn ink_scale(&self) -> f64 {
+        1.0
+    }
 }
 
 /// The blueprint palette and metrics.
@@ -99,18 +119,24 @@ pub fn leader_geometry(
     offset: Option<(f64, f64)>,
     text_width: f64,
     canvas_w: f64,
+    ink: f64,
 ) -> (f64, f64, f64, f64, f64, f64, bool) {
     let angle = style::LEADER_ANGLE_DEG.to_radians();
     let (raw_dx, raw_dy) = offset.unwrap_or((angle.cos(), -angle.sin()));
     let len = (raw_dx * raw_dx + raw_dy * raw_dy).sqrt().max(f64::EPSILON);
     let (mut ux, uy) = (raw_dx / len, raw_dy / len);
 
-    let rule_len = text_width + style::RULE_OVERHANG;
-    // Enough room on the intended side for the leader AND the rule?
+    // Every length here is furniture in device pixels, so every one of them
+    // takes the ink factor. `text_width` arrives already scaled, because it was
+    // measured with the scaled font — mixing a scaled width with an unscaled
+    // overhang is how a rule ends up not reaching the end of its own text.
+    let rule_len = text_width + style::RULE_OVERHANG * ink;
+    // The stored offset is in screen pixels too — a label is furniture, not
+    // part of the image — so it scales with the rest of the furniture.
     let leader_len = if offset.is_some() {
-        len.max(style::LEADER_LEN * 0.5)
+        (len * ink).max(style::LEADER_LEN * 0.5 * ink)
     } else {
-        style::LEADER_LEN
+        style::LEADER_LEN * ink
     };
     let reach = half_w + leader_len + rule_len;
     let rightwards = if ux >= 0.0 {
@@ -148,9 +174,9 @@ pub fn leader_geometry(
         elbow_x - rule_len
     };
     let text_x = if rightwards {
-        elbow_x + style::RULE_OVERHANG / 2.0
+        elbow_x + style::RULE_OVERHANG * ink / 2.0
     } else {
-        rule_end + style::RULE_OVERHANG / 2.0
+        rule_end + style::RULE_OVERHANG * ink / 2.0
     };
     (sx, sy, elbow_x, elbow_y, rule_end, text_x, rightwards)
 }
@@ -165,6 +191,9 @@ pub fn draw(
     canvas_w: f64,
     canvas_h: f64,
 ) {
+    // Asked once, and made usable once: it is a property of this rendering,
+    // not of a mark, and every length below is multiplied by it.
+    let ink = MarkStyle::usable_ink(surface.ink_scale());
     for a in annotations {
         // A mark whose anchor is off-canvas or behind the camera is skipped,
         // not clamped: a clamped mark points at the wrong thing.
@@ -183,7 +212,7 @@ pub fn draw(
 
         let is_selected = selected == Some(a.id.as_str());
         let is_editing = editing == Some(a.id.as_str());
-        let own = a.effective_style();
+        let own = a.effective_style().scaled(ink);
         // Per mark, not once for the run: size and weight vary now, and a
         // face set outside the loop would give every mark whichever one the
         // previous mark happened to leave behind.
@@ -203,7 +232,7 @@ pub fn draw(
         // that got thinner when you clicked it would read as the click having
         // broken something.
         cr.set_line_width(if is_selected || is_editing {
-            own.stroke.max(style::SELECTED_STROKE)
+            own.stroke.max(style::SELECTED_STROKE * ink)
         } else {
             own.stroke
         });
@@ -241,7 +270,7 @@ pub fn draw(
         // everything with a leader.
         if !a.text.trim().is_empty() {
             if a.kind == AnnotationKind::Text {
-                draw_label_at(cr, a, cx, cy, canvas_w);
+                draw_label_at(cr, a, cx, cy, canvas_w, own.font_size, ink);
             } else {
                 let text_width = cr.text_extents(&a.text).map(|e| e.width()).unwrap_or(0.0);
                 let elliptical = a.kind != AnnotationKind::Rect;
@@ -259,14 +288,15 @@ pub fn draw(
                     a.label_offset,
                     text_width,
                     canvas_w,
+                    ink,
                 );
                 cr.new_path();
                 cr.move_to(sx, sy);
                 cr.line_to(ex, ey);
                 cr.line_to(rule_end, ey);
                 cr.stroke().ok();
-                let ty = (ey - style::TEXT_LIFT).max(own.font_size);
-                draw_text_with_shadow(cr, text_x, ty, &a.text);
+                let ty = (ey - style::TEXT_LIFT * ink).max(own.font_size);
+                draw_text_with_shadow(cr, text_x, ty, &a.text, ink);
             }
         }
         let _ = canvas_h;
@@ -287,7 +317,15 @@ fn draw_ellipse(cr: &cairo::Context, cx: f64, cy: f64, rx: f64, ry: f64) {
 
 /// A label centred over a point, kept inside the canvas and legible on top of
 /// whatever is under it.
-fn draw_label_at(cr: &cairo::Context, a: &Annotation, cx: f64, cy: f64, canvas_w: f64) {
+fn draw_label_at(
+    cr: &cairo::Context,
+    a: &Annotation,
+    cx: f64,
+    cy: f64,
+    canvas_w: f64,
+    font_size: f64,
+    ink: f64,
+) {
     if a.text.trim().is_empty() {
         return;
     }
@@ -295,8 +333,11 @@ fn draw_label_at(cr: &cairo::Context, a: &Annotation, cx: f64, cy: f64, canvas_w
     // Slide back inside rather than clip — a label that runs off the edge is
     // unreadable exactly when it matters.
     let x = (cx - width / 2.0).clamp(2.0, (canvas_w - width - 2.0).max(2.0));
-    let y = cy.max(a.effective_style().font_size);
-    draw_text_with_shadow(cr, x, y, &a.text);
+    // The size actually set on the context, not the mark's stored one: at 4x
+    // they differ by four, and lifting the baseline by the stored number would
+    // clip the top of every label at the canvas edge.
+    let y = cy.max(font_size);
+    draw_text_with_shadow(cr, x, y, &a.text, ink);
 }
 
 /// Text with a dark offset copy under it.
@@ -306,14 +347,14 @@ fn draw_label_at(cr: &cairo::Context, a: &Annotation, cx: f64, cy: f64, canvas_w
 /// have done this since they were written, and the first version of this
 /// renderer did not — the probe showed a label over a bright patch of the test
 /// image and it could not be read.
-fn draw_text_with_shadow(cr: &cairo::Context, x: f64, y: f64, text: &str) {
+fn draw_text_with_shadow(cr: &cairo::Context, x: f64, y: f64, text: &str, ink: f64) {
     // save/restore rather than holding the old pattern across a `set_source`.
     // `cairo_get_source` hands back a pattern the context owns; keeping a
     // reference to it over a call that replaces it is the shape of a
     // use-after-free, and cairo's failures are segfaults rather than errors.
     cr.save().ok();
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.75);
-    cr.move_to(x + 1.0, y + 1.0);
+    cr.move_to(x + ink, y + ink);
     cr.show_text(text).ok();
     cr.restore().ok();
     cr.move_to(x, y);
@@ -597,6 +638,27 @@ mod tests {
         }
     }
 
+    /// A bigger rendering of the same view: the plate, or an export at 2x/4x.
+    ///
+    /// `units_to_pixels` scales with it, exactly as a real plate surface does —
+    /// the geometry was never the broken half, and a test surface that scaled
+    /// the ink but not the geometry would prove nothing about proportions.
+    struct Bigger(f64);
+    impl AnnotationSurface for Bigger {
+        fn project(&self, anchor: &Anchor) -> Option<(f64, f64)> {
+            match *anchor {
+                Anchor::ImagePixel { x, y } => Some((x * self.0, y * self.0)),
+                _ => None,
+            }
+        }
+        fn units_to_pixels(&self, _: &Anchor) -> f64 {
+            self.0
+        }
+        fn ink_scale(&self) -> f64 {
+            self.0
+        }
+    }
+
     fn callout(offset: Option<(f64, f64)>) -> Annotation {
         let mut a = Annotation::new(
             AnnotationKind::Callout,
@@ -622,7 +684,7 @@ mod tests {
     #[test]
     fn the_leader_leaves_the_outline_of_the_shape() {
         let r = 10.0;
-        let (sx, sy, ..) = leader_geometry(100.0, 100.0, r, r, true, None, 60.0, 800.0);
+        let (sx, sy, ..) = leader_geometry(100.0, 100.0, r, r, true, None, 60.0, 800.0, 1.0);
         let d = ((sx - 100.0).powi(2) + (sy - 100.0).powi(2)).sqrt();
         assert!(
             (d - r).abs() < 0.5,
@@ -639,7 +701,7 @@ mod tests {
     fn a_callout_near_the_right_edge_flips() {
         let canvas_w = 300.0;
         let (.., rule_end, text_x, rightwards) =
-            leader_geometry(280.0, 100.0, 10.0, 10.0, true, None, 90.0, canvas_w);
+            leader_geometry(280.0, 100.0, 10.0, 10.0, true, None, 90.0, canvas_w, 1.0);
         assert!(!rightwards, "the callout ran off the right edge");
         assert!(rule_end < 280.0, "the rule did not flip: {rule_end}");
         assert!(text_x >= 0.0, "the text went off the left edge: {text_x}");
@@ -648,7 +710,8 @@ mod tests {
     /// With room, it points the way it was asked to.
     #[test]
     fn a_callout_with_room_keeps_its_direction() {
-        let (.., rightwards) = leader_geometry(100.0, 100.0, 10.0, 10.0, true, None, 60.0, 800.0);
+        let (.., rightwards) =
+            leader_geometry(100.0, 100.0, 10.0, 10.0, true, None, 60.0, 800.0, 1.0);
         assert!(rightwards);
         let (.., rightwards_left) = leader_geometry(
             400.0,
@@ -659,6 +722,7 @@ mod tests {
             Some((-50.0, -40.0)),
             60.0,
             800.0,
+            1.0,
         );
         assert!(!rightwards_left, "an explicit left offset was overridden");
     }
@@ -668,7 +732,7 @@ mod tests {
     fn the_rule_is_long_enough_for_its_text() {
         let text_width = 120.0;
         let (.., ex, _ey, rule_end, _tx, _r) =
-            leader_geometry(100.0, 100.0, 10.0, 10.0, true, None, text_width, 900.0);
+            leader_geometry(100.0, 100.0, 10.0, 10.0, true, None, text_width, 900.0, 1.0);
         assert!(
             (rule_end - ex).abs() >= text_width,
             "rule {} shorter than its text {text_width}",
@@ -686,7 +750,7 @@ mod tests {
     fn a_large_shape_still_gets_a_full_length_leader() {
         // Radius 60, leader 46: the old formula put the elbow INSIDE the shape.
         let (sx, sy, ex, ey, ..) =
-            leader_geometry(300.0, 300.0, 60.0, 60.0, true, None, 80.0, 900.0);
+            leader_geometry(300.0, 300.0, 60.0, 60.0, true, None, 80.0, 900.0, 1.0);
         let from_centre = ((ex - 300.0).powi(2) + (ey - 300.0).powi(2)).sqrt();
         assert!(
             from_centre > 60.0,
@@ -703,7 +767,7 @@ mod tests {
     #[test]
     fn a_circles_leader_starts_on_the_circle() {
         let r = 40.0;
-        let (sx, sy, ..) = leader_geometry(200.0, 200.0, r, r, true, None, 50.0, 900.0);
+        let (sx, sy, ..) = leader_geometry(200.0, 200.0, r, r, true, None, 50.0, 900.0, 1.0);
         let d = ((sx - 200.0).powi(2) + (sy - 200.0).powi(2)).sqrt();
         assert!(
             (d - r).abs() < 0.5,
@@ -717,7 +781,7 @@ mod tests {
     #[test]
     fn a_rects_leader_starts_on_its_edge() {
         let (hw, hh) = (50.0, 20.0);
-        let (sx, sy, ..) = leader_geometry(200.0, 200.0, hw, hh, false, None, 50.0, 900.0);
+        let (sx, sy, ..) = leader_geometry(200.0, 200.0, hw, hh, false, None, 50.0, 900.0, 1.0);
         // At 45 degrees on a wide flat box, the short axis is met first.
         assert!(
             (sy - (200.0 - hh)).abs() < 0.5,
@@ -730,7 +794,8 @@ mod tests {
     /// Every leader on a canvas leaves at the same angle.
     #[test]
     fn the_default_leader_angle_is_fixed() {
-        let (sx, sy, ex, ey, ..) = leader_geometry(100.0, 100.0, 0.0, 0.0, true, None, 10.0, 800.0);
+        let (sx, sy, ex, ey, ..) =
+            leader_geometry(100.0, 100.0, 0.0, 0.0, true, None, 10.0, 800.0, 1.0);
         let angle = ((ey - sy) / (ex - sx)).atan().abs().to_degrees();
         assert!(
             (angle - style::LEADER_ANGLE_DEG).abs() < 0.5,
@@ -1303,6 +1368,189 @@ mod tests {
         assert_eq!(ink_for(&mark, false, false), (1.0, 0.0, 0.0));
         assert_eq!(ink_for(&mark, true, false), style::SELECTED_INK);
         assert_eq!(ink_for(&mark, true, true), style::EDITING_INK);
+    }
+
+    /// A mark keeps its proportions when the rendering is bigger.
+    ///
+    /// This is the bug the ink scale exists for, and it shipped: an export at
+    /// 4x re-rendered the picture at four times the resolution and scaled the
+    /// plate's own title, caption and colorbar with it, while every mark kept
+    /// its screen numbers. A 2px ring stayed 2px and a 12px label stayed a
+    /// 15x10px smudge — so the annotations were the ONE thing in the figure
+    /// that shrank, and they became unreadable at exactly the resolution
+    /// someone had chosen for publication.
+    ///
+    /// Measured as ink laid down, at three factors, because a fix that scaled
+    /// the ring and forgot the label would pass any single-number check.
+    #[test]
+    fn a_mark_keeps_its_proportions_when_the_rendering_is_bigger() {
+        // Ink at `k`, as (ring stroke in px, label bounding box area).
+        let measure = |k: f64| -> (usize, usize) {
+            let mut mark = Annotation::new(
+                AnnotationKind::Circle,
+                Anchor::ImagePixel { x: 30.0, y: 45.0 },
+                "AB",
+                Author::User,
+            );
+            mark.extent = Some(Extent::square(12.0));
+            mark.style = Some(MarkStyle {
+                stroke: 2.0,
+                font_size: 12.0,
+                ..MarkStyle::default()
+            });
+            let side = (240.0 * k) as i32;
+            let surface =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, side, side).expect("surface");
+            {
+                let cr = cairo::Context::new(&surface).expect("cr");
+                draw(
+                    &[mark],
+                    &Bigger(k),
+                    None,
+                    None,
+                    &cr,
+                    f64::from(side),
+                    f64::from(side),
+                );
+            }
+            let mut s = surface;
+            s.flush();
+            let w = side as usize;
+            let data = s.data().expect("data");
+            let lit = |x: usize, y: usize| data[(y * w + x) * 4 + 3] > 40;
+            // The ring's stroke: the first run of ink along the row through the
+            // shape's centre.
+            let cy = (45.0 * k) as usize;
+            let mut stroke = 0usize;
+            for x in 0..w {
+                if lit(x, cy) {
+                    stroke += 1;
+                } else if stroke > 0 {
+                    break;
+                }
+            }
+            // The label: ink above the shape, where the leader puts the text.
+            let ceiling = (30.0 * k) as usize;
+            let mut label = 0usize;
+            for y in 0..ceiling.min(w) {
+                for x in 0..w {
+                    if lit(x, y) {
+                        label += 1;
+                    }
+                }
+            }
+            (stroke, label)
+        };
+
+        let (s1, l1) = measure(1.0);
+        assert!(
+            s1 > 0 && l1 > 0,
+            "nothing drew at 1x: {s1}px ring, {l1}px label"
+        );
+        for k in [2.0, 4.0] {
+            let (sk, lk) = measure(k);
+            // Ring: within a pixel of k times, which is antialiasing, not drift.
+            let want = s1 as f64 * k;
+            assert!(
+                (sk as f64 - want).abs() <= 1.5,
+                "at {k}x the ring is {sk}px and {want} was wanted — the stroke \
+                 did not follow the rendering"
+            );
+            // Label: area, so k times taller AND wider is k squared the ink.
+            let ratio = lk as f64 / l1 as f64;
+            assert!(
+                ratio > k * k * 0.6,
+                "at {k}x the label laid down {lk} px of ink against {l1} at 1x \
+                 (x{ratio:.2}); a label that scaled would be near x{:.0}",
+                k * k
+            );
+        }
+    }
+
+    /// A rendering that cannot say how big it is draws the screen's look.
+    ///
+    /// `ink_scale` is derived from a widget allocation, and a headless one is
+    /// zero — a probe, or an agent asking before the window is mapped. Zero
+    /// would collapse every mark to nothing and NaN would erase them, in the
+    /// exact situations nobody is watching a screen.
+    #[test]
+    fn a_rendering_that_cannot_size_itself_draws_the_screens_look() {
+        struct Broken(f64);
+        impl AnnotationSurface for Broken {
+            fn project(&self, anchor: &Anchor) -> Option<(f64, f64)> {
+                match *anchor {
+                    Anchor::ImagePixel { x, y } => Some((x, y)),
+                    _ => None,
+                }
+            }
+            fn units_to_pixels(&self, _: &Anchor) -> f64 {
+                1.0
+            }
+            fn ink_scale(&self) -> f64 {
+                self.0
+            }
+        }
+        let render = |surface: &dyn AnnotationSurface| -> Vec<u8> {
+            let mut mark = Annotation::new(
+                AnnotationKind::Circle,
+                Anchor::ImagePixel { x: 60.0, y: 60.0 },
+                "AB",
+                Author::User,
+            );
+            mark.extent = Some(Extent::square(20.0));
+            let s = cairo::ImageSurface::create(cairo::Format::ARgb32, 120, 120).expect("surface");
+            {
+                let cr = cairo::Context::new(&s).expect("cr");
+                draw(&[mark], surface, None, None, &cr, 120.0, 120.0);
+            }
+            let mut s = s;
+            s.flush();
+            let bytes = s.data().expect("data").to_vec();
+            bytes
+        };
+        let screen = render(&Flat);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                render(&Broken(bad)),
+                screen,
+                "an ink scale of {bad} did not draw what the screen draws"
+            );
+        }
+    }
+
+    /// The leader and its rule are furniture, and furniture scales too.
+    ///
+    /// Geometry rather than pixels, because this is the half a raster test
+    /// would find hardest to attribute: a 4x label on a 1x leader reads as the
+    /// text having come loose from its mark.
+    #[test]
+    fn the_leader_scales_with_the_rendering() {
+        // Same mark, same text width per unit of ink — the text is measured
+        // with the scaled font by the caller, so 4x here means a 4x wide label.
+        let reach = |ink: f64| {
+            let (sx, _sy, ex, _ey, rule_end, _tx, _r) = leader_geometry(
+                400.0,
+                400.0,
+                20.0 * ink,
+                20.0 * ink,
+                true,
+                None,
+                60.0 * ink,
+                2000.0,
+                ink,
+            );
+            (ex - sx, rule_end - ex)
+        };
+        let (leader1, rule1) = reach(1.0);
+        let (leader4, rule4) = reach(4.0);
+        assert!(
+            (leader4 / leader1 - 4.0).abs() < 0.01,
+            "the leader went from {leader1} to {leader4} — not four times"
+        );
+        assert!(
+            (rule4 / rule1 - 4.0).abs() < 0.01,
+            "the rule went from {rule1} to {rule4} — not four times"
+        );
     }
 
     /// A drag is sized on screen, so what you dragged is what you get.

@@ -2,6 +2,29 @@
 
 All notable changes to Verbinal (the native Linux CANFAR Science Portal companion).
 
+## [Unreleased]
+
+### Marks can be styled, and they survive being exported
+
+- **Colour, size, weight and thickness for a mark**, from a Style row in the
+  Marks section that both viewers already mount. The controls act on the
+  selected mark when there is one, and on what the next mark will look like
+  otherwise. The default is remembered, read when a mark is CREATED and copied
+  into it — never at draw time, so changing it leaves every mark already drawn
+  alone. An agent's marks keep their own green: the setting means "what I
+  draw".
+- **Marks kept their screen size in an export.** At 4x the picture was
+  re-rendered at four times the resolution and the plate's own title, caption
+  and colorbar scaled with it, while a 2px ring stayed 2px and a 12px label
+  stayed a 15x10px smudge — so the annotations were the one thing in the figure
+  that shrank, and they became unreadable at exactly the resolution someone
+  chose for publication. Stroke, label, leader and rule now follow the
+  rendering, in both directions: an agent's downscaled capture thins them to
+  match too.
+- The two inks are written from their 8-bit channels now. A colour is stored,
+  shown and sent as `#rrggbb`, so a constant with more precision than that could
+  not come back from its own storage. Same colour on screen, to the byte.
+
 ## [1.4.1] - 2026-08-30
 
 An imaging release. You can now draw on a FITS image or a cube, an AI agent can

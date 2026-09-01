@@ -70,6 +70,38 @@ fn on_image(px: f64, py: f64, w: usize, h: usize) -> bool {
     px >= 0.0 && px < w as f64 && py >= 0.0 && py < h as f64
 }
 
+/// The view to substitute so that `region` fills an `out_w` x `out_h` raster.
+///
+/// Pure, and separate from the draw, because both halves of the answer have to
+/// move together and neither can be checked through a widget: GTK gives a
+/// headless process no allocation, which is how a capture that cropped instead
+/// of scaling shipped once, and how marks that kept their screen size in a 4x
+/// export shipped again.
+///
+/// The second half is the ink. The picture is `k` times the size it was on
+/// screen, so the marks are too — without it a 4x figure scaled its own title,
+/// caption and colorbar and left every annotation at its screen numbers, which
+/// made them the one thing in the picture that shrank.
+fn region_view(
+    saved: ViewTransform,
+    saved_ink: f64,
+    region: ViewRegion,
+    out_w: i32,
+    out_h: i32,
+) -> (ViewTransform, f64) {
+    let k = (f64::from(out_w) / region.width).min(f64::from(out_h) / region.height);
+    (
+        ViewTransform {
+            scale: saved.scale * k,
+            // Centre whatever the fit leaves over.
+            offset_x: (saved.offset_x - region.x) * k + (f64::from(out_w) - region.width * k) / 2.0,
+            offset_y: (saved.offset_y - region.y) * k
+                + (f64::from(out_h) - region.height * k) / 2.0,
+        },
+        saved_ink * k,
+    )
+}
+
 /// Map an image pixel to a screen point, replicating the draw transform
 /// (`screen = image·scale + offset`) plus the North-Up rotation about the image
 /// centre. Keeps crosshair/hover markers locked to their pixel when rotated.
@@ -376,6 +408,14 @@ pub struct FitsCanvas {
     /// what the release will produce.
     #[allow(clippy::type_complexity)]
     preview: Rc<RefCell<Option<Box<dyn Fn() -> crate::models::annotation::PendingMark>>>>,
+    /// How much bigger the pass being drawn is than the screen.
+    ///
+    /// Substituted for the duration of a region draw and restored after,
+    /// exactly like `transform` beside it and for the same reason: a capture
+    /// borrows the canvas to draw one frame at a different size, and both the
+    /// geometry and the ink have to follow it. Restored together, or the next
+    /// screen frame inherits an export's numbers.
+    ink: std::cell::Cell<f64>,
     /// What the current drag is doing to the selected mark, if anything.
     grab: Rc<RefCell<Option<Grab>>>,
     /// The mark this press selected, if it selected one. A press that turns
@@ -478,6 +518,7 @@ impl FitsCanvas {
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
             preview: Rc::new(RefCell::new(None)),
+            ink: std::cell::Cell::new(1.0),
             grab: Rc::new(RefCell::new(None)),
             tapped: Rc::new(RefCell::new(None)),
             on_annotations_changed: Rc::new(RefCell::new(None)),
@@ -1137,6 +1178,7 @@ impl FitsCanvas {
             mark.label_offset,
             text_w,
             width,
+            1.0,
         );
         let pad = 4.0;
         Some((
@@ -1374,7 +1416,7 @@ impl FitsCanvas {
         // A nominal text width: the label does not exist yet, and the caret
         // only needs to land on the rule.
         let (.., ey, _rule_end, text_x, _right) =
-            leader_geometry(cx, cy, hw, hh, true, mark.label_offset, 90.0, width);
+            leader_geometry(cx, cy, hw, hh, true, mark.label_offset, 90.0, width, 1.0);
         Some(gtk::gdk::Rectangle::new(
             text_x as i32,
             (ey - 14.0).max(0.0) as i32,
@@ -1512,18 +1554,13 @@ impl FitsCanvas {
             return;
         }
         let saved = *self.transform.borrow();
-        let k = (f64::from(out_w) / region.width).min(f64::from(out_h) / region.height);
-        {
-            let mut t = self.transform.borrow_mut();
-            t.scale = saved.scale * k;
-            // Centre whatever the fit leaves over.
-            t.offset_x =
-                (saved.offset_x - region.x) * k + (f64::from(out_w) - region.width * k) / 2.0;
-            t.offset_y =
-                (saved.offset_y - region.y) * k + (f64::from(out_h) - region.height * k) / 2.0;
-        }
+        let saved_ink = self.ink.get();
+        let (substituted, ink) = region_view(saved, saved_ink, region, out_w, out_h);
+        *self.transform.borrow_mut() = substituted;
+        self.ink.set(ink);
         self.draw_area_inner(cr, out_w, out_h, opts);
         *self.transform.borrow_mut() = saved;
+        self.ink.set(saved_ink);
     }
 
     /// A region of the working area, as a PNG.
@@ -2273,6 +2310,96 @@ impl crate::helpers::annotation_render::AnnotationSurface for FitsCanvas {
 
     fn units_to_pixels(&self, anchor: &crate::models::annotation::Anchor) -> f64 {
         self.annotation_scale(anchor)
+    }
+
+    fn ink_scale(&self) -> f64 {
+        self.ink.get()
+    }
+}
+
+#[cfg(test)]
+mod region_view_tests {
+    use super::{region_view, ViewRegion, ViewTransform};
+
+    fn region(x: f64, y: f64, w: f64, h: f64) -> ViewRegion {
+        ViewRegion {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
+    }
+
+    /// The ink follows the picture, at every scale the picker offers.
+    ///
+    /// This is the regression: a 4x export re-rendered the image at four times
+    /// the resolution and scaled the plate's own title, caption and colorbar
+    /// with it, while every mark kept its screen numbers — so a 2px ring came
+    /// out a hairline and a 12px label an unreadable smudge, in exactly the
+    /// figure someone had chosen a publication resolution for.
+    #[test]
+    fn the_ink_grows_with_the_raster() {
+        let screen = ViewTransform::default();
+        let r = region(40.0, 90.0, 120.0, 60.0);
+        for scale in [1, 2, 4] {
+            let (t, ink) = region_view(screen, 1.0, r, 120 * scale, 60 * scale);
+            let k = f64::from(scale);
+            assert_eq!(ink, k, "at {scale}x the marks were drawn at ink {ink}");
+            assert_eq!(t.scale, k, "the picture and the ink disagreed at {scale}x");
+        }
+    }
+
+    /// A capture SMALLER than the view thins the ink to match.
+    ///
+    /// `get_fits_image` renders a 1400px view into a 1024px raster by default.
+    /// Marks that kept their screen numbers there would come out relatively
+    /// fatter than what the person is looking at — the same unfaithfulness as
+    /// the export bug, in the other direction.
+    #[test]
+    fn a_downscaled_capture_thins_the_ink_too() {
+        let (_, ink) = region_view(
+            ViewTransform::default(),
+            1.0,
+            region(0.0, 0.0, 1400.0, 1000.0),
+            700,
+            500,
+        );
+        assert_eq!(ink, 0.5);
+    }
+
+    /// An ink factor already in force is multiplied, not replaced.
+    ///
+    /// A capture taken from inside another capture is not a thing today, and
+    /// the day it becomes one, a replaced factor would silently drop the outer
+    /// one and nothing would say so.
+    #[test]
+    fn a_nested_capture_compounds_the_factor() {
+        let (_, ink) = region_view(
+            ViewTransform::default(),
+            2.0,
+            region(0.0, 0.0, 100.0, 100.0),
+            400,
+            400,
+        );
+        assert_eq!(ink, 8.0);
+    }
+
+    /// The region is what lands in the raster, wherever it sits in the view.
+    ///
+    /// An offset region is the case that hides an arithmetic slip: one starting
+    /// at the origin makes the `- region.x` term a no-op.
+    #[test]
+    fn an_offset_region_lands_at_the_origin_of_the_raster() {
+        let (t, _) = region_view(
+            ViewTransform::default(),
+            1.0,
+            region(40.0, 90.0, 120.0, 60.0),
+            240,
+            120,
+        );
+        // The region's top-left maps to (0, 0) of the output.
+        assert_eq!(t.offset_x + 40.0 * t.scale, 0.0);
+        assert_eq!(t.offset_y + 90.0 * t.scale, 0.0);
     }
 }
 

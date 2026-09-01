@@ -602,6 +602,7 @@ impl CubeViewer {
                     (self.vol.nx, self.vol.ny),
                     (w, h),
                     self.current_channel.get(),
+                    self.plate_ink(w),
                 );
                 crate::helpers::annotation_render::draw(
                     &marks,
@@ -1848,7 +1849,23 @@ impl CubeViewer {
             dims: (self.vol.nx, self.vol.ny, self.vol.nz),
             spectral_scale: self.gl.spectral_scale(),
             panel: (w as f32, h as f32),
+            ink: self.plate_ink(w),
         }
+    }
+
+    /// How much bigger a plate `w` pixels wide is than the working area.
+    ///
+    /// The camera and the framing are the same either way, so the plate is the
+    /// screen at a different resolution — and the marks belong at that
+    /// resolution too. Without it a 4x figure kept 2px rings and 12px labels
+    /// while its own title and caption scaled, so the annotations were the one
+    /// thing in the picture that shrank.
+    ///
+    /// 1.0 when the working area has no size: a headless render — a probe, or
+    /// an agent asking before the window is mapped — has a zero allocation, and
+    /// dividing by it would put every mark at infinity.
+    fn plate_ink(&self, w: i32) -> f64 {
+        plate_ink(w, self.working_area_size().0)
     }
 
     fn setup_overlay(self: &Rc<Self>) {
@@ -2668,16 +2685,19 @@ mod working_area_tests {
 struct SlicePlateSurface {
     sx: f64,
     sy: f64,
+    /// How much bigger this plate is than the working area — see `plate_ink`.
+    ink: f64,
     /// The channel the plate was rendered from. A mark on any other one is not
     /// on this picture.
     z: usize,
 }
 
 impl SlicePlateSurface {
-    fn new(vol: (usize, usize), plate: (i32, i32), z: usize) -> Self {
+    fn new(vol: (usize, usize), plate: (i32, i32), z: usize, ink: f64) -> Self {
         Self {
             sx: plate.0.max(1) as f64 / vol.0.max(1) as f64,
             sy: plate.1.max(1) as f64 / vol.1.max(1) as f64,
+            ink,
             z,
         }
     }
@@ -2689,6 +2709,10 @@ impl crate::helpers::annotation_render::AnnotationSurface for SlicePlateSurface 
             return None;
         };
         (z.round() as i64 == self.z as i64).then_some((x * self.sx, y * self.sy))
+    }
+
+    fn ink_scale(&self) -> f64 {
+        self.ink
     }
 
     fn units_to_pixels(&self, _anchor: &crate::models::annotation::Anchor) -> f64 {
@@ -2722,11 +2746,27 @@ enum VolumeGrab {
 /// `project_voxel` and is honoured rather than clamped: a mark behind the
 /// camera that is clamped onto the canvas looks placed, and is pointing at
 /// nothing.
+/// How much bigger a plate `plate_w` pixels wide is than a `screen_w` view.
+///
+/// A free function because the method around it needs a realised widget, and a
+/// widget is the one thing a headless test cannot have — which is precisely the
+/// case that has to be right: an unrealised working area is zero pixels wide,
+/// and dividing by it would send every mark to infinity.
+fn plate_ink(plate_w: i32, screen_w: i32) -> f64 {
+    if plate_w <= 0 || screen_w <= 0 {
+        return 1.0;
+    }
+    f64::from(plate_w) / f64::from(screen_w)
+}
+
 struct CubeAnnotationSurface {
     view_proj: crate::helpers::cube_math::Mat4,
     dims: (usize, usize, usize),
     spectral_scale: f32,
     panel: (f32, f32),
+    /// How much bigger this rendering is than the working area — 1.0 on
+    /// screen, the export scale on a plate. See `plate_ink`.
+    ink: f64,
 }
 
 impl crate::helpers::annotation_render::AnnotationSurface for CubeAnnotationSurface {
@@ -2746,6 +2786,10 @@ impl crate::helpers::annotation_render::AnnotationSurface for CubeAnnotationSurf
             self.panel,
         )
         .map(|(x, y)| (x as f64, y as f64))
+    }
+
+    fn ink_scale(&self) -> f64 {
+        self.ink
     }
 
     fn units_to_pixels(&self, anchor: &crate::models::annotation::Anchor) -> f64 {
@@ -2784,10 +2828,82 @@ impl crate::helpers::annotation_render::AnnotationSurface for CubeAnnotationSurf
 }
 
 #[cfg(test)]
+mod plate_ink_tests {
+    use super::plate_ink;
+
+    /// The plate is the screen at a different resolution, and says so.
+    ///
+    /// The bug: a cube figure exported at 4x scaled its own title, caption and
+    /// colorbar and left every mark at its screen size, so the annotations were
+    /// the one thing in the picture that shrank.
+    #[test]
+    fn a_bigger_plate_asks_for_bigger_marks() {
+        assert_eq!(plate_ink(800, 800), 1.0, "a plate the size of the view");
+        assert_eq!(plate_ink(3200, 800), 4.0, "a plate four times the view");
+        assert_eq!(plate_ink(400, 800), 0.5, "a plate half the view");
+    }
+
+    /// Every plate surface is told how big the plate is.
+    ///
+    /// The arithmetic being right is worth nothing if a construction site
+    /// leaves the field at a literal — which is exactly the shape the bug had:
+    /// the number existed, and the marks were drawn without it. Two sites, and
+    /// they are two because the cube exports a volume and a slice.
+    #[test]
+    fn every_plate_surface_is_told_how_big_the_plate_is() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/ui/cube_viewer.rs"
+        ))
+        .expect("this file is readable");
+        let code = crate::testing::code(&source);
+        // Only the non-test half: the tests below construct surfaces with
+        // literal factors on purpose.
+        let code = &code[..code.find("#[cfg(test)]").unwrap_or(code.len())];
+        for built in ["CubeAnnotationSurface {", "SlicePlateSurface::new("] {
+            let at = code
+                .find(built)
+                .unwrap_or_else(|| panic!("{built} is gone"));
+            let block = &code[at..(at + 400).min(code.len())];
+            assert!(
+                block.contains("plate_ink"),
+                "{built} is built without plate_ink, so its marks keep their \
+                 screen size however big the figure is"
+            );
+        }
+    }
+
+    /// An unrealised working area is zero pixels wide.
+    ///
+    /// A probe, or an agent asking before the window is mapped. Dividing by it
+    /// would put every mark at infinity — drawn nowhere, with nothing reporting
+    /// a problem — so the screen's own numbers are the answer.
+    #[test]
+    fn a_view_with_no_size_falls_back_to_the_screens_look() {
+        assert_eq!(plate_ink(1024, 0), 1.0);
+        assert_eq!(plate_ink(0, 800), 1.0);
+        assert_eq!(plate_ink(-1, 800), 1.0);
+        assert_eq!(plate_ink(1024, -1), 1.0);
+    }
+}
+
+#[cfg(test)]
 mod slice_plate_tests {
     use super::SlicePlateSurface;
     use crate::helpers::annotation_render::AnnotationSurface;
     use crate::models::annotation::Anchor;
+
+    /// A plate surface reports the factor it was built with.
+    ///
+    /// It is the only thing between `plate_ink` and the renderer, and a field
+    /// stored and never read is exactly the shape of this whole bug.
+    #[test]
+    fn the_plate_surface_passes_its_ink_scale_on() {
+        let s = SlicePlateSurface::new((64, 64), (1024, 1024), 0, 4.0);
+        assert_eq!(s.ink_scale(), 4.0);
+        let screen = SlicePlateSurface::new((64, 64), (64, 64), 0, 1.0);
+        assert_eq!(screen.ink_scale(), 1.0);
+    }
 
     fn data(x: f64, y: f64, z: f64) -> Anchor {
         Anchor::Data { x, y, z }
@@ -2800,7 +2916,7 @@ mod slice_plate_tests {
     /// was drawn on rather than beside it.
     #[test]
     fn a_voxel_lands_at_the_same_fraction_of_the_plate() {
-        let s = SlicePlateSurface::new((64, 32), (1024, 768), 5);
+        let s = SlicePlateSurface::new((64, 32), (1024, 768), 5, 1.0);
         assert_eq!(s.project(&data(0.0, 0.0, 5.0)), Some((0.0, 0.0)));
         assert_eq!(s.project(&data(32.0, 16.0, 5.0)), Some((512.0, 384.0)));
         assert_eq!(s.project(&data(64.0, 32.0, 5.0)), Some((1024.0, 768.0)));
@@ -2813,7 +2929,7 @@ mod slice_plate_tests {
     /// figure that someone then publishes.
     #[test]
     fn a_mark_from_another_channel_is_not_on_the_plate() {
-        let s = SlicePlateSurface::new((64, 32), (1024, 768), 5);
+        let s = SlicePlateSurface::new((64, 32), (1024, 768), 5, 1.0);
         assert!(s.project(&data(10.0, 10.0, 5.0)).is_some());
         assert!(s.project(&data(10.0, 10.0, 4.0)).is_none());
         assert!(s.project(&data(10.0, 10.0, 6.0)).is_none());
@@ -2822,7 +2938,7 @@ mod slice_plate_tests {
     /// Anchors from another viewer's space are skipped, not guessed at.
     #[test]
     fn only_voxel_anchors_reach_the_plate() {
-        let s = SlicePlateSurface::new((64, 32), (1024, 768), 0);
+        let s = SlicePlateSurface::new((64, 32), (1024, 768), 0, 1.0);
         assert!(s
             .project(&Anchor::Sky {
                 ra_deg: 202.0,
@@ -2840,8 +2956,8 @@ mod slice_plate_tests {
     /// is a speck.
     #[test]
     fn a_mark_grows_with_the_plate() {
-        let small = SlicePlateSurface::new((64, 64), (64, 64), 0);
-        let big = SlicePlateSurface::new((64, 64), (1024, 1024), 0);
+        let small = SlicePlateSurface::new((64, 64), (64, 64), 0, 1.0);
+        let big = SlicePlateSurface::new((64, 64), (1024, 1024), 0, 1.0);
         let a = data(0.0, 0.0, 0.0);
         assert!((small.units_to_pixels(&a) - 1.0).abs() < 1e-9);
         assert!((big.units_to_pixels(&a) - 16.0).abs() < 1e-9);
@@ -2851,11 +2967,11 @@ mod slice_plate_tests {
     #[test]
     fn a_stretched_plate_splits_the_difference() {
         // 4x across, 1x down: the geometric mean is 2.
-        let s = SlicePlateSurface::new((64, 64), (256, 64), 0);
+        let s = SlicePlateSurface::new((64, 64), (256, 64), 0, 1.0);
         let a = data(0.0, 0.0, 0.0);
         assert!((s.units_to_pixels(&a) - 2.0).abs() < 1e-9);
         // A degenerate plate must not give a zero-size mark.
-        let d = SlicePlateSurface::new((64, 64), (0, 0), 0);
+        let d = SlicePlateSurface::new((64, 64), (0, 0), 0, 1.0);
         assert!(d.units_to_pixels(&a) > 0.0);
     }
 }

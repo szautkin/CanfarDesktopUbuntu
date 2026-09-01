@@ -327,6 +327,46 @@ impl MarkStyle {
         self.colour = (c(self.colour.0), c(self.colour.1), c(self.colour.2));
         self
     }
+
+    /// An ink factor that can actually be drawn with.
+    ///
+    /// One definition, because the factor is applied in several places — the
+    /// stroke, the font, the leader, the rule, the text shadow — and a zero
+    /// caught in one of them and not the others draws a mark with a full-size
+    /// ring and no leader at all. An ink scale is derived from a widget
+    /// allocation, and a headless one is zero: a probe, or an agent asking
+    /// before the window is mapped.
+    pub fn usable_ink(ink: f64) -> f64 {
+        if ink.is_finite() && ink > 0.0 {
+            ink
+        } else {
+            1.0
+        }
+    }
+
+    /// The same look, on a rendering `ink` times the size of the screen.
+    ///
+    /// Stroke and font are in device pixels on purpose — a stroke that
+    /// thickened as you zoomed out would turn the view into a blot — but
+    /// "device pixels" means the SCREEN's, and an export at 4x has four times
+    /// as many. Drawn at its stored numbers there, a mark comes out a quarter
+    /// of the size it had on screen.
+    ///
+    /// Deliberately NOT followed by [`Self::sane`]: those ceilings are what a
+    /// person may pick on screen, and clamping a 22px label back to 72 after
+    /// multiplying by 4 would shrink exactly the marks that were made large on
+    /// purpose. Apply this last.
+    ///
+    /// A factor that is not a positive finite number is 1.0, via
+    /// [`Self::usable_ink`].
+    pub fn scaled(self, ink: f64) -> Self {
+        let k = Self::usable_ink(ink);
+        Self {
+            font_size: self.font_size * k,
+            stroke: self.stroke * k,
+            ..self
+        }
+    }
 }
 
 impl Default for MarkStyle {
@@ -465,6 +505,74 @@ fn default_half_extent(anchor: &Anchor) -> f64 {
 /// A short unique id.
 fn new_id() -> String {
     format!("ann-{}", uuid::Uuid::new_v4().simple())
+}
+
+#[cfg(test)]
+mod ink_scale_tests {
+    use super::*;
+
+    /// Both numbers follow the rendering, and nothing else does.
+    #[test]
+    fn scaling_multiplies_the_stroke_and_the_font_only() {
+        let style = MarkStyle {
+            colour: (1.0, 0.0, 0.0),
+            font_size: 12.0,
+            bold: true,
+            stroke: 2.0,
+        };
+        let big = style.scaled(4.0);
+        assert_eq!(big.font_size, 48.0);
+        assert_eq!(big.stroke, 8.0);
+        assert_eq!(big.colour, style.colour, "the colour is not a size");
+        assert_eq!(big.bold, style.bold, "the weight is not a size");
+    }
+
+    /// Scaling must not re-clamp: apply it last.
+    ///
+    /// `sane` caps a label at 72px and a stroke at 20px, and those are the
+    /// ceilings for what a PERSON may pick on screen. Clamping again after
+    /// multiplying by 4 would hold a 22px label at 72 instead of 88 — shrinking
+    /// exactly the marks that were made large on purpose, and only in the
+    /// export, which is the hardest place to notice it.
+    #[test]
+    fn a_large_label_is_not_clamped_back_down_by_the_export() {
+        let style = MarkStyle {
+            font_size: 22.0,
+            stroke: 6.0,
+            ..MarkStyle::default()
+        }
+        .sane();
+        let big = style.scaled(4.0);
+        assert_eq!(big.font_size, 88.0, "a 22px label at 4x was clamped to 72");
+        assert_eq!(big.stroke, 24.0, "a 6px stroke at 4x was clamped to 20");
+    }
+
+    /// A factor that cannot be drawn with is the screen's.
+    ///
+    /// Zero is not hypothetical: an ink scale comes from a widget allocation,
+    /// and a headless render — a probe, or an agent asking before the window is
+    /// mapped — has none. Zero would collapse every mark to nothing.
+    #[test]
+    fn an_unusable_factor_is_the_screen() {
+        for bad in [0.0, -1.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(MarkStyle::usable_ink(bad), 1.0, "{bad} was accepted");
+            let style = MarkStyle::default().scaled(bad);
+            assert_eq!(style, MarkStyle::default(), "{bad} changed the look");
+        }
+    }
+
+    /// Shrinking is a factor too: an agent's downscaled capture.
+    ///
+    /// `get_fits_image` renders a 1400px view into a 1024px raster. A mark that
+    /// kept its screen numbers there would be relatively FATTER than what the
+    /// person is looking at, which is the same faithfulness problem the other
+    /// way round.
+    #[test]
+    fn a_smaller_rendering_shrinks_the_ink_too() {
+        let half = MarkStyle::default().scaled(0.5);
+        assert_eq!(half.font_size, DEFAULT_FONT_SIZE / 2.0);
+        assert_eq!(half.stroke, DEFAULT_STROKE / 2.0);
+    }
 }
 
 #[cfg(test)]
