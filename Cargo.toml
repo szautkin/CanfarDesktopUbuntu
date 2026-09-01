@@ -66,6 +66,10 @@ copyright = "2025 Serhii Zautkin"
 section = "science"
 priority = "optional"
 depends = "libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.4), libglib2.0-0 (>= 2.76), libcfitsio9 | libcfitsio10"
+# Recommended, not required: GTK's media backend is what plays the agent cues,
+# and an app that refused to install without it would be trading a working app
+# for a ding. Without it `ui::sound` is silent and nothing else changes.
+recommends = "libgtk-4-media-gstreamer"
 assets = [
     ["target/release/verbinal", "usr/bin/", "755"],
     ["data/net.canfar.Verbinal.desktop", "usr/share/applications/", "644"],
@@ -80,6 +84,8 @@ assets = [
     ["assets/icons/hicolor/512x512/apps/net.canfar.Verbinal.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
     ["assets/icons/hicolor/scalable/apps/net.canfar.Verbinal.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["assets/icons/hicolor/symbolic/apps/verbinal-agent-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
+    ["assets/sounds/agent-start.wav", "usr/share/verbinal/sounds/", "644"],
+    ["assets/sounds/agent-stop.wav", "usr/share/verbinal/sounds/", "644"],
     ["README.md", "usr/share/doc/verbinal/", "644"],
     ["LICENSE", "usr/share/doc/verbinal/", "644"],
 ]

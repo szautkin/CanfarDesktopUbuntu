@@ -4,6 +4,17 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### The agent's arrival and departure, heard and seen
+
+- **Two short sounds**, one when an agent starts calling tools and a different
+  one when it goes quiet — rising for a start, falling for a finish, about a
+  third of a second each. On by default, with a switch in Preferences under
+  Appearance. Nothing else in the application makes a sound.
+- **The three dots travel** while an agent is working and sit still when it is
+  not, so a glance answers the question without reading the words. They follow
+  the desktop's animation setting, and the frame clock rather than a timer, so
+  they cost nothing while idle.
+
 ### The agent says what it is doing, and a reset stopped taking fourteen seconds
 
 - **`reset_search_form` timed out.** It took about fourteen seconds and grew

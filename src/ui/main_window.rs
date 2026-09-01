@@ -106,9 +106,15 @@ pub fn build_main_window(
     agent_icon.set_pixel_size(16);
     let agent_label = gtk::Label::new(Some(crate::tr_en!("agent idle")));
     agent_label.add_css_class("caption");
+    // The three dots travel while the agent is working and sit still when it is
+    // not, so a glance answers the question without reading the words. They are
+    // the label's ellipsis made honest: "…" says the same thing whether or not
+    // anything is still happening.
+    let agent_dots = crate::ui::working_dots::WorkingDots::new();
     let agent_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     agent_box.append(&agent_icon);
     agent_box.append(&agent_label);
+    agent_box.append(agent_dots.widget());
     agent_box.add_css_class("dim-label");
     agent_box.set_tooltip_text(Some(crate::tr_en!(
         "No AI agent has called a tool recently"
@@ -117,17 +123,20 @@ pub fn build_main_window(
         let agent_box = agent_box.clone();
         let agent_label = agent_label.clone();
         // Starts idle, and `was` is what stops the poll from touching widgets
-        // sixty times a minute to say the same thing.
+        // sixty times a minute to say the same thing — and from playing the cue
+        // on every tick instead of on the change.
         let mut was = false;
         glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
             let active = crate::helpers::agent_activity::is_active_within(5);
             if active != was {
                 was = active;
+                agent_dots.set_running(active);
                 if active {
-                    agent_label.set_text(crate::tr_en!("agent working…"));
+                    agent_label.set_text(crate::tr_en!("agent working"));
                     agent_box.remove_css_class("dim-label");
                     agent_box.add_css_class("accent");
                     agent_box.set_tooltip_text(Some(crate::tr_en!("An AI agent is working")));
+                    crate::ui::sound::play(crate::ui::sound::Cue::AgentStarted);
                 } else {
                     agent_label.set_text(crate::tr_en!("agent idle"));
                     agent_box.remove_css_class("accent");
@@ -135,6 +144,7 @@ pub fn build_main_window(
                     agent_box.set_tooltip_text(Some(crate::tr_en!(
                         "No AI agent has called a tool recently"
                     )));
+                    crate::ui::sound::play(crate::ui::sound::Cue::AgentFinished);
                 }
             }
             glib::ControlFlow::Continue

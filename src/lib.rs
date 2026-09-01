@@ -49,19 +49,28 @@ use state::AppServices;
 /// configuration people actually run, and how the AI Guide lost its icon in
 /// the sidebar and on the home page.
 pub fn source_tree_icons() -> Option<std::path::PathBuf> {
-    source_tree_icons_from(&std::env::current_exe().ok()?)
+    source_tree_asset("icons")
+}
+
+/// `assets/<kind>` in the build tree the running binary came out of.
+///
+/// The same walk for icons and for sounds, because it answers the same
+/// question: is this a binary running out of a checkout, and if so where is the
+/// checkout.
+pub fn source_tree_asset(kind: &str) -> Option<std::path::PathBuf> {
+    source_tree_asset_from(&std::env::current_exe().ok()?, kind)
 }
 
 /// The search, split out so it can be tested against a path rather than
 /// against wherever the test binary happens to live.
-fn source_tree_icons_from(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+fn source_tree_asset_from(exe: &std::path::Path, kind: &str) -> Option<std::path::PathBuf> {
     // Bounded: an unbounded walk ends at `/`, and `/assets/icons` on a machine
     // that happened to have one is not this application's icon theme.
     exe.ancestors()
         .skip(1)
         .take(5)
-        .map(|dir| dir.join("assets").join("icons"))
-        .find(|icons| icons.is_dir())
+        .map(|dir| dir.join("assets").join(kind))
+        .find(|dir| dir.is_dir())
 }
 
 pub fn run() {
@@ -152,7 +161,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod icon_path_tests {
-    use super::source_tree_icons_from;
+    use super::source_tree_asset_from;
     use std::path::Path;
 
     /// Found from every place cargo puts a binary.
@@ -171,7 +180,7 @@ mod icon_path_tests {
             "target/debug/examples/icon_render_probe",
             "target/debug/deps/verbinal-0123456789abcdef",
         ] {
-            let found = source_tree_icons_from(&root.join(rel));
+            let found = source_tree_asset_from(&root.join(rel), "icons");
             assert_eq!(
                 found.as_deref(),
                 Some(root.join("assets").join("icons").as_path()),
@@ -187,6 +196,9 @@ mod icon_path_tests {
     /// pointing at a directory that does not exist is dead weight at best.
     #[test]
     fn an_installed_binary_adds_no_search_path() {
-        assert_eq!(source_tree_icons_from(Path::new("/usr/bin/verbinal")), None);
+        assert_eq!(
+            source_tree_asset_from(Path::new("/usr/bin/verbinal"), "icons"),
+            None
+        );
     }
 }

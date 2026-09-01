@@ -201,6 +201,31 @@ impl SettingsPage {
         });
         group.add(&lang_row);
 
+        // Agent sounds. On by default: the point of a cue is that it reaches
+        // someone who is looking at something else, and a cue nobody has turned
+        // on reaches nobody.
+        let sound_row = adw::SwitchRow::new();
+        sound_row.set_title(crate::tr_en!("Agent sounds"));
+        sound_row.set_subtitle(crate::tr_en!(
+            "A short sound when an AI agent starts and stops working"
+        ));
+        sound_row.set_active(self.config.borrow().agent_sounds);
+        {
+            let config = self.config.clone();
+            let services = self.services.clone();
+            sound_row.connect_active_notify(move |row| {
+                let on = row.is_active();
+                config.borrow_mut().agent_sounds = on;
+                let _ = services.settings.save(&config.borrow());
+                // Play the cue the switch just enabled, so "on" is something
+                // you hear rather than something you take on trust.
+                if on {
+                    crate::ui::sound::play(crate::ui::sound::Cue::AgentStarted);
+                }
+            });
+        }
+        group.add(&sound_row);
+
         self.widget.add(&group);
     }
 

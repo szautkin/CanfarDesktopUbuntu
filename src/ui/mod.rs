@@ -55,6 +55,7 @@ pub mod session_icon;
 pub mod session_list;
 pub mod settings_page;
 pub mod share_dialog;
+pub mod sound;
 pub mod space;
 pub mod storage_quota;
 pub mod text_viewer_dialog;
@@ -81,6 +82,7 @@ pub type CallbackSlot<F> = RefCell<Option<Rc<F>>>;
 /// seen by every closure that captured the widget.
 pub type SharedCallbackSlot<F> = Rc<CallbackSlot<F>>;
 pub mod viewer_shell;
+pub mod working_dots;
 
 #[cfg(test)]
 mod markup_tests {

@@ -75,6 +75,9 @@ fn d_resolver_base() -> String {
 fn d_theme() -> String {
     "System".to_string()
 }
+fn d_true() -> bool {
+    true
+}
 fn d_mark_colour() -> String {
     crate::models::annotation::MarkStyle::default().colour_hex()
 }
@@ -141,6 +144,14 @@ pub struct AppConfig {
     #[serde(default = "d_language")]
     pub language: String,
 
+    /// Play a short sound when an agent starts and stops calling tools.
+    ///
+    /// On by default. It is the only sound the application makes, it is under
+    /// half a second, and the indicator beside the service health says the same
+    /// thing silently for anyone who would rather it did.
+    #[serde(default = "d_true")]
+    pub agent_sounds: bool,
+
     // --- what a NEW mark looks like ---
     //
     // Read when a mark is CREATED and copied into it, never consulted at draw
@@ -173,6 +184,7 @@ impl Default for AppConfig {
             resolver_base: d_resolver_base(),
             vizier_mirrors: d_vizier_mirrors(),
             theme: d_theme(),
+            agent_sounds: d_true(),
             mark_colour: d_mark_colour(),
             mark_font_size: d_mark_font_size(),
             mark_bold: false,
