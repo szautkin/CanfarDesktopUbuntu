@@ -954,6 +954,8 @@ pub fn build_main_window(
             let notebook_host = notebook_host.clone();
             let fits_viewer = fits_viewer.clone();
             let search_page = search_page.clone();
+            // Resolving an `open_cube` observationId needs the Research store.
+            let services_for_cube_pump = services.clone();
             glib::spawn_future_local(async move {
                 while let Some(cmd) = vc_rx.recv().await {
                     // Each command gets its own task. This loop used to await
@@ -973,8 +975,24 @@ pub fn build_main_window(
                     let notebook_host = notebook_host.clone();
                     let fits_viewer = fits_viewer.clone();
                     let search_page = search_page.clone();
+                    // For resolving an `open_cube` observationId against the
+                    // Research store, which the cube host cannot see.
+                    let services_for_cube = services_for_cube_pump.clone();
                     glib::spawn_future_local(async move {
                         let result = match cmd.target.as_str() {
+                            // `open_cube` takes an observationId as well as a
+                            // path, and the cube host has no access to the
+                            // Research store — nor should it. Resolved here,
+                            // through the same function the FITS open uses, and
+                            // handed on as a path.
+                            "cube" if cmd.op == "open_cube" => {
+                                match cube_open_args(&cmd.args, &services_for_cube) {
+                                    Ok(args) => {
+                                        cube_host.handle_viewer_command(&cmd.op, &args).await
+                                    }
+                                    Err(why) => Err(why),
+                                }
+                            }
                             "cube" => cube_host.handle_viewer_command(&cmd.op, &cmd.args).await,
                             "notebook" => {
                                 notebook_host
@@ -1602,6 +1620,76 @@ impl SignedInChrome {
 // Navigation
 // ---------------------------------------------------------------------------
 
+/// `open_cube` arguments with an `observationId` turned into a `path`.
+///
+/// Left alone when a path is already given, or when neither is: the cube host
+/// refuses an empty target with its own message, and two places saying the same
+/// thing differently is how they come to disagree.
+fn cube_open_args(
+    args: &serde_json::Value,
+    services: &Arc<AppServices>,
+) -> Result<serde_json::Value, String> {
+    let has_path = crate::mcp::tools::arg(args, "path")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    let observation = crate::mcp::tools::arg(args, "observationId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(id) = observation.filter(|_| !has_path) else {
+        return Ok(args.clone());
+    };
+    let (_, path) = resolve_downloaded_target(id, services).map_err(|(_, _, why)| why)?;
+    let mut out = args.clone();
+    if let Some(map) = out.as_object_mut() {
+        map.remove("observationId");
+        map.insert("path".to_string(), serde_json::json!(path));
+    }
+    Ok(out)
+}
+
+/// A local path for what an agent named: a file, or a downloaded observation.
+///
+/// A real file resolves to itself — the file-picker equivalent. Anything else
+/// is an observation id, which is what an agent has after
+/// `list_downloaded_observations`: the listing gives a filename, never a path,
+/// so resolving here is the only way it can open its own downloads.
+///
+/// Shared by the FITS and cube open paths, because "open this thing" should
+/// mean the same in both viewers. It did not: the cube took a path and nothing
+/// else, so an agent could open a downloaded observation as an image and had to
+/// resolve the id itself to open the same file as a cube.
+///
+/// `Err` carries the id, the path if one was found, and why — so the caller can
+/// report what happened rather than that it asked.
+fn resolve_downloaded_target(
+    target: &str,
+    services: &Arc<AppServices>,
+) -> Result<(String, String), (String, Option<String>, String)> {
+    if std::path::Path::new(target).is_file() {
+        return Ok((target.to_string(), target.to_string()));
+    }
+    let downloaded = services.observation_store.load();
+    let Some(obs) = downloaded
+        .iter()
+        .find(|o| o.id == target || o.publisher_id == target)
+    else {
+        return Err((
+            target.to_string(),
+            None,
+            "file not found and observation not in Research".to_string(),
+        ));
+    };
+    if obs.local_path.is_empty() || !std::path::Path::new(&obs.local_path).is_file() {
+        return Err((
+            obs.id.clone(),
+            Some(obs.local_path.clone()),
+            "not downloaded yet — use download_observation first".to_string(),
+        ));
+    }
+    Ok((obs.id.clone(), obs.local_path.clone()))
+}
+
 /// Open a FITS file for the agent: by path, or by the id of a downloaded
 /// observation, reporting what actually happened.
 ///
@@ -1623,32 +1711,9 @@ fn open_fits_target(
         return OpenFitsOutcome::failed(target, None, "path or observationId is required");
     }
 
-    // A real file opens directly — the file-picker equivalent. Anything else is
-    // an observation id, which is what an agent has after
-    // `list_downloaded_observations`: the listing gives a filename, never a
-    // path, so resolving here is the only way it can open its own downloads.
-    let (observation_id, local_path) = if std::path::Path::new(target).is_file() {
-        (target.to_string(), target.to_string())
-    } else {
-        let downloaded = services.observation_store.load();
-        let Some(obs) = downloaded
-            .iter()
-            .find(|o| o.id == target || o.publisher_id == target)
-        else {
-            return OpenFitsOutcome::failed(
-                target,
-                None,
-                "file not found and observation not in Research",
-            );
-        };
-        if obs.local_path.is_empty() || !std::path::Path::new(&obs.local_path).is_file() {
-            return OpenFitsOutcome::failed(
-                &obs.id,
-                Some(&obs.local_path),
-                "not downloaded yet — use download_observation first",
-            );
-        }
-        (obs.id.clone(), obs.local_path.clone())
+    let (observation_id, local_path) = match resolve_downloaded_target(target, services) {
+        Ok(pair) => pair,
+        Err((id, path, why)) => return OpenFitsOutcome::failed(&id, path.as_deref(), &why),
     };
 
     // Report success only on a confirmed load, so a file that will not parse —
@@ -2426,7 +2491,13 @@ mod navigation_tests {
         let at = code
             .find("while let Some(cmd) = vc_rx.recv().await")
             .expect("the viewer command loop is gone");
-        let body = &code[at..(at + 1400).min(code.len())];
+        // To the end of the block that holds the loop, not a fixed number of
+        // characters: a window measured in bytes is one that a new branch
+        // inside the loop silently pushes the interesting part out of.
+        let body = &code[at..code[at..]
+            .find("\n        }")
+            .map(|e| at + e)
+            .unwrap_or(code.len())];
         assert!(
             body.contains("glib::spawn_future_local"),
             "the loop awaits each handler inline again, so one slow command \
@@ -2471,9 +2542,20 @@ mod navigation_tests {
             !body.contains("activate_action"),
             "the open is dispatched fire-and-forget again, so its result is a guess"
         );
-        // The two resolution failures an agent can act on.
-        assert!(body.contains("observation not in Research"));
-        assert!(body.contains("use download_observation first"));
+        // The two resolution failures an agent can act on. They live in the
+        // shared resolver now — the cube open needs the same two, and an agent
+        // that is told "not downloaded yet" should be told it the same way
+        // whichever viewer it asked for.
+        let at = code
+            .find("fn resolve_downloaded_target")
+            .expect("the shared resolution is gone");
+        let end = code[at..]
+            .find("\n}\n")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        let resolver = &code[at..end];
+        assert!(resolver.contains("observation not in Research"));
+        assert!(resolver.contains("use download_observation first"));
     }
 
     #[test]
@@ -2482,7 +2564,10 @@ mod navigation_tests {
         // the reference does — so an id has to be openable, or an agent can
         // download something and then have no way to look at it.
         let code = crate::testing::without_comments(crate::testing::code(SOURCE));
-        let at = code.find("fn open_fits_target").expect("gone");
+        // The resolution lives in `resolve_downloaded_target` now, because the
+        // cube open takes the same two forms and "open this thing" should mean
+        // the same in both viewers.
+        let at = code.find("fn resolve_downloaded_target").expect("gone");
         let end = code[at..]
             .find("\n}\n")
             .map(|e| at + e)
@@ -2492,6 +2577,20 @@ mod navigation_tests {
             body.contains("o.id == target || o.publisher_id == target"),
             "an observation id no longer resolves to its file"
         );
+        // And both viewers go through it.
+        for caller in ["fn open_fits_target", "fn cube_open_args"] {
+            let at = code
+                .find(caller)
+                .unwrap_or_else(|| panic!("{caller} is gone"));
+            let end = code[at..]
+                .find("\n}\n")
+                .map(|e| at + e)
+                .unwrap_or(code.len());
+            assert!(
+                code[at..end].contains("resolve_downloaded_target"),
+                "{caller} resolves an observation id its own way again"
+            );
+        }
     }
 
     #[test]

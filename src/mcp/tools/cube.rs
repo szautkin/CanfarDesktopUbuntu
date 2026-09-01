@@ -41,15 +41,19 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "open_cube".into(),
             description:
-                "Open a FITS spectral cube (NAXIS≥3) from a local path in the 3D Cube Viewer. \
-                 A cube is a FITS file, so get_fits_header and get_fits_wcs read one directly \
-                 from the same path — there is no separate cube-header tool because there does \
-                 not need to be."
+                "Open a FITS spectral cube (NAXIS≥3) in the 3D Cube Viewer — by local file \
+                 path, or by the id or publisher id of a DOWNLOADED observation, the same two \
+                 ways open_fits_file takes. A cube is a FITS file, so get_fits_header and \
+                 get_fits_wcs read one directly from the same path — there is no separate \
+                 cube-header tool because there does not need to be."
                     .into(),
             input_schema: json!({
                 "type": "object",
-                "properties": { "path": { "type": "string", "description": "Local .fits/.fits.fz cube path." } },
-                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string", "description": "Local .fits/.fits.fz cube path." },
+                    "observationId": { "type": "string", "description": "Id or publisher id of a downloaded observation (from list_downloaded_observations). Ignored when `path` is given." }
+                },
+                "anyOf": [{"required": ["path"]}, {"required": ["observationId"]}],
                 "additionalProperties": false
             }),
             verb: VerbClass::Write,

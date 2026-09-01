@@ -4,6 +4,15 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### open_cube takes an observation id, like open_fits_file
+
+- `open_fits_file` accepted a path OR the id of a downloaded observation;
+  `open_cube` took a path and nothing else. So an agent could open a download as
+  an image but had to resolve the id itself to open the same file as a cube —
+  and the observation detail page offers "Open in Cube Viewer" to a person. Both
+  now go through one resolver, so "open this thing" means the same in either
+  viewer, down to the two failure messages.
+
 ### View, Save and More are the first three columns
 
 - The three things you can DO to a search result were the LAST three cells in
