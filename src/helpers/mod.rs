@@ -37,6 +37,7 @@ pub mod image_parser;
 pub mod job_diagnostics;
 pub mod legal_terms;
 pub mod local_path;
+pub mod main_thread_watch;
 pub mod manifest_parser;
 pub mod notebook_autosave;
 pub mod notebook_formats;

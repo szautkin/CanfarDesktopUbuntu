@@ -135,6 +135,10 @@ pub fn run() {
             gtk4::IconTheme::for_display(&display).add_search_path(icons);
         }
 
+        // A stall detector for the one thread everything shares. Off unless
+        // asked for; see `helpers::main_thread_watch`.
+        crate::helpers::main_thread_watch::start_if_asked();
+
         let (services, toast_rx) = AppServices::new(handle.clone());
 
         // Resolve the UI language from settings (system => environment locale).

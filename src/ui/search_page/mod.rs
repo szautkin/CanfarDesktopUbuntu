@@ -3439,8 +3439,12 @@ impl SearchPage {
                 caption.set_xalign(0.0);
                 caption.add_css_class("caption");
                 check.set_child(Some(&caption));
-                // Ellipsized, so the whole value has to be readable somewhere.
-                check.set_tooltip_text(Some(value));
+                // No `set_tooltip_text` here. The value is ellipsized so it has
+                // to be readable somewhere, but a stored tooltip per row costs
+                // 25 times what the row itself does — 5005 filter rows take
+                // 2400 ms with one and 100 ms without, measured — and the panel
+                // is built on the thread that draws the window. The column
+                // answers for all of its rows instead; see `facet_tooltips`.
                 check.set_sensitive(available.contains(value));
                 check.set_active(selected_sets[idx].contains(value));
 
@@ -3473,6 +3477,38 @@ impl SearchPage {
         }
         self.train_settling.set(false);
     }
+}
+
+/// Let a facet column answer for its own rows' tooltips.
+///
+/// One handler for the column instead of a string stored on every row. The
+/// stored form is what a tooltip usually is, and at this scale it is the wrong
+/// shape: `set_tooltip_text` installs the tooltip machinery per widget, and on
+/// the CADC filter column — 5005 values — that is 2400 ms of the main thread
+/// against 100 ms for the rows themselves.
+///
+/// Asked only when a pointer actually rests on a row, which is a handful of
+/// times a session rather than five thousand times a load.
+fn facet_tooltips(list: &gtk::ListBox) {
+    list.set_has_tooltip(true);
+    list.connect_query_tooltip(|list, _x, y, _keyboard, tooltip| {
+        let Some(row) = list.row_at_y(y) else {
+            return false;
+        };
+        let Some(check) = row
+            .child()
+            .and_then(|c| c.downcast::<gtk::CheckButton>().ok())
+        else {
+            return false;
+        };
+        match facet_value(&check) {
+            Some(value) => {
+                tooltip.set_text(Some(&value));
+                true
+            }
+            None => false,
+        }
+    });
 }
 
 /// The check buttons a facet column currently holds, in order.
@@ -4738,6 +4774,7 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Multiple);
+        facet_tooltips(&list);
         let placeholder = gtk::Label::new(Some(crate::tr_en!("Loading...")));
         placeholder.add_css_class("dim-label");
         placeholder.add_css_class("caption");
