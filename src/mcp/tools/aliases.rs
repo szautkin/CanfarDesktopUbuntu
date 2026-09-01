@@ -310,6 +310,16 @@ mod tests {
          Observation on obsID.",
     ),
     (
+        "show_observation_detail",
+        "Every other control in the Search results table has a tool — sort, filter, page, \
+         rows per page, column visibility and units, CSV and TSV export — and each row's three \
+         buttons have one for the DATA behind them: get_preview_image, download_observation, \
+         get_observation_caom2. What had no tool was the row's Details button itself, so an \
+         agent could read an observation's metadata but not put it in front of the person it \
+         was explaining it to. The reference has no equivalent because its agent surface does \
+         not steer the window; ours does, and set_search_focus is the precedent.",
+    ),
+    (
         "export_fits_figure",
         "The reference exports a cube figure and nothing else; the FITS viewer had no export \
          at all, in either app. An astronomer who has marked up a frame wants that frame in a \

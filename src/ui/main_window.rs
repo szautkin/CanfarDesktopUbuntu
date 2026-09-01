@@ -879,6 +879,9 @@ pub fn build_main_window(
             let services_for_actions = services.clone();
             let fits_viewer_for_actions = fits_viewer.clone();
             let navigate_for_actions = navigate.clone();
+            // To CHECK the detail page arrived, not merely to ask for it.
+            let content_nav_for_actions = content_nav.clone();
+            let obs_detail_page_for_actions = obs_detail_nav_page.clone();
             glib::spawn_future_local(async move {
                 use crate::mcp::view_state::ViewAction;
                 while let Some(action) = vs_rx.recv().await {
@@ -910,6 +913,28 @@ pub fn build_main_window(
                             navigate("search");
                             search_page.show_search_form(ra, dec);
                             let _ = reply.send(true);
+                        }
+                        ViewAction::ShowObservationDetail {
+                            publisher_id,
+                            reply,
+                        } => {
+                            // The same action the Details button in a results
+                            // row activates, so there is one way in rather than
+                            // an agent's own copy of the push-and-show dance.
+                            if !publisher_id.trim().is_empty() {
+                                app.activate_action(
+                                    "open-observation-detail",
+                                    Some(&publisher_id.to_variant()),
+                                );
+                            }
+                            // Then LOOK, rather than reporting that a request
+                            // was sent. `open_fits_file` once answered
+                            // `opened: true` for a path that did not exist, for
+                            // exactly this reason, and an agent went looking
+                            // for a tab that was never going to appear.
+                            let shown = content_nav_for_actions.visible_page().as_ref()
+                                == Some(&obs_detail_page_for_actions);
+                            let _ = reply.send(shown);
                         }
                         ViewAction::CloseActiveTab { reply } => {
                             // Per-module tab closing is not yet wired; report no-op.

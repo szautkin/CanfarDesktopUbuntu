@@ -95,6 +95,12 @@ pub enum ViewAction {
         dec: f64,
         reply: oneshot::Sender<bool>,
     },
+    /// Show one observation's CAOM2 detail page, the way the Details button in
+    /// a results row does.
+    ShowObservationDetail {
+        publisher_id: String,
+        reply: oneshot::Sender<bool>,
+    },
 }
 
 static ACTION_TX: Lazy<RwLock<Option<mpsc::UnboundedSender<ViewAction>>>> =
@@ -329,6 +335,16 @@ pub async fn set_search_focus_action(ra: f64, dec: f64) -> bool {
     send_action(|reply| ViewAction::SetSearchFocus { ra, dec, reply })
         .await
         .unwrap_or(false)
+}
+
+/// Open one observation's detail page in the window.
+pub async fn show_observation_detail_action(publisher_id: String) -> bool {
+    send_action(|reply| ViewAction::ShowObservationDetail {
+        publisher_id,
+        reply,
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

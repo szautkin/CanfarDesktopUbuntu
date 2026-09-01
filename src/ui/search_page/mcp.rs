@@ -458,8 +458,16 @@ impl SearchPage {
             // A preference that would hide EVERY column is not a preference the
             // caller expressed. When it selects nothing, show the result as it
             // came back.
-            let mut visible: Vec<&crate::models::search_result::ResultColumnInfo> =
-                columns.iter().filter(|c| self.is_col_visible(c)).collect();
+            // `allColumns` is what the row-detail modal shows: every column the
+            // query returned, not the dozen the grid is set to. Without it an
+            // agent could see a row's cells only by changing the grid's column
+            // visibility, which is a change the person watching would see.
+            let all = crate::mcp::tools::opt_bool(args, "allColumns").unwrap_or(false);
+            let mut visible: Vec<&crate::models::search_result::ResultColumnInfo> = if all {
+                columns.iter().collect()
+            } else {
+                columns.iter().filter(|c| self.is_col_visible(c)).collect()
+            };
             if visible.is_empty() {
                 visible = columns.iter().collect();
             }

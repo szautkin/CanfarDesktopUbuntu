@@ -256,6 +256,7 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "get_observation_caom2"
         | "get_data_links"
         | "get_preview_image"
+        | "show_observation_detail"
         | "list_recent_searches" => "search",
         // Saved Queries
         "list_saved_queries" | "get_saved_query" | "save_query" | "update_saved_query"

@@ -329,6 +329,26 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "show_observation_detail".into(),
+            description: "Open one observation's CAOM2 detail page in the window, the way the \
+                          Details button in a search-results row does — for SHOWING a person an \
+                          observation. To READ its metadata instead, use get_observation_caom2, \
+                          which returns the same data without moving the view."
+                .into(),
+            input_schema: json!({
+                "type":"object",
+                "properties": {
+                    "publisherId": {
+                        "type":"string",
+                        "description": "CADC publisher id, e.g. ivo://cadc.nrc.ca/CFHT?1234567/1234567p"
+                    }
+                },
+                "required": ["publisherId"], "additionalProperties": false
+            }),
+            verb: VerbClass::Write,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "set_search_focus".into(),
             description: "Point the Search form at a sky position (ICRS RA/Dec in degrees) and bring \
                           it into view, so the user can refine an agent-suggested cone. Live-applied \
@@ -471,6 +491,15 @@ pub async fn dispatch(
                 );
             }
             Some(ToolResult::Data(out))
+        }
+        "show_observation_detail" => {
+            let id = crate::mcp::tools::opt_str_arg(args, "publisherId").unwrap_or_default();
+            Some(if id.trim().is_empty() {
+                ToolResult::Failed("publisherId is required".to_string())
+            } else {
+                let shown = view_state::show_observation_detail_action(id.clone()).await;
+                ToolResult::Data(json!({ "shown": shown, "publisherId": id }))
+            })
         }
         "set_search_focus" => Some(match sky_focus_args(args) {
             Ok((ra, dec)) => {

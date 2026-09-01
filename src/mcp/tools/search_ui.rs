@@ -237,13 +237,16 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
              filteredRows, pagination as currentPage (0-based), totalPages, rowsPerPage and a \
              human-readable pageStatus, sortColumn/sortAscending, active per-column filters, \
              columnUnits, the column set with visibility, and — by default — the current \
-             page's RAW cell values (capped at 500 rows). Values are raw, not \
-             display-formatted, so you can compute on them.",
+             page's RAW cell values (capped at 500 rows) for the columns the grid is \
+             showing — pass allColumns to get every column instead, which is what the \
+             row-detail dialog shows. Values are raw, not display-formatted, so you can \
+             compute on them.",
             json!({
                 "type": "object",
                 "properties": {
                     "includeRows": {"type": "boolean", "description": "Include the current page's cells (default true)."},
-                    "maxRows": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Cap on returned rows (default and hard cap 500)."}
+                    "maxRows": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Cap on returned rows (default and hard cap 500)."},
+                    "allColumns": {"type": "boolean", "description": "Return EVERY column the query produced rather than the ones the grid is showing — what the row-detail dialog displays when a person clicks a row. Default false."}
                 },
                 "additionalProperties": false
             }),

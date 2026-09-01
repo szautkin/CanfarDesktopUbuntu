@@ -4,6 +4,18 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Two things in the results table an agent could not reach
+
+- **`show_observation_detail`** opens one observation's CAOM2 detail page in the
+  window, the way a results row's Details button does. Every other control in
+  that table already had a tool, and each row's three buttons had one for the
+  DATA behind them — so an agent could read an observation's metadata but not
+  put it in front of the person it was explaining it to.
+- **`get_search_results` takes `allColumns`.** It returned the dozen columns the
+  grid is showing; a row has 41. The only way to see the rest was to change the
+  grid's column visibility, which is a change the person watching would see.
+  This is the same data the row-detail dialog shows when a row is clicked.
+
 ### Steering the results table is about three times faster
 
 - **Every cell in the results grid stored its own tooltip**, plus three action
