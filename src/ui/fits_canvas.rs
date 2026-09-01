@@ -375,7 +375,7 @@ pub struct FitsCanvas {
     /// asks the picker instead, so the preview cannot fall out of step with
     /// what the release will produce.
     #[allow(clippy::type_complexity)]
-    preview_kind: Rc<RefCell<Option<Box<dyn Fn() -> crate::models::annotation::AnnotationKind>>>>,
+    preview: Rc<RefCell<Option<Box<dyn Fn() -> crate::models::annotation::PendingMark>>>>,
     /// What the current drag is doing to the selected mark, if anything.
     grab: Rc<RefCell<Option<Grab>>>,
     /// The mark this press selected, if it selected one. A press that turns
@@ -477,7 +477,7 @@ impl FitsCanvas {
             surface_cache: RefCell::new(None),
             on_left_click: Rc::new(RefCell::new(None)),
             pending_shape: Rc::new(RefCell::new(None)),
-            preview_kind: Rc::new(RefCell::new(None)),
+            preview: Rc::new(RefCell::new(None)),
             grab: Rc::new(RefCell::new(None)),
             tapped: Rc::new(RefCell::new(None)),
             on_annotations_changed: Rc::new(RefCell::new(None)),
@@ -1000,23 +1000,23 @@ impl FitsCanvas {
         // contain a half-made mark. The cube guards its preview the same way.
         if opts.chrome {
             if let Some((ix, iy, half)) = *self.pending_shape.borrow() {
-                use crate::models::annotation::AnnotationKind;
                 let (sx, sy) = self.image_to_screen_point(ix, iy);
                 let r = (half * self.transform.borrow().scale).max(1.0);
-                // Asked at draw time, not remembered: the picker can change while
-                // drawing is armed, and the preview must be the shape you get.
-                let kind = self
-                    .preview_kind
+                // Asked at draw time, not remembered: the picker and the style
+                // row can change while drawing is armed, and the preview must
+                // be the mark you get.
+                let pending = self
+                    .preview
                     .borrow()
                     .as_ref()
                     .map(|f| f())
-                    .unwrap_or(AnnotationKind::Circle);
+                    .unwrap_or_default();
                 crate::helpers::annotation_render::draw_preview(
-                    kind,
+                    pending.kind,
                     sx,
                     sy,
                     r,
-                    crate::models::annotation::MarkStyle::default(),
+                    pending.style,
                     cr,
                 );
             }
@@ -1890,11 +1890,11 @@ impl FitsCanvas {
     /// is anchored in — converting at the edge means the viewer never handles a
     /// screen coordinate it might forget to transform.
     /// Tell the canvas where to ask what shape is being drawn.
-    pub fn set_preview_kind_source(
+    pub fn set_pending_mark_source(
         &self,
-        f: impl Fn() -> crate::models::annotation::AnnotationKind + 'static,
+        f: impl Fn() -> crate::models::annotation::PendingMark + 'static,
     ) {
-        *self.preview_kind.borrow_mut() = Some(Box::new(f));
+        *self.preview.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_on_left_click(&self, f: impl Fn(f64, f64, f64) + 'static) {

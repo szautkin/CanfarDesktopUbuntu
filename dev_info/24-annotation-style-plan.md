@@ -1,7 +1,7 @@
 # 24 — Styling a mark: colour, weight, size, thickness
 
-Status: plan. Measured against the tree at `596f8a4`; nothing here is
-implemented.
+Status: **done**. Steps 1–4 landed in `9de3b29` and `43eb1a4`; steps 5 and 6
+are below the line at the end of this file, with what changed from the plan.
 
 The ask: font size, font weight and colour for a mark's label, and thickness for
 its outline.
@@ -164,3 +164,70 @@ person could.
   must not change that.
 - **Both viewers**, since the renderer is shared: the cube probes cover the
   volume and the slice without new work.
+
+---
+
+## What was built (steps 5 and 6)
+
+### The two things the plan did not say
+
+**One value, not two.** The plan had the picker and the style as separate
+questions. They are asked at the same moment, for the same reason — either can
+change while drawing is armed — so they became `PendingMark { kind, style }`,
+and `set_preview_kind_source` became `set_pending_mark_source`. The preview and
+the mark it lands as are now made from ONE read of the controls, so they cannot
+disagree about either half. That removed a field and a setter per surface
+rather than adding one.
+
+**The inks are 8-bit now.** `USER_INK` was `(0.62, 0.85, 1.0)`, which does not
+survive its own storage: a colour is written as `#rrggbb` in the settings file,
+in a colour button and over MCP, so the constant came back as
+`(0.6196…, 0.8509…, 1.0)` and a fresh install's default was not equal to
+itself. They are written `rgb8(158, 217, 255)` now — the same colour on screen,
+to the byte, and the round trip is exact.
+
+### Where things live
+
+| | |
+| --- | --- |
+| `AppConfig.mark_{colour,font_size,bold,stroke}` | What a NEW mark looks like |
+| `MarkStyle::from_settings` / `store_in` | The one bridge between the two |
+| `settings_service::{default_mark_style, remember_mark_style}` | Read and write it |
+| `MarksSection::{pending, style, show_style_for, set_on_style_changed}` | The row |
+
+The section owns the CONTROLS and knows nothing about tabs or canvases; each
+viewer decides the POLICY, which is the one thing that genuinely differs:
+a control move restyles the selected mark if there is one, and otherwise
+becomes the default for the next.
+
+An agent's marks are excluded from the default deliberately: the setting means
+"what I draw", and green is how a mark is known to be an agent's before anyone
+opens the list.
+
+### The invariant, and the test that holds it
+
+Nothing reads the stored default at draw time. A draw path that consulted it
+would restyle marks people had already drawn — and already exported — the
+moment the colour button moved, silently.
+
+`nothing_but_the_style_row_reads_the_stored_default` walks the tree and fails
+on any caller of `default_mark_style` outside the one place a new mark is made
+from it. Mutation-tested: adding a call inside the FITS canvas's draw function
+fails it, and deleting the cube's `set_on_style_changed` fails
+`both_viewers_connect_the_style_row`.
+
+### Measured, not assumed
+
+- `a_thicker_outline_lays_down_more_ink` — stroke 4 covers more pixels than
+  stroke 1 in a real raster. With the renderer mutated back to the constant:
+  "stroke 4 covered 419 pixels and stroke 1 covered 419".
+- `a_marks_colour_reaches_the_raster` — a red mark comes out red in BGRA.
+- `selection_still_overrides_a_custom_colour` — a red mark still goes white
+  when picked out, so selection does not become invisible on exactly the marks
+  someone cared enough to restyle.
+- `a_bad_settings_file_still_draws_a_visible_mark` — the file is JSON people
+  edit; an unparseable colour or a zero stroke cannot produce a mark that is
+  drawn and invisible.
+- `annotation_style_probe` grew a styled row, because whether four numbers a
+  person picked still read as one set of annotations is not a thing a test can
+  answer.

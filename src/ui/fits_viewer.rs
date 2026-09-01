@@ -1033,6 +1033,20 @@ impl FitsViewer {
             });
         }
         {
+            // Moving a style control restyles the selected mark if there is
+            // one, and otherwise sets what the next mark will look like.
+            let v = viewer.clone();
+            viewer.marks_section.set_on_style_changed(move |style| {
+                match v
+                    .current_tab()
+                    .and_then(|t| t.canvas().selected_annotation())
+                {
+                    Some(id) => v.restyle_mark(&id, style),
+                    None => crate::services::settings_service::remember_mark_style(style),
+                }
+            });
+        }
+        {
             let v = viewer.clone();
             viewer.annotations_panel.set_on_delete(move |id| {
                 // An editor open on the mark being deleted would be left
@@ -2655,11 +2669,11 @@ impl FitsViewer {
             // One source for both the preview and the mark it becomes: the
             // picker itself, asked each time.
             let viewer = Rc::downgrade(self);
-            canvas.set_preview_kind_source(move || {
+            canvas.set_pending_mark_source(move || {
                 viewer
                     .upgrade()
-                    .map(|v| v.selected_draw_kind())
-                    .unwrap_or(crate::models::annotation::AnnotationKind::Circle)
+                    .map(|v| v.pending_mark())
+                    .unwrap_or_default()
             });
         }
         let viewer = Rc::downgrade(self);
@@ -2668,12 +2682,12 @@ impl FitsViewer {
             // Read at CLICK time, not when Draw was switched on. Capturing it
             // here meant the shape picked when the mode was armed was the shape
             // you got for ever after: choosing Box and drawing gave a circle.
-            v.place_mark(v.selected_draw_kind(), img_x, img_y, half);
+            v.place_mark(v.pending_mark(), img_x, img_y, half);
         });
     }
 
-    fn selected_draw_kind(&self) -> crate::models::annotation::AnnotationKind {
-        self.marks_section.kind()
+    fn pending_mark(&self) -> crate::models::annotation::PendingMark {
+        self.marks_section.pending()
     }
 
     /// Add a mark where the user clicked.
@@ -2683,7 +2697,7 @@ impl FitsViewer {
     /// WCS, so the mark survives reopening the file.
     fn place_mark(
         self: &Rc<Self>,
-        kind: crate::models::annotation::AnnotationKind,
+        pending: crate::models::annotation::PendingMark,
         img_x: f64,
         img_y: f64,
         dragged_half_px: f64,
@@ -2711,6 +2725,7 @@ impl FitsViewer {
         // units. A tap with no drag falls back to a default, so a click still
         // makes a mark rather than nothing.
         let canvas = tab.canvas();
+        let kind = pending.kind;
         let extent = if dragged_half_px > 3.0 {
             crate::models::annotation::Extent::square(
                 dragged_half_px * canvas.units_per_image_pixel(&anchor),
@@ -2722,10 +2737,33 @@ impl FitsViewer {
         // Every kind gets its label the same way: the shape lands, then a
         // cursor appears at the end of its leader and you type. A callout with
         // no words is fine for the moment — you are about to give it some.
-        let mark = Annotation::new(kind, anchor, "", Author::User).with_extent(extent);
+        // The style is COPIED into the mark now, and never consulted again:
+        // changing the row afterwards must not restyle marks already drawn.
+        let mark = Annotation::new(kind, anchor, "", Author::User)
+            .with_extent(extent)
+            .with_style(pending.style);
         let id = mark.id.clone();
         self.add_mark(mark);
         self.ask_for_text_at_leader(&id);
+    }
+
+    /// Give one mark a new look, and keep it.
+    fn restyle_mark(&self, id: &str, style: crate::models::annotation::MarkStyle) {
+        let Some(tab) = self.current_tab() else {
+            return;
+        };
+        let canvas = tab.canvas();
+        let mut all = canvas.annotations();
+        let Some(mark) = all.iter_mut().find(|a| a.id == id) else {
+            return;
+        };
+        if mark.effective_style() == style {
+            return;
+        }
+        mark.style = Some(style);
+        canvas.set_annotations(all);
+        self.persist_annotations(&tab);
+        self.refresh_annotations_panel();
     }
 
     /// Store a validated mark and show it.
@@ -2900,7 +2938,10 @@ impl FitsViewer {
     fn refresh_annotations_panel(&self) {
         match self.current_tab() {
             Some(tab) => self.refresh_annotations_panel_for(&tab),
-            None => self.annotations_panel.set_annotations(&[], None),
+            None => {
+                self.annotations_panel.set_annotations(&[], None);
+                self.marks_section.show_style_for(None);
+            }
         }
     }
 
@@ -2916,6 +2957,7 @@ impl FitsViewer {
         self.hdu_infos.borrow_mut().clear();
         self.close_label_editor();
         self.annotations_panel.set_annotations(&[], None);
+        self.marks_section.show_style_for(None);
         self.draw_mode.set_active(false);
     }
 
@@ -2953,6 +2995,8 @@ impl FitsViewer {
             &canvas.annotations(),
             canvas.selected_annotation().as_deref(),
         );
+        self.marks_section
+            .show_style_for(canvas.selected_mark().as_ref());
     }
 
     /// Show `tab`'s zoom in the toolbar.

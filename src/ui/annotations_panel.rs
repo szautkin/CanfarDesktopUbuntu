@@ -12,6 +12,7 @@ use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
 use libadwaita::prelude::*;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub struct AnnotationsPanel {
@@ -201,11 +202,23 @@ fn describe(a: &Annotation) -> String {
 /// One argument, because one thing genuinely differs: the FITS viewer can pan
 /// with Shift-drag while drawing and the cube cannot, so their tooltips say
 /// different things about it.
+/// Told the new style whenever a style control moves.
+type StyleCallback = Rc<dyn Fn(crate::models::annotation::MarkStyle)>;
+
 pub struct MarksSection {
     expander: gtk::Expander,
     panel: Rc<AnnotationsPanel>,
     draw_mode: gtk::ToggleButton,
     draw_kind: gtk::DropDown,
+    colour: gtk::ColorDialogButton,
+    font_size: gtk::SpinButton,
+    bold: gtk::ToggleButton,
+    stroke: gtk::SpinButton,
+    /// Told the style whenever a control moves.
+    on_style: RefCell<Option<StyleCallback>>,
+    /// Suppresses `on_style` while the controls are being set FROM a style,
+    /// so showing a mark's style does not immediately write it back.
+    settling: Cell<bool>,
 }
 
 impl MarksSection {
@@ -229,17 +242,159 @@ impl MarksSection {
         draw_box.append(&draw_mode);
         draw_box.append(&draw_kind);
 
+        // Style, directly under the pencil that uses it. Four controls,
+        // acting on the selected mark when there is one and on what the next
+        // mark will look like otherwise — which is how every drawing
+        // application behaves, and avoids a separate "preferences for new
+        // marks" screen nobody would find.
+        let colour = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+        colour.set_tooltip_text(Some(crate::tr_en!("Mark colour")));
+
+        let font_size = gtk::SpinButton::with_range(6.0, 72.0, 1.0);
+        font_size.set_value(crate::models::annotation::DEFAULT_FONT_SIZE);
+        font_size.set_tooltip_text(Some(crate::tr_en!("Label size in pixels")));
+
+        let bold = gtk::ToggleButton::new();
+        bold.set_icon_name("format-text-bold-symbolic");
+        bold.set_tooltip_text(Some(crate::tr_en!("Bold label")));
+
+        let stroke = gtk::SpinButton::with_range(0.5, 20.0, 0.5);
+        stroke.set_digits(1);
+        stroke.set_value(crate::models::annotation::DEFAULT_STROKE);
+        stroke.set_tooltip_text(Some(crate::tr_en!("Outline thickness in pixels")));
+
+        let style_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        style_box.append(&colour);
+        style_box.append(&font_size);
+        style_box.append(&bold);
+        style_box.append(&stroke);
+
+        // Both rows go into the panel's one drawing slot rather than the panel
+        // growing a second slot: the slot means "the controls that make a
+        // mark", and what a mark looks like is part of making it.
+        let rows = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        rows.append(&draw_box);
+        rows.append(&style_box);
+
         let panel = AnnotationsPanel::new();
-        panel.set_draw_controls(&draw_box);
+        panel.set_draw_controls(&rows);
         let expander = gtk::Expander::new(Some(crate::tr_en!("Marks")));
         expander.set_child(Some(panel.widget()));
 
-        Rc::new(Self {
+        let this = Rc::new(Self {
             expander,
             panel,
             draw_mode,
             draw_kind,
-        })
+            colour,
+            font_size,
+            bold,
+            stroke,
+            on_style: RefCell::new(None),
+            settling: Cell::new(false),
+        });
+
+        // One handler for four controls: they all mean the same thing, and
+        // four copies of "read all four, clamp, notify" would be four places
+        // to forget the guard.
+        let announce = {
+            let weak = Rc::downgrade(&this);
+            move || {
+                let Some(this) = weak.upgrade() else { return };
+                if this.settling.get() {
+                    return;
+                }
+                let cb = this.on_style.borrow().clone();
+                if let Some(cb) = cb {
+                    cb(this.style());
+                }
+            }
+        };
+        {
+            let a = announce.clone();
+            this.colour.connect_rgba_notify(move |_| a());
+        }
+        {
+            let a = announce.clone();
+            this.font_size.connect_value_changed(move |_| a());
+        }
+        {
+            let a = announce.clone();
+            this.bold.connect_toggled(move |_| a());
+        }
+        {
+            let a = announce;
+            this.stroke.connect_value_changed(move |_| a());
+        }
+        this.show_style_for(None);
+        this
+    }
+
+    /// What the next mark will be, shape and look together.
+    ///
+    /// Asked at draw time and again when the mark lands, so the preview and
+    /// the mark cannot disagree about either half.
+    pub fn pending(&self) -> crate::models::annotation::PendingMark {
+        crate::models::annotation::PendingMark {
+            kind: self.kind(),
+            style: self.style(),
+        }
+    }
+
+    /// What the controls currently say.
+    pub fn style(&self) -> crate::models::annotation::MarkStyle {
+        let c = self.colour.rgba();
+        crate::models::annotation::MarkStyle {
+            colour: (
+                f64::from(c.red()),
+                f64::from(c.green()),
+                f64::from(c.blue()),
+            ),
+            font_size: self.font_size.value(),
+            bold: self.bold.is_active(),
+            stroke: self.stroke.value(),
+        }
+        .sane()
+    }
+
+    /// Point the style row at the selected mark, or — when nothing is
+    /// selected — at the stored default, which is what the next mark will get.
+    ///
+    /// One place decides that, so no path through either viewer can leave the
+    /// row describing a mark that is no longer selected.
+    pub fn show_style_for(&self, selected: Option<&Annotation>) {
+        self.show_style(match selected {
+            Some(mark) => mark.effective_style(),
+            None => crate::services::settings_service::default_mark_style(
+                crate::models::annotation::Author::User,
+            ),
+        });
+    }
+
+    /// Show `style` without announcing it back.
+    ///
+    /// Setting a widget emits its change signal, so without the guard,
+    /// displaying the selected mark's style would immediately write that same
+    /// style back to it — harmless here, but it would also overwrite the
+    /// stored default every time a mark was clicked.
+    pub fn show_style(&self, style: crate::models::annotation::MarkStyle) {
+        let style = style.sane();
+        self.settling.set(true);
+        self.colour.set_rgba(&gtk::gdk::RGBA::new(
+            style.colour.0 as f32,
+            style.colour.1 as f32,
+            style.colour.2 as f32,
+            1.0,
+        ));
+        self.font_size.set_value(style.font_size);
+        self.bold.set_active(style.bold);
+        self.stroke.set_value(style.stroke);
+        self.settling.set(false);
+    }
+
+    /// Called with the style whenever a control moves.
+    pub fn set_on_style_changed(&self, f: impl Fn(crate::models::annotation::MarkStyle) + 'static) {
+        *self.on_style.borrow_mut() = Some(Rc::new(f));
     }
 
     /// The collapsible, to append to a control column.
@@ -278,6 +433,64 @@ mod tests {
 
     fn mark(kind: AnnotationKind, text: &str, author: Author) -> Annotation {
         Annotation::new(kind, Anchor::ImagePixel { x: 12.0, y: 34.0 }, text, author)
+    }
+
+    /// Both viewers mount this section, so both must connect its style row.
+    ///
+    /// The controls exist either way; unconnected, they move and nothing
+    /// happens — no error, no log line, and a person concluding the feature is
+    /// broken. That is exactly the failure a compiler cannot see, because a
+    /// callback nobody registers is not a type error.
+    #[test]
+    fn both_viewers_connect_the_style_row() {
+        for (path, source) in crate::testing::rust_sources() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name != "fits_viewer.rs" && name != "cube_viewer.rs" {
+                continue;
+            }
+            let code = crate::testing::code(&source);
+            assert!(
+                code.contains("set_on_style_changed"),
+                "{name} mounts the Marks section but never connects its style \
+                 row — the controls would move and do nothing"
+            );
+            assert!(
+                code.contains("show_style_for"),
+                "{name} never points the style row at the selected mark, so it \
+                 would describe whatever was last touched"
+            );
+        }
+    }
+
+    /// The stored default is read when a mark is CREATED, nowhere else.
+    ///
+    /// The whole reason a mark carries its own style is that changing the
+    /// setting must leave marks already drawn alone. A draw path that consulted
+    /// the setting would restyle everyone's work the moment the colour button
+    /// moved — silently, and to marks they had already exported.
+    ///
+    /// `show_style_for` is the one caller: it fills the CONTROLS, which is what
+    /// the next mark is made from. Anything else asking is the bug.
+    #[test]
+    fn nothing_but_the_style_row_reads_the_stored_default() {
+        let mut callers: Vec<String> = Vec::new();
+        for (path, source) in crate::testing::rust_sources() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "settings_service.rs" || name == "annotations_panel.rs" {
+                continue;
+            }
+            for (i, line) in crate::testing::code(&source).lines().enumerate() {
+                if line.contains("default_mark_style(") {
+                    callers.push(format!("{name}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            callers.is_empty(),
+            "the stored default is meant to be read only where a new mark is \
+             made from it; these read it elsewhere, and would restyle marks \
+             already drawn: {callers:#?}"
+        );
     }
 
     #[test]

@@ -75,6 +75,15 @@ fn d_resolver_base() -> String {
 fn d_theme() -> String {
     "System".to_string()
 }
+fn d_mark_colour() -> String {
+    crate::models::annotation::MarkStyle::default().colour_hex()
+}
+fn d_mark_font_size() -> f64 {
+    crate::models::annotation::DEFAULT_FONT_SIZE
+}
+fn d_mark_stroke() -> f64 {
+    crate::models::annotation::DEFAULT_STROKE
+}
 fn d_session_type() -> String {
     "notebook".to_string()
 }
@@ -131,6 +140,24 @@ pub struct AppConfig {
     /// UI language: "system", "en", or "fr".
     #[serde(default = "d_language")]
     pub language: String,
+
+    // --- what a NEW mark looks like ---
+    //
+    // Read when a mark is CREATED and copied into it, never consulted at draw
+    // time. A setting that restyled marks already drawn when it changed would
+    // silently rewrite work someone had done — the same reason a mark's own
+    // style is an Option rather than a defaulted struct.
+    /// Ink for a new mark, as `#rrggbb`.
+    #[serde(default = "d_mark_colour")]
+    pub mark_colour: String,
+    /// Label size for a new mark, in device pixels.
+    #[serde(default = "d_mark_font_size")]
+    pub mark_font_size: f64,
+    #[serde(default)]
+    pub mark_bold: bool,
+    /// Outline width for a new mark, in device pixels.
+    #[serde(default = "d_mark_stroke")]
+    pub mark_stroke: f64,
 }
 
 impl Default for AppConfig {
@@ -146,6 +173,10 @@ impl Default for AppConfig {
             resolver_base: d_resolver_base(),
             vizier_mirrors: d_vizier_mirrors(),
             theme: d_theme(),
+            mark_colour: d_mark_colour(),
+            mark_font_size: d_mark_font_size(),
+            mark_bold: false,
+            mark_stroke: d_mark_stroke(),
             default_session_type: d_session_type(),
             default_cores: d_cores(),
             default_ram: d_ram(),

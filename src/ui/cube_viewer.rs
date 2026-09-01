@@ -758,6 +758,20 @@ impl CubeViewer {
         self.persist_annotations();
     }
 
+    /// Give one mark a new look, and keep it.
+    fn restyle_mark(&self, id: &str, style: crate::models::annotation::MarkStyle) {
+        let mut all = self.annotations();
+        let Some(mark) = all.iter_mut().find(|a| a.id == id) else {
+            return;
+        };
+        if mark.effective_style() == style {
+            return;
+        }
+        mark.style = Some(style);
+        self.set_annotations(all);
+        self.persist_annotations();
+    }
+
     fn delete_mark(&self, id: &str) {
         let mut all = self.annotations();
         all.retain(|a| a.id != id);
@@ -765,7 +779,7 @@ impl CubeViewer {
         self.persist_annotations();
     }
 
-    /// Refill the sidebar list from what is actually stored.    /// Refill the sidebar list from what is actually stored.
+    /// Refill the sidebar list from what is actually stored.
     ///
     /// Called by the setters rather than by their callers: the owner announces
     /// its own change, so no path — MCP, a click, a file load — can move the
@@ -775,6 +789,10 @@ impl CubeViewer {
             &self.annotations.borrow(),
             self.selected_annotation.borrow().as_deref(),
         );
+        let selected = self.selected_annotation.borrow().clone();
+        let all = self.annotations.borrow();
+        self.marks_section
+            .show_style_for(selected.and_then(|id| all.iter().find(|a| a.id == id)));
     }
 
     /// Write the current marks to the store, under this cube's own path.
@@ -1202,10 +1220,22 @@ impl CubeViewer {
             });
         }
 
+        {
+            // Moving a style control restyles the selected mark if there is
+            // one, and otherwise sets what the next mark will look like.
+            let this = self.clone();
+            ctl.marks_section
+                .set_on_style_changed(move |style| match this.selected_annotation() {
+                    Some(id) => this.restyle_mark(&id, style),
+                    None => crate::services::settings_service::remember_mark_style(style),
+                });
+        }
+
         // One picker, asked by both previews at draw time.
         {
             let section = ctl.marks_section.clone();
-            self.slice.set_preview_kind_source(move || section.kind());
+            self.slice
+                .set_pending_mark_source(move || section.pending());
         }
 
         // Draw mode arms the slice: a click there places a mark instead of
@@ -1639,14 +1669,16 @@ impl CubeViewer {
     fn place_mark(self: &Rc<Self>, vx: f64, vy: f64, radius: f64) {
         use crate::models::annotation::{Anchor, Annotation, Author, Extent};
         // Read at CLICK time, not when drawing was armed.
-        let kind = self.marks_section.kind();
+        let pending = self.marks_section.pending();
         let half = if radius > 0.0 {
             radius
         } else {
             self.default_mark_extent()
         };
+        // The style is COPIED into the mark now, and never consulted again:
+        // changing the row afterwards must not restyle marks already drawn.
         let mark = Annotation::new(
-            kind,
+            pending.kind,
             Anchor::Data {
                 x: vx,
                 y: vy,
@@ -1655,7 +1687,8 @@ impl CubeViewer {
             String::new(),
             Author::User,
         )
-        .with_extent(Extent::square(half));
+        .with_extent(Extent::square(half))
+        .with_style(pending.style);
         let id = mark.id.clone();
         let mut all = self.annotations();
         all.push(mark);
@@ -1766,12 +1799,13 @@ impl CubeViewer {
                 } {
                     use crate::helpers::annotation_render::AnnotationSurface;
                     let r = half * surface.units_to_pixels(&anchor);
+                    let pending = self.marks_section.pending();
                     crate::helpers::annotation_render::draw_preview(
-                        self.marks_section.kind(),
+                        pending.kind,
                         sx,
                         sy,
                         r,
-                        crate::models::annotation::MarkStyle::default(),
+                        pending.style,
                         cr,
                     );
                 }

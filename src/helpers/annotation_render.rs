@@ -1193,6 +1193,118 @@ mod tests {
         assert_ne!(circle, rect, "the two kinds preview identically");
     }
 
+    /// A thicker outline lays down more ink.
+    ///
+    /// The whole style feature is worth nothing if the number reaches the
+    /// struct and stops there. Counting pixels is the only way to say the
+    /// renderer used it: a stroke that is read, stored, round-tripped through
+    /// JSON and then ignored by cairo passes every other test in this file.
+    #[test]
+    fn a_thicker_outline_lays_down_more_ink() {
+        let ink = |stroke: f64| {
+            let mut mark = Annotation::new(
+                AnnotationKind::Circle,
+                Anchor::ImagePixel { x: 60.0, y: 60.0 },
+                "",
+                Author::User,
+            );
+            mark.extent = Some(Extent::square(30.0));
+            mark.style = Some(MarkStyle {
+                stroke,
+                ..MarkStyle::default()
+            });
+            let surface =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, 120, 120).expect("surface");
+            {
+                let cr = cairo::Context::new(&surface).expect("cr");
+                draw(&[mark], &Flat, None, None, &cr, 120.0, 120.0);
+            }
+            let mut s = surface;
+            s.flush();
+            // Alpha only: a wider ring covers more pixels, whatever its colour.
+            let covered = s
+                .data()
+                .expect("data")
+                .chunks_exact(4)
+                .filter(|px| px[3] != 0)
+                .count();
+            covered
+        };
+        let thin = ink(1.0);
+        let thick = ink(4.0);
+        assert!(thin > 0, "a mark at the default stroke drew nothing");
+        assert!(
+            thick > thin,
+            "stroke 4 covered {thick} pixels and stroke 1 covered {thin} — the \
+             thickness never reached cairo"
+        );
+    }
+
+    /// A mark's colour is the colour it is drawn in.
+    ///
+    /// Not "some colour": the exact channels, because the failure this catches
+    /// is the renderer keeping its own constant and the setting changing
+    /// nothing anyone can see.
+    #[test]
+    fn a_marks_colour_reaches_the_raster() {
+        let mut mark = Annotation::new(
+            AnnotationKind::Rect,
+            Anchor::ImagePixel { x: 60.0, y: 60.0 },
+            "",
+            Author::User,
+        );
+        mark.extent = Some(Extent::square(30.0));
+        mark.style = Some(MarkStyle {
+            colour: (1.0, 0.0, 0.0),
+            stroke: 4.0,
+            ..MarkStyle::default()
+        });
+        let surface =
+            cairo::ImageSurface::create(cairo::Format::ARgb32, 120, 120).expect("surface");
+        {
+            let cr = cairo::Context::new(&surface).expect("cr");
+            draw(&[mark], &Flat, None, None, &cr, 120.0, 120.0);
+        }
+        let mut s = surface;
+        s.flush();
+        // BGRA, premultiplied: on the most opaque pixel, red must dominate.
+        let data = s.data().expect("data");
+        let px = data
+            .chunks_exact(4)
+            .max_by_key(|px| px[3])
+            .expect("some pixel");
+        assert!(px[3] > 0, "the mark drew nothing at all");
+        assert!(
+            px[2] > px[1] && px[2] > px[0],
+            "a red mark came out as B{} G{} R{} — the colour never reached cairo",
+            px[0],
+            px[1],
+            px[2]
+        );
+    }
+
+    /// Selection ink still overrides a custom colour, and only on screen.
+    ///
+    /// A mark the person coloured red must still go white when picked out, or
+    /// selection becomes invisible on exactly the marks they cared enough to
+    /// restyle.
+    #[test]
+    fn selection_still_overrides_a_custom_colour() {
+        let mut mark = Annotation::new(
+            AnnotationKind::Circle,
+            Anchor::ImagePixel { x: 10.0, y: 10.0 },
+            "",
+            Author::User,
+        );
+        mark.style = Some(MarkStyle {
+            colour: (1.0, 0.0, 0.0),
+            ..MarkStyle::default()
+        });
+        assert_eq!(ink_for(&mark, false, false), (1.0, 0.0, 0.0));
+        assert_eq!(ink_for(&mark, true, false), style::SELECTED_INK);
+        assert_eq!(ink_for(&mark, true, true), style::EDITING_INK);
+    }
+
     /// A drag is sized on screen, so what you dragged is what you get.
     ///
     /// The cube's volume view looks at the slice plane at an angle, so

@@ -138,7 +138,7 @@ pub struct CubeSliceView {
     /// remembered — the picker can change while drawing is armed, and a
     /// preview that showed a ring and released a box teaches people not to
     /// trust it.
-    preview_kind: RefCell<Option<Box<dyn Fn() -> crate::models::annotation::AnnotationKind>>>,
+    preview: RefCell<Option<Box<dyn Fn() -> crate::models::annotation::PendingMark>>>,
     /// The shape a placing drag is about to create: `(voxel x, voxel y, half
     /// in voxels)`. Drawn while the button is down so the size is chosen by
     /// eye rather than guessed — without it you draw blind and find out what
@@ -314,7 +314,7 @@ impl CubeSliceView {
             play_gen: Cell::new(0),
             placing: Cell::new(false),
             default_zoom: Cell::new(1.0),
-            preview_kind: RefCell::new(None),
+            preview: RefCell::new(None),
             pending_shape: RefCell::new(None),
             editing_annotation: RefCell::new(None),
             drag_intent: RefCell::new(DragIntent::Pan),
@@ -664,11 +664,11 @@ impl CubeSliceView {
         self.annotation_surface()?.project(anchor)
     }
 
-    pub fn set_preview_kind_source(
+    pub fn set_pending_mark_source(
         &self,
-        f: impl Fn() -> crate::models::annotation::AnnotationKind + 'static,
+        f: impl Fn() -> crate::models::annotation::PendingMark + 'static,
     ) {
-        *self.preview_kind.borrow_mut() = Some(Box::new(f));
+        *self.preview.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_on_marks_changed(
@@ -1197,18 +1197,18 @@ impl CubeSliceView {
                         y: vy,
                         z: 0.0,
                     });
-                let kind = this
-                    .preview_kind
+                let pending = this
+                    .preview
                     .borrow()
                     .as_ref()
                     .map(|f| f())
-                    .unwrap_or(crate::models::annotation::AnnotationKind::Circle);
+                    .unwrap_or_default();
                 crate::helpers::annotation_render::draw_preview(
-                    kind,
+                    pending.kind,
                     sx,
                     sy,
                     r,
-                    crate::models::annotation::MarkStyle::default(),
+                    pending.style,
                     cr,
                 );
             }

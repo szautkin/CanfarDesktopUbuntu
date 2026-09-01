@@ -218,10 +218,21 @@ pub struct MarkStyle {
     pub stroke: f64,
 }
 
+/// A colour from its 8-bit channels.
+///
+/// The inks below are written this way because 8 bits is what a colour
+/// SURVIVES as: it is stored as `#rrggbb`, shown in a colour button as
+/// `#rrggbb`, and sent over MCP as `#rrggbb`. A constant with more precision
+/// than that is a value that cannot come back from its own storage — which is
+/// how a default ends up not equal to itself after one round trip.
+const fn rgb8(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0)
+}
+
 /// The drawing ink: cold white-cyan.
-pub const USER_INK: (f64, f64, f64) = (0.62, 0.85, 1.0);
+pub const USER_INK: (f64, f64, f64) = rgb8(158, 217, 255);
 /// An agent's marks, distinguishable without being louder.
-pub const AGENT_INK: (f64, f64, f64) = (0.55, 1.0, 0.80);
+pub const AGENT_INK: (f64, f64, f64) = rgb8(140, 255, 204);
 pub const DEFAULT_FONT_SIZE: f64 = 11.0;
 pub const DEFAULT_STROKE: f64 = 1.0;
 
@@ -237,6 +248,36 @@ impl MarkStyle {
             bold: false,
             stroke: DEFAULT_STROKE,
         }
+    }
+
+    /// What a NEW mark by `author` looks like, per the user's settings.
+    ///
+    /// Read at creation and copied into the mark — never consulted at draw
+    /// time, so changing the setting leaves every mark already drawn alone.
+    ///
+    /// An agent's marks keep their own ink whatever the setting says: the
+    /// setting is "what I draw", and something a person did not draw is not
+    /// theirs to have restyled by it.
+    pub fn from_settings(author: Author, cfg: &crate::config::AppConfig) -> Self {
+        let base = Self::for_author(author);
+        if author == Author::Agent {
+            return base;
+        }
+        Self {
+            colour: Self::colour_from_hex(&cfg.mark_colour).unwrap_or(base.colour),
+            font_size: cfg.mark_font_size,
+            bold: cfg.mark_bold,
+            stroke: cfg.mark_stroke,
+        }
+        .sane()
+    }
+
+    /// Write this style back as the default for new marks.
+    pub fn store_in(&self, cfg: &mut crate::config::AppConfig) {
+        cfg.mark_colour = self.colour_hex();
+        cfg.mark_font_size = self.font_size;
+        cfg.mark_bold = self.bold;
+        cfg.mark_stroke = self.stroke;
     }
 
     /// The colour as `#rrggbb`.
@@ -294,6 +335,27 @@ impl Default for MarkStyle {
     }
 }
 
+/// What the next mark will be: its shape and its look.
+///
+/// One value rather than two, because the preview and the mark it becomes must
+/// agree about both, and they are asked at the same moment for the same reason
+/// — the picker and the style row can change while drawing is armed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PendingMark {
+    pub kind: AnnotationKind,
+    pub style: MarkStyle,
+}
+
+impl Default for PendingMark {
+    /// What a viewer draws with before anything has told it otherwise.
+    fn default() -> Self {
+        Self {
+            kind: AnnotationKind::Circle,
+            style: MarkStyle::default(),
+        }
+    }
+}
+
 impl Annotation {
     /// How this mark should actually be drawn.
     ///
@@ -330,6 +392,11 @@ impl Annotation {
             style: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
+    }
+
+    pub fn with_style(mut self, style: MarkStyle) -> Self {
+        self.style = Some(style.sane());
+        self
     }
 
     pub fn with_extent(mut self, extent: Extent) -> Self {
@@ -398,6 +465,106 @@ fn default_half_extent(anchor: &Anchor) -> f64 {
 /// A short unique id.
 fn new_id() -> String {
     format!("ann-{}", uuid::Uuid::new_v4().simple())
+}
+
+#[cfg(test)]
+mod style_default_tests {
+    use super::*;
+    use crate::config::AppConfig;
+
+    /// A new mark gets the look the person chose, not a constant.
+    #[test]
+    fn a_new_mark_gets_the_stored_look() {
+        let cfg = AppConfig {
+            mark_colour: "#ff0000".to_string(),
+            mark_font_size: 20.0,
+            mark_bold: true,
+            mark_stroke: 3.0,
+            ..AppConfig::default()
+        };
+
+        let style = MarkStyle::from_settings(Author::User, &cfg);
+        assert_eq!(style.colour_hex(), "#ff0000");
+        assert_eq!(style.font_size, 20.0);
+        assert!(style.bold);
+        assert_eq!(style.stroke, 3.0);
+    }
+
+    /// An agent's marks keep their own ink whatever the setting says.
+    ///
+    /// The setting means "what I draw". Something a person did not draw is not
+    /// theirs to have restyled by it — and green is how a mark is known to be
+    /// an agent's before anyone opens the list.
+    #[test]
+    fn an_agents_mark_is_not_restyled_by_the_persons_default() {
+        let cfg = AppConfig {
+            mark_colour: "#ff0000".to_string(),
+            mark_font_size: 20.0,
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            MarkStyle::from_settings(Author::Agent, &cfg),
+            MarkStyle::for_author(Author::Agent)
+        );
+    }
+
+    /// What is written is what comes back.
+    #[test]
+    fn the_stored_look_survives_a_round_trip() {
+        let style = MarkStyle {
+            colour: (0.2, 0.4, 0.6),
+            font_size: 17.0,
+            bold: true,
+            stroke: 2.5,
+        };
+        let mut cfg = AppConfig::default();
+        style.store_in(&mut cfg);
+        let back = MarkStyle::from_settings(Author::User, &cfg);
+        // Through hex, so the colour is exact to 1/255 rather than bit-exact.
+        assert!(
+            (back.colour.0 - style.colour.0).abs() < 0.005
+                && (back.colour.1 - style.colour.1).abs() < 0.005
+                && (back.colour.2 - style.colour.2).abs() < 0.005,
+            "{:?} came back as {:?}",
+            style.colour,
+            back.colour
+        );
+        assert_eq!(back.font_size, style.font_size);
+        assert_eq!(back.bold, style.bold);
+        assert_eq!(back.stroke, style.stroke);
+    }
+
+    /// A fresh install draws exactly what it drew before there was a setting.
+    #[test]
+    fn a_fresh_install_looks_as_it_always_did() {
+        assert_eq!(
+            MarkStyle::from_settings(Author::User, &AppConfig::default()),
+            MarkStyle::default()
+        );
+    }
+
+    /// A settings file edited by hand cannot make a mark that cannot be seen.
+    ///
+    /// The file is JSON on disk and people do edit it; a colour that does not
+    /// parse, or a zero stroke, would be a mark that is drawn and invisible,
+    /// with nothing reporting a problem.
+    #[test]
+    fn a_bad_settings_file_still_draws_a_visible_mark() {
+        let cfg = AppConfig {
+            mark_colour: "not a colour".to_string(),
+            mark_font_size: 0.0,
+            mark_stroke: 0.0,
+            ..AppConfig::default()
+        };
+
+        let style = MarkStyle::from_settings(Author::User, &cfg);
+        assert_eq!(
+            style.colour, USER_INK,
+            "an unreadable colour must fall back"
+        );
+        assert!(style.font_size >= 6.0, "{}", style.font_size);
+        assert!(style.stroke >= 0.5, "{}", style.stroke);
+    }
 }
 
 #[cfg(test)]
