@@ -61,15 +61,26 @@ pub const COLLAPSE_FLEXIBLE_SP: f64 = 660.0;
 /// A form is not an image: its fields have widths they cannot go below, so the
 /// content cannot absorb the squeeze and the panel is what has to go.
 ///
-/// Derived, not chosen. `panel_width_probe` measures the Search page's form at
-/// a 583 px minimum and its panel at [`RECENT_WIDTH`]; 583 + 340 is 923, so a
-/// page that docked below about that is a page drawing past its own edge —
-/// which is exactly what it did, by 47 px, at the window the app opens at.
-/// Rounded up for the margin the measurement does not include.
+/// Derived, not chosen, and with room to spare. `panel_width_probe` measures
+/// the Search page's split view at a 923 px minimum docked and 583 px
+/// collapsed, so a page docking below about 923 draws past its own edge — which
+/// is exactly what it did, by 47 px, at the window the app opens at.
+///
+/// The margin above 923 is the point of the number. At 940 there were 17 px of
+/// it, and that was not enough: the running app logged
+///
+/// ```text
+/// AdwOverlaySplitView exceeds AdwBreakpointBin width: requested 933 px, 920 available
+/// ```
+///
+/// — the real page carries about 10 px of margin the measurement does not, and
+/// a breakpoint is evaluated against an allocation that moves during a resize.
+/// A threshold that close to the minimum it protects is a threshold that is
+/// occasionally wrong. This one leaves about 70 px.
 ///
 /// Both are in `sp`, which scales with the user's text size: a threshold in raw
 /// pixels is one that moves out from under the text it was measured against.
-pub const COLLAPSE_RIGID_SP: f64 = 940.0;
+pub const COLLAPSE_RIGID_SP: f64 = 1000.0;
 
 /// A list of names is not a column of controls, and is not this wide.
 ///

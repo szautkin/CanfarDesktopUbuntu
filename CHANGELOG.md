@@ -4,6 +4,26 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### The agent says what it is doing, and a reset stopped taking fourteen seconds
+
+- **`reset_search_form` timed out.** It took about fourteen seconds and grew
+  from there, because clearing the form tore down and rebuilt every row in all
+  seven Additional Constraints columns. The values in those columns are
+  computed once, when the data train loads, and never change — only which are
+  available and which are ticked. Updated in place, the same call takes 0.0 to
+  0.2 seconds and stays there.
+- That also fixes the jump: with nothing torn down, a click no longer sends
+  every column back to its first row.
+- **The agent indicator is always on screen**, beside the service health, as
+  `agent idle` or `agent working…` with the same robot icon the AI Guide uses.
+  It used to appear only while an agent was working, which is indistinguishable
+  from its not existing: nothing told you it was a thing to look at, so a tool
+  call that did nothing visible looked like nothing had happened.
+- **The Search panel's collapse threshold had 17 px of margin**, and the app
+  logged `AdwOverlaySplitView exceeds AdwBreakpointBin width: requested 933 px,
+  920 available` when a resize landed in the gap. It has about 70 now, and the
+  probe fails below 40.
+
 ### Additional Constraints jerked sideways, and Home kept asking a signed-in user to sign in
 
 - **Clicking a facet checkbox scrolled its column to the right.** A value like

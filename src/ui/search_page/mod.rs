@@ -576,6 +576,15 @@ pub struct SearchPage {
     search_spinner: gtk::Spinner,
     // --- Data Train ---
     train_lists: [gtk::ListBox; 7],
+    /// True while the facet rows are being set FROM the model, so the toggle
+    /// handlers know not to report a change back.
+    ///
+    /// Without it, updating a checkbox in place fires `toggled`, which toggles
+    /// the model, which schedules another refresh, which fires `toggled` again.
+    /// The old code avoided it by tearing every row down and building new ones
+    /// with no handler attached yet — which is also what made a reset take
+    /// fourteen seconds.
+    train_settling: std::cell::Cell<bool>,
     train_manager: Rc<RefCell<DataTrainManager>>,
     // --- State ---
     resolved_ra: Rc<RefCell<Option<f64>>>,
@@ -1180,6 +1189,7 @@ impl SearchPage {
             saved_list,
             save_name_entry,
             train_lists,
+            train_settling: std::cell::Cell::new(false),
             train_manager: Rc::new(RefCell::new(DataTrainManager::new())),
             status_label,
             search_spinner,
@@ -3388,15 +3398,31 @@ impl SearchPage {
             &mgr.selected_obs_types,
         ];
 
+        // Set FROM the model, so the handlers below must not report back.
+        self.train_settling.set(true);
         for (idx, (list_box, all_values, available)) in all_lists.iter().enumerate() {
-            // Toggling one facet rebuilds all seven, so every column would
-            // otherwise snap back to its first row — including the one being
-            // clicked, which jumps out from under the pointer. Remembered
-            // across the teardown and put back.
-            let scroller = list_box
-                .ancestor(gtk::ScrolledWindow::static_type())
-                .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok());
-            let scrolled_to = scroller.as_ref().map(|s| s.vadjustment().value());
+            // Update in place when the rows are already the right ones.
+            //
+            // `all_values` is computed once, when the data train loads, and
+            // never changes after — only which values are AVAILABLE and which
+            // are SELECTED do. Tearing down every row to say that took about
+            // fourteen seconds per call on a real train, and it threw away the
+            // scroll position and the focus with it: click a checkbox and the
+            // column jumped back to its first row.
+            let existing: Vec<gtk::CheckButton> = facet_checks(list_box);
+            let reusable = existing.len() == all_values.len()
+                && existing
+                    .iter()
+                    .zip(all_values.iter())
+                    .all(|(c, v)| facet_value(c).as_deref() == Some(v.as_str()));
+
+            if reusable {
+                for (check, value) in existing.iter().zip(all_values.iter()) {
+                    check.set_sensitive(available.contains(value));
+                    check.set_active(selected_sets[idx].contains(value));
+                }
+                continue;
+            }
 
             while let Some(child) = list_box.first_child() {
                 list_box.remove(&child);
@@ -3415,46 +3441,69 @@ impl SearchPage {
                 check.set_child(Some(&caption));
                 // Ellipsized, so the whole value has to be readable somewhere.
                 check.set_tooltip_text(Some(value));
+                check.set_sensitive(available.contains(value));
+                check.set_active(selected_sets[idx].contains(value));
 
-                // Gray out unavailable items
-                if !available.contains(value) {
-                    check.set_sensitive(false);
-                }
-
-                // Restore selection state
-                if selected_sets[idx].contains(value) {
-                    check.set_active(true);
-                }
-
-                // Wire toggle → cascade. Toggling one facet narrows the others,
-                // so the whole panel has to be rebuilt: without it the grey-out
-                // never updates, and values the cascade just cleared stay visibly
-                // ticked while the model has dropped them.
+                // Toggling one facet narrows the others, so the whole panel is
+                // refreshed: without it the grey-out never updates, and values
+                // the cascade just cleared stay visibly ticked while the model
+                // has dropped them.
                 let value_owned = value.clone();
                 let col_idx = idx;
                 // Weak, so the closure a widget owns cannot keep the page alive.
                 let weak = Rc::downgrade(self);
                 check.connect_toggled(move |_btn| {
                     let Some(page) = weak.upgrade() else { return };
+                    // The refresh sets these from the model; without this guard
+                    // that would look like a click and toggle the model back.
+                    if page.train_settling.get() {
+                        return;
+                    }
                     page.train_manager
                         .borrow_mut()
                         .toggle(col_idx, &value_owned);
                     page.status_label.set_text(crate::tr_en!("Filter updated"));
-                    // Deferred: this handler's own checkbox is a child of the list
-                    // we are about to tear down.
+                    // Deferred: the model is borrowed by the refresh this
+                    // handler is about to ask for.
                     glib::idle_add_local_once(move || page.refresh_train_ui());
                 });
 
                 list_box.append(&check);
             }
-
-            // After the rows exist, or the adjustment has nothing to scroll
-            // over and the value is clamped straight back to zero.
-            if let (Some(scroller), Some(at)) = (scroller, scrolled_to) {
-                glib::idle_add_local_once(move || scroller.vadjustment().set_value(at));
-            }
         }
+        self.train_settling.set(false);
     }
+}
+
+/// The check buttons a facet column currently holds, in order.
+///
+/// `ListBox::append` wraps each child in a `GtkListBoxRow`, so the button is one
+/// level down from what iterating the list box gives you.
+fn facet_checks(list_box: &gtk::ListBox) -> Vec<gtk::CheckButton> {
+    let mut out = Vec::new();
+    let mut child = list_box.first_child();
+    while let Some(row) = child {
+        if let Some(check) = row
+            .first_child()
+            .and_then(|c| c.downcast::<gtk::CheckButton>().ok())
+        {
+            out.push(check);
+        }
+        child = row.next_sibling();
+    }
+    out
+}
+
+/// The value a facet check button stands for, read back off its own label.
+///
+/// Read rather than remembered: a parallel `Vec` of values would be a second
+/// place for the order to be right, and the whole point of matching them up is
+/// to be sure the row being updated is the row that value belongs to.
+fn facet_value(check: &gtk::CheckButton) -> Option<String> {
+    check
+        .child()
+        .and_then(|c| c.downcast::<gtk::Label>().ok())
+        .map(|l| l.label().to_string())
 }
 
 // =============================================================================

@@ -122,6 +122,22 @@ fn width_without_truncation(root: &gtk::Widget) -> (i32, i32, usize) {
     (widths[n / 2], widths[n - 1], n)
 }
 
+/// The `AdwOverlaySplitView` inside a page, if it has one.
+fn find_split(root: &gtk::Widget) -> Option<adw::OverlaySplitView> {
+    let mut stack = vec![root.clone()];
+    while let Some(w) = stack.pop() {
+        if let Ok(s) = w.clone().downcast::<adw::OverlaySplitView>() {
+            return Some(s);
+        }
+        let mut child = w.first_child();
+        while let Some(c) = child {
+            child = c.next_sibling();
+            stack.push(c);
+        }
+    }
+    None
+}
+
 /// Widgets that state a width AND expand — the contradiction this is all about.
 ///
 /// A `set_size_request` says "I am this wide". Expanding says "give me
@@ -283,6 +299,37 @@ fn main() {
                 w.width_request(),
                 w.width()
             );
+            failures += 1;
+        }
+    }
+
+    // ── Does a docked panel fit above the width it docks at? ────────────────
+    //
+    // The threshold decides WHEN a panel docks; the split view's own minimum
+    // decides whether it FITS once docked. A threshold below that minimum, or
+    // barely above it, is how the running app came to log "AdwOverlaySplitView
+    // exceeds AdwBreakpointBin width: requested 933 px, 920 available".
+    println!("\n── docked panels against the width they dock at ──");
+    for (name, page) in &pages {
+        let Some(split) = find_split(page) else {
+            continue;
+        };
+        let collapsed_was = split.is_collapsed();
+        split.set_collapsed(false);
+        let (docked_min, _, _, _) = split.measure(gtk::Orientation::Horizontal, -1);
+        split.set_collapsed(true);
+        let (loose_min, _, _, _) = split.measure(gtk::Orientation::Horizontal, -1);
+        split.set_collapsed(collapsed_was);
+        // Which threshold this page uses is the page's own business; the rigid
+        // one is the larger, so it is the one worth checking against.
+        let threshold = verbinal::ui::panel::COLLAPSE_RIGID_SP as i32;
+        let margin = threshold - docked_min;
+        println!(
+            "  {name}: docked needs {docked_min}, collapsed needs {loose_min}, \
+             docks above {threshold} — {margin} px of margin"
+        );
+        if margin < 40 {
+            println!("    !! too tight; a resize will request more than it has");
             failures += 1;
         }
     }

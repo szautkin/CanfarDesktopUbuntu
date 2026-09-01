@@ -90,31 +90,51 @@ pub fn build_main_window(
     status_label.set_visible(false);
     status_label.connect_label_notify(|l| l.set_visible(!l.label().is_empty()));
 
-    // --- Transient agent-activity indicator ---
-    // Flashes "⚡ agent working…" with a spinner while an MCP agent has invoked
-    // a tool in the last few seconds; hidden when the agent is idle. Polled once
-    // a second against the global agent-activity log (the MCP router records
-    // each dispatch there — see crate::helpers::agent_activity).
-    let agent_spinner = gtk::Spinner::new();
-    let agent_label = gtk::Label::new(Some(crate::tr_en!("⚡ agent working…")));
+    // --- Agent-activity indicator ---
+    //
+    // Always on screen, beside the service health it sits next to, because the
+    // question it answers — is something driving this app besides me — has an
+    // answer either way. It used to appear only while an agent was working and
+    // be absent otherwise, which is indistinguishable from the indicator not
+    // existing: nothing told you it was a thing to look at, so a tool call that
+    // did nothing visible looked like nothing had happened.
+    //
+    // Polled once a second against the global agent-activity log; the MCP
+    // router records every dispatch there, so this covers all of the tools
+    // rather than the ones a viewer happens to know about.
+    let agent_icon = gtk::Image::from_icon_name(AGENT_ICON);
+    agent_icon.set_pixel_size(16);
+    let agent_label = gtk::Label::new(Some(crate::tr_en!("agent idle")));
     agent_label.add_css_class("caption");
-    agent_label.add_css_class("accent");
     let agent_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    agent_box.append(&agent_spinner);
+    agent_box.append(&agent_icon);
     agent_box.append(&agent_label);
-    agent_box.set_visible(false);
-    agent_box.set_tooltip_text(Some(crate::tr_en!("An AI agent is working")));
+    agent_box.add_css_class("dim-label");
+    agent_box.set_tooltip_text(Some(crate::tr_en!(
+        "No AI agent has called a tool recently"
+    )));
     {
         let agent_box = agent_box.clone();
-        let agent_spinner = agent_spinner.clone();
+        let agent_label = agent_label.clone();
+        // Starts idle, and `was` is what stops the poll from touching widgets
+        // sixty times a minute to say the same thing.
+        let mut was = false;
         glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
             let active = crate::helpers::agent_activity::is_active_within(5);
-            if active != agent_box.is_visible() {
-                agent_box.set_visible(active);
+            if active != was {
+                was = active;
                 if active {
-                    agent_spinner.start();
+                    agent_label.set_text(crate::tr_en!("agent working…"));
+                    agent_box.remove_css_class("dim-label");
+                    agent_box.add_css_class("accent");
+                    agent_box.set_tooltip_text(Some(crate::tr_en!("An AI agent is working")));
                 } else {
-                    agent_spinner.stop();
+                    agent_label.set_text(crate::tr_en!("agent idle"));
+                    agent_box.remove_css_class("accent");
+                    agent_box.add_css_class("dim-label");
+                    agent_box.set_tooltip_text(Some(crate::tr_en!(
+                        "No AI agent has called a tool recently"
+                    )));
                 }
             }
             glib::ControlFlow::Continue
@@ -336,11 +356,7 @@ pub fn build_main_window(
             crate::tr_en!("Workflows"),
             "view-list-symbolic",
         ),
-        (
-            "aiguide",
-            crate::tr_en!("AI Guide"),
-            "verbinal-agent-symbolic",
-        ),
+        ("aiguide", crate::tr_en!("AI Guide"), AGENT_ICON),
     ];
     let nav_keys: Rc<Vec<&'static str>> = Rc::new(nav_items.iter().map(|(k, _, _)| *k).collect());
     for (key, title, icon) in &nav_items {
@@ -715,7 +731,7 @@ pub fn build_main_window(
         ai_guide_page.widget(),
         Some("aiguide"),
         crate::tr_en!("AI Guide"),
-        "verbinal-agent-symbolic",
+        AGENT_ICON,
     );
 
     let dashboard: Rc<RefCell<Option<DashboardView>>> = Rc::new(RefCell::new(None));
@@ -1848,6 +1864,11 @@ struct TileSpec {
 /// fresh install (no `mcp_settings.json`) keeps it hidden. We read the shared
 /// MCP-settings JSON directly and only treat the tile as visible when the
 /// `show_ai_guide_tile` key is explicitly present and `true`.
+/// The agent's own icon: the sidebar row, the landing tile, and the activity
+/// indicator all mean the same thing by it, and a fourth spelling of the name
+/// is a fourth chance to get it wrong.
+const AGENT_ICON: &str = "verbinal-agent-symbolic";
+
 fn read_show_ai_guide_tile() -> bool {
     let Some(dirs) = directories::ProjectDirs::from("net", "canfar", "Verbinal") else {
         return false;
@@ -1997,7 +2018,7 @@ fn build_welcome_page(
     ];
     if show_ai_guide_tile {
         specs.push(TileSpec {
-            icon: "verbinal-agent-symbolic",
+            icon: AGENT_ICON,
             title: crate::tr_en!("AI Guide"),
             desc: crate::tr_en!("Pair an AI agent over MCP"),
             action: TileAction::Navigate {
