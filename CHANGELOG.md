@@ -4,6 +4,20 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### An agent can see what a dropdown offers, and a bad value is refused
+
+- **`rowsPerPageOptions`** reports the Rows/page menu — 25, 50, 100, 250, 500 —
+  beside the size in force. Any whole number from 1 to 1000 is still accepted;
+  the menu is the menu, not the limit.
+- **Each column reports its own display `units`**, so a caller picks one instead
+  of guessing and reading the refusal. RA offers hms/degrees, Int. Time offers
+  seconds through days, the spectral columns offer fourteen.
+- **A value that is not a whole number is refused rather than ignored.**
+  `{"rowsPerPage": "abc"}` used to report success and change nothing, because
+  the reader answered "absent" for both missing and unreadable. `"42"` is still
+  accepted — agents send that routinely — but `12.5`, `null` and `"abc"` are
+  now refused, saying what was wanted and what arrived.
+
 ### A hand-written query keeps the columns it selected
 
 - `SELECT target_name, collection` came back as **`collection` alone** — the

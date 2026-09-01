@@ -415,11 +415,22 @@ impl SearchPage {
         let column_json: Vec<Value> = columns
             .iter()
             .map(|c| {
-                json!({
+                // The display units this column offers, so a caller can pick
+                // one instead of guessing and reading the refusal. Absent for
+                // the columns that have no unit menu, which is most of them.
+                let units: Vec<&str> = crate::helpers::column_units::available_units(&c.key)
+                    .iter()
+                    .map(|u| u.id)
+                    .collect();
+                let mut out = json!({
                     "key": c.key,
                     "label": c.display_name,
                     "visible": self.is_col_visible(c),
-                })
+                });
+                if !units.is_empty() {
+                    out["units"] = json!(units);
+                }
+                out
             })
             .collect();
 
@@ -441,6 +452,11 @@ impl SearchPage {
             "currentPage": page,
             "totalPages": self.total_pages(),
             "rowsPerPage": page_size,
+            // What the Rows/page dropdown offers. Any whole number from 1 to
+            // 1000 is accepted as well — these are the menu, not the limit —
+            // and a size that is not one of them simply leaves the dropdown
+            // showing nothing selected.
+            "rowsPerPageOptions": crate::ui::search_page::ROWS_PER_PAGE,
             "pageStatus": self.page_label.text().to_string(),
             "sortColumn": self.sort_column.borrow().clone(),
             "sortAscending": *self.sort_ascending.borrow(),
@@ -876,7 +892,7 @@ impl SearchPage {
         // Selection last but one, so it clamps against the filters and page
         // size above; the detail dialog after it, so it opens on what was just
         // selected rather than on what used to be.
-        if let Some(n) = crate::mcp::tools::opt_u64(args, "rowsPerPage") {
+        if let Some(n) = crate::mcp::tools::opt_whole(args, "rowsPerPage")? {
             if !(1..=1000).contains(&n) {
                 return Err(format!("rowsPerPage must be between 1 and 1000, got {n}"));
             }
@@ -900,7 +916,7 @@ impl SearchPage {
                 }
             };
         }
-        if let Some(n) = crate::mcp::tools::opt_u64(args, "page") {
+        if let Some(n) = crate::mcp::tools::opt_whole(args, "page")? {
             *self.current_page.borrow_mut() = (n as usize).min(last_page);
         }
 

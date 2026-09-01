@@ -211,6 +211,89 @@ pub fn num_arg(args: &Value, key: &str) -> Option<f64> {
         .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
 }
 
+/// A whole-number argument that REFUSES what it cannot read.
+///
+/// `opt_u64` answers `None` both for "absent" and for "present but not a
+/// number", so a caller cannot tell them apart and treats a wrong type as not
+/// supplied. `set_search_results_view {"rowsPerPage": "abc"}` therefore
+/// reported success and changed nothing — the same "answered that it was
+/// asked, not what happened" this codebase keeps having to fix.
+///
+/// A numeric STRING is accepted, because agents routinely send `"42"` where the
+/// schema says integer and refusing that is pedantry rather than safety. A
+/// fractional value is not: `12.5` rows a page is a request nobody meant.
+pub fn opt_whole(args: &Value, key: &str) -> Result<Option<u64>, String> {
+    let Some(v) = arg(args, key) else {
+        return Ok(None);
+    };
+    if let Some(n) = v.as_u64() {
+        return Ok(Some(n));
+    }
+    if let Some(text) = v.as_str() {
+        if let Ok(n) = text.trim().parse::<u64>() {
+            return Ok(Some(n));
+        }
+    }
+    Err(format!(
+        "{key} takes a whole number, got {}",
+        crate::mcp::tools::describe_json(v)
+    ))
+}
+
+/// A JSON value in the words of a refusal — its shape, not its contents.
+fn describe_json(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => format!("the boolean {b}"),
+        Value::Number(n) => format!("{n}"),
+        Value::String(s) => format!("the text {s:?}"),
+        Value::Array(_) => "an array".to_string(),
+        Value::Object(_) => "an object".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod whole_number_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Absent is not the same as unreadable.
+    ///
+    /// `opt_u64` answered `None` for both, so a wrong type was treated as not
+    /// supplied: `{"rowsPerPage": "abc"}` reported success and changed nothing.
+    #[test]
+    fn a_value_that_is_not_a_number_is_refused_rather_than_ignored() {
+        let absent = json!({});
+        assert_eq!(opt_whole(&absent, "n"), Ok(None));
+        for bad in [
+            json!("abc"),
+            json!(12.5),
+            json!(null),
+            json!(true),
+            json!([1]),
+        ] {
+            let args = json!({ "n": bad });
+            let out = opt_whole(&args, "n");
+            assert!(out.is_err(), "{bad} was accepted: {out:?}");
+            assert!(
+                out.unwrap_err().contains("whole number"),
+                "the refusal should say what it wanted"
+            );
+        }
+    }
+
+    /// A numeric string is a number.
+    ///
+    /// Agents routinely send `"42"` where a schema says integer, and refusing
+    /// that is pedantry rather than safety.
+    #[test]
+    fn a_numeric_string_is_accepted() {
+        assert_eq!(opt_whole(&json!({ "n": "42" }), "n"), Ok(Some(42)));
+        assert_eq!(opt_whole(&json!({ "n": " 7 " }), "n"), Ok(Some(7)));
+        assert_eq!(opt_whole(&json!({ "n": 3 }), "n"), Ok(Some(3)));
+    }
+}
+
 /// An optional array-of-strings argument.
 ///
 /// Distinguishes "omitted" (`None`) from "explicitly empty" (`Some(vec![])`) —

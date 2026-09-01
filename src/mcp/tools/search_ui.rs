@@ -244,7 +244,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             "get_search_results",
             "Read the results table: status, the ADQL that produced it, totalRows and \
              filteredRows, pagination as currentPage (0-based), totalPages, rowsPerPage and a \
-             human-readable pageStatus, selectedRows, sortColumn/sortAscending, active \
+             human-readable pageStatus, rowsPerPageOptions, selectedRows, \
+             sortColumn/sortAscending, active \
              per-column filters, \
              columnUnits, the column set with visibility, and — by default — the current \
              page's RAW cell values (capped at 500 rows) for the columns the grid is \
@@ -279,8 +280,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "sortAscending": {"type": "boolean", "description": "Sort direction (default true). Only meaningful with sortColumn."},
                     "showColumns": {"type": "array", "items": {"type": "string"}, "description": "Column keys to reveal."},
                     "hideColumns": {"type": "array", "items": {"type": "string"}, "description": "Column keys to hide."},
-                    "columnUnits": {"type": "object", "description": "Column key → display unit id. An empty string restores that column's default.", "additionalProperties": {"type": "string"}},
-                    "rowsPerPage": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Page size; resets to the first page."},
+                    "columnUnits": {"type": "object", "description": "Column key → display unit id. get_search_results lists each column's own `units`, so there is no need to guess; a rejected one is refused with the list. An empty string restores that column's default.", "additionalProperties": {"type": "string"}},
+                    "rowsPerPage": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Page size; resets to the first page. Any whole number from 1 to 1000 — the Rows/page dropdown's own entries are reported as rowsPerPageOptions by get_search_results, and a size that is not one of them is still applied, leaving the dropdown showing nothing selected."},
                     "pageAction": {"type": "string", "enum": ["first", "previous", "next", "last"]},
                     "page": {"type": "integer", "minimum": 0, "description": "Absolute 0-based page, clamped to the last page."},
                     "applyFiltersToAdql": {"type": "boolean", "description": "Rewrite the ADQL query to include the active filters, and switch to the ADQL tab."},

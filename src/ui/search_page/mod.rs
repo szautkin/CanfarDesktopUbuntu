@@ -56,7 +56,9 @@ pub(crate) const INTENTS: [&str; 3] = ["", "science", "calibration"];
 /// derived from these numbers rather than written out a second time — the two
 /// literals used to sit 350 lines apart, and adding a choice to one would have
 /// silently given the wrong page size.
-const ROWS_PER_PAGE: [usize; 5] = [25, 50, 100, 250, 500];
+/// What the Rows/page dropdown offers. Reported to agents as
+/// `rowsPerPageOptions`; any whole number from 1 to 1000 is also accepted.
+pub(crate) const ROWS_PER_PAGE: [usize; 5] = [25, 50, 100, 250, 500];
 
 // The numeric inputs' bounds. These are ALSO what `set_search_form` advertises
 // over MCP, and a SpinButton silently clamps anything outside its range — so a
