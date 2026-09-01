@@ -168,6 +168,20 @@ pub(crate) fn column_width_for(key: &str, display_name: &str) -> i32 {
 }
 
 /// A label that fills its cell and ellipsizes rather than widening it.
+/// What a click on a results row means, given what was held down.
+///
+/// The three gestures every table has: pick this one, add or remove this one,
+/// take everything from the last pick to this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowClickKind {
+    /// Plain click: this row alone, and open its dialog.
+    Replace,
+    /// Ctrl: toggle this row's membership, and open nothing.
+    Toggle,
+    /// Shift: everything between the anchor and this row, and open nothing.
+    Range,
+}
+
 /// Marks the highlighted result row. Styled in `style.css`.
 pub(crate) const SELECTED_ROW: &str = "selected-row";
 /// Marks a cell that filters the grid to its own value when clicked.
@@ -657,13 +671,26 @@ pub struct SearchPage {
     /// supposed to be showing it, instead of leaving it saying 100 beside a
     /// pagination bar counting in tens.
     rows_combo: gtk::DropDown,
-    /// The highlighted row, as an index into the FILTERED, SORTED rows.
+    /// The highlighted rows, as indices into the FILTERED, SORTED rows.
     ///
-    /// That index rather than the page's, because it is the one an agent can
-    /// name and the one that survives a page turn — and it is what
-    /// `get_search_results` counts in. Cleared whenever the order changes,
-    /// since a remembered index would then point at a different observation.
-    selected_row: std::cell::Cell<Option<usize>>,
+    /// Those indices rather than the page's, because they are what an agent can
+    /// name and what survives a page turn — and what `get_search_results`
+    /// counts in. Cleared whenever the order changes, since remembered indices
+    /// would then point at different observations.
+    ///
+    /// A set, not a single index: a person picking three rows to compare, or an
+    /// agent saying "these four", is the ordinary case, and a single selection
+    /// is that set with one member.
+    selected_rows: RefCell<std::collections::BTreeSet<usize>>,
+    /// Where a Shift-click measures from — the last row picked on its own.
+    selection_anchor: std::cell::Cell<Option<usize>>,
+    /// The modifier held during the click being handled, recorded by one
+    /// capture-phase gesture on the grid.
+    ///
+    /// A `Button`'s `clicked` says nothing about modifiers, and a hundred
+    /// gestures — one per row — is a hundred objects rebuilt on every page
+    /// turn. One gesture over the whole grid sees every click in it.
+    click_modifier: std::cell::Cell<RowClickKind>,
     // --- Data Train ---
     train_lists: [gtk::ListBox; 7],
     /// True while the facet rows are being set FROM the model, so the toggle
@@ -1296,7 +1323,9 @@ impl SearchPage {
             search_spinner,
             run_buttons: [search_btn.clone(), exec_btn.clone()],
             rows_combo: rows_combo.clone(),
-            selected_row: std::cell::Cell::new(None),
+            selected_rows: RefCell::new(std::collections::BTreeSet::new()),
+            selection_anchor: std::cell::Cell::new(None),
+            click_modifier: std::cell::Cell::new(RowClickKind::Replace),
             resolved_ra: Rc::new(RefCell::new(None)),
             resolved_dec: Rc::new(RefCell::new(None)),
             resolver_service_used: Rc::new(RefCell::new(None)),
@@ -1424,6 +1453,32 @@ impl SearchPage {
             *p.current_page.borrow_mut() = 0;
             p.render_results_page();
         });
+
+        // What was held down when a row was clicked.
+        //
+        // One gesture over the whole grid, in the CAPTURE phase so it sees the
+        // press before the row's button does, and claiming nothing so the
+        // button still fires. A `Button`'s `clicked` carries no modifier state,
+        // and a gesture per row would be a hundred objects rebuilt on every
+        // page turn — the per-row costs in this table have been expensive twice
+        // already.
+        {
+            let p = page.clone();
+            let modifiers = gtk::GestureClick::new();
+            modifiers.set_propagation_phase(gtk::PropagationPhase::Capture);
+            modifiers.connect_pressed(move |gesture, _, _, _| {
+                let state = gesture.current_event_state();
+                p.click_modifier
+                    .set(if state.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                        RowClickKind::Range
+                    } else if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                        RowClickKind::Toggle
+                    } else {
+                        RowClickKind::Replace
+                    });
+            });
+            page.results_panel.add_controller(modifiers);
+        }
 
         // Rows per page combo
         let p = page.clone();
@@ -2600,10 +2655,17 @@ impl SearchPage {
             row_btn.connect_clicked(move |_| {
                 // Clicking a row is what selecting one means here, so the
                 // highlight follows the pointer and an agent reading
-                // `selectedRow` sees what the person is looking at.
-                if let Some(page) = page_for_select.upgrade() {
-                    page.selected_row.set(Some(absolute));
-                    page.mark_selected_row();
+                // `selectedRows` sees what the person is looking at.
+                //
+                // Ctrl and Shift build a selection instead, and neither opens
+                // the dialog: adding a fourth row to a comparison should not
+                // put a window over the three being read.
+                let open_dialog = match page_for_select.upgrade() {
+                    Some(page) => page.apply_row_click(absolute),
+                    None => true,
+                };
+                if !open_dialog {
+                    return;
                 }
                 let row = Rc::clone(&row_for_detail);
                 let columns = Rc::clone(&columns_for_detail);
@@ -2639,9 +2701,10 @@ impl SearchPage {
         *self.sort_column.borrow_mut() = None;
         *self.sort_ascending.borrow_mut() = true;
         *self.current_page.borrow_mut() = 0;
-        // The highlight is an index into an order that has just changed, so it
-        // would point at a different observation. Dropped with the rest.
-        self.selected_row.set(None);
+        // The highlights are indices into an order that has just changed, so
+        // they would point at different observations. Dropped with the rest.
+        self.selected_rows.borrow_mut().clear();
+        self.selection_anchor.set(None);
     }
 
     /// Set the page size, and move every control that shows it.
@@ -2682,12 +2745,12 @@ impl SearchPage {
     /// of a second, which would be a third of a second between the click and
     /// the highlight following it.
     fn mark_selected_row(&self) {
-        let selected = self.selected_row.get();
+        let selected = self.selected_rows.borrow();
         let start = (*self.current_page.borrow()).saturating_mul(*self.page_size.borrow());
         let mut child = self.results_panel.first_child();
         let mut offset = 0usize;
         while let Some(w) = child {
-            if selected == Some(start + offset) {
+            if selected.contains(&(start + offset)) {
                 w.add_css_class(SELECTED_ROW);
             } else {
                 w.remove_css_class(SELECTED_ROW);
@@ -2697,13 +2760,58 @@ impl SearchPage {
         }
     }
 
+    /// The selected rows, in order.
+    pub(crate) fn selected_rows(&self) -> Vec<usize> {
+        self.selected_rows.borrow().iter().copied().collect()
+    }
+
+    /// Apply a click on row `index`, given what was held down.
+    ///
+    /// Returns whether the caller should open the row's dialog: a plain click
+    /// does, and the two multi-select gestures do not — adding a fourth row to
+    /// a comparison should not put a window over the three you were reading.
+    fn apply_row_click(self: &Rc<Self>, index: usize) -> bool {
+        let kind = self.click_modifier.replace(RowClickKind::Replace);
+        {
+            let mut rows = self.selected_rows.borrow_mut();
+            match kind {
+                RowClickKind::Replace => {
+                    rows.clear();
+                    rows.insert(index);
+                    self.selection_anchor.set(Some(index));
+                }
+                RowClickKind::Toggle => {
+                    if !rows.remove(&index) {
+                        rows.insert(index);
+                    }
+                    // The anchor follows the last row touched on purpose, so a
+                    // Shift-click after a Ctrl-click measures from where the
+                    // person last was rather than from wherever they began.
+                    self.selection_anchor.set(Some(index));
+                }
+                RowClickKind::Range => {
+                    let from = self.selection_anchor.get().unwrap_or(index);
+                    let (lo, hi) = if from <= index {
+                        (from, index)
+                    } else {
+                        (index, from)
+                    };
+                    rows.clear();
+                    rows.extend(lo..=hi);
+                }
+            }
+        }
+        self.mark_selected_row();
+        kind == RowClickKind::Replace
+    }
+
     /// Open the row-detail dialog for the selected row.
     ///
     /// Built from the same three pieces the row's own click handler uses, so
     /// the dialog an agent opens is the dialog a person opens — not a second
     /// rendering of the same data that can drift from it.
     async fn show_selected_row_detail(self: &Rc<Self>) -> Result<(), String> {
-        let Some(index) = self.selected_row.get() else {
+        let Some(index) = self.selected_rows.borrow().iter().copied().next() else {
             return Err("no row is selected — pass selectRow first".to_string());
         };
         let rows = self.get_processed_rows();
@@ -2741,12 +2849,17 @@ impl SearchPage {
     /// Returns what is selected afterwards — `None` for a cleared selection or
     /// an index past the end, so a caller learns that its row is not there
     /// rather than that its request was accepted.
-    fn set_selected_row(self: &Rc<Self>, row: Option<usize>) -> Option<usize> {
+    fn set_selected_rows(self: &Rc<Self>, rows: &[usize]) -> Vec<usize> {
         let total = self.get_processed_rows().len();
-        let chosen = row.filter(|i| *i < total);
-        self.selected_row.set(chosen);
+        let chosen: std::collections::BTreeSet<usize> =
+            rows.iter().copied().filter(|i| *i < total).collect();
+        let first = chosen.iter().copied().next();
+        self.selection_anchor.set(first);
+        *self.selected_rows.borrow_mut() = chosen.clone();
         let page_now = *self.current_page.borrow();
-        let wanted = chosen.map(|i| i / (*self.page_size.borrow()).max(1));
+        // Page to the FIRST of them: a caller that named several rows is
+        // pointing at a group, and the group starts there.
+        let wanted = first.map(|i| i / (*self.page_size.borrow()).max(1));
         match wanted {
             // A row on another page needs the rows rebuilt; one on this page
             // only needs the class moved.
@@ -2756,7 +2869,7 @@ impl SearchPage {
             }
             _ => self.mark_selected_row(),
         }
-        chosen
+        chosen.into_iter().collect()
     }
 
     /// Append the active client-side column filters to the current ADQL as a
@@ -4043,21 +4156,48 @@ async fn show_row_detail(
         });
     }
 
-    // Metadata group
-    let metadata_group = adw::PreferencesGroup::new();
-    metadata_group.set_title(crate::tr_en!("Observation Metadata"));
+    // Metadata, in two columns.
+    //
+    // A row returns 41 columns and the dialog shows every non-empty one, so a
+    // single stack of label-over-value was a list you scrolled rather than a
+    // sheet you read. Two columns halve the height and put the whole of a
+    // typical observation on one screen.
+    //
+    // Filled down the first column and then the second, not alternating, so
+    // the order the values were computed in survives being wrapped — an agent
+    // and a person quoting "the fourth field" mean the same one.
+    let shown: Vec<&(String, String)> = fields.iter().filter(|(_, v)| !v.is_empty()).collect();
+    let per_column = shown.len().div_ceil(2);
+    // The heading sits ABOVE both columns rather than inside the first.
+    //
+    // Inside, it is part of that column's own height, so the left column
+    // started a heading lower than the right and the two never lined up. One
+    // heading over the pair also says what it means: this is one block of
+    // metadata shown in two columns, not two groups of it.
+    let metadata_heading = gtk::Label::new(Some(crate::tr_en!("Observation Metadata")));
+    metadata_heading.add_css_class("heading");
+    metadata_heading.set_halign(gtk::Align::Start);
+    content.append(&metadata_heading);
 
-    for (label, value) in fields {
-        if !value.is_empty() {
-            let row = adw::ActionRow::builder()
-                .title(label.as_str())
-                .subtitle(value.as_str())
-                .subtitle_selectable(true)
-                .build();
-            metadata_group.add(&row);
+    let metadata_columns = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    metadata_columns.set_homogeneous(true);
+    for chunk in shown.chunks(per_column.max(1)) {
+        let group = adw::PreferencesGroup::new();
+        group.set_valign(gtk::Align::Start);
+        group.set_hexpand(true);
+        for (label, value) in chunk {
+            group.add(
+                &adw::ActionRow::builder()
+                    .title(label.as_str())
+                    .subtitle(value.as_str())
+                    .subtitle_selectable(true)
+                    .use_markup(false)
+                    .build(),
+            );
         }
+        metadata_columns.append(&group);
     }
-    content.append(&metadata_group);
+    content.append(&metadata_columns);
 
     scroll.set_child(Some(&content));
     toolbar_view.set_content(Some(&scroll));
@@ -5087,6 +5227,54 @@ mod selection_tests {
             writes.len()
         );
         assert!(code.contains("fn set_page_size"), "the one place is gone");
+    }
+
+    /// The three click gestures every table has, and what each opens.
+    ///
+    /// Ctrl and Shift build a selection; neither opens the dialog, because
+    /// adding a fourth row to a comparison should not put a window over the
+    /// three being read. Only a plain click does both.
+    #[test]
+    fn a_modified_click_selects_without_opening_the_dialog() {
+        let code = crate::testing::without_comments(crate::testing::code(include_str!("mod.rs")));
+        for kind in [
+            "RowClickKind::Replace",
+            "RowClickKind::Toggle",
+            "RowClickKind::Range",
+        ] {
+            assert!(code.contains(kind), "{kind} is gone");
+        }
+        let at = code
+            .find("fn apply_row_click")
+            .expect("apply_row_click is gone");
+        let end = code[at..]
+            .find("\n    }")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        assert!(
+            code[at..end].contains("kind == RowClickKind::Replace"),
+            "the dialog no longer opens for a plain click alone, so Ctrl- and \
+             Shift-click will open one over the selection being built"
+        );
+    }
+
+    /// The modifier is read once for the grid, not once per row.
+    ///
+    /// A gesture per row is a hundred objects rebuilt on every page turn, and
+    /// the per-row costs in this table have been expensive twice already.
+    #[test]
+    fn one_gesture_reads_the_modifier_for_the_whole_grid() {
+        let code = crate::testing::without_comments(crate::testing::code(include_str!("mod.rs")));
+        let gestures = code.matches("GestureClick::new()").count();
+        assert_eq!(
+            gestures, 1,
+            "{gestures} click gestures are built in the results page; one over \
+             the grid is enough and a per-row one is a hundred per render"
+        );
+        assert!(
+            code.contains("results_panel.add_controller"),
+            "the modifier gesture is no longer on the grid itself"
+        );
     }
 
     /// The highlight is applied in one place, and it is not the row builder.

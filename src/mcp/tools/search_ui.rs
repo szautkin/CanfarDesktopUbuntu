@@ -244,7 +244,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             "get_search_results",
             "Read the results table: status, the ADQL that produced it, totalRows and \
              filteredRows, pagination as currentPage (0-based), totalPages, rowsPerPage and a \
-             human-readable pageStatus, sortColumn/sortAscending, active per-column filters, \
+             human-readable pageStatus, selectedRows, sortColumn/sortAscending, active \
+             per-column filters, \
              columnUnits, the column set with visibility, and — by default — the current \
              page's RAW cell values (capped at 500 rows) for the columns the grid is \
              showing — pass allColumns to get every column instead, which is what the \

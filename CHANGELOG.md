@@ -4,6 +4,17 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Several rows at once, and a metadata sheet you can read
+
+- **Multiple selection.** Click picks one row, Ctrl-click adds or removes one,
+  Shift-click takes the range — and neither modifier opens the dialog, because
+  adding a fourth row to a comparison should not put a window over the three
+  being read. `selectRow` takes one index, an array of them, or null, and
+  `get_search_results` reports `selectedRows`.
+- **The row dialog's metadata is in two columns**, with one heading above both
+  so they start at the same height. A row has 41 columns and the dialog shows
+  every non-empty one, which was a list to scroll rather than a sheet to read.
+
 ### A results row can be highlighted, and its dialog opened, from MCP
 
 - **`selectRow`** highlights one row of the filtered results and pages to it, so

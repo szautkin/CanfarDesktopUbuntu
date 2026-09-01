@@ -229,7 +229,7 @@ impl SearchPage {
             "get_search_results" => Ok(self.results_snapshot(args)),
             "show_search_row_detail" => {
                 self.show_selected_row_detail().await?;
-                Ok(json!({ "shown": true, "selectedRow": self.selected_row.get() }))
+                Ok(json!({ "shown": true, "selectedRows": self.selected_rows() }))
             }
             "set_search_results_view" => {
                 self.apply_results_view(args)?;
@@ -446,9 +446,9 @@ impl SearchPage {
             "sortAscending": *self.sort_ascending.borrow(),
             "filters": self.column_filters.borrow().clone(),
             "columnUnits": self.column_units.borrow().clone(),
-            // Which row is highlighted, counted in the FILTERED rows — the same
-            // index `selectRow` takes and `rows` is indexed by.
-            "selectedRow": self.selected_row.get(),
+            // Which rows are highlighted, counted in the FILTERED rows — the
+            // same indices `selectRow` takes and `rows` is indexed by.
+            "selectedRows": self.selected_rows(),
             "columns": column_json,
         });
 
@@ -899,21 +899,42 @@ impl SearchPage {
         // after pagination, so `selectRow` decides the page rather than
         // fighting a `page` given in the same call.
         if let Some(v) = crate::mcp::tools::arg(args, "selectRow") {
-            match v {
-                Value::Null => {
-                    self.set_selected_row(None);
-                }
-                other => {
-                    let Some(i) = other.as_u64() else {
-                        return Err("selectRow must be a row index or null".to_string());
-                    };
-                    let total = self.get_processed_rows().len();
-                    if self.set_selected_row(Some(i as usize)).is_none() {
-                        return Err(format!(
-                            "row {i} is past the end — there are {total} rows after filtering"
-                        ));
+            // One index, several, or null — the same argument, because "select
+            // this" and "select these" are one intention and a second argument
+            // for the plural is a second thing to keep in step.
+            let wanted: Vec<usize> = match v {
+                Value::Null => Vec::new(),
+                Value::Number(_) => match v.as_u64() {
+                    Some(i) => vec![i as usize],
+                    None => return Err("selectRow must be a row index or null".to_string()),
+                },
+                Value::Array(items) => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for item in items {
+                        match item.as_u64() {
+                            Some(i) => out.push(i as usize),
+                            None => return Err("selectRow's array takes row indices".to_string()),
+                        }
                     }
+                    out
                 }
+                _ => {
+                    return Err(
+                        "selectRow must be a row index, an array of them, or null".to_string()
+                    )
+                }
+            };
+            let applied = self.set_selected_rows(&wanted);
+            if applied.len() != wanted.len() {
+                let total = self.get_processed_rows().len();
+                let dropped: Vec<usize> = wanted
+                    .iter()
+                    .copied()
+                    .filter(|i| !applied.contains(i))
+                    .collect();
+                return Err(format!(
+                    "row(s) {dropped:?} are past the end — there are {total} rows after filtering"
+                ));
             }
         }
         if crate::mcp::tools::bool_arg(args, "applyFiltersToAdql") {
