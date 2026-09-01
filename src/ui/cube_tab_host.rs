@@ -237,14 +237,14 @@ impl CubeTabHost {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "open_cube requires a 'path' string".to_string())?;
-                // `opened: true` is returned unconditionally below, so a path
-                // that could never open has to be refused here or the caller is
-                // told it worked.
+                // A remote path is refused before the loader is asked, so the
+                // error names the actual problem rather than whatever a decoder
+                // makes of a URL.
                 crate::helpers::local_path::reject_remote(
                     path,
                     crate::helpers::local_path::FETCH_IT_FIRST,
                 )?;
-                self.open_path(std::path::Path::new(path));
+                self.open_path_awaited(std::path::Path::new(path)).await?;
                 Ok(json!({ "opened": true, "path": path }))
             }
             // Read the active cube's 3D view parameters + dims.
@@ -1058,7 +1058,26 @@ impl CubeTabHost {
     /// Load a cube from `path` OFF the UI thread (cfitsio decode can take seconds
     /// on a large cube), showing a spinner tab until it's ready, then swap in the
     /// viewer — or a toast on failure.
+    /// Open a cube and forget about it — the file picker and the recents list.
+    ///
+    /// The awaited form is what an agent needs; a person clicking Open does not
+    /// wait on a return value, they watch the spinner.
     pub fn open_path(self: &Rc<Self>, path: &Path) {
+        let this = self.clone();
+        let path = path.to_path_buf();
+        glib::spawn_future_local(async move {
+            let _ = this.open_path_awaited(&path).await;
+        });
+    }
+
+    /// Open a cube and report whether it actually loaded.
+    ///
+    /// `open_cube` used to answer `opened: true` the moment the decode was
+    /// handed to a worker thread, so a file that was not a cube, or not a FITS
+    /// file at all, was reported as open while a toast said otherwise on
+    /// screen. The same bug `open_fits_file` had, and the same fix: report the
+    /// load, not the request.
+    pub async fn open_path_awaited(self: &Rc<Self>, path: &Path) -> Result<(), String> {
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -1102,34 +1121,39 @@ impl CubeTabHost {
         let path_for_viewer = path.to_path_buf();
         let name2 = name.clone();
         let loading_weak = loading_page.downgrade();
-        glib::spawn_future_local(async move {
-            let outcome = rx.await;
-            if let Some(page) = loading_weak.upgrade() {
-                this.tab_view.close_page(&page);
+        let outcome = rx.await;
+        if let Some(page) = loading_weak.upgrade() {
+            this.tab_view.close_page(&page);
+        }
+        match outcome {
+            Ok(Ok((vol, wcs))) => {
+                let viewer = CubeViewer::new(vol, wcs, name2.clone());
+                viewer.set_source_path(&path_for_viewer); // native-res slice source
+                let page = this.tab_view.append(viewer.widget());
+                page.set_title(&name2);
+                page.set_tooltip(&path_for_viewer.display().to_string());
+                this.viewers.borrow_mut().push(viewer);
+                this.tab_view.set_selected_page(&page);
+                publish_cube_tabs(&this.tab_view, &this.viewers);
+                this.recents.add(&path_for_viewer);
+                this.refresh_recents();
+                Ok(())
             }
-            match outcome {
-                Ok(Ok((vol, wcs))) => {
-                    let viewer = CubeViewer::new(vol, wcs, name2.clone());
-                    viewer.set_source_path(&path_for_viewer); // native-res slice source
-                    let page = this.tab_view.append(viewer.widget());
-                    page.set_title(&name2);
-                    page.set_tooltip(&path_for_viewer.display().to_string());
-                    this.viewers.borrow_mut().push(viewer);
-                    this.tab_view.set_selected_page(&page);
-                    publish_cube_tabs(&this.tab_view, &this.viewers);
-                    this.recents.add(&path_for_viewer);
-                    this.refresh_recents();
-                }
-                Ok(Err(e)) => {
-                    this.toast_overlay
-                        .add_toast(adw::Toast::new(&crate::tr_fmt!(
-                            "Failed to load cube: {}",
-                            e
-                        )));
-                }
-                Err(_) => {}
+            Ok(Err(e)) => {
+                // The toast stays: an agent's failed open is still something
+                // the person watching should see, and it is the only place a
+                // file-picker open reports one.
+                this.toast_overlay
+                    .add_toast(adw::Toast::new(&crate::tr_fmt!(
+                        "Failed to load cube: {}",
+                        e
+                    )));
+                Err(e)
             }
-        });
+            // The worker dropped its end without sending — it panicked, and
+            // there is nothing further to say about the file itself.
+            Err(_) => Err("the cube loader stopped without a result".to_string()),
+        }
     }
 
     /// Open a file picker and load the chosen cube.

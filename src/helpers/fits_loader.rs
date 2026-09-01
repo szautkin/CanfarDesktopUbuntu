@@ -44,6 +44,8 @@ pub fn load_fits_image(path: &Path) -> Result<FitsImageData, String> {
     // extracted member — stays alive until this function returns, so the
     // extracted file survives the whole load.
     let resolved = crate::helpers::fits_container::resolve_fits_path(path)?;
+    // One decode at a time: cfitsio's error stack is process-global.
+    let _cfitsio = crate::helpers::cfitsio_lock::acquire();
     unsafe { load_fits_image_raw(&resolved.path, None) }
 }
 
@@ -70,6 +72,8 @@ pub type HduHeader = (
 #[cfg(feature = "fits")]
 pub fn read_hdu_header(path: &Path, hdu: usize) -> Result<HduHeader, String> {
     let resolved = crate::helpers::fits_container::resolve_fits_path(path)?;
+    // One decode at a time: cfitsio's error stack is process-global.
+    let _cfitsio = crate::helpers::cfitsio_lock::acquire();
     unsafe { read_hdu_header_raw(&resolved.path, hdu as i32) }
 }
 
@@ -135,12 +139,16 @@ unsafe fn read_hdu_header_raw(path: &Path, hdu: i32) -> Result<HduHeader, String
 /// selector and the cube viewer (spectral-axis extension).
 #[cfg(feature = "fits")]
 pub fn load_fits_image_hdu(path: &Path, hdu: usize) -> Result<FitsImageData, String> {
+    // One decode at a time: cfitsio's error stack is process-global.
+    let _cfitsio = crate::helpers::cfitsio_lock::acquire();
     unsafe { load_fits_image_raw(path, Some(hdu as i32)) }
 }
 
 /// Enumerate all HDUs in a FITS file (index, name, dimensions, image flag).
 #[cfg(feature = "fits")]
 pub fn list_hdus(path: &Path) -> Result<Vec<crate::models::fits_image::HduInfo>, String> {
+    // One decode at a time: cfitsio's error stack is process-global.
+    let _cfitsio = crate::helpers::cfitsio_lock::acquire();
     unsafe { list_hdus_raw(path) }
 }
 
@@ -204,6 +212,9 @@ impl Drop for FitsHandle {
     fn drop(&mut self) {
         if !self.fptr.is_null() {
             let mut status = 0;
+            // No lock here: this handle is created and dropped inside a
+            // single locked section, so the caller already holds it — and
+            // `Mutex` is not reentrant, so taking it again would deadlock.
             unsafe {
                 sys::ffclos(self.fptr, &mut status);
             }
@@ -217,7 +228,16 @@ unsafe fn check_status(status: i32, context: &str) -> Result<(), String> {
         Ok(())
     } else {
         // CFITSIO error messages are short — pull them off the internal stack
-        let mut buf = [0i8; 31];
+        // FLEN_ERRMSG, not a guess. `ffgmsg` writes up to 81 bytes into the
+        // buffer it is handed, and this was 31 — so any cfitsio message longer
+        // than thirty characters wrote up to fifty bytes past the end of a
+        // STACK array. "failed to find or open the following file: (ffopen)" is
+        // one, which is why opening a path that does not exist ended in
+        //
+        //     double free or corruption (out)
+        //
+        // and took the whole application with it.
+        let mut buf = [0i8; sys::FLEN_ERRMSG as usize];
         sys::ffgmsg(buf.as_mut_ptr());
         let msg = std::ffi::CStr::from_ptr(buf.as_ptr())
             .to_string_lossy()

@@ -52,6 +52,9 @@ impl Drop for NativeSliceSource {
     fn drop(&mut self) {
         if !self.fptr.is_null() {
             let mut status = 0;
+            // Closing is a cfitsio call like any other, and a close racing a
+            // decode is exactly the double free this lock exists for.
+            let _cfitsio = crate::helpers::cfitsio_lock::acquire();
             unsafe {
                 sys::ffclos(self.fptr, &mut status);
             }
@@ -65,6 +68,8 @@ impl NativeSliceSource {
     /// is not a plain, CFITSIO-openable NAXIS≥3 image cube with a modest plane
     /// size (caller then uses the down-sampled volume plane).
     pub fn try_open(path: &Path) -> Option<Self> {
+        // One decode at a time: cfitsio's error stack is process-global.
+        let _cfitsio = crate::helpers::cfitsio_lock::acquire();
         unsafe { Self::try_open_raw(path) }
     }
 
@@ -77,6 +82,9 @@ impl NativeSliceSource {
     /// `[norm_lo, norm_hi]` (NaN/Inf kept as NaN), returning a fresh `nx*ny`
     /// buffer in x-fastest row order. `None` on a bad channel or an I/O error.
     pub fn read_channel(&self, z: usize, norm_lo: f64, norm_hi: f64) -> Option<Vec<f32>> {
+        // The handle stays open between calls, which is fine; what must not
+        // overlap is two callers inside the library at once.
+        let _cfitsio = crate::helpers::cfitsio_lock::acquire();
         unsafe { self.read_channel_raw(z, norm_lo, norm_hi) }
     }
 

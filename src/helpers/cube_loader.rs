@@ -51,6 +51,8 @@ pub fn load_cube(
     path: &Path,
     hdu: Option<usize>,
 ) -> Result<crate::models::volume_data::VolumeData, String> {
+    // One decode at a time: cfitsio's error stack is process-global.
+    let _cfitsio = crate::helpers::cfitsio_lock::acquire();
     unsafe { load_cube_raw(path, hdu.map(|h| h as i32)) }
 }
 
@@ -59,6 +61,8 @@ pub fn load_cube(
 /// unquoted/trimmed; `COMMENT`/`HISTORY`/`END` cards are omitted.
 #[cfg(feature = "fits")]
 pub fn cube_header(path: &Path) -> Result<HashMap<String, String>, String> {
+    // One decode at a time: cfitsio's error stack is process-global.
+    let _cfitsio = crate::helpers::cfitsio_lock::acquire();
     unsafe { cube_header_raw(path) }
 }
 
@@ -97,6 +101,9 @@ impl Drop for FitsHandle {
     fn drop(&mut self) {
         if !self.fptr.is_null() {
             let mut status = 0;
+            // No lock here: this handle is created and dropped inside a
+            // single locked section, so the caller already holds it — and
+            // `Mutex` is not reentrant, so taking it again would deadlock.
             unsafe {
                 sys::ffclos(self.fptr, &mut status);
             }
@@ -109,7 +116,16 @@ unsafe fn check_status(status: i32, context: &str) -> Result<(), String> {
     if status == 0 {
         Ok(())
     } else {
-        let mut buf = [0i8; 31];
+        // FLEN_ERRMSG, not a guess. `ffgmsg` writes up to 81 bytes into the
+        // buffer it is handed, and this was 31 — so any cfitsio message longer
+        // than thirty characters wrote up to fifty bytes past the end of a
+        // STACK array. "failed to find or open the following file: (ffopen)" is
+        // one, which is why opening a path that does not exist ended in
+        //
+        //     double free or corruption (out)
+        //
+        // and took the whole application with it.
+        let mut buf = [0i8; sys::FLEN_ERRMSG as usize];
         sys::ffgmsg(buf.as_mut_ptr());
         let msg = std::ffi::CStr::from_ptr(buf.as_ptr())
             .to_string_lossy()

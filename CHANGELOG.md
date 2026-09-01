@@ -4,6 +4,27 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### A stack buffer overflow in the FITS error path
+
+- **Opening a FITS file that produced a long cfitsio error crashed the app.**
+  `ffgmsg` writes up to 81 bytes into the buffer it is handed, and both call
+  sites gave it a 31-byte stack array — so any message longer than thirty
+  characters wrote up to fifty bytes past the end of it. "failed to find or open
+  the following file: (ffopen)" is one, which is why opening a path that did not
+  exist ended in `double free or corruption (out)`.
+- **Two cfitsio decodes at once read each other's errors.** cfitsio keeps its
+  messages in a process-global stack and the cube loader decodes on a worker
+  thread, so opening four cubes in a row reported the missing file's message for
+  the malformed one and vice versa. One lock now lets one caller in at a time.
+- **A failure left messages behind for the next one to find.** cfitsio queues
+  several per failure and only one was read, so opening a text file left cards of
+  it on the stack and the next error reported them: `Cannot open FITS file:
+  [package] name = "verbinal"`. The stack is cleared when the lock is taken.
+- **`open_cube` reports the load, not the request.** It answered `opened: true`
+  the moment the decode was handed to a worker, so a file that was not a cube was
+  reported as open while a toast said otherwise. The same bug `open_fits_file`
+  had, and the same fix.
+
 ### open_cube takes an observation id, like open_fits_file
 
 - `open_fits_file` accepted a path OR the id of a downloaded observation;

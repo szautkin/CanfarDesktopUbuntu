@@ -11,6 +11,7 @@ pub mod batch_jobs_helper;
 pub mod caom2_format;
 pub mod caom2_parser;
 pub mod caom2_uri;
+pub mod cfitsio_lock;
 pub mod column_units;
 pub mod cube_axes;
 pub mod cube_colormaps;
