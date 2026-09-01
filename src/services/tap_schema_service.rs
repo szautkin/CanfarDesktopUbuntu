@@ -127,7 +127,13 @@ impl TapSchemaService {
         *self.cache.write().unwrap() = None;
     }
 
-    fn cached(&self) -> Option<Arc<TapSchema>> {
+    /// The cached schema, or `None` — never a fetch.
+    ///
+    /// Public so the ADQL editor can check a query as it is typed: a check that
+    /// awaited a network round trip would be a check that runs on every
+    /// keystroke, and one that blocked the main thread would be worse still.
+    /// `None` means "not known yet", which the checker treats as "say nothing".
+    pub fn cached(&self) -> Option<Arc<TapSchema>> {
         let guard = self.cache.read().unwrap();
         let (at, schema) = guard.as_ref()?;
         (at.elapsed() < CACHE_TTL).then(|| Arc::clone(schema))

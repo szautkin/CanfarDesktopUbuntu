@@ -1,6 +1,7 @@
 pub mod adql_builder;
 pub mod adql_error;
 pub mod adql_summary;
+pub mod adql_validate;
 pub mod agent_activity;
 pub mod agent_attribution;
 pub mod analysis_notebook;

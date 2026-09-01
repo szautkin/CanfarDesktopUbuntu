@@ -113,6 +113,7 @@ static HAND_PAIRS: &[(&str, &str)] = &[
     ("Clear all marks",                             "Effacer tous les repères"),
     ("Add Mark",                                    "Ajouter un repère"),
     ("agent idle",                                  "agent inactif"),
+    (" — write {}",                                 " — écrivez {}"),
     ("Agent sounds",                                "Sons de l'agent"),
     ("A short sound when an AI agent starts and stops working",
                                                     "Un son bref quand un agent IA commence et termine son travail"),

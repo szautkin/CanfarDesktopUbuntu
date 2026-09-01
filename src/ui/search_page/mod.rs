@@ -666,6 +666,12 @@ pub struct SearchPage {
     /// grey them while one is running: a second press queued a second query
     /// against a service that answers in tens of seconds.
     run_buttons: [gtk::Button; 2],
+    /// Marks the text a pre-flight check objected to. Held so the mark can be
+    /// moved without rebuilding the buffer's tag table.
+    adql_error_tag: gtk::TextTag,
+    /// The Execute button, greyed while the editor holds a query the service
+    /// would refuse.
+    exec_btn: gtk::Button,
     /// The Rows/page dropdown. Held so a page size set from anywhere else —
     /// `set_search_results_view`, a restored view — moves the control that is
     /// supposed to be showing it, instead of leaving it saying 100 beside a
@@ -1122,6 +1128,14 @@ impl SearchPage {
         let adql_scroll = gtk::ScrolledWindow::new();
         adql_scroll.set_vexpand(true);
         let adql_editor = gtk::TextView::new();
+        // The mark a failed pre-flight check leaves on the offending words. A
+        // wavy underline rather than a colour: the editor is monospace on a
+        // plain ground and a red run of text reads as syntax highlighting.
+        let adql_error_tag = gtk::TextTag::builder()
+            .name("adql-error")
+            .underline(gtk::pango::Underline::Error)
+            .build();
+        adql_editor.buffer().tag_table().add(&adql_error_tag);
         adql_editor.set_monospace(true);
         adql_editor.set_wrap_mode(gtk::WrapMode::Word);
         adql_editor.set_editable(true);
@@ -1322,6 +1336,8 @@ impl SearchPage {
             status_label,
             search_spinner,
             run_buttons: [search_btn.clone(), exec_btn.clone()],
+            adql_error_tag: adql_error_tag.clone(),
+            exec_btn: exec_btn.clone(),
             rows_combo: rows_combo.clone(),
             selected_rows: RefCell::new(std::collections::BTreeSet::new()),
             selection_anchor: std::cell::Cell::new(None),
@@ -1360,6 +1376,28 @@ impl SearchPage {
         // Reset button
         let p = page.clone();
         reset_btn.connect_clicked(move |_| p.clear_form());
+
+        // Check the query as it is typed.
+        //
+        // On the buffer's own change signal rather than a timer: the check is
+        // string work over a query, not a request, and it costs nothing next to
+        // the keystroke that triggered it.
+        {
+            let p = page.clone();
+            page.adql_editor.buffer().connect_changed(move |_| {
+                p.recheck_adql();
+            });
+        }
+        // And once the service's schema arrives, since until then the check has
+        // nothing to check against and stays quiet.
+        {
+            let p = page.clone();
+            glib::spawn_future_local(async move {
+                let svc = p.services.clone();
+                let _ = svc.tap_schema.schema().await;
+                p.recheck_adql();
+            });
+        }
 
         // Execute ADQL button
         let p = page.clone();
@@ -2050,6 +2088,23 @@ impl SearchPage {
                 .set_text(crate::tr_en!("Enter an ADQL query"));
             return;
         }
+        // The button is greyed for a query that fails the check, so this is
+        // belt and braces for the keyboard path — and it is where the MCP
+        // `execute_adql_query` lands too.
+        if let Some(first) = self.recheck_adql().into_iter().next() {
+            let said = match &first.fix {
+                Some(fix) => crate::tr_fmt!("{}", format!("{} — write {fix}", first.message)),
+                None => first.message.clone(),
+            };
+            self.status_label.set_text(&said);
+            // Recorded the way a service failure is, so a caller gets the
+            // reason instead of `ran: true` over an empty result — the same
+            // "reported that it was asked, not what happened" this codebase has
+            // had to fix in three other places.
+            *self.last_search_error.borrow_mut() = Some(said);
+            return;
+        }
+        *self.last_search_error.borrow_mut() = None;
         self.run_query(&adql, self.max_records.value() as u32, None)
             .await;
     }
@@ -2705,6 +2760,68 @@ impl SearchPage {
         // they would point at different observations. Dropped with the rest.
         self.selected_rows.borrow_mut().clear();
         self.selection_anchor.set(None);
+    }
+
+    /// Check what is in the ADQL editor, mark what is wrong, and gate Execute.
+    ///
+    /// Returns the problems, so the caller can also refuse to run. The check is
+    /// the same one the MCP path uses — the point of a pre-flight is that both
+    /// ways in get it, and a query an agent sends is a query a person could
+    /// have typed.
+    ///
+    /// Silent when the schema has not arrived: nothing is knowable then, and
+    /// greying Execute for the first second of a session because a fetch is in
+    /// flight would be a worse bug than the one this prevents.
+    fn recheck_adql(self: &Rc<Self>) -> Vec<crate::helpers::adql_validate::Problem> {
+        let buffer = self.adql_editor.buffer();
+        let text = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .to_string();
+        let problems = match self.services.tap_schema.cached() {
+            Some(schema) => crate::helpers::adql_validate::problems(&text, &schema),
+            None => Vec::new(),
+        };
+
+        buffer.remove_tag(
+            &self.adql_error_tag,
+            &buffer.start_iter(),
+            &buffer.end_iter(),
+        );
+        for p in &problems {
+            // Byte offsets from the checker; GTK counts characters.
+            let to_chars = |byte: usize| text[..byte.min(text.len())].chars().count() as i32;
+            let (Some(from), Some(to)) = (
+                buffer.iter_at_offset(to_chars(p.start)).into(),
+                buffer.iter_at_offset(to_chars(p.end)).into(),
+            ) else {
+                continue;
+            };
+            buffer.apply_tag(&self.adql_error_tag, &from, &to);
+        }
+
+        // Greyed, and told why: a disabled button with no explanation is a
+        // button that looks broken.
+        self.exec_btn.set_sensitive(problems.is_empty());
+        match problems.first() {
+            Some(p) => {
+                let mut said = p.message.clone();
+                if let Some(fix) = &p.fix {
+                    said.push_str(&crate::tr_fmt!(" — write {}", fix));
+                }
+                self.exec_btn.set_tooltip_text(Some(&said));
+                self.status_label.set_text(&said);
+            }
+            None => {
+                self.exec_btn.set_tooltip_text(None);
+                if self.status_label.text().contains("ambiguous")
+                    || self.status_label.text().contains("no column")
+                    || self.status_label.text().contains("no table")
+                {
+                    self.status_label.set_text("");
+                }
+            }
+        }
+        problems
     }
 
     /// Set the page size, and move every control that shows it.

@@ -4,6 +4,21 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### An ADQL query is checked against the service's own schema before it is sent
+
+- **The mistake that prompted it**: `FROM caom2.Observation JOIN caom2.Plane ON
+  Plane.obsID=Observation.obsID` is refused by CADC with "Column [obsID] is
+  ambiguous", because a bare table name is only a valid qualifier while the
+  column it names belongs to one of the joined tables. Writing `AS p` or
+  `caom2.Plane.obsID` both work.
+- The offending words are underlined in the editor, the reason and the fix are
+  shown beside the title, and Execute is greyed until the query is one the
+  service would accept. The same check runs on `execute_adql_query`, so an
+  agent's query is refused with the reason instead of spending a round trip.
+- **It only reports what it is sure of.** A subquery, a function, a table the
+  schema has not been fetched for — each is left alone, because a false positive
+  here disables Execute on a query that would have worked.
+
 ### Several rows at once, and a metadata sheet you can read
 
 - **Multiple selection.** Click picks one row, Ctrl-click adds or removes one,
