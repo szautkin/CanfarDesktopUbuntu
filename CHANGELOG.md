@@ -4,6 +4,20 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### A hand-written query keeps the columns it selected
+
+- `SELECT target_name, collection` came back as **`collection` alone** — the
+  target silently dropped — while `SELECT target_name, type` came back with
+  both. Adding a recognised column to a query made the others disappear. The
+  column-visibility preference is about the SEARCH FORM's own result shape, and
+  applying it to an arbitrary query filtered out every column it had never
+  heard of. A result that is not the form's shape now shows everything it
+  returned.
+- **`set_search_results_view` reports `rowColumns`.** It answers without rows —
+  a hundred of them on every column toggle is a lot of wire for a confirmation —
+  and it used to drop the header list with them, so revealing a column and then
+  checking the reply looked like nothing had happened.
+
 ### `validate_adql_query` — check a query without spending one
 
 - The same check the editor and `execute_adql_query` run, offered on its own, so

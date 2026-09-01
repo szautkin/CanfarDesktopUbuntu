@@ -675,6 +675,9 @@ pub struct SearchPage {
     /// grey them while one is running: a second press queued a second query
     /// against a service that answers in tens of seconds.
     run_buttons: [gtk::Button; 2],
+    /// Whether the last result carries columns the search form never asks for
+    /// — a hand-written ADQL query rather than the form's own.
+    result_is_arbitrary: std::cell::Cell<bool>,
     /// Marks the text a pre-flight check objected to. Held so the mark can be
     /// moved without rebuilding the buffer's tag table.
     adql_error_tag: gtk::TextTag,
@@ -1345,6 +1348,7 @@ impl SearchPage {
             status_label,
             search_spinner,
             run_buttons: [search_btn.clone(), exec_btn.clone()],
+            result_is_arbitrary: std::cell::Cell::new(false),
             adql_error_tag: adql_error_tag.clone(),
             exec_btn: exec_btn.clone(),
             rows_combo: rows_combo.clone(),
@@ -2195,6 +2199,7 @@ impl SearchPage {
                 // "returns nothing". The reference clears on the same line it
                 // assigns `Results` (`ExecuteAdqlAsync` → `ResetFiltersAndSort`);
                 // we ported the method and dropped the call.
+                self.note_result_shape(&results.columns);
                 *self.results_store.borrow_mut() = Some(results);
                 *self.results_version.borrow_mut() += 1;
                 self.reset_filters_and_sort();
@@ -2219,11 +2224,47 @@ impl SearchPage {
     /// made one, otherwise the column's default. The ONLY place visibility is
     /// decided, so the grid, the export and the column dialog can never disagree.
     fn is_col_visible(&self, col: &crate::models::search_result::ResultColumnInfo) -> bool {
+        // An arbitrary query shows everything it returned.
+        //
+        // The default-visible set is the SEARCH FORM's vocabulary — cleaned
+        // display keys like `targetname`. A hand-written query names the
+        // archive's columns, `target_name`, which is not in that set and was
+        // therefore hidden. So `SELECT target_name, collection` came back as
+        // one column, `collection`, with the target silently dropped — and
+        // `SELECT target_name, type` came back with BOTH, because nothing
+        // matched at all and the whole-set fallback fired. Adding a recognised
+        // column to a query made the others disappear.
+        //
+        // The preference is about the form's own result shape. A result that
+        // is not that shape is not something it has an opinion on.
+        if self.result_is_arbitrary.get() {
+            return true;
+        }
         crate::models::search_result::column_is_visible(
             &self.column_visibility.borrow(),
             &col.key,
             col.visible,
         )
+    }
+
+    /// Note whether the columns just returned are the form's own.
+    ///
+    /// Called where a result set is stored, so the answer is computed once per
+    /// search rather than once per column per render.
+    fn note_result_shape(&self, columns: &[String]) {
+        // Against the form's OWN select list, not the default-visible set: the
+        // form returns 41 columns and shows a dozen of them, so "not in the
+        // visible set" is true of most of its own result and would call every
+        // search arbitrary.
+        //
+        // A saved query and a recent search replay the form's ADQL, so they
+        // produce that same shape and are recognised without a special case.
+        let known = crate::helpers::adql_builder::form_column_keys();
+        let arbitrary = columns.iter().any(|header| {
+            let key = crate::models::search_result::clean_key(header);
+            !known.iter().any(|k| k.eq_ignore_ascii_case(&key))
+        });
+        self.result_is_arbitrary.set(arbitrary);
     }
 
     /// Everything the processed rows depend on, hashed. Cheap next to the work
@@ -5347,6 +5388,63 @@ mod selection_tests {
             writes.len()
         );
         assert!(code.contains("fn set_page_size"), "the one place is gone");
+    }
+
+    /// A hand-written query shows every column it selected.
+    ///
+    /// The default-visible set is the SEARCH FORM's vocabulary — `targetname`,
+    /// cleaned for display. A hand-written query names the archive's columns,
+    /// `target_name`, so filtering an arbitrary result through that preference
+    /// dropped the columns it had never heard of: `SELECT target_name,
+    /// collection` came back as `collection` alone, while `SELECT target_name,
+    /// type` came back with both, because nothing matched and the whole-set
+    /// fallback fired. Adding a recognised column made the others disappear.
+    #[test]
+    fn an_arbitrary_result_is_not_filtered_by_the_forms_preference() {
+        use crate::helpers::adql_builder::form_column_keys;
+        use crate::models::search_result::clean_key;
+        let known = form_column_keys();
+        let knows = |h: &str| {
+            let key = clean_key(h);
+            known.iter().any(|k| k.eq_ignore_ascii_case(&key))
+        };
+        // The form's own columns are recognised — including the many it
+        // returns but does not show, which is why the default-VISIBLE set was
+        // the wrong list to ask: it would have called every search arbitrary.
+        for header in [
+            "collection",
+            "Target Name",
+            "observationID",
+            "sequenceNumber",
+            // The aliased coordinate columns. Dropping these because their
+            // NAME contains a bracket made every form search look
+            // hand-written, and every one then showed all 41 columns.
+            "RA (J2000.0)",
+            "Dec. (J2000.0)",
+        ] {
+            assert!(knows(header), "{header} is one of the form's own columns");
+        }
+        // … and the archive's raw spellings are not.
+        for header in ["target_name", "obs_id", "energy_bandpassName"] {
+            assert!(
+                !knows(header),
+                "{header} is not a column the form asks for, so a preference \
+                 about the form's results says nothing about it"
+            );
+        }
+        // And the rule reaches visibility rather than being computed and lost.
+        let code = crate::testing::without_comments(crate::testing::code(include_str!("mod.rs")));
+        let at = code
+            .find("fn is_col_visible")
+            .expect("is_col_visible is gone");
+        let end = code[at..]
+            .find("\n    }")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        assert!(
+            code[at..end].contains("result_is_arbitrary"),
+            "visibility no longer asks whether the result is the form's own"
+        );
     }
 
     /// The three click gestures every table has, and what each opens.

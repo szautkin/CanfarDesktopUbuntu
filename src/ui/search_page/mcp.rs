@@ -452,7 +452,7 @@ impl SearchPage {
             "columns": column_json,
         });
 
-        if include_rows {
+        {
             let start = page.saturating_mul(page_size);
             // Column visibility is a preference about the GRID, tuned for the
             // default search view. An arbitrary ADQL `SELECT` — a JOIN, an
@@ -479,16 +479,27 @@ impl SearchPage {
                 visible = columns.iter().collect();
             }
             let headers: Vec<&str> = visible.iter().map(|c| c.key.as_str()).collect();
-            let rows: Vec<Value> = processed
-                .iter()
-                .skip(start)
-                .take(page_size.min(max_rows))
-                .map(|row| {
-                    Value::Array(visible.iter().map(|c| json!(row.get(&c.header))).collect())
-                })
-                .collect();
+            // `rowColumns` ALWAYS, `rows` only when asked for.
+            //
+            // `set_search_results_view` replies without rows — a hundred of
+            // them on every column toggle is a lot of wire for a confirmation
+            // — and it used to drop the header list with them. So a caller that
+            // revealed a column, then looked at the reply to see whether the
+            // rows would carry it, saw nothing and concluded the column was
+            // still hidden. The list is thirteen short strings; the rows are
+            // what was worth omitting.
             out["rowColumns"] = json!(headers);
-            out["rows"] = json!(rows);
+            if include_rows {
+                let rows: Vec<Value> = processed
+                    .iter()
+                    .skip(start)
+                    .take(page_size.min(max_rows))
+                    .map(|row| {
+                        Value::Array(visible.iter().map(|c| json!(row.get(&c.header))).collect())
+                    })
+                    .collect();
+                out["rows"] = json!(rows);
+            }
         }
         out
     }

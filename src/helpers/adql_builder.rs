@@ -32,6 +32,44 @@ pub const DIALECT_NOTE: &str = "\n\nDialect: CADC TAP (argus), ADQL 2.0 — no U
      `INTERSECTS(INTERVAL(mjd1, mjd2), Plane.time_bounds_samples) = 1` (times are MJD). \
      A bare INTERSECTS(...) without `= 1` is a syntax error.";
 
+/// The column names the form's own SELECT produces, cleaned the way the grid
+/// cleans a header.
+///
+/// Derived from [`SELECT_COLUMNS`] rather than listed again: the form's shape
+/// is defined once, and a column added there is a column this knows about
+/// without being told. A saved query and a recent search replay that same
+/// ADQL, so they produce the same shape and are recognised too.
+pub fn form_column_keys() -> Vec<String> {
+    SELECT_COLUMNS
+        .split(',')
+        .filter_map(|piece| {
+            let piece = piece.trim();
+            if piece.is_empty() {
+                return None;
+            }
+            // An aliased column is named by its alias, parentheses and all:
+            // `AS "RA (J2000.0)"` IS the header the grid receives. Rejecting it
+            // for containing a bracket dropped the two coordinate columns from
+            // the form's own shape, which made every form search look
+            // hand-written and show all 41 columns.
+            match piece.rfind(" AS ") {
+                Some(at) => {
+                    let alias = piece[at + 4..].trim().trim_matches('"').trim();
+                    (!alias.is_empty()).then(|| crate::models::search_result::clean_key(alias))
+                }
+                None => {
+                    // Unaliased: the part after the last dot. A bracket here is
+                    // an expression with no name, and it returns no header
+                    // worth matching.
+                    let name = piece.rsplit('.').next().unwrap_or(piece).trim();
+                    (!name.is_empty() && !name.contains('('))
+                        .then(|| crate::models::search_result::clean_key(name))
+                }
+            }
+        })
+        .collect()
+}
+
 // Exact 41-column SELECT matching the Windows implementation
 const SELECT_COLUMNS: &str = r#"
     Observation.observationID,
