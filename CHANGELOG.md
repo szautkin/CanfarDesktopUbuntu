@@ -4,6 +4,23 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Additional Constraints jerked sideways, and Home kept asking a signed-in user to sign in
+
+- **Clicking a facet checkbox scrolled its column to the right.** A value like
+  `Infrared|Optical|UV|EUV|X-ray|Gamma-ray` gave a row a 257 px MINIMUM in a
+  100 px column — `CheckButton::with_label` has no label to ellipsize, so the
+  row could not shrink. The column scrolled horizontally, and clicking a
+  checkbox focused it, so GTK scrolled sideways to reveal the rest of the row.
+  The rows ellipsize now, with the full value on a tooltip, and the columns
+  scroll vertically only.
+- **And every column jumped back to its first row** on each click, because
+  toggling one facet rebuilds all seven. The scroll positions are kept across
+  the rebuild.
+- **"Log in with your CADC credentials to get started" stayed on the landing
+  page after signing in.** It was a plain label that nothing told about the
+  sign-in state, sitting under the tiles while the sidebar above it showed the
+  account name. It is driven by the same lockers that unlock the tiles now.
+
 ### Five things that were cut off, blank, or silently refused
 
 - **The window drew 267 px past its own bottom edge.** `AdwViewStack` is

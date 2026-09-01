@@ -3389,12 +3389,32 @@ impl SearchPage {
         ];
 
         for (idx, (list_box, all_values, available)) in all_lists.iter().enumerate() {
+            // Toggling one facet rebuilds all seven, so every column would
+            // otherwise snap back to its first row — including the one being
+            // clicked, which jumps out from under the pointer. Remembered
+            // across the teardown and put back.
+            let scroller = list_box
+                .ancestor(gtk::ScrolledWindow::static_type())
+                .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok());
+            let scrolled_to = scroller.as_ref().map(|s| s.vadjustment().value());
+
             while let Some(child) = list_box.first_child() {
                 list_box.remove(&child);
             }
             for value in *all_values {
-                let check = gtk::CheckButton::with_label(value);
-                check.add_css_class("caption");
+                // A Label child rather than `with_label`, because the label of a
+                // `CheckButton` cannot be reached to ellipsize it — and a row
+                // that cannot shrink is a row whose minimum width is its whole
+                // value: 257 px in a 100 px column, which is what made the
+                // column scrollable sideways in the first place.
+                let check = gtk::CheckButton::new();
+                let caption = gtk::Label::new(Some(value));
+                caption.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                caption.set_xalign(0.0);
+                caption.add_css_class("caption");
+                check.set_child(Some(&caption));
+                // Ellipsized, so the whole value has to be readable somewhere.
+                check.set_tooltip_text(Some(value));
 
                 // Gray out unavailable items
                 if !available.contains(value) {
@@ -3426,6 +3446,12 @@ impl SearchPage {
                 });
 
                 list_box.append(&check);
+            }
+
+            // After the rows exist, or the adjustment has nothing to scroll
+            // over and the value is clamped straight back to zero.
+            if let (Some(scroller), Some(at)) = (scroller, scrolled_to) {
+                glib::idle_add_local_once(move || scroller.vadjustment().set_value(at));
             }
         }
     }
@@ -4655,6 +4681,12 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_min_content_height(120);
         scroll.set_max_content_height(180);
+        // Vertical only. A facet value like `Infrared|Optical|UV|EUV|X-ray|Gamma-ray`
+        // makes a row 257 px wide in a column that is 100 — measured — so with
+        // horizontal scrolling on, clicking a checkbox focused it and GTK
+        // scrolled the column sideways to reveal the rest of the row. That is
+        // the jerk to the right: not an animation, a scroll-to-focus.
+        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Multiple);
         let placeholder = gtk::Label::new(Some(crate::tr_en!("Loading...")));

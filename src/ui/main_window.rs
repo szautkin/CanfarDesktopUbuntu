@@ -2021,7 +2021,13 @@ fn build_welcome_page(
 
     content.append(&tiles);
 
-    // Login prompt
+    // Login prompt — signed out only.
+    //
+    // It is a locker rather than a field, because it says exactly what the
+    // lockers say: this is the signed-out state. As a plain label it was told
+    // nothing when the state changed, so "Log in with your CADC credentials to
+    // get started" sat under the tiles for the whole session while the sidebar
+    // above it showed the account name.
     let login_prompt = gtk::Label::new(Some(crate::tr_en!(
         "Log in with your CADC credentials to get started"
     )));
@@ -2029,6 +2035,7 @@ fn build_welcome_page(
     login_prompt.set_halign(gtk::Align::Center);
     login_prompt.set_margin_top(8);
     content.append(&login_prompt);
+    lockers.push(Rc::new(move |locked| login_prompt.set_visible(locked)));
 
     scrolled.set_child(Some(&content));
     page.append(&scrolled);
@@ -2291,6 +2298,25 @@ mod navigation_tests {
         ] {
             assert!(body.contains(step), "the navigator no longer does {step}");
         }
+    }
+
+    #[test]
+    fn nothing_on_the_landing_page_still_asks_a_signed_in_user_to_sign_in() {
+        // "Log in with your CADC credentials to get started" was a plain label
+        // that nothing ever told about the sign-in state, so it sat under the
+        // tiles for the whole session while the sidebar above it showed the
+        // account name. Everything on that page which means "signed out" goes
+        // through the same lockers, or the next one drifts the same way.
+        let code = crate::testing::code(SOURCE);
+        let at = code
+            .find("Log in with your CADC credentials")
+            .expect("the landing page no longer offers a sign-in prompt");
+        let after = &code[at..(at + 600).min(code.len())];
+        assert!(
+            after.contains("lockers.push"),
+            "the landing page's sign-in prompt is not driven by the auth \
+             lockers, so it will be shown to signed-in users"
+        );
     }
 
     #[test]
