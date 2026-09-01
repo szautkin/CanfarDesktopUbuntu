@@ -335,6 +335,10 @@ impl CubeTabHost {
                     .to_string();
 
                 let mut mark = Annotation::new(kind, Anchor::Data { x, y, z }, text, Author::Agent);
+                mark.style = crate::mcp::tools::mark_style_args(
+                    args,
+                    crate::models::annotation::MarkStyle::for_author(Author::Agent),
+                )?;
                 // No radius given gets a size visible on THIS cube. It used to
                 // get no extent at all, which the renderer draws at zero size:
                 // the mark existed, listed, and could not be seen.
@@ -424,6 +428,11 @@ impl CubeTabHost {
                             format!("'{k}' is not a kind — use rect, circle, callout or text")
                         })?;
                 }
+                if let Some(style) =
+                    crate::mcp::tools::mark_style_args(args, mark.effective_style())?
+                {
+                    mark.style = Some(style);
+                }
                 // A voxel move keeps whichever coordinates were left out, so
                 // "shift it two channels" does not also reset x and y.
                 if num("x").is_some() || num("y").is_some() || num("z").is_some() {
@@ -501,6 +510,7 @@ impl CubeTabHost {
                             // nowhere before, which made sizing write-only.
                             "radius": a.extent.map(|e| e.half_width),
                             "radiusUnits": "voxels",
+                            "style": crate::ui::fits_viewer::style_json(a),
                             "author": a.author.as_str(),
                             "createdAt": a.created_at,
                         })

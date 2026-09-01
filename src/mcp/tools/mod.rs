@@ -71,6 +71,84 @@ pub(crate) fn snake_case(key: &str) -> String {
     out
 }
 
+/// Read the style arguments a mark tool accepts, over a mark's current style.
+///
+/// One reader for all four tools — `annotate_fits`, `annotate_cube`,
+/// `update_annotation` and anything that follows — because four copies of
+/// "parse a hex colour, clamp a font size" is four chances for them to disagree
+/// about what `#gg0000` means.
+///
+/// Returns `Ok(None)` when nothing about style was asked for, so a caller can
+/// tell "leave it alone" from "set it to the defaults" — an
+/// `update_annotation` that reset a mark's colour because the call happened not
+/// to mention it would be worse than one that refused.
+pub fn mark_style_args(
+    args: &Value,
+    current: crate::models::annotation::MarkStyle,
+) -> Result<Option<crate::models::annotation::MarkStyle>, String> {
+    let mut style = current;
+    let mut touched = false;
+
+    if let Some(v) = arg(args, "colour").or_else(|| arg(args, "color")) {
+        let text = v
+            .as_str()
+            .ok_or_else(|| "colour must be a string like \"#ff8800\"".to_string())?;
+        style.colour = crate::models::annotation::MarkStyle::colour_from_hex(text)
+            .ok_or_else(|| format!("'{text}' is not a colour — use #rrggbb"))?;
+        touched = true;
+    }
+    if let Some(v) = arg(args, "fontSize").and_then(|v| v.as_f64()) {
+        style.font_size = v;
+        touched = true;
+    }
+    if let Some(v) = arg(args, "bold").and_then(|v| v.as_bool()) {
+        style.bold = v;
+        touched = true;
+    }
+    if let Some(v) = arg(args, "stroke").and_then(|v| v.as_f64()) {
+        style.stroke = v;
+        touched = true;
+    }
+    // Clamped here rather than at draw time as well: what comes back from
+    // `list_*_annotations` should be what will actually be drawn, so an agent
+    // that asks for a 500px label can see it was given 72.
+    Ok(touched.then(|| style.sane()))
+}
+
+/// The style fields every mark tool accepts, for its input schema.
+///
+/// Declared once so the four tools cannot advertise different spellings or
+/// different ranges from the ones `mark_style_args` enforces.
+pub fn mark_style_schema() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "colour",
+            serde_json::json!({
+                "type": "string",
+                "description": "Ink, as #rrggbb. Also accepted as `color`. A mark keeps this in the file and in an exported figure; picking it out on screen still highlights it, which is session state and never reaches an export."
+            }),
+        ),
+        (
+            "fontSize",
+            serde_json::json!({
+                "type": "number", "minimum": 6, "maximum": 72,
+                "description": "Label size in device pixels, not scaled by zoom (an export scales it). 11 by default."
+            }),
+        ),
+        (
+            "bold",
+            serde_json::json!({ "type": "boolean", "description": "Draw the label bold." }),
+        ),
+        (
+            "stroke",
+            serde_json::json!({
+                "type": "number", "minimum": 0.5, "maximum": 20,
+                "description": "Outline width in device pixels, not scaled by zoom. 1 by default."
+            }),
+        ),
+    ]
+}
+
 /// Look up `key` in an arguments object, accepting either naming style.
 ///
 /// Tools ask for the canonical (camelCase) name; a caller that sent snake_case

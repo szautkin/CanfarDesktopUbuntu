@@ -243,6 +243,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "x": {"type":"number","description":"New image pixel position."},
                     "y": {"type":"number"},
                     "z": {"type":"number","description":"New channel, on a cube. Voxel coordinates keep whatever you leave out, so you can shift a mark in z alone."},
+                    "colour": {"type":"string","description":"Ink, as #rrggbb. Also accepted as `color`. A mark keeps this in the file and in an exported figure; picking it out on screen highlights it too, which is session state and never reaches an export — so use a colour, not selection, to make one mark stand out in a handout."},
+                    "fontSize": {"type":"number","minimum":6,"maximum":72,"description":"Label size in device pixels, not scaled by zoom. 11 by default; an export scales it."},
+                    "bold": {"type":"boolean","description":"Draw the label bold."},
+                    "stroke": {"type":"number","minimum":0.5,"maximum":20,"description":"Outline width in device pixels, not scaled by zoom. 1 by default. Raise it to make one mark carry across a printed page."},
                     "radius": {
                         "type":"number",
                         "description":"New half-size, in IMAGE PIXELS unless you pass \

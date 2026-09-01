@@ -714,6 +714,11 @@ mod advertised_argument_tests {
     /// Every file that reads tool arguments — the live viewer-command handlers
     /// and the tool modules themselves.
     const ARGUMENT_READERS: &[&str] = &[
+        // Shared readers count. `mark_style_args` reads the four style
+        // arguments for every mark tool, so without this the scan reports
+        // twelve arguments as unread that are read by one function — and the
+        // fix it would suggest is to stop sharing it.
+        include_str!("mod.rs"),
         include_str!("../../ui/notebook_host.rs"),
         include_str!("../../ui/cube_tab_host.rs"),
         include_str!("../../ui/cube_viewer.rs"),

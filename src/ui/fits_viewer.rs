@@ -1323,6 +1323,13 @@ impl FitsViewer {
                     .to_string();
 
                 let mut mark = Annotation::new(kind, anchor, text, Author::Agent);
+                // Style, if the call said anything about it. Over the look a
+                // mark by this author would have had, so `colour` alone changes
+                // the colour and leaves the rest.
+                mark.style = crate::mcp::tools::mark_style_args(
+                    args,
+                    crate::models::annotation::MarkStyle::for_author(Author::Agent),
+                )?;
                 mark = match Self::radius_extent(canvas, args, &anchor) {
                     Some(extent) => mark.with_extent(extent),
                     // No radius given: a size that is visible on THIS image,
@@ -1428,6 +1435,13 @@ impl FitsViewer {
                             format!("'{k}' is not a kind — use rect, circle, callout or text")
                         })?;
                 }
+                // Over the mark's CURRENT look, so changing one field leaves
+                // the others where they were.
+                if let Some(style) =
+                    crate::mcp::tools::mark_style_args(args, mark.effective_style())?
+                {
+                    mark.style = Some(style);
+                }
                 if let (Some(ra), Some(dec)) = (num("ra"), num("dec")) {
                     mark.anchor = Anchor::Sky {
                         ra_deg: ra,
@@ -1521,6 +1535,7 @@ impl FitsViewer {
                             "anchor": a.anchor,
                             "radius": radius,
                             "radiusUnits": "image pixels",
+                            "style": style_json(a),
                             "author": a.author.as_str(),
                             "createdAt": a.created_at,
                         })
@@ -1771,28 +1786,34 @@ impl FitsViewer {
                         colormap_from_str(c).ok_or_else(|| format!("unknown colormap '{c}'"))?,
                     );
                 }
-                if let Some(v) = crate::mcp::tools::arg(args, "minCut").and_then(|v| v.as_f64()) {
+                // Cut levels, validated rather than accepted.
+                //
+                // A QA run set minCut 50 / maxCut 10 and got `isError: false`
+                // and a near-black frame: the tool said yes, the picture said
+                // nothing, and the mistake surfaced several steps later as
+                // "why is this image empty". An inverted or out-of-range cut
+                // is always a caller error, and saying so costs one line.
+                let min_cut = crate::mcp::tools::arg(args, "minCut").and_then(|v| v.as_f64());
+                let max_cut = crate::mcp::tools::arg(args, "maxCut").and_then(|v| v.as_f64());
+                let min_pct =
+                    crate::mcp::tools::arg(args, "minCutPercentile").and_then(|v| v.as_f64());
+                let max_pct =
+                    crate::mcp::tools::arg(args, "maxCutPercentile").and_then(|v| v.as_f64());
+                validate_cuts(min_cut, max_cut, min_pct, max_pct)?;
+                if let Some(v) = min_cut {
                     tab.set_vmin(v);
                 }
-                if let Some(v) = crate::mcp::tools::arg(args, "maxCut").and_then(|v| v.as_f64()) {
+                if let Some(v) = max_cut {
                     tab.set_vmax(v);
                 }
                 // Percentiles, which mean the same thing on any image — a data
                 // value does not, and an agent that has not read the frame's
                 // range cannot pick one.
-                if let Some(p) =
-                    crate::mcp::tools::arg(args, "minCutPercentile").and_then(|v| v.as_f64())
-                {
-                    if let Some(value) = tab.value_at_percentile(p) {
-                        tab.set_vmin(value);
-                    }
+                if let Some(value) = min_pct.and_then(|p| tab.value_at_percentile(p)) {
+                    tab.set_vmin(value);
                 }
-                if let Some(p) =
-                    crate::mcp::tools::arg(args, "maxCutPercentile").and_then(|v| v.as_f64())
-                {
-                    if let Some(value) = tab.value_at_percentile(p) {
-                        tab.set_vmax(value);
-                    }
+                if let Some(value) = max_pct.and_then(|p| tab.value_at_percentile(p)) {
+                    tab.set_vmax(value);
                 }
                 // The presets the panel offers, under the same names.
                 if let Some(preset) =
@@ -3828,6 +3849,66 @@ mod hdu_selector_tests {
         assert!(!model_needs_rebuild(Some(&a), &b));
     }
 }
+/// Refuse a cut that would render the frame blank.
+///
+/// A QA run set `minCut: 50, maxCut: 10` and got `isError: false` with a
+/// near-black image: the tool said yes, the picture said nothing, and the
+/// mistake surfaced several steps later as "why is this empty". An inverted or
+/// out-of-range cut is always a caller error.
+///
+/// Only the pair given in THIS call is compared. Setting one level now and the
+/// other later is legitimate — and checking a new minimum against a stale
+/// maximum would refuse it.
+fn validate_cuts(
+    min_cut: Option<f64>,
+    max_cut: Option<f64>,
+    min_pct: Option<f64>,
+    max_pct: Option<f64>,
+) -> Result<(), String> {
+    for (name, v) in [("minCutPercentile", min_pct), ("maxCutPercentile", max_pct)] {
+        if let Some(v) = v {
+            if !(0.0..=100.0).contains(&v) {
+                return Err(format!(
+                    "{name} is {v}, which is not a percentile — it must be 0 to 100"
+                ));
+            }
+        }
+    }
+    if let (Some(lo), Some(hi)) = (min_cut, max_cut) {
+        if lo >= hi {
+            return Err(format!(
+                "minCut {lo} is not below maxCut {hi} — everything would render black. \
+                 Swap them, or set one at a time."
+            ));
+        }
+    }
+    if let (Some(lo), Some(hi)) = (min_pct, max_pct) {
+        if lo >= hi {
+            return Err(format!(
+                "minCutPercentile {lo} is not below maxCutPercentile {hi} — everything \
+                 would render black."
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A mark's style as an agent states it: hex colour, pixel sizes.
+///
+/// The EFFECTIVE style, not the stored one, so what comes back is what will be
+/// drawn — an unstyled mark reports the look it actually has rather than null,
+/// which an agent would otherwise need the defaults to interpret.
+pub(crate) fn style_json(a: &crate::models::annotation::Annotation) -> serde_json::Value {
+    let s = a.effective_style();
+    json!({
+        "colour": s.colour_hex(),
+        "fontSize": s.font_size,
+        "bold": s.bold,
+        "stroke": s.stroke,
+        "explicit": a.style.is_some(),
+    })
+}
+
 /// A cut level, short enough for a caption and readable across the range
 /// astronomical pixel values actually take.
 ///
@@ -3844,5 +3925,76 @@ fn format_cut(v: f64) -> String {
         format!("{v:.2}")
     } else {
         format!("{v:.4}")
+    }
+}
+
+#[cfg(test)]
+mod cut_validation_tests {
+    use super::validate_cuts;
+
+    /// An inverted cut is refused, in either form.
+    ///
+    /// From a QA run: `minCut 50 / maxCut 10` returned success and a near-black
+    /// frame, and the mistake was found several steps later while wondering why
+    /// an image was empty. The message has to say what to do, not just that
+    /// something is wrong.
+    #[test]
+    fn an_inverted_cut_is_refused_with_a_reason() {
+        let e = validate_cuts(Some(50.0), Some(10.0), None, None).unwrap_err();
+        assert!(
+            e.contains("50") && e.contains("10"),
+            "the message hides the values: {e}"
+        );
+        assert!(
+            e.to_lowercase().contains("black"),
+            "the message does not say what happens: {e}"
+        );
+
+        let e = validate_cuts(None, None, Some(90.0), Some(80.0)).unwrap_err();
+        assert!(e.contains("minCutPercentile"), "{e}");
+    }
+
+    /// Equal levels are refused too: the range is empty, not merely narrow.
+    #[test]
+    fn an_empty_range_is_refused() {
+        assert!(validate_cuts(Some(5.0), Some(5.0), None, None).is_err());
+        assert!(validate_cuts(None, None, Some(50.0), Some(50.0)).is_err());
+    }
+
+    /// A percentile outside 0..100 is not a percentile.
+    #[test]
+    fn a_percentile_outside_the_range_is_refused() {
+        for bad in [-5.0, 105.0, 1000.0] {
+            assert!(
+                validate_cuts(None, None, Some(bad), None).is_err(),
+                "{bad} was accepted as a percentile"
+            );
+            assert!(validate_cuts(None, None, None, Some(bad)).is_err());
+        }
+        assert!(validate_cuts(None, None, Some(0.0), Some(100.0)).is_ok());
+    }
+
+    /// One level at a time is legitimate and stays legitimate.
+    ///
+    /// Only the pair given in a single call can be compared: checking a new
+    /// minimum against whatever maximum the tab happens to hold would refuse a
+    /// perfectly ordinary two-step adjustment.
+    #[test]
+    fn setting_one_level_alone_is_allowed() {
+        assert!(validate_cuts(Some(99.0), None, None, None).is_ok());
+        assert!(validate_cuts(None, Some(-1.0), None, None).is_ok());
+        assert!(validate_cuts(None, None, None, None).is_ok());
+    }
+
+    /// The two forms are checked independently.
+    ///
+    /// A caller may give a data-unit minimum and a percentile maximum; neither
+    /// can be compared with the other, because one is a value and the other is
+    /// a position in a distribution.
+    #[test]
+    fn a_value_and_a_percentile_are_not_compared() {
+        // 90 as a percentile is far above 5 as a data value, but the two are
+        // not comparable and refusing the pair would be wrong.
+        assert!(validate_cuts(Some(5.0), None, None, Some(90.0)).is_ok());
     }
 }

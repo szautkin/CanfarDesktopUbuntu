@@ -239,6 +239,35 @@ impl MarkStyle {
         }
     }
 
+    /// The colour as `#rrggbb`.
+    ///
+    /// Hex because that is what a person and an agent both write. A float
+    /// triple over JSON invites precision arguments about a value that ends up
+    /// quantised to eight bits on the way to the screen anyway.
+    pub fn colour_hex(&self) -> String {
+        let q = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            q(self.colour.0),
+            q(self.colour.1),
+            q(self.colour.2)
+        )
+    }
+
+    /// Parse `#rrggbb` or `rrggbb`, case-insensitively.
+    ///
+    /// `None` for anything else, so a caller can say what was wrong rather
+    /// than a typo silently producing black — which on a dark image is a mark
+    /// that has vanished.
+    pub fn colour_from_hex(text: &str) -> Option<(f64, f64, f64)> {
+        let t = text.trim().trim_start_matches('#');
+        if t.len() != 6 || !t.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let c = |i: usize| u8::from_str_radix(&t[i..i + 2], 16).ok().map(f64::from);
+        Some((c(0)? / 255.0, c(2)? / 255.0, c(4)? / 255.0))
+    }
+
     /// Clamped to what can actually be drawn and read.
     ///
     /// A zero stroke draws nothing and a zero font size is an invisible label —
@@ -641,6 +670,33 @@ mod style_tests {
         let json = serde_json::to_string(&a).expect("serialises");
         let back: Annotation = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(back.style, a.style);
+    }
+
+    /// Hex round-trips, and a typo is refused rather than turned into black.
+    ///
+    /// Silently defaulting a bad colour to black would be a mark that vanished
+    /// on a dark image, which is the least debuggable outcome available.
+    #[test]
+    fn a_colour_survives_hex_and_a_typo_does_not_become_black() {
+        for hex in ["#ff8800", "#000000", "#ffffff", "#9dd9ff"] {
+            let c = MarkStyle::colour_from_hex(hex).expect("valid");
+            let s = MarkStyle {
+                colour: c,
+                ..MarkStyle::default()
+            };
+            assert_eq!(s.colour_hex(), hex, "{hex} did not survive the round trip");
+        }
+        // Case and a missing hash are both fine; anything else is not.
+        assert_eq!(
+            MarkStyle::colour_from_hex("FF8800"),
+            MarkStyle::colour_from_hex("#ff8800")
+        );
+        for bad in ["", "#fff", "#gggggg", "red", "#ff88000"] {
+            assert!(
+                MarkStyle::colour_from_hex(bad).is_none(),
+                "`{bad}` was accepted as a colour"
+            );
+        }
     }
 
     /// A style that cannot be drawn is clamped, not honoured.

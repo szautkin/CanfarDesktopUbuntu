@@ -204,6 +204,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                         "description":"Channel. Omit for the channel the viewer is showing."
                     },
                     "text": {"type":"string","description":"The label. Required for callout and text."},
+                    "colour": {"type":"string","description":"Ink, as #rrggbb. Also accepted as `color`. A mark keeps this in the file and in an exported figure; picking it out on screen highlights it too, which is session state and never reaches an export — so use a colour, not selection, to make one mark stand out in a handout."},
+                    "fontSize": {"type":"number","minimum":6,"maximum":72,"description":"Label size in device pixels, not scaled by zoom. 11 by default; an export scales it."},
+                    "bold": {"type":"boolean","description":"Draw the label bold."},
+                    "stroke": {"type":"number","minimum":0.5,"maximum":20,"description":"Outline width in device pixels, not scaled by zoom. 1 by default. Raise it to make one mark carry across a printed page."},
                     "radius": {
                         "type":"number",
                         "description":"Half-size in voxels. Omit it for a size that is visible \
