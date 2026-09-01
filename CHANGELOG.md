@@ -4,6 +4,16 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Steering the results table is about three times faster
+
+- **Every cell in the results grid stored its own tooltip**, plus three action
+  buttons a row — roughly 1,800 of them on a hundred-row page, rebuilt on every
+  column toggle, sort and page turn. `set_tooltip_text` costs about 1.2 ms a
+  widget, which was most of the time each of those took. The grid answers for
+  its own cells through one handler now: hiding a column went from 0.90 s to
+  0.35 s, and the main thread is blocked for a third of what it was. The full
+  value of an elided cell is still on hover.
+
 ### Two ways the results tools made an agent guess
 
 - **A column key is matched whatever case it is written in.** The keys are

@@ -63,7 +63,18 @@ on the main thread, so only the handover is on it.
 
 ## What is left, and what it is worth
 
-### 1. Rendering a page of results — 890 ms
+### 1. Rendering a page of results — 890 ms, now ~350 ms
+
+**Update.** The same per-widget tooltip that cost the facet panel 25x cost the
+results grid too: every cell carried one, plus three action buttons a row — a
+hundred rows by fifteen columns is around 1,800 stored tooltips rebuilt on
+every column toggle, sort and page turn. The grid answers for its own cells
+through one `query-tooltip` handler now, and a column toggle went from 0.90 s
+to 0.35 s.
+
+What remains below is still true of the ~350 ms.
+
+
 
 Results are paginated at 100 rows, so this is 100 rows times about fifteen
 columns of widgets, not 10,000. It is the largest remaining stall and the one a

@@ -168,6 +168,78 @@ pub(crate) fn column_width_for(key: &str, display_name: &str) -> i32 {
 }
 
 /// A label that fills its cell and ellipsizes rather than widening it.
+/// Marks a cell that filters the grid to its own value when clicked.
+const NARROW_CELL: &str = "narrow-cell";
+/// Marks a row's "save to Research" button.
+const SAVE_CELL: &str = "save-cell";
+/// Marks a row's "observation details" button.
+const DETAILS_CELL: &str = "details-cell";
+
+/// Let the results grid answer for its own cells' tooltips.
+///
+/// One handler for the grid instead of a string stored on every cell. A page is
+/// 100 rows by about fifteen columns, and `set_tooltip_text` costs roughly
+/// 1.2 ms a widget — so the stored form was most of the ~900 ms that hiding a
+/// column took, on the thread that draws the window. The same shape as
+/// `facet_tooltips`, and for the same reason.
+///
+/// The text is the cell's DISPLAYED value. A narrowable cell filters on the raw
+/// one, which can be a different spelling of the same thing — a right ascension
+/// in degrees behind a sexagesimal cell — and quoting the raw form here would
+/// mean keeping it, per cell, which is the cost this exists to avoid. What is
+/// on screen is also what a person is pointing at.
+fn cell_tooltips(grid: &gtk::Box) {
+    grid.set_has_tooltip(true);
+    grid.connect_query_tooltip(|grid, x, y, _keyboard, tooltip| {
+        let Some(picked) = grid.pick(f64::from(x), f64::from(y), gtk::PickFlags::DEFAULT) else {
+            return false;
+        };
+        // The pointer lands on the label, or on the button holding it, so walk
+        // up until the grid to find what kind of cell it belongs to.
+        let mut narrowable = false;
+        let mut fixed: Option<&str> = None;
+        let mut widget = Some(picked);
+        let mut text = None;
+        while let Some(w) = widget {
+            if w.has_css_class(NARROW_CELL) {
+                narrowable = true;
+            }
+            if w.has_css_class(SAVE_CELL) {
+                fixed = Some(crate::tr_en!(
+                    "Save to Research (downloads preview + FITS file)"
+                ));
+            }
+            if w.has_css_class(DETAILS_CELL) {
+                fixed = Some(crate::tr_en!("View the full CAOM2 observation metadata"));
+            }
+            if text.is_none() {
+                if let Some(label) = w.downcast_ref::<gtk::Label>() {
+                    text = Some(label.label().to_string());
+                }
+            }
+            if w.eq(grid.upcast_ref::<gtk::Widget>()) {
+                break;
+            }
+            widget = w.parent();
+        }
+        if let Some(t) = fixed {
+            tooltip.set_text(Some(t));
+            return true;
+        }
+        match text.filter(|t| !t.is_empty()) {
+            Some(t) => {
+                tooltip.set_text(Some(&if narrowable {
+                    crate::tr_fmt!("Narrow to: {}", t)
+                } else {
+                    t
+                }));
+                true
+            }
+            None => false,
+        }
+    });
+}
+
 pub(crate) fn cell_label(text: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -946,6 +1018,7 @@ impl SearchPage {
         let results_scroll = gtk::ScrolledWindow::new();
         results_scroll.set_vexpand(true);
         let results_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        cell_tooltips(&results_panel);
         results_panel.set_margin_start(12);
         results_panel.set_margin_end(12);
         results_panel.set_margin_bottom(12);
@@ -2378,7 +2451,8 @@ impl SearchPage {
                     cell_btn.add_css_class("flat");
                     pin_width(&cell_btn, column_width_for(&col.key, &col.display_name));
                     cell_btn.set_margin_end(RESULT_COLUMN_GAP);
-                    cell_btn.set_tooltip_text(Some(&crate::tr_fmt!("Narrow to: {}", raw)));
+                    // The marker, not a stored tooltip: see `cell_tooltips`.
+                    cell_btn.add_css_class(NARROW_CELL);
 
                     let filters_rc = self.column_filters.clone();
                     let page_rc = Rc::clone(self);
@@ -2396,10 +2470,12 @@ impl SearchPage {
                     pin_width(&label, column_width_for(&col.key, &col.display_name));
                     label.set_margin_end(RESULT_COLUMN_GAP);
                     label.set_selectable(true);
-                    // The value in full, since the cell elides to its column.
-                    if !formatted.is_empty() {
-                        label.set_tooltip_text(Some(&formatted));
-                    }
+                    // No stored tooltip. The cell elides to its column so the
+                    // value has to be readable somewhere, but a tooltip per
+                    // cell is 100 rows times fifteen columns of them on every
+                    // render — measured at about 1.2 ms each, which is most of
+                    // the second a column toggle used to take. The grid answers
+                    // for its own cells; see `cell_tooltips`.
                     row_box.append(&label);
                 }
             }
@@ -2424,9 +2500,10 @@ impl SearchPage {
 
                 let save_btn = gtk::Button::from_icon_name("bookmark-new-symbolic");
                 save_btn.add_css_class("flat");
-                save_btn.set_tooltip_text(Some(crate::tr_en!(
-                    "Save to Research (downloads preview + FITS file)"
-                )));
+                // Marked, not told: three of these per row times a hundred rows
+                // is three hundred stored tooltips on every render. See
+                // `cell_tooltips`.
+                save_btn.add_css_class(SAVE_CELL);
                 save_btn.set_valign(gtk::Align::Center);
                 pin_width(&save_btn, ACTION_COLUMN_WIDTH);
                 save_btn.set_margin_end(RESULT_COLUMN_GAP);
@@ -2448,9 +2525,7 @@ impl SearchPage {
                 // "Details" → full CAOM2 observation detail page.
                 let details_btn = gtk::Button::from_icon_name("view-more-symbolic");
                 details_btn.add_css_class("flat");
-                details_btn.set_tooltip_text(Some(crate::tr_en!(
-                    "View the full CAOM2 observation metadata"
-                )));
+                details_btn.add_css_class(DETAILS_CELL);
                 details_btn.set_valign(gtk::Align::Center);
                 pin_width(&details_btn, ACTION_COLUMN_WIDTH);
                 details_btn.set_margin_end(RESULT_COLUMN_GAP);
@@ -4829,6 +4904,43 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
 }
 
 #[cfg(test)]
+mod cell_tooltip_tests {
+    /// No per-widget tooltip in the two places there are thousands of widgets.
+    ///
+    /// `set_tooltip_text` installs the tooltip machinery on the widget, at
+    /// about 1.2 ms each — measured, 5005 facet rows take 100 ms to build
+    /// without one and 2400 ms with. The results grid is 100 rows by fifteen
+    /// columns rebuilt on every column toggle, sort and page turn, and the
+    /// facet panel is 5443 rows. Both answer for their own children through a
+    /// single `query-tooltip` handler instead.
+    #[test]
+    fn neither_the_grid_nor_the_facets_store_a_tooltip_per_row() {
+        // Comments stripped as well as tests: the code being guarded explains
+        // in a comment that it does not do the thing, and a grep cannot tell
+        // the explanation from the deed.
+        let code = crate::testing::without_comments(crate::testing::code(include_str!("mod.rs")));
+        // The bulk builders, by the function that does the building.
+        for (label, marker) in [
+            ("the results grid", "fn render_rows"),
+            ("the facet columns", "fn refresh_train_ui"),
+        ] {
+            let at = code
+                .find(marker)
+                .unwrap_or_else(|| panic!("{marker} is gone"));
+            // To the end of that function: its closing brace at the method
+            // indentation, which is the first `\n    }` after it.
+            let body = &code[at..];
+            let end = body.find("\n    }").map(|e| e + 6).unwrap_or(body.len());
+            assert!(
+                !body[..end].contains("set_tooltip_text"),
+                "{label} stores a tooltip per row again, which is most of the \
+                 time it takes to build"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod busy_state_tests {
     /// One place decides what "a query is running" looks like.
     ///
@@ -5101,8 +5213,11 @@ mod results_layout_tests {
             body.contains("set_max_width_chars(1)"),
             "the natural width is unclamped again, which is the whole defect"
         );
+        // The requirement is unchanged; only who answers it. A stored tooltip
+        // per cell was about 1.2 ms a widget on a grid rebuilt for every column
+        // toggle, sort and page turn, so the GRID answers for its cells now.
         assert!(
-            code.contains("label.set_tooltip_text(Some(&formatted))"),
+            code.contains("fn cell_tooltips") && code.contains("connect_query_tooltip"),
             "an elided value has no way to be read in full"
         );
     }
