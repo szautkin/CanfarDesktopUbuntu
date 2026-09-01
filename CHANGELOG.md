@@ -4,6 +4,22 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Two ways the results tools made an agent guess
+
+- **A column key is matched whatever case it is written in.** The keys are
+  cleaned lower-case names, but an agent reads "Filter" and "Instrument" off the
+  heading strip, and being refused for the case taught it nothing it could not
+  have guessed. The canonical key is what gets stored, so a filter written as
+  `TargetName` matches the same rows as `targetname` instead of matching none.
+- **A rejected display unit names the units that column takes.** It used to say
+  only that the unit was wrong, so `deg`, then `sexagesimal`, then giving up was
+  three round trips to learn something the app already knew. It now reads:
+  `"deg" is not a display unit for column "ra(j20000)"; it takes ["hms",
+  "degrees"] (or "" to reset)`.
+- `get_search_results` now names its pagination fields in its own description —
+  `currentPage` (0-based), `totalPages`, `rowsPerPage`, `pageStatus` — because
+  looking for `page` and `pageCount` and finding neither reads as a bug.
+
 ### Execute in the ADQL Editor looked like it did nothing
 
 - **The spinner and the status line were in the Search Form's action bar**, and

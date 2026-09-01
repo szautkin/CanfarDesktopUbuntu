@@ -233,10 +233,12 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         ),
         read_tool(
             "get_search_results",
-            "Read the results table: status, the ADQL that produced it, total and filtered row \
-             counts, pagination, sort, active per-column filters, display units, the column set \
-             with visibility, and — by default — the current page's RAW cell values (capped at \
-             500 rows). Values are raw, not display-formatted, so you can compute on them.",
+            "Read the results table: status, the ADQL that produced it, totalRows and \
+             filteredRows, pagination as currentPage (0-based), totalPages, rowsPerPage and a \
+             human-readable pageStatus, sortColumn/sortAscending, active per-column filters, \
+             columnUnits, the column set with visibility, and — by default — the current \
+             page's RAW cell values (capped at 500 rows). Values are raw, not \
+             display-formatted, so you can compute on them.",
             json!({
                 "type": "object",
                 "properties": {
@@ -249,8 +251,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         write_tool(
             "set_search_results_view",
             "Steer the results table: filter, sort, show/hide columns, switch a column's display \
-             unit, change page size, and paginate. Every column key is validated first, so a \
-             command naming an unknown column changes nothing rather than applying half of itself. \
+             unit, change page size, and paginate. Column keys are the cleaned lower-case names \
+             `get_search_results` reports (\"targetname\", \"ra(j20000)\"); the case you write does \
+             not matter, and an unknown one is refused with the full list. Every key is validated \
+             first, so a command naming a bad column changes nothing rather than applying half of \
+             itself. A rejected display unit names the units that column does take. \
              Set applyFiltersToAdql to promote the active client-side filters into the ADQL query.",
             json!({
                 "type": "object",

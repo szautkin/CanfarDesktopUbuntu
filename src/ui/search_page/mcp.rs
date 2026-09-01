@@ -735,40 +735,75 @@ impl SearchPage {
         };
         let known: std::collections::HashSet<&str> =
             columns.iter().map(|c| c.key.as_str()).collect();
-        let check = |key: &str| -> Result<(), String> {
+        // Resolve a caller's spelling to the one the grid uses.
+        //
+        // The keys are lower case because they are cleaned column names, and an
+        // agent reading "Filter" off the heading strip wrote "Filter". Refusing
+        // that taught it nothing it could not have guessed, so the case is
+        // ignored — and the CANONICAL key is what comes back, because it is
+        // what the filter map, the visibility map and the unit map are keyed
+        // by. Matching case-insensitively and then storing the caller's
+        // spelling would be a filter that never matches a row.
+        let resolve = |key: &str| -> Result<String, String> {
             if known.contains(key) {
-                Ok(())
-            } else {
-                let mut names: Vec<&str> = known.iter().copied().collect();
-                names.sort();
-                Err(format!("unknown column {key:?}; known columns: {names:?}"))
+                return Ok(key.to_string());
             }
+            let lowered = key.to_ascii_lowercase();
+            if let Some(found) = known.iter().find(|k| **k == lowered) {
+                return Ok((*found).to_string());
+            }
+            let mut names: Vec<&str> = known.iter().copied().collect();
+            names.sort();
+            Err(format!("unknown column {key:?}; known columns: {names:?}"))
         };
 
         // ── Validate everything before mutating anything ────────────────────
         let set_filters = crate::mcp::tools::arg(args, "setFilters").and_then(Value::as_object);
+        let mut filters_to_set: Vec<(String, String)> = Vec::new();
         if let Some(map) = set_filters {
-            for key in map.keys() {
-                check(key)?;
+            for (key, value) in map {
+                let key = resolve(key)?;
+                let text = value.as_str().map(str::trim).unwrap_or_default();
+                filters_to_set.push((key, text.to_string()));
             }
         }
-        let sort_column = crate::mcp::tools::opt_str_arg(args, "sortColumn");
-        if let Some(key) = &sort_column {
-            check(key)?;
-        }
-        let show: Vec<String> = string_list(args, "showColumns");
-        let hide: Vec<String> = string_list(args, "hideColumns");
-        for key in show.iter().chain(hide.iter()) {
-            check(key)?;
-        }
+        let sort_column = match crate::mcp::tools::opt_str_arg(args, "sortColumn") {
+            Some(key) => Some(resolve(&key)?),
+            None => None,
+        };
+        let show: Vec<String> = string_list(args, "showColumns")
+            .iter()
+            .map(|k| resolve(k))
+            .collect::<Result<_, _>>()?;
+        let hide: Vec<String> = string_list(args, "hideColumns")
+            .iter()
+            .map(|k| resolve(k))
+            .collect::<Result<_, _>>()?;
         let units = crate::mcp::tools::arg(args, "columnUnits").and_then(Value::as_object);
+        let mut units_to_set: Vec<(String, String)> = Vec::new();
         if let Some(map) = units {
             for (key, value) in map {
-                check(key)?;
+                let key = resolve(key)?;
                 let unit = value.as_str().unwrap_or_default();
-                if !crate::helpers::column_units::is_valid_unit(key, unit) {
-                    return Err(format!("{unit:?} is not a display unit for column {key:?}"));
+                if !crate::helpers::column_units::is_valid_unit(&key, unit) {
+                    // Say what WOULD work. The unknown-column error above lists
+                    // every column, and an agent given "not a display unit" and
+                    // nothing else has to guess its way through "deg",
+                    // "degrees", "sexagesimal" one call at a time.
+                    let choices: Vec<&str> = crate::helpers::column_units::available_units(&key)
+                        .iter()
+                        .map(|c| c.id)
+                        .collect();
+                    return Err(if choices.is_empty() {
+                        format!("column {key:?} has no display units to choose from")
+                    } else {
+                        format!(
+                            "{unit:?} is not a display unit for column {key:?}; \
+                             it takes {choices:?} (or \"\" to reset)"
+                        )
+                    });
                 }
+                units_to_set.push((key, unit.to_string()));
             }
         }
 
@@ -776,16 +811,13 @@ impl SearchPage {
         if crate::mcp::tools::bool_arg(args, "clearFilters") {
             self.column_filters.borrow_mut().clear();
         }
-        if let Some(map) = set_filters {
+        if !filters_to_set.is_empty() {
             let mut filters = self.column_filters.borrow_mut();
-            for (key, value) in map {
-                match value.as_str().map(str::trim).unwrap_or_default() {
-                    "" => {
-                        filters.remove(key);
-                    }
-                    text => {
-                        filters.insert(key.clone(), text.to_string());
-                    }
+            for (key, text) in filters_to_set {
+                if text.is_empty() {
+                    filters.remove(&key);
+                } else {
+                    filters.insert(key, text);
                 }
             }
         }
@@ -803,16 +835,13 @@ impl SearchPage {
                 visibility.insert(key, false);
             }
         }
-        if let Some(map) = units {
+        if !units_to_set.is_empty() {
             let mut chosen = self.column_units.borrow_mut();
-            for (key, value) in map {
-                match value.as_str().unwrap_or_default() {
-                    "" => {
-                        chosen.remove(key);
-                    }
-                    unit => {
-                        chosen.insert(key.clone(), unit.to_string());
-                    }
+            for (key, unit) in units_to_set {
+                if unit.is_empty() {
+                    chosen.remove(&key);
+                } else {
+                    chosen.insert(key, unit);
                 }
             }
             drop(chosen);
@@ -967,6 +996,60 @@ fn default_export_path(format: &str) -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("Verbinal");
     dir.join(format!("search_results_{stamp}.{format}"))
+}
+
+#[cfg(test)]
+mod column_key_tests {
+    /// A rejected unit says what the column WOULD take.
+    ///
+    /// The unknown-column error lists every column, which is what makes it
+    /// useful. The unit error said only that the unit was wrong, so an agent
+    /// asked for "deg", then "sexagesimal", then gave up — three round trips to
+    /// learn a fact the app already had.
+    #[test]
+    fn a_rejected_unit_names_the_ones_that_would_work() {
+        let choices: Vec<&str> = crate::helpers::column_units::available_units("ra(j20000)")
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert!(
+            !choices.is_empty(),
+            "ra(j20000) has display units, so a refusal can name them"
+        );
+        assert!(
+            choices.contains(&"degrees"),
+            "the units for ra(j20000) are {choices:?}, which no longer includes \
+             the one the error message was written against"
+        );
+        let source = include_str!("mcp.rs");
+        assert!(
+            crate::testing::code(source).contains("it takes {choices:?}"),
+            "the unit refusal no longer lists the choices, so it is back to \
+             telling an agent only that it was wrong"
+        );
+    }
+
+    /// The case a caller writes does not decide whether a column exists.
+    ///
+    /// The keys are cleaned column names and therefore lower case, but an agent
+    /// reads "Filter" and "Instrument" off the heading strip — and a refusal
+    /// there teaches nothing that could not have been guessed.
+    #[test]
+    fn a_column_key_is_matched_whatever_case_it_is_written_in() {
+        let source = crate::testing::code(include_str!("mcp.rs"));
+        assert!(
+            source.contains("to_ascii_lowercase"),
+            "column keys are matched exactly again, so `Filter` is an error and \
+             `filter` is not"
+        );
+        // And the canonical form is what gets stored — a filter keyed by the
+        // caller's spelling matches no row at all.
+        assert!(
+            source.contains("filters_to_set") && source.contains("units_to_set"),
+            "the resolved key is no longer what is applied, so a filter can be \
+             stored under a key the grid does not use"
+        );
+    }
 }
 
 #[cfg(test)]
