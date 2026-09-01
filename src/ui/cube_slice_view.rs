@@ -1203,7 +1203,14 @@ impl CubeSliceView {
                     .as_ref()
                     .map(|f| f())
                     .unwrap_or(crate::models::annotation::AnnotationKind::Circle);
-                crate::helpers::annotation_render::draw_preview(kind, sx, sy, r, cr);
+                crate::helpers::annotation_render::draw_preview(
+                    kind,
+                    sx,
+                    sy,
+                    r,
+                    crate::models::annotation::MarkStyle::default(),
+                    cr,
+                );
             }
 
             // Marks last, so they sit over the image — and through the same

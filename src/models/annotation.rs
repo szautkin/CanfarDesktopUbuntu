@@ -182,9 +182,100 @@ pub struct Annotation {
     pub label_offset: Option<(f64, f64)>,
     #[serde(default)]
     pub author: Author,
+    /// How this mark is drawn, when it has been said explicitly.
+    ///
+    /// `None` means "however a mark by this author is drawn" — which is what
+    /// every mark on disk before styling existed means, and what it has always
+    /// meant. That is why this is an `Option` rather than a struct with
+    /// defaults: `#[serde(default)]` on a plain `MarkStyle` would give every
+    /// stored agent mark the USER colour on load, silently restyling work
+    /// people had already done, with no error to notice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<MarkStyle>,
     /// RFC-3339, for the panel's ordering.
     #[serde(default)]
     pub created_at: String,
+}
+
+/// How a mark is drawn: its ink, its label, and the weight of its outline.
+///
+/// Per-mark rather than global because a mark persists with its file, travels
+/// over MCP and ends up in an exported figure that has to look the same when
+/// it is opened again.
+///
+/// Sizes are in DEVICE PIXELS and are not scaled by zoom, for the reason the
+/// hairline stroke always had: a stroke that thickens as you zoom out turns the
+/// view into a blot. An export still scales them, because cairo's line width
+/// and font size live in user space and the capture scales the context.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MarkStyle {
+    /// Ink, as linear RGB in 0..=1.
+    pub colour: (f64, f64, f64),
+    /// Label size in device pixels.
+    pub font_size: f64,
+    pub bold: bool,
+    /// Outline width in device pixels.
+    pub stroke: f64,
+}
+
+/// The drawing ink: cold white-cyan.
+pub const USER_INK: (f64, f64, f64) = (0.62, 0.85, 1.0);
+/// An agent's marks, distinguishable without being louder.
+pub const AGENT_INK: (f64, f64, f64) = (0.55, 1.0, 0.80);
+pub const DEFAULT_FONT_SIZE: f64 = 11.0;
+pub const DEFAULT_STROKE: f64 = 1.0;
+
+impl MarkStyle {
+    /// What a mark by `author` looks like when nothing has been said about it.
+    pub fn for_author(author: Author) -> Self {
+        Self {
+            colour: match author {
+                Author::Agent => AGENT_INK,
+                _ => USER_INK,
+            },
+            font_size: DEFAULT_FONT_SIZE,
+            bold: false,
+            stroke: DEFAULT_STROKE,
+        }
+    }
+
+    /// Clamped to what can actually be drawn and read.
+    ///
+    /// A zero stroke draws nothing and a zero font size is an invisible label —
+    /// both look like the mark having been lost. The ceilings stop one mark
+    /// from covering the frame.
+    pub fn sane(mut self) -> Self {
+        self.font_size = self.font_size.clamp(6.0, 72.0);
+        self.stroke = self.stroke.clamp(0.5, 20.0);
+        let c = |v: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        self.colour = (c(self.colour.0), c(self.colour.1), c(self.colour.2));
+        self
+    }
+}
+
+impl Default for MarkStyle {
+    fn default() -> Self {
+        Self::for_author(Author::User)
+    }
+}
+
+impl Annotation {
+    /// How this mark should actually be drawn.
+    ///
+    /// Its own style if it has one, else the look of its author. One answer, so
+    /// the renderer, the label hit box and the export cannot each decide
+    /// differently — they did not, but only because there was one constant.
+    pub fn effective_style(&self) -> MarkStyle {
+        self.style
+            .unwrap_or_else(|| MarkStyle::for_author(self.author))
+            .sane()
+    }
 }
 
 impl Annotation {
@@ -205,6 +296,9 @@ impl Annotation {
             text: text.into(),
             label_offset: None,
             author,
+            // Unstyled: a new mark looks like every other mark by its author
+            // until something says otherwise.
+            style: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }
@@ -474,5 +568,107 @@ mod tests {
         assert_eq!(a.author, Author::User, "an unattributed mark is the user's");
         assert!(a.text.is_empty());
         assert!(a.label_offset.is_none());
+    }
+}
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+
+    /// A mark saved before styling existed loads exactly as it always did.
+    ///
+    /// Against a JSON FIXTURE rather than a round-tripped struct, because the
+    /// fixture is what is actually on disk. Marks persist per file, and a
+    /// release that silently restyled everything anyone had drawn would be a
+    /// bug with no error message — which is the whole reason `style` is an
+    /// Option rather than a struct with defaults.
+    #[test]
+    fn a_mark_saved_before_styling_is_unchanged() {
+        // The real on-disk shape, taken from a serialised mark rather than
+        // guessed — the first version of this fixture invented an anchor
+        // encoding and proved nothing about what is actually stored.
+        let stored = r#"{
+            "id": "ann-d412bbb071cf420cb6f732856487766d",
+            "kind": "circle",
+            "anchor": { "space": "imagePixel", "x": 10.0, "y": 20.0 },
+            "extent": { "halfWidth": 12.0, "halfHeight": 12.0 },
+            "text": "NGC 5194",
+            "author": "agent",
+            "createdAt": "2026-01-01T00:00:00Z"
+        }"#;
+        let a: Annotation = serde_json::from_str(stored).expect("an old mark still loads");
+        assert_eq!(a.style, None, "an old mark must not acquire a style");
+        // And it draws the way it always drew: an agent's mark in agent ink.
+        assert_eq!(a.effective_style().colour, AGENT_INK);
+        assert_eq!(a.effective_style().font_size, DEFAULT_FONT_SIZE);
+        assert_eq!(a.effective_style().stroke, DEFAULT_STROKE);
+    }
+
+    /// An unstyled mark stays unstyled on disk.
+    ///
+    /// `skip_serializing_if` keeps the key out entirely, so saving a file with
+    /// this build and opening it with the previous one changes nothing.
+    #[test]
+    fn an_unstyled_mark_writes_no_style_key() {
+        let a = Annotation::new(
+            AnnotationKind::Circle,
+            Anchor::ImagePixel { x: 1.0, y: 2.0 },
+            "",
+            Author::User,
+        );
+        let json = serde_json::to_string(&a).expect("serialises");
+        assert!(
+            !json.contains("style"),
+            "an unstyled mark wrote a style key: {json}"
+        );
+    }
+
+    /// A styled mark round-trips.
+    #[test]
+    fn a_styled_mark_survives_the_store() {
+        let mut a = Annotation::new(
+            AnnotationKind::Rect,
+            Anchor::ImagePixel { x: 1.0, y: 2.0 },
+            "x",
+            Author::User,
+        );
+        a.style = Some(MarkStyle {
+            colour: (1.0, 0.5, 0.0),
+            font_size: 18.0,
+            bold: true,
+            stroke: 3.0,
+        });
+        let json = serde_json::to_string(&a).expect("serialises");
+        let back: Annotation = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back.style, a.style);
+    }
+
+    /// A style that cannot be drawn is clamped, not honoured.
+    ///
+    /// A zero stroke draws nothing and a zero font size is an invisible label;
+    /// both look like the mark having been lost rather than like a setting.
+    /// An agent can send any number, so this is the boundary that has to hold.
+    #[test]
+    fn an_unusable_style_is_clamped_to_something_visible() {
+        let mut a = Annotation::new(
+            AnnotationKind::Circle,
+            Anchor::ImagePixel { x: 0.0, y: 0.0 },
+            "",
+            Author::User,
+        );
+        a.style = Some(MarkStyle {
+            colour: (5.0, -1.0, f64::NAN),
+            font_size: 0.0,
+            bold: false,
+            stroke: 0.0,
+        });
+        let s = a.effective_style();
+        assert!(
+            s.font_size >= 6.0,
+            "font size {} is unreadable",
+            s.font_size
+        );
+        assert!(s.stroke >= 0.5, "stroke {} draws nothing", s.stroke);
+        assert_eq!(s.colour, (1.0, 0.0, 0.0), "colour left the 0..1 range");
     }
 }

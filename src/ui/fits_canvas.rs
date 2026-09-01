@@ -1011,7 +1011,14 @@ impl FitsCanvas {
                     .as_ref()
                     .map(|f| f())
                     .unwrap_or(AnnotationKind::Circle);
-                crate::helpers::annotation_render::draw_preview(kind, sx, sy, r, cr);
+                crate::helpers::annotation_render::draw_preview(
+                    kind,
+                    sx,
+                    sy,
+                    r,
+                    crate::models::annotation::MarkStyle::default(),
+                    cr,
+                );
             }
         }
 
@@ -1106,15 +1113,20 @@ impl FitsCanvas {
         &self,
         mark: &crate::models::annotation::Annotation,
     ) -> Option<(f64, f64, f64, f64)> {
-        use crate::helpers::annotation_render::{leader_geometry, style};
+        use crate::helpers::annotation_render::leader_geometry;
         let (cx, cy) = self.project_anchor(&mark.anchor)?;
         let scale = self.annotation_scale(&mark.anchor);
         let (hw, hh) = mark
             .extent
             .map(|e| (e.half_width * scale, e.half_height * scale))
             .unwrap_or((3.0, 3.0));
+        // The MARK's size, not a constant. The hit box has to follow whatever
+        // the label is actually drawn at, or clicking the words on a restyled
+        // mark stops opening it — which reads as a broken click rather than as
+        // a box in the wrong place.
+        let font_size = mark.effective_style().font_size;
         // Monospace at this size advances about 0.6 of the font size.
-        let text_w = mark.text.chars().count() as f64 * style::FONT_SIZE * 0.62;
+        let text_w = mark.text.chars().count() as f64 * font_size * 0.62;
         let width = self.drawing_area.width().max(1) as f64;
         let (.., ey, _rule_end, text_x, _right) = leader_geometry(
             cx,
@@ -1129,7 +1141,7 @@ impl FitsCanvas {
         let pad = 4.0;
         Some((
             text_x - pad,
-            ey - style::FONT_SIZE - pad,
+            ey - font_size - pad,
             text_x + text_w + pad,
             ey + pad,
         ))

@@ -11,7 +11,7 @@
 //! square corners, a cold palette, and a label on a rule rather than in a
 //! filled box.
 
-use crate::models::annotation::{Annotation, AnnotationKind, Author};
+use crate::models::annotation::{Annotation, AnnotationKind, MarkStyle};
 use gtk4::cairo;
 
 /// A viewer that can place one of its own coordinates on its canvas.
@@ -35,14 +35,9 @@ pub trait AnnotationSurface {
 
 /// The blueprint palette and metrics.
 pub mod style {
-    /// Hairline. Not scaled with zoom — a stroke that thickens turns a
-    /// zoomed-out view into a blot.
-    pub const STROKE: f64 = 1.0;
+    /// A mark being edited or picked out is drawn thicker, whatever its own
+    /// stroke says: the emphasis is chrome and has to read at any weight.
     pub const SELECTED_STROKE: f64 = 2.0;
-    /// Cold white-cyan, the drawing-ink of the set.
-    pub const INK: (f64, f64, f64) = (0.62, 0.85, 1.0);
-    /// An agent's marks, distinguishable without being louder.
-    pub const AGENT_INK: (f64, f64, f64) = (0.55, 1.0, 0.80);
     /// The mark being EDITED — grips out, label field open.
     pub const EDITING_INK: (f64, f64, f64) = (1.0, 0.78, 0.35);
     /// A mark merely picked out, from the list or a click. Brighter than the
@@ -50,7 +45,6 @@ pub mod style {
     /// they ARE different — one has grips you can drag and the other does not.
     pub const SELECTED_INK: (f64, f64, f64) = (1.0, 1.0, 1.0);
     pub const ALPHA: f64 = 0.92;
-    pub const FONT_SIZE: f64 = 11.0;
     /// The leader leaves a shape at this angle, and every leader on a canvas
     /// uses the same one — varying angles is what makes an annotated figure
     /// look untidy.
@@ -65,14 +59,16 @@ pub mod style {
 
 /// The ink for one annotation.
 fn ink_for(a: &Annotation, selected: bool, editing: bool) -> (f64, f64, f64) {
+    // State first, and state is CHROME: which mark you have clicked is a fact
+    // about the session, not about the picture. Both are already excluded from
+    // captures and exports, and a mark's own colour must not resurrect them
+    // there.
     if editing {
         style::EDITING_INK
     } else if selected {
         style::SELECTED_INK
-    } else if a.author == Author::Agent {
-        style::AGENT_INK
     } else {
-        style::INK
+        a.effective_style().colour
     }
 }
 
@@ -169,13 +165,6 @@ pub fn draw(
     canvas_w: f64,
     canvas_h: f64,
 ) {
-    cr.select_font_face(
-        "monospace",
-        cairo::FontSlant::Normal,
-        cairo::FontWeight::Normal,
-    );
-    cr.set_font_size(style::FONT_SIZE);
-
     for a in annotations {
         // A mark whose anchor is off-canvas or behind the camera is skipped,
         // not clamped: a clamped mark points at the wrong thing.
@@ -194,12 +183,29 @@ pub fn draw(
 
         let is_selected = selected == Some(a.id.as_str());
         let is_editing = editing == Some(a.id.as_str());
+        let own = a.effective_style();
+        // Per mark, not once for the run: size and weight vary now, and a
+        // face set outside the loop would give every mark whichever one the
+        // previous mark happened to leave behind.
+        cr.select_font_face(
+            "monospace",
+            cairo::FontSlant::Normal,
+            if own.bold {
+                cairo::FontWeight::Bold
+            } else {
+                cairo::FontWeight::Normal
+            },
+        );
+        cr.set_font_size(own.font_size);
         let (r, g, b) = ink_for(a, is_selected, is_editing);
         cr.set_source_rgba(r, g, b, style::ALPHA);
+        // Emphasis never draws THINNER than the mark itself: a 4px outline
+        // that got thinner when you clicked it would read as the click having
+        // broken something.
         cr.set_line_width(if is_selected || is_editing {
-            style::SELECTED_STROKE
+            own.stroke.max(style::SELECTED_STROKE)
         } else {
-            style::STROKE
+            own.stroke
         });
 
         let scale = surface.units_to_pixels(&a.anchor);
@@ -259,7 +265,7 @@ pub fn draw(
                 cr.line_to(ex, ey);
                 cr.line_to(rule_end, ey);
                 cr.stroke().ok();
-                let ty = (ey - style::TEXT_LIFT).max(style::FONT_SIZE);
+                let ty = (ey - style::TEXT_LIFT).max(own.font_size);
                 draw_text_with_shadow(cr, text_x, ty, &a.text);
             }
         }
@@ -289,7 +295,7 @@ fn draw_label_at(cr: &cairo::Context, a: &Annotation, cx: f64, cy: f64, canvas_w
     // Slide back inside rather than clip — a label that runs off the edge is
     // unreadable exactly when it matters.
     let x = (cx - width / 2.0).clamp(2.0, (canvas_w - width - 2.0).max(2.0));
-    let y = cy.max(style::FONT_SIZE);
+    let y = cy.max(a.effective_style().font_size);
     draw_text_with_shadow(cr, x, y, &a.text);
 }
 
@@ -422,10 +428,22 @@ pub fn annotation_at(
 ///
 /// Screen coordinates, because a preview lives for one drag and every canvas
 /// already knows where the pointer is. `r` is the half-size in device pixels.
-pub fn draw_preview(kind: AnnotationKind, cx: f64, cy: f64, r: f64, cr: &cairo::Context) {
-    let (ink_r, ink_g, ink_b) = style::INK;
+///
+/// `mark_style` is the style the mark WILL have, for the same reason the kind
+/// is asked for rather than remembered: a preview drawn in a different ink or
+/// weight from the thing it becomes is a preview nobody trusts.
+pub fn draw_preview(
+    kind: AnnotationKind,
+    cx: f64,
+    cy: f64,
+    r: f64,
+    mark_style: MarkStyle,
+    cr: &cairo::Context,
+) {
+    let mark_style = mark_style.sane();
+    let (ink_r, ink_g, ink_b) = mark_style.colour;
     cr.set_source_rgba(ink_r, ink_g, ink_b, 0.9);
-    cr.set_line_width(style::STROKE);
+    cr.set_line_width(mark_style.stroke);
     cr.new_path();
     let r = r.max(1.0);
     match kind {
@@ -562,7 +580,7 @@ pub fn resize_half(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::annotation::{Anchor, Extent};
+    use crate::models::annotation::{Anchor, Author, Extent};
 
     /// A surface that projects nothing anywhere real — the geometry under test
     /// is the leader's, and it needs no viewer.
@@ -778,19 +796,41 @@ mod tests {
         assert_eq!(half * Zoomed(4.0).units_to_pixels(&a.anchor), 40.0);
     }
 
-    /// An agent's mark is drawn in its own ink.
+    /// An unstyled agent mark is still drawn in its own ink.
+    ///
+    /// The author's colour is the DEFAULT a mark takes now rather than a rule
+    /// applied on every frame — which is what lets one be recoloured — so this
+    /// is really the test that an unstyled mark is unchanged.
     #[test]
     fn an_agents_mark_is_distinguishable() {
+        use crate::models::annotation::{AGENT_INK, USER_INK};
         let mut mine = callout(None);
         mine.author = Author::Agent;
-        assert_ne!(ink_for(&mine, false, false), style::INK);
-        assert_eq!(ink_for(&mine, false, false), style::AGENT_INK);
-        // Picking one out wins over authorship — you need to see what you
-        // chose — and editing wins over both, because that is the one you can
-        // drag.
+        assert_ne!(ink_for(&mine, false, false), USER_INK);
+        assert_eq!(ink_for(&mine, false, false), AGENT_INK);
+        // Picking one out wins over the mark's own colour — you need to see
+        // what you chose — and editing wins over both, because that is the one
+        // you can drag.
         assert_eq!(ink_for(&mine, true, false), style::SELECTED_INK);
         assert_eq!(ink_for(&mine, true, true), style::EDITING_INK);
         assert_ne!(style::SELECTED_INK, style::EDITING_INK);
+    }
+
+    /// A mark's own colour is used, and state still overrides it.
+    #[test]
+    fn a_styled_mark_keeps_its_colour_until_it_is_picked_out() {
+        use crate::models::annotation::MarkStyle;
+        let mut m = callout(None);
+        let red = (1.0, 0.0, 0.0);
+        m.style = Some(MarkStyle {
+            colour: red,
+            ..MarkStyle::default()
+        });
+        assert_eq!(ink_for(&m, false, false), red);
+        // Selection and editing are chrome: they say which mark you clicked,
+        // which is a fact about the session and not about the picture.
+        assert_eq!(ink_for(&m, true, false), style::SELECTED_INK);
+        assert_eq!(ink_for(&m, false, true), style::EDITING_INK);
     }
 
     /// Marks are not strung together into one path.
@@ -1139,7 +1179,7 @@ mod tests {
                 cairo::ImageSurface::create(cairo::Format::ARgb32, 60, 60).expect("surface");
             {
                 let cr = cairo::Context::new(&surface).expect("cr");
-                draw_preview(kind, 30.0, 30.0, 12.0, &cr);
+                draw_preview(kind, 30.0, 30.0, 12.0, MarkStyle::default(), &cr);
             }
             let mut s = surface;
             s.flush();

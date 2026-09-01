@@ -1771,6 +1771,7 @@ impl CubeViewer {
                         sx,
                         sy,
                         r,
+                        crate::models::annotation::MarkStyle::default(),
                         cr,
                     );
                 }
