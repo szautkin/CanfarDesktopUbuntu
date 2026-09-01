@@ -4,6 +4,14 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### View, Save and More are the first three columns
+
+- The three things you can DO to a search result were the LAST three cells in
+  the row, past a dozen data columns — 41 with every column shown — so they were
+  off the right-hand edge of the table and only reachable by scrolling there.
+  They are first now, with their headings, which is where a table puts what a
+  row is for.
+
 ### Two things in the results table an agent could not reach
 
 - **`show_observation_detail`** opens one observation's CAOM2 detail page in the

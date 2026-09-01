@@ -2226,6 +2226,36 @@ impl SearchPage {
         let sort_asc = *self.sort_ascending.borrow();
         // Header row with clickable sort + filter entries
         let header_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // The three action cells every row carries, FIRST.
+        //
+        // They used to be last, which put them past a dozen data columns —
+        // 41 if every column is shown — so the three things you can actually do
+        // to a row were off the right-hand edge and only reachable by scrolling
+        // there. First is where a table puts what a row is for.
+        //
+        // Without these headings the table ran three buttons past its own
+        // headings, and nothing said what they do until you hovered one.
+        for (label, tip) in [
+            (
+                crate::tr_en!("View"),
+                crate::tr_en!("Preview this observation"),
+            ),
+            (
+                crate::tr_en!("Save"),
+                crate::tr_en!("Save to Research (downloads preview + FITS file)"),
+            ),
+            (crate::tr_en!("More"), crate::tr_en!("View details")),
+        ] {
+            let head = cell_label(label);
+            head.add_css_class("caption");
+            head.add_css_class("dim-label");
+            head.set_halign(gtk::Align::Center);
+            head.set_xalign(0.5);
+            head.set_tooltip_text(Some(tip));
+            pin_width(&head, ACTION_COLUMN_WIDTH);
+            head.set_margin_end(RESULT_COLUMN_GAP);
+            header_row.append(&head);
+        }
         for col in vis_columns.iter() {
             let col_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
             pin_width(&col_box, column_width_for(&col.key, &col.display_name));
@@ -2331,30 +2361,6 @@ impl SearchPage {
             header_row.append(&col_box);
         }
 
-        // The three action cells every row carries. Without these the table ran
-        // three buttons past its own headings, and nothing said what they do
-        // until you hovered one.
-        for (label, tip) in [
-            (
-                crate::tr_en!("View"),
-                crate::tr_en!("Preview this observation"),
-            ),
-            (
-                crate::tr_en!("Save"),
-                crate::tr_en!("Save to Research (downloads preview + FITS file)"),
-            ),
-            (crate::tr_en!("More"), crate::tr_en!("View details")),
-        ] {
-            let head = cell_label(label);
-            head.add_css_class("caption");
-            head.add_css_class("dim-label");
-            head.set_halign(gtk::Align::Center);
-            head.set_xalign(0.5);
-            head.set_tooltip_text(Some(tip));
-            pin_width(&head, ACTION_COLUMN_WIDTH);
-            head.set_margin_end(RESULT_COLUMN_GAP);
-            header_row.append(&head);
-        }
         self.header_panel.append(&header_row);
         self.header_panel
             .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -2426,62 +2432,13 @@ impl SearchPage {
             row_box.set_margin_top(1);
             row_box.set_margin_bottom(1);
 
-            for col in vis_columns.iter() {
-                let raw = row.get(&col.header);
-                // Unit-bearing columns render through the chosen-unit formatter
-                // (RA/Dec sexagesimal by default); all others keep the fixed
-                // per-column formatter to preserve existing behaviour.
-                let formatted = if column_units::has_menu(&col.key) {
-                    let chosen = self.column_units.borrow().get(&col.key).cloned();
-                    format_cell_with_unit(&col.header, raw, chosen.as_deref())
-                } else {
-                    format_cell(raw, col.format)
-                };
-
-                // Identity columns become "narrow to this value" links: a click
-                // sets a client-side column filter and re-renders (ref
-                // `NarrowableKeys` / `IsNarrowable`).
-                if is_narrowable(&col.key) && !raw.is_empty() {
-                    let inner = cell_label(&formatted);
-                    inner.add_css_class("caption");
-                    inner.set_hexpand(true);
-
-                    let cell_btn = gtk::Button::new();
-                    cell_btn.set_child(Some(&inner));
-                    cell_btn.add_css_class("flat");
-                    pin_width(&cell_btn, column_width_for(&col.key, &col.display_name));
-                    cell_btn.set_margin_end(RESULT_COLUMN_GAP);
-                    // The marker, not a stored tooltip: see `cell_tooltips`.
-                    cell_btn.add_css_class(NARROW_CELL);
-
-                    let filters_rc = self.column_filters.clone();
-                    let page_rc = Rc::clone(self);
-                    let ckey = col.key.clone();
-                    let cval = raw.to_string();
-                    cell_btn.connect_clicked(move |_| {
-                        filters_rc.borrow_mut().insert(ckey.clone(), cval.clone());
-                        *page_rc.current_page.borrow_mut() = 0;
-                        page_rc.render_results_page();
-                    });
-                    row_box.append(&cell_btn);
-                } else {
-                    let label = cell_label(&formatted);
-                    label.add_css_class("caption");
-                    pin_width(&label, column_width_for(&col.key, &col.display_name));
-                    label.set_margin_end(RESULT_COLUMN_GAP);
-                    label.set_selectable(true);
-                    // No stored tooltip. The cell elides to its column so the
-                    // value has to be readable somewhere, but a tooltip per
-                    // cell is 100 rows times fifteen columns of them on every
-                    // render — measured at about 1.2 ms each, which is most of
-                    // the second a column toggle used to take. The grid answers
-                    // for its own cells; see `cell_tooltips`.
-                    row_box.append(&label);
-                }
-            }
-
-            // "Save to Research" button at the end of the row — routes
-            // through the same flow as the detail dialog button.
+            // The row's three actions, FIRST — under the headings that moved
+            // with them. Last put them past a dozen data columns, or 41 with
+            // every column shown, so the things you can DO to a row were off
+            // the right-hand edge.
+            //
+            // "Save to Research" routes through the same flow as the detail
+            // dialog button.
             let publisher_id = row.get("publisherID").to_string();
             if publisher_id.is_empty() {
                 // Same shape as every other row: three empty cells, so a row
@@ -2542,6 +2499,60 @@ impl SearchPage {
                     }
                 });
                 row_box.append(&details_btn);
+            }
+
+            for col in vis_columns.iter() {
+                let raw = row.get(&col.header);
+                // Unit-bearing columns render through the chosen-unit formatter
+                // (RA/Dec sexagesimal by default); all others keep the fixed
+                // per-column formatter to preserve existing behaviour.
+                let formatted = if column_units::has_menu(&col.key) {
+                    let chosen = self.column_units.borrow().get(&col.key).cloned();
+                    format_cell_with_unit(&col.header, raw, chosen.as_deref())
+                } else {
+                    format_cell(raw, col.format)
+                };
+
+                // Identity columns become "narrow to this value" links: a click
+                // sets a client-side column filter and re-renders (ref
+                // `NarrowableKeys` / `IsNarrowable`).
+                if is_narrowable(&col.key) && !raw.is_empty() {
+                    let inner = cell_label(&formatted);
+                    inner.add_css_class("caption");
+                    inner.set_hexpand(true);
+
+                    let cell_btn = gtk::Button::new();
+                    cell_btn.set_child(Some(&inner));
+                    cell_btn.add_css_class("flat");
+                    pin_width(&cell_btn, column_width_for(&col.key, &col.display_name));
+                    cell_btn.set_margin_end(RESULT_COLUMN_GAP);
+                    // The marker, not a stored tooltip: see `cell_tooltips`.
+                    cell_btn.add_css_class(NARROW_CELL);
+
+                    let filters_rc = self.column_filters.clone();
+                    let page_rc = Rc::clone(self);
+                    let ckey = col.key.clone();
+                    let cval = raw.to_string();
+                    cell_btn.connect_clicked(move |_| {
+                        filters_rc.borrow_mut().insert(ckey.clone(), cval.clone());
+                        *page_rc.current_page.borrow_mut() = 0;
+                        page_rc.render_results_page();
+                    });
+                    row_box.append(&cell_btn);
+                } else {
+                    let label = cell_label(&formatted);
+                    label.add_css_class("caption");
+                    pin_width(&label, column_width_for(&col.key, &col.display_name));
+                    label.set_margin_end(RESULT_COLUMN_GAP);
+                    label.set_selectable(true);
+                    // No stored tooltip. The cell elides to its column so the
+                    // value has to be readable somewhere, but a tooltip per
+                    // cell is 100 rows times fifteen columns of them on every
+                    // render — measured at about 1.2 ms each, which is most of
+                    // the second a column toggle used to take. The grid answers
+                    // for its own cells; see `cell_tooltips`.
+                    row_box.append(&label);
+                }
             }
 
             // Wrap row in a clickable button for detail modal
@@ -5241,6 +5252,38 @@ mod results_layout_tests {
             code.contains("pin_width(&spacer, ACTION_COLUMN_WIDTH)"),
             "a row with nothing to act on ends early and stops lining up"
         );
+    }
+
+    /// The actions come first, in the header and in the rows alike.
+    ///
+    /// Last put them past a dozen data columns — 41 with every column shown —
+    /// so View, Save and More were off the right-hand edge of the table and
+    /// only reachable by scrolling there. They are what a row is FOR.
+    ///
+    /// Both halves are asserted because they have to agree: headings that moved
+    /// without their cells, or the other way round, is a table whose columns
+    /// are labelled wrong all the way across.
+    #[test]
+    fn the_row_actions_come_before_the_data_columns() {
+        let code = crate::testing::code(SOURCE);
+        let header = code
+            .find("fn render_header")
+            .expect("render_header is gone");
+        let rows = code.find("fn render_rows").expect("render_rows is gone");
+        for (what, from, until) in [("the header", header, rows), ("a row", rows, code.len())] {
+            let body = &code[from..until];
+            let actions = body
+                .find("ACTION_COLUMN_WIDTH")
+                .unwrap_or_else(|| panic!("{what} has no action cells at all"));
+            let columns = body
+                .find("for col in vis_columns.iter()")
+                .unwrap_or_else(|| panic!("{what} no longer loops over the columns"));
+            assert!(
+                actions < columns,
+                "in {what} the action cells are built after the data columns, \
+                 which puts them off the right-hand edge of the table"
+            );
+        }
     }
 
     #[test]
