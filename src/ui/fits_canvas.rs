@@ -478,8 +478,16 @@ impl FitsCanvas {
         let drawing_area = gtk::DrawingArea::new();
         drawing_area.set_vexpand(true);
         drawing_area.set_hexpand(true);
-        drawing_area.set_content_width(width.min(800) as i32);
-        drawing_area.set_content_height(height.min(600) as i32);
+        // A FLOOR, not a preferred size. `set_content_width` is the drawing
+        // area's minimum, so `width.min(800)` meant any image 800 px or wider
+        // gave the viewer an 800 px minimum — and the control column beside it
+        // could then only dock in a window nobody opens by default. The picture
+        // is drawn through a transform and fits itself to whatever it is given,
+        // so it does not need a large minimum; it needs to be allowed to shrink
+        // so the panel beside it can keep its width.
+        let floor = crate::ui::panel::CONTENT_FLOOR;
+        drawing_area.set_content_width((width as i32).min(floor));
+        drawing_area.set_content_height((height as i32).min(floor * 3 / 4));
 
         let coord_label = gtk::Label::new(None);
         coord_label.add_css_class("caption");

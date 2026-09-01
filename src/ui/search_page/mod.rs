@@ -691,8 +691,17 @@ impl SearchPage {
         let title = gtk::Label::new(Some(crate::tr_en!("CADC Archive Search")));
         title.add_css_class("title-2");
         title.set_halign(gtk::Align::Start);
-        title.set_margin_bottom(12);
-        main_box.append(&title);
+        title.set_hexpand(true);
+        title.set_xalign(0.0);
+
+        // The title row also carries the panel toggle, filled in once the
+        // panel exists. It has to be somewhere a person can see: below the
+        // collapse breakpoint the Recent Searches panel is off screen, and a
+        // panel with no way back is a feature that has been deleted.
+        let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        title_row.set_margin_bottom(12);
+        title_row.append(&title);
+        main_box.append(&title_row);
 
         // A failed query says why HERE, wrapped and dismissible, rather than in
         // the one-line status label where a TAP service's explanation of what
@@ -998,15 +1007,18 @@ impl SearchPage {
         );
 
         main_box.append(&notebook);
-        widget.append(&main_box);
 
         // =====================================================================
-        // SIDEBAR (right, 260px fixed)
+        // SIDEBAR (right, a panel — it states its width and holds it)
         // =====================================================================
-        widget.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
         let sidebar_scroll = gtk::ScrolledWindow::new();
-        sidebar_scroll.set_size_request(260, -1);
+        // `pin` rather than a bare size request. The request was already here
+        // and was not enough: `recent_title` inside this scroller sets
+        // `hexpand(true)`, GTK propagates expansion upward, and so a panel that
+        // never asked to expand took half of every pixel a wider window brought
+        // — 175 px at a 1200 window and 618 at 2000, measured. Setting the flag
+        // explicitly to false is what stops the propagation.
+        crate::ui::panel::pin(&sidebar_scroll, crate::ui::panel::RECENT_WIDTH);
         sidebar_scroll.set_vexpand(true);
 
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -1082,7 +1094,25 @@ impl SearchPage {
         sidebar.append(&saved_card);
 
         sidebar_scroll.set_child(Some(&sidebar));
-        widget.append(&sidebar_scroll);
+
+        // Docked beside the form when there is room, over it when there is not.
+        //
+        // Before this the page was a plain box holding both, and at the window
+        // the app opens at that box needed 844 px and had 797 — so GTK drew the
+        // panel 47 px past the window edge. Every row's edit and delete buttons
+        // were outside the window, "Clear All" was cut mid-word, and a saved
+        // coordinate wrapped mid-token across three lines. None of that is an
+        // error GTK reports; it just draws.
+        let docked = crate::ui::panel::docked(
+            &main_box,
+            &sidebar_scroll,
+            crate::tr_en!("Show or hide recent searches"),
+            // A form, not a picture: its fields have widths they cannot go
+            // below, so the panel is what has to give way.
+            crate::ui::panel::COLLAPSE_RIGID_SP,
+        );
+        title_row.append(&docked.toggle);
+        widget.append(&docked.widget);
 
         // =====================================================================
         // Build the struct

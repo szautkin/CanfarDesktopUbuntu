@@ -1,6 +1,9 @@
 # 26 — Panels that keep their width, and an account block that is not last
 
-Status: plan. Every number below was **measured on the running app**
+Status: **done**. What was built, and what changed from the plan, is below the
+line at the end.
+
+Every number below was **measured on the running app**
 (`target/release/verbinal` at `960362b`), not read off the source.
 
 ## How it was measured
@@ -228,3 +231,103 @@ The specific claims to re-measure after the change:
 | Search panel does not grow past its stated width | 618 at 2000 |
 | No row control is outside the window at 1200 logical | edit + delete are |
 | Viewer controls are on screen at the default window size | absent below 1400 |
+
+---
+
+## What was built
+
+All six steps, in the order above. `examples/panel_width_probe.rs` was written
+first, and it is the reason the rest is a set of numbers rather than a set of
+opinions: it builds the **real** pages — not a mimicry of them, which would only
+measure the mimicry — allocates them at the widths that matter, and walks the
+tree reporting what each child asked for against what it got.
+
+### The plan was wrong about one thing, and the probe caught it
+
+One collapse threshold cannot serve every page. A viewer's content shrinks
+freely; a form's does not. With a single number the app is always back to one of
+the two bugs: either the viewers' controls vanish while there is room for them,
+or the Search form is drawn past the window edge. So there are two, and they are
+named for what they describe rather than for a size:
+
+| | | |
+| --- | --- | --- |
+| `COLLAPSE_FLEXIBLE_SP` | 660 | An image, a volume, a list — content that can give up width |
+| `COLLAPSE_RIGID_SP` | 940 | A form, whose fields have widths they cannot go below |
+
+### The finding the plan did not have
+
+`set_content_width` reads like "how big I would like to be" and means "how
+small I may ever be". Both viewers spelled a number there:
+
+```rust
+drawing_area.set_content_width(width.min(800));   // fits_canvas
+slice_area.set_content_width(vol.nx.clamp(1, 800));  // cube_slice_view
+```
+
+So any image 800 px or wider gave its viewer an 800 px floor, and the control
+column beside it could only dock in a window nobody opens by default. The cube's
+was worse than it looked: the slice and the 3D volume share a homogeneous
+`Stack`, so the slice's number was the volume's minimum too.
+
+That is why lowering the collapse threshold alone moved the viewers' docking
+point from ~1400 to only ~1300 logical. `panel::CONTENT_FLOOR` (360) is the
+other half, and a test holds it below `COLLAPSE_FLEXIBLE_SP - WIDTH` — because
+above that the picture's own minimum decides when a panel docks, and the
+threshold describes nothing.
+
+### The measurements, before and after
+
+| | before | after |
+| --- | --- | --- |
+| Search page minimum | 844 (page has 797 — **clips by 47**) | 360 |
+| Search panel at a 1200 window | 175 of the 260 it asks for | docked at 340, or overlaid |
+| Search panel at a 2000 window | 618 — half of every extra pixel | 340 |
+| Research / Workflows list | 320, badges and titles truncated | 430 |
+| FITS + cube controls at the default window | absent | **docked** |
+| Cube controls when docked | ran past the window edge | fit |
+
+### Seen, not only measured
+
+The captures: the Search panel's card is no longer cut by the window edge and
+every row's edit and delete buttons are inside it; "Clear All" reads in full;
+Research shows `16.0 MB`, `540.0 KB`, `1.6 GB`, `110.9 MB` where it showed
+`540.0 …` and `1….`; six of nine workflow titles that were truncated now read in
+full; and both viewers show colormap, stretch, cut levels and the rest at the
+window the app opens at.
+
+Narrow and widen again, with a file open: the panel collapses and comes back.
+
+### The account block
+
+Top of the sidebar, under the header, with service health and agent activity on
+one row beside it. `Welcome, {name}` is gone rather than moved — the button
+directly above says the name, and printing it twice in a 280 px column is how a
+sidebar starts looking like a form. The status label now shows only when it has
+something to say, driven from its own `notify::label` rather than from each of
+the four callers, so the fifth cannot forget. The bottom bar is gone, which
+gives the height back to the navigation list.
+
+### What holds it
+
+- `panel_width_probe` fails when a page needs more than the window the app opens
+  at, or when a panel states a width and expands anyway. It finds panels by a
+  marker `panel::pin` leaves on them, because every guess from the outside — "a
+  width request between 200 and 400" — flagged a shrink floor or a thumbnail.
+- `nothing_states_its_own_panel_width` and `no_picture_area_states_its_own_floor`
+  are greps: the failure is never a wrong number, it is a **second** number.
+- `a_picture_leaves_room_for_the_panel_beside_it` ties `CONTENT_FLOOR` to
+  `COLLAPSE_FLEXIBLE_SP`, so the two cannot drift into meaninglessness.
+- `a_form_gives_up_its_panel_before_a_picture_does` keeps the two thresholds in
+  the order that makes them worth having.
+
+### Still open, and deliberately
+
+- **Mid-token wrapping** in a saved search's name: `13:29:5121,+47:12:145` still
+  breaks at an arbitrary character. The panel is wide enough now; the string has
+  no separator to break at, which is a formatting question, not a width one.
+- **The two longest workflow titles** still truncate. Their rows want 641 px and
+  the list is 430 — the median, because a panel sized for its rarest row is the
+  wrong trade.
+- **The AI Guide's single-column tiles**, and the window's declared minimum,
+  both still as the plan left them.

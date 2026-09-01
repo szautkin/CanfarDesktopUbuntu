@@ -4,6 +4,31 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Panels keep their width, and the account is where you look first
+
+- **The Search page was clipping its own right panel.** At the window the app
+  opens at it needed 844 px and had 797, so GTK drew Recent Searches 47 px past
+  the window edge: every row's edit and delete buttons were outside the window,
+  "Clear All" was cut mid-word, and a saved coordinate wrapped mid-token across
+  three lines. Widen the window and the same panel took half of every extra
+  pixel instead — 175 px at 1200 and 618 at 2000 — because one label inside it
+  set `hexpand`, which GTK propagates upward. It is a panel now: it states its
+  width, holds it, and steps aside into an overlay rather than off the edge.
+- **Both viewers' controls were absent at the window the app opens at.**
+  Colormap, stretch, cut levels, the channel scrubber and the marks panel were
+  reachable only through a toggle, and then only as an overlay over the picture.
+  Two causes: a collapse threshold measured for a different machine, and a
+  picture that claimed an 800 px minimum it did not need. They dock now, and the
+  picture takes the squeeze.
+- **The Research and Workflows lists** were truncating the names they exist to
+  show — `110.9 …`, `Archival imaging reconnaissance (CFHT Mega…` — beside a
+  pane displaying an empty "select something" placeholder. The list keeps its
+  width; the pane gives it up.
+- **The account moved to the top of the sidebar**, under the header, with
+  service health and agent activity beside it. It was the last thing in the
+  sidebar and the first thing anyone checks. The display name is no longer
+  printed twice.
+
 ### Marks can be styled, and they survive being exported
 
 - **Colour, size, weight and thickness for a mark**, from a Style row in the

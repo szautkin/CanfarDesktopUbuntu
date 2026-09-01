@@ -9,16 +9,15 @@
 //! column from here now, so a control looks and behaves the same whichever one
 //! you are in.
 
-use gtk4::glib::prelude::ToValue;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
-use libadwaita::prelude::*;
 
 /// Width of a viewer's control column.
 ///
-/// One number for both, or the app has two ideas of how wide "the controls" are.
-pub const COLUMN_WIDTH: i32 = 280;
+/// One number for both, or the app has two ideas of how wide "the controls"
+/// are — and now one number for the whole app, since the pages grew panels too.
+pub const COLUMN_WIDTH: i32 = crate::ui::panel::WIDTH;
 
 /// A section heading inside a control column (`DISPLAY`, `IMAGE`, `COMPARE`).
 pub fn section_header(text: &str) -> gtk::Label {
@@ -62,7 +61,7 @@ pub fn control_column() -> (gtk::Box, gtk::ScrolledWindow) {
     column.set_margin_end(12);
     column.set_margin_top(12);
     column.set_margin_bottom(12);
-    column.set_width_request(COLUMN_WIDTH);
+    crate::ui::panel::pin_standard(&column);
 
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
@@ -71,24 +70,12 @@ pub fn control_column() -> (gtk::Box, gtk::ScrolledWindow) {
     (column, scroll)
 }
 
-/// Below this width the column stops taking space from the image and floats
-/// over it instead.
-///
-/// Chosen so the image keeps roughly two thirds of a small laptop's width:
-/// below it, a 280 px column is taking a third of the picture.
-const COLLAPSE_WIDTH_SP: f64 = 900.0;
-
 /// Put the image and the control column side by side.
 ///
-/// An `OverlaySplitView` rather than a `Paned`: on a wide window the column is
-/// docked beside the image, and on a narrow one it floats over the image
-/// instead of squeezing it. A fixed 280 px column on a 1024-wide laptop takes a
-/// third of the picture, which is the wrong third to give up.
-///
-/// The breakpoint lives in an `adw::BreakpointBin` so the rule is the shell's
-/// own: a viewer is a page inside a window it does not own, and asking the
-/// window to know about a viewer's sidebar would be the coupling this module
-/// exists to avoid.
+/// The behaviour — docked when there is room, overlaying when there is not,
+/// with a toggle that survives both — lives in [`crate::ui::panel::docked`]
+/// now, because the Search page needed exactly the same thing and a second copy
+/// is the one that drifts. This is the viewers' name for it.
 pub struct ViewerShell {
     /// The whole shell — put this in the page.
     pub widget: adw::BreakpointBin,
@@ -98,52 +85,17 @@ pub struct ViewerShell {
 }
 
 pub fn shell(image: &impl IsA<gtk::Widget>, column: &gtk::ScrolledWindow) -> ViewerShell {
-    let split = adw::OverlaySplitView::new();
-    split.set_content(Some(image));
-    split.set_sidebar(Some(column));
-    split.set_sidebar_position(gtk::PackType::End);
-    split.set_show_sidebar(true);
-    split.set_hexpand(true);
-    split.set_vexpand(true);
-
-    let bin = adw::BreakpointBin::new();
-    bin.set_hexpand(true);
-    bin.set_vexpand(true);
-    // A BreakpointBin refuses to allocate smaller than its child's minimum, so
-    // the child must be allowed to shrink to the width the breakpoint watches
-    // for — otherwise the condition can never be met.
-    bin.set_size_request(360, 200);
-    bin.set_child(Some(&split));
-
-    let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-        adw::BreakpointConditionLengthType::MaxWidth,
-        COLLAPSE_WIDTH_SP,
-        adw::LengthUnit::Sp,
-    ));
-    breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
-    // Hidden as well as collapsed: a narrow window should give the whole width
-    // to the image, and the toggle brings the controls back over it. Overlaying
-    // them the moment the window narrows would cover the picture uninvited.
-    breakpoint.add_setter(&split, "show-sidebar", Some(&false.to_value()));
-    bin.add_breakpoint(breakpoint);
-
-    let sidebar_toggle = gtk::ToggleButton::new();
-    sidebar_toggle.set_icon_name("sidebar-show-right-symbolic");
-    sidebar_toggle.add_css_class("flat");
-    sidebar_toggle.set_valign(gtk::Align::Center);
-    sidebar_toggle.set_tooltip_text(Some(crate::tr_en!("Show or hide the controls")));
-    // Bound both ways: the button reflects a collapse the breakpoint caused, and
-    // pressing it moves the same property. A separate bool would be a second
-    // opinion about whether the column is on screen.
-    split
-        .bind_property("show-sidebar", &sidebar_toggle, "active")
-        .bidirectional()
-        .sync_create()
-        .build();
-
+    let docked = crate::ui::panel::docked(
+        image,
+        column,
+        crate::tr_en!("Show or hide the controls"),
+        // An image shrinks; the controls do not. Docked wherever there is room
+        // for both, which is the whole point of the picture having a viewer.
+        crate::ui::panel::COLLAPSE_FLEXIBLE_SP,
+    );
     ViewerShell {
-        widget: bin,
-        sidebar_toggle,
+        widget: docked.widget,
+        sidebar_toggle: docked.toggle,
     }
 }
 

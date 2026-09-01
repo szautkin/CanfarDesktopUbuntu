@@ -81,6 +81,14 @@ pub fn build_main_window(
     status_label.add_css_class("caption");
     status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     status_label.set_xalign(0.0);
+    // Shown only when it says something. It carries transient state —
+    // "Checking authentication…", "Session expired" — and an empty one held a
+    // blank line open above the navigation list for the whole session.
+    //
+    // Driven from the label's own property rather than from each caller: there
+    // are four places that set the text, and a fifth would have forgotten.
+    status_label.set_visible(false);
+    status_label.connect_label_notify(|l| l.set_visible(!l.label().is_empty()));
 
     // --- Transient agent-activity indicator ---
     // Flashes "⚡ agent working…" with a spinner while an MCP agent has invoked
@@ -340,23 +348,40 @@ pub fn build_main_window(
     sidebar_scroll.set_vexpand(true);
     sidebar_scroll.set_child(Some(&sidebar_list));
 
-    // Footer: agent activity, service status, account.
-    let sidebar_footer = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    sidebar_footer.set_margin_start(12);
-    sidebar_footer.set_margin_end(12);
-    sidebar_footer.set_margin_top(6);
-    sidebar_footer.set_margin_bottom(12);
+    // ── Account and connection state, at the TOP of the sidebar ─────────────
+    //
+    // It used to be the bottom bar. "Am I signed in?" and "is CANFAR up?" are
+    // what someone checks before doing anything, and they were the last things
+    // in the sidebar, under ten navigation rows. Pinned at the bottom they also
+    // took height from the only part of the sidebar that scrolls, so on a short
+    // window the navigation list lost rows to a block that never changes size.
+    //
+    // Top, under the header, is where GNOME puts identity — Fractal, Software
+    // and Console all do — and it is first in reading order for the same reason
+    // it is first in importance.
+    let sidebar_account = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    sidebar_account.set_margin_start(12);
+    sidebar_account.set_margin_end(12);
+    sidebar_account.set_margin_top(6);
+    sidebar_account.set_margin_bottom(6);
+    // One of these two is visible at a time — signed out, or signed in.
+    sidebar_account.append(&login_btn);
+    sidebar_account.append(&user_menu_btn);
+    // Service health and agent activity answer the same question as the account
+    // does — what is the state of my connection to CANFAR — so they sit with
+    // it, on one row rather than a stack of three.
+    let state_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     agent_box.set_halign(gtk::Align::Start);
-    sidebar_footer.append(&agent_box);
-    sidebar_footer.append(&health_btn);
-    sidebar_footer.append(&login_btn);
-    sidebar_footer.append(&user_menu_btn);
-    sidebar_footer.append(&status_label);
+    state_row.append(&health_btn);
+    state_row.append(&agent_box);
+    sidebar_account.append(&state_row);
+    sidebar_account.append(&status_label);
 
     let sidebar_tv = adw::ToolbarView::new();
     sidebar_tv.add_top_bar(&sidebar_header);
+    // A second top bar goes UNDER the header, which is where identity belongs.
+    sidebar_tv.add_top_bar(&sidebar_account);
     sidebar_tv.set_content(Some(&sidebar_scroll));
-    sidebar_tv.add_bottom_bar(&sidebar_footer);
     let sidebar_page = adw::NavigationPage::new(&sidebar_tv, "Verbinal");
 
     let split_view = adw::NavigationSplitView::new();
@@ -1481,8 +1506,10 @@ impl SignedInChrome {
         self.login_btn.set_visible(false);
         self.user_menu_btn.set_label(&display);
         self.user_menu_btn.set_visible(true);
-        self.status_label
-            .set_text(&crate::tr_fmt!("Welcome, {}", &display));
+        // Not "Welcome, {name}": the button directly above now says the name,
+        // and printing it twice in a 280 px column is how a sidebar starts
+        // looking like a form. The label goes back to transient state only.
+        self.status_label.set_text("");
         // The agent's snapshot answers "who is signed in" — and answered "nobody"
         // for as long as this went unpushed, because `get_app_view` reads the
         // snapshot and nothing ever wrote to it.

@@ -40,6 +40,7 @@ pub mod notebook_cell;
 pub mod notebook_host;
 pub mod notebook_page;
 pub mod observation_detail_page;
+pub mod panel;
 pub mod platform_load;
 pub mod recent_launches;
 pub mod recents_section;

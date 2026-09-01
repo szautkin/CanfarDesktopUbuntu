@@ -120,7 +120,7 @@ impl WorkflowsPage {
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
         paned.set_vexpand(true);
         paned.set_hexpand(true);
-        paned.set_position(320);
+        paned.set_position(crate::ui::panel::LIST_WIDTH);
         paned.set_shrink_start_child(false);
         paned.set_shrink_end_child(false);
         paned.set_resize_start_child(false);
@@ -128,7 +128,12 @@ impl WorkflowsPage {
 
         // ── Left pane: sectioned list ──────────────────────────────────
         let left_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        left_pane.set_size_request(280, -1);
+        // The list is the panel here, and it keeps its width: the detail
+        // pane beside it takes the squeeze. At 320 the names it exists to
+        // show were truncated — `panel_width_probe` measures the rows at a
+        // 429 px median with truncation switched off — while the pane doing
+        // the squeezing was showing a "select something" placeholder.
+        crate::ui::panel::pin(&left_pane, crate::ui::panel::LIST_WIDTH);
 
         let scrolled = gtk::ScrolledWindow::new();
         scrolled.set_vexpand(true);

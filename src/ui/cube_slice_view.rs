@@ -184,8 +184,13 @@ impl CubeSliceView {
         slice_area.set_hexpand(true);
         slice_area.set_vexpand(true);
         slice_area.set_focusable(true);
-        slice_area.set_content_width(vol.nx.clamp(1, 800) as i32);
-        slice_area.set_content_height(vol.ny.clamp(1, 600) as i32);
+        // A floor, not a preferred size — see `panel::CONTENT_FLOOR`. The 800
+        // that was here was worse than it looked: the slice and the 3D volume
+        // share a homogeneous `Stack`, so this number was the volume's minimum
+        // too, and it is why the cube's controls would not dock.
+        let floor = crate::ui::panel::CONTENT_FLOOR;
+        slice_area.set_content_width((vol.nx as i32).clamp(1, floor));
+        slice_area.set_content_height((vol.ny as i32).clamp(1, floor * 3 / 4));
 
         // The cursor readout is painted by the draw function (see
         // `ui::coord_chip`), not layered as a widget — so the slice needs no
@@ -356,8 +361,11 @@ impl CubeSliceView {
         *self.native.borrow_mut() = Some(Rc::new(src));
         // The native aspect matches the volume's, so the content-size hint stays
         // valid; refresh it and re-render at native resolution.
-        self.slice_area.set_content_width(snx.clamp(1, 800) as i32);
-        self.slice_area.set_content_height(sny.clamp(1, 600) as i32);
+        let floor = crate::ui::panel::CONTENT_FLOOR;
+        self.slice_area
+            .set_content_width((snx as i32).clamp(1, floor));
+        self.slice_area
+            .set_content_height((sny as i32).clamp(1, floor * 3 / 4));
         self.render();
     }
 
