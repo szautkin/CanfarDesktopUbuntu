@@ -435,6 +435,7 @@ impl SettingsPage {
             move || {
                 if services.mcp_host.is_running() {
                     let sock = crate::mcp::socket_path::socket_path();
+                    status_row.set_use_markup(false);
                     status_row.set_subtitle(&format!(
                         "{} — {}",
                         crate::tr_en!("Running"),
@@ -620,6 +621,7 @@ impl SettingsPage {
                 for id in ids {
                     let approved = services.mcp_clients.is_approved(&id);
                     let row = adw::ActionRow::new();
+                    row.set_use_markup(false);
                     row.set_title(&id);
                     row.set_subtitle(if approved {
                         crate::tr_en!("Approved")
@@ -682,6 +684,7 @@ impl SettingsPage {
         } else {
             for e in entries {
                 let row = adw::ActionRow::new();
+                row.set_use_markup(false);
                 row.set_title(&e.tool);
                 row.set_subtitle(&e.at);
                 row.add_prefix(&gtk::Image::from_icon_name("document-open-recent-symbolic"));
@@ -801,6 +804,7 @@ impl SettingsPage {
                     }
                     for r in &results {
                         let row = adw::ActionRow::new();
+                        row.set_use_markup(false);
                         row.set_title(&r.name);
                         row.set_subtitle(&r.url);
                         let (icon, detail) = if r.ok {
@@ -1135,6 +1139,7 @@ impl SettingsPage {
                     }
                     result_icon.add_css_class(css);
                     result_row.set_title(title);
+                    result_row.set_use_markup(false);
                     result_row.set_subtitle(&message);
                     result_row.set_subtitle_lines(0);
                     result_row.set_visible(true);
@@ -1216,6 +1221,7 @@ impl SettingsPage {
                 };
                 if ready {
                     row.set_title(crate::tr_en!("run_code is ready"));
+                    row.set_use_markup(false);
                     row.set_subtitle(&resolved);
                 } else {
                     row.set_title(crate::tr_en!("run_code is off"));
@@ -1528,6 +1534,7 @@ impl SettingsPage {
                     }
                     result_icon.add_css_class(css);
                     result_row.set_title(title);
+                    result_row.set_use_markup(false);
                     result_row.set_subtitle(&message);
                     result_row.set_subtitle_lines(0);
                     result_row.set_visible(true);
@@ -1667,6 +1674,7 @@ fn show_mcp_diagnostics(
     group.set_margin_bottom(12);
     for r in &rows {
         let row = adw::ActionRow::new();
+        row.set_use_markup(false);
         row.set_title(&r.label);
         let mut subtitle = r.detail.clone();
         if !r.ok {

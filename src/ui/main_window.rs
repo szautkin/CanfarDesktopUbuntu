@@ -154,6 +154,17 @@ pub fn build_main_window(
 
     // --- Content pages ---
     let view_stack = adw::ViewStack::new();
+    // A page sizes itself. A homogeneous stack asks every page for the size of
+    // the LARGEST one, so a single tall page becomes the minimum for all ten —
+    // and the window's content was then allocated 945 px inside a 678 px
+    // window, drawing 267 px past the bottom edge. The visible symptoms were
+    // the Search form's action bar and the last navigation rows being off the
+    // screen, on pages that had nothing to do with the one that was tall.
+    //
+    // Nothing here needs the stack to be homogeneous: pages are switched, not
+    // compared, and each one already fills whatever it is given.
+    view_stack.set_vhomogeneous(false);
+    view_stack.set_hhomogeneous(false);
 
     // --- Content header trailing controls: spinner + proposals badge ---
     let spinner = gtk::Spinner::new();
@@ -1222,6 +1233,7 @@ pub fn build_main_window(
                     }
                     ServiceStatus::Unreachable { since, reason } => {
                         let local: chrono::DateTime<chrono::Local> = (*since).into();
+                        row.set_use_markup(false);
                         row.set_subtitle(&crate::tr_fmt!("Last seen {}", local.format("%H:%M")));
                         // Every failure has recorded WHY since the tracker was
                         // written, and the row showed only that something was
@@ -1773,7 +1785,13 @@ fn show_terms_gate(
 /// Map an agent-facing view key to a ViewStack child name. `None` = unknown key.
 fn map_view_key(key: &str) -> Option<&'static str> {
     match key {
-        "home" | "portal" | "landing" => Some("home"),
+        "home" | "landing" => Some("home"),
+        // Its own page since Home kept its tiles. This mapped to "home" for as
+        // long as they were the same screen, and went on doing so after they
+        // were split — so an agent asking for the Portal was answered
+        // `navigated: true` and shown the landing tiles instead, which is worse
+        // than an error because nothing says it went wrong.
+        "portal" => Some("portal"),
         "search" => Some("search"),
         "storage" => Some("storage"),
         "fits" | "fitsViewer" => Some("fits"),
@@ -1989,19 +2007,7 @@ fn build_welcome_page(
         });
     }
 
-    // A FlowBox, not a fixed 3-column Grid: the grid could not reflow, so on a
-    // narrow window the tiles were clipped rather than rewrapping, and on a short
-    // one the later rows were unreachable. Capped at 3 per line to keep the
-    // intended wide layout, down to 1 when there is no room for more.
-    let tiles = gtk::FlowBox::new();
-    tiles.set_row_spacing(16);
-    tiles.set_column_spacing(16);
-    tiles.set_homogeneous(true);
-    tiles.set_min_children_per_line(1);
-    tiles.set_max_children_per_line(3);
-    // Tiles are buttons; FlowBox selection would add a second, conflicting
-    // notion of "chosen" on top of the button's own activation.
-    tiles.set_selection_mode(gtk::SelectionMode::None);
+    let tiles = crate::ui::tiles::grid(16);
     tiles.set_halign(gtk::Align::Center);
 
     let mut lockers: Vec<Rc<dyn Fn(bool)>> = Vec::new();
@@ -2303,6 +2309,13 @@ mod navigation_tests {
         assert!(
             code.contains(r#"Some("portal")"#),
             "the Portal has no page of its own"
+        );
+        // And it is reachable by that name. The alias outlived the split: an
+        // agent asking for "portal" was sent to "home" and told it had arrived.
+        assert!(
+            !code.contains(r#""home" | "portal""#),
+            "`portal` is still an alias for `home`, so nothing can navigate to \
+             the page that was split out"
         );
         let at = code
             .find("async fn build_dashboard")

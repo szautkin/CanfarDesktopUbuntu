@@ -502,6 +502,7 @@ impl DiscoveryUi {
         let now = chrono::Utc::now().to_rfc3339();
 
         let row = adw::ExpanderRow::new();
+        row.set_use_markup(false);
         row.set_title(&img.display_name);
         row.set_subtitle(&status_subtitle(outcome.as_ref(), is_running, &now));
 

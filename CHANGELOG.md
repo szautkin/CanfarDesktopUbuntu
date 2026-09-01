@@ -4,6 +4,32 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Five things that were cut off, blank, or silently refused
+
+- **The window drew 267 px past its own bottom edge.** `AdwViewStack` is
+  homogeneous by default, so every page was allocated the size of the tallest
+  one: content 945 px tall inside a 678 px window. The visible results were on
+  pages that had nothing to do with the tall one — the Search form's Search
+  button was off the bottom at any window under about 1000 logical px, the last
+  navigation rows were unreachable, and the CANFAR Images card ran past the
+  frame. Pages size themselves now.
+- **A tool description containing `<user>` rendered as nothing.** Rows treat
+  their title and subtitle as Pango markup, so `vos:<user>/workflows/` was an
+  unclosed element: GTK logged a warning per row per rebuild and drew no text.
+  Every row that shows a name, a path, a URL or an error — thirteen of them, in
+  six files — says it is text now, and so does the Search page's error banner,
+  which shows whatever a TAP service sent back.
+- **The AI Guide lost its icon** in the sidebar and on the home page. The icon
+  search path for a source tree had been put behind `debug_assertions`, which
+  silently dropped it from `cargo build --release`. It is derived from the
+  running executable now, so it works in either profile and embeds nothing in a
+  shipped binary.
+- **The AI Guide's tiles were one per row** at a quarter-screen window while
+  the home page's were three. Both build their grid from one place now, and a
+  tile states a width so the grid stays a grid.
+- **`navigate_to("portal")` answered "navigated" and showed Home.** The alias
+  outlived the split that gave the Portal a page of its own.
+
 ### Panels keep their width, and the account is where you look first
 
 - **The Search page was clipping its own right panel.** At the window the app

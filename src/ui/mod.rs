@@ -58,6 +58,7 @@ pub mod share_dialog;
 pub mod space;
 pub mod storage_quota;
 pub mod text_viewer_dialog;
+pub mod tiles;
 pub mod toast;
 pub mod vospace_browser;
 pub mod workflows_page;
@@ -80,3 +81,61 @@ pub type CallbackSlot<F> = RefCell<Option<Rc<F>>>;
 /// seen by every closure that captured the widget.
 pub type SharedCallbackSlot<F> = Rc<CallbackSlot<F>>;
 pub mod viewer_shell;
+
+#[cfg(test)]
+mod markup_tests {
+    /// A row shown text from outside the app must say it is not markup.
+    ///
+    /// `AdwPreferencesRow` treats its title and subtitle as Pango markup by
+    /// default. A tool description reading `vos:<user>/workflows/` is then an
+    /// unclosed `<user>` element: GTK refuses to render it, logs
+    ///
+    /// ```text
+    /// Failed to set text '…' from markup due to error parsing markup:
+    /// Element "markup" was closed, but the currently open element is "user"
+    /// ```
+    ///
+    /// once per row per rebuild, and shows nothing where the text should be.
+    /// Anything a user typed, a service returned, or a tool author wrote can
+    /// contain an angle bracket, and none of it is markup.
+    ///
+    /// A literal is fine — that text is ours and it is not going to change
+    /// underneath us — so only the `&variable` form is checked.
+    #[test]
+    fn a_row_given_text_from_outside_says_it_is_not_markup() {
+        let mut unguarded: Vec<String> = Vec::new();
+        for (path, source) in crate::testing::rust_sources() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let code = crate::testing::code(&source);
+            // `set_subtitle`, and not `set_title`, on purpose: a subtitle
+            // belongs only to an `AdwPreferencesRow` and its descendants, which
+            // are exactly the markup-rendering widgets. A `title` is also on
+            // `AdwNavigationPage` and `AdwTabPage`, whose titles are plain text
+            // with no markup property to set, and telling those apart from the
+            // outside took a guess that was wrong about something either way.
+            // In practice a row that shows a variable title shows a variable
+            // subtitle beside it, and one `set_use_markup(false)` covers both.
+            for setter in ["set_subtitle(&"] {
+                for (at, _) in code.match_indices(setter) {
+                    // The receiver, and how far back to look for its
+                    // `use_markup`: the same window the popover guard in
+                    // `viewer_shell` uses, for the same reason — a widget is
+                    // configured within a few lines of being built.
+                    let start = at.saturating_sub(900);
+                    if code[start..at].contains("set_use_markup(false)") {
+                        continue;
+                    }
+                    let line = code[..at].lines().count();
+                    let snippet: String = code[at..].lines().next().unwrap_or("").into();
+                    unguarded.push(format!("{name}:{line}: {}", snippet.trim()));
+                }
+            }
+        }
+        assert!(
+            unguarded.is_empty(),
+            "these rows render text from outside the app as Pango markup, so an \
+             angle bracket in it means the text does not appear at all: \
+             {unguarded:#?}"
+        );
+    }
+}

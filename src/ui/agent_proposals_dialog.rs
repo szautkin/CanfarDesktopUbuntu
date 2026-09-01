@@ -98,6 +98,7 @@ impl ProposalsContent {
 
         for p in pending {
             let row = adw::ActionRow::new();
+            row.set_use_markup(false);
             row.set_title(&p.kind);
             row.set_subtitle(&p.summary);
             if p.destructive {

@@ -708,6 +708,11 @@ impl SearchPage {
         // was wrong with the ADQL is ellipsised away. Mirrors the reference's
         // error InfoBar.
         let error_banner = adw::Banner::new("");
+        // A TAP service's explanation of what was wrong with the ADQL is
+        // whatever the server sent, and an angle bracket in it would otherwise
+        // be read as Pango markup — so the one message that explains a failed
+        // query would be the message that fails to appear.
+        error_banner.set_use_markup(false);
         error_banner.set_revealed(false);
         error_banner.set_button_label(Some(crate::tr_en!("Dismiss")));
         {

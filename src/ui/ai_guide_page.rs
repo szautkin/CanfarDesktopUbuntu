@@ -197,13 +197,7 @@ impl AiGuidePage {
         let stack = gtk::Stack::new();
         stack.set_hexpand(true);
 
-        let launchpad_flow = gtk::FlowBox::new();
-        launchpad_flow.set_selection_mode(gtk::SelectionMode::None);
-        launchpad_flow.set_homogeneous(true);
-        launchpad_flow.set_min_children_per_line(1);
-        launchpad_flow.set_max_children_per_line(3);
-        launchpad_flow.set_row_spacing(12);
-        launchpad_flow.set_column_spacing(12);
+        let launchpad_flow = crate::ui::tiles::grid(12);
         // View switch: tiles, or every tool at once. Without it the only way to
         // read all 137 descriptions was to open each of the seventeen
         // categories in turn, or to invent a search string that matches
@@ -366,7 +360,6 @@ impl AiGuidePage {
         let btn = gtk::Button::new();
         btn.add_css_class("card");
         btn.set_hexpand(true);
-        btn.set_size_request(-1, 118);
 
         let v = gtk::Box::new(gtk::Orientation::Vertical, 6);
         v.set_margin_start(12);
@@ -401,6 +394,13 @@ impl AiGuidePage {
         summary.add_css_class("caption");
         summary.add_css_class("dim-label");
         v.append(&summary);
+
+        // The tile's width comes from `tiles`, and so does the cap on how wide
+        // this sentence may push it. Without the cap the label's natural width
+        // is the whole summary, a homogeneous grid sizes every tile to the
+        // widest, and the grid becomes one column of full-width bands.
+        crate::ui::tiles::size(&btn, &[&title, &summary]);
+        btn.set_size_request(crate::ui::tiles::TILE_WIDTH, 118);
 
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         footer.set_halign(gtk::Align::End);
@@ -584,6 +584,13 @@ impl AiGuidePage {
         let is_overridden = snapshot.overrides.contains_key(&d.name);
 
         let row = adw::ExpanderRow::new();
+        // Plain text, not markup. A row treats its title and subtitle as Pango
+        // markup by default, and a tool description is prose someone wrote for
+        // an agent — `vos:<user>/workflows/` in one of them is an unclosed
+        // `<user>` element, which GTK refuses to render and reports as a
+        // warning per row, per rebuild. The description then does not appear at
+        // all, which is the opposite of what this page is for.
+        row.set_use_markup(false);
         row.set_title(&d.name);
         row.set_subtitle(&effective);
         row.set_subtitle_lines(0);
@@ -674,6 +681,7 @@ impl AiGuidePage {
                 if trimmed.is_empty() || trimmed == default.trim() {
                     page.guide.clear_override(&name);
                     badge.set_visible(false);
+                    row.set_use_markup(false);
                     row.set_subtitle(&default);
                 } else {
                     page.guide.set_override(&name, trimmed);
@@ -712,6 +720,8 @@ impl AiGuidePage {
 
         for g in guides {
             let row = adw::ActionRow::new();
+            // Written by the user, so certainly not markup — see above.
+            row.set_use_markup(false);
             row.set_title(&g.name);
             row.set_subtitle(&g.description);
             row.set_subtitle_lines(0);

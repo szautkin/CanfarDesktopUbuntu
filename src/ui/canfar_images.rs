@@ -326,6 +326,7 @@ impl CanfarImagesView {
         let status = status_of(outcome.as_ref());
 
         let row = adw::ActionRow::new();
+        row.set_use_markup(false);
         row.set_title(&img.display_name);
         row.set_subtitle(&if is_running {
             crate::tr_en!("Inspecting…").to_string()
