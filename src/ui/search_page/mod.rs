@@ -182,6 +182,15 @@ pub(crate) enum RowClickKind {
     Range,
 }
 
+/// One problem, in the words shown on the button, the status line and the
+/// refusal an agent gets. One place, so the three cannot say it differently.
+fn describe_problem(p: &crate::helpers::adql_validate::Problem) -> String {
+    match &p.fix {
+        Some(fix) => format!("{} — {}", p.message, crate::tr_fmt!("write {}", fix)),
+        None => p.message.clone(),
+    }
+}
+
 /// Marks the highlighted result row. Styled in `style.css`.
 pub(crate) const SELECTED_ROW: &str = "selected-row";
 /// Marks a cell that filters the grid to its own value when clicked.
@@ -2092,10 +2101,7 @@ impl SearchPage {
         // belt and braces for the keyboard path — and it is where the MCP
         // `execute_adql_query` lands too.
         if let Some(first) = self.recheck_adql().into_iter().next() {
-            let said = match &first.fix {
-                Some(fix) => crate::tr_fmt!("{}", format!("{} — write {fix}", first.message)),
-                None => first.message.clone(),
-            };
+            let said = describe_problem(&first);
             self.status_label.set_text(&said);
             // Recorded the way a service failure is, so a caller gets the
             // reason instead of `ran: true` over an empty result — the same
@@ -2804,10 +2810,7 @@ impl SearchPage {
         self.exec_btn.set_sensitive(problems.is_empty());
         match problems.first() {
             Some(p) => {
-                let mut said = p.message.clone();
-                if let Some(fix) = &p.fix {
-                    said.push_str(&crate::tr_fmt!(" — write {}", fix));
-                }
+                let said = describe_problem(p);
                 self.exec_btn.set_tooltip_text(Some(&said));
                 self.status_label.set_text(&said);
             }
