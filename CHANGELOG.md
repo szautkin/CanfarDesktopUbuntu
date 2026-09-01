@@ -4,6 +4,19 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### Execute in the ADQL Editor looked like it did nothing
+
+- **The spinner and the status line were in the Search Form's action bar**, and
+  the Search Form is the one tab you are not on when it matters. Pressing
+  Execute in the ADQL Editor set "Searching…" and started a spinner on a tab you
+  could not see, then sat silent for however long CADC took — indistinguishable
+  from a button that does nothing. They are in the page header now, beside the
+  title, visible from all three tabs.
+- **Both buttons that start a query grey out while one is running**, so a second
+  press cannot queue a second query against a service that answers in tens of
+  seconds.
+- A failed query's message is now visible from whichever tab you ran it on.
+
 ### The agent's arrival and departure, heard and seen
 
 - **Two short sounds**, one when an agent starts calling tools and a different

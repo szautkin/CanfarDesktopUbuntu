@@ -574,6 +574,10 @@ pub struct SearchPage {
     // --- Status ---
     status_label: gtk::Label,
     search_spinner: gtk::Spinner,
+    /// The two buttons that start a query. Held so [`SearchPage::set_busy`] can
+    /// grey them while one is running: a second press queued a second query
+    /// against a service that answers in tens of seconds.
+    run_buttons: [gtk::Button; 2],
     // --- Data Train ---
     train_lists: [gtk::ListBox; 7],
     /// True while the facet rows are being set FROM the model, so the toggle
@@ -837,16 +841,26 @@ impl SearchPage {
         max_records.set_width_chars(6);
         action_bar.append(&max_records);
 
+        // The spinner and the status line are NOT in this tab's action bar.
+        //
+        // They were, and the Form tab is the one tab you are not on when it
+        // matters: pressing Execute in the ADQL Editor set "Searching…" and
+        // started a spinner on a tab you could not see, then sat silent for
+        // however long CADC took. The whole wait had no sign of life, which is
+        // indistinguishable from a button that does nothing.
+        //
+        // They belong to the page, not to a tab, so they live in the page's
+        // header row — visible from the Search Form, the Results and the ADQL
+        // Editor alike, and one of each rather than three that have to agree.
         let search_spinner = gtk::Spinner::new();
         search_spinner.set_visible(false);
-        action_bar.append(&search_spinner);
 
         let status_label = gtk::Label::new(None);
         status_label.add_css_class("caption");
         status_label.add_css_class("dim-label");
-        status_label.set_hexpand(true);
-        status_label.set_halign(gtk::Align::End);
-        action_bar.append(&status_label);
+        status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        title_row.append(&search_spinner);
+        title_row.append(&status_label);
 
         form_tab.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         form_tab.append(&action_bar);
@@ -1193,6 +1207,7 @@ impl SearchPage {
             train_manager: Rc::new(RefCell::new(DataTrainManager::new())),
             status_label,
             search_spinner,
+            run_buttons: [search_btn.clone(), exec_btn.clone()],
             resolved_ra: Rc::new(RefCell::new(None)),
             resolved_dec: Rc::new(RefCell::new(None)),
             resolver_service_used: Rc::new(RefCell::new(None)),
@@ -1834,8 +1849,7 @@ impl SearchPage {
         {
             self.status_label
                 .set_text(crate::tr_en!("Resolving target..."));
-            self.search_spinner.set_visible(true);
-            self.search_spinner.start();
+            self.set_busy(true);
 
             let svc = self.services.clone();
             let t = state.target.clone();
@@ -1866,8 +1880,7 @@ impl SearchPage {
                     ));
                 }
                 Err(e) => {
-                    self.search_spinner.stop();
-                    self.search_spinner.set_visible(false);
+                    self.set_busy(false);
                     self.status_label
                         .set_text(&crate::tr_fmt!("Resolve failed: {}", e));
                     return;
@@ -1894,6 +1907,24 @@ impl SearchPage {
             .await;
     }
 
+    /// Everything that changes while a query is in flight, in one place.
+    ///
+    /// The spinner, the words beside it and the two buttons that start a query
+    /// all describe the same fact. Set from three call sites and they drift:
+    /// the ADQL Editor's Execute button used to start a search that showed a
+    /// spinner on a different tab and left itself pressable.
+    fn set_busy(&self, busy: bool) {
+        self.search_spinner.set_visible(busy);
+        if busy {
+            self.search_spinner.start();
+        } else {
+            self.search_spinner.stop();
+        }
+        for button in &self.run_buttons {
+            button.set_sensitive(!busy);
+        }
+    }
+
     async fn run_query(
         self: &Rc<Self>,
         adql: &str,
@@ -1903,8 +1934,7 @@ impl SearchPage {
         self.status_label.set_text(crate::tr_en!("Searching..."));
         // A previous failure must not sit above a fresh, successful search.
         self.error_banner.set_revealed(false);
-        self.search_spinner.set_visible(true);
-        self.search_spinner.start();
+        self.set_busy(true);
 
         let svc = self.services.clone();
         let adql_owned = adql.to_string();
@@ -1919,8 +1949,7 @@ impl SearchPage {
             })
             .await;
 
-        self.search_spinner.stop();
-        self.search_spinner.set_visible(false);
+        self.set_busy(false);
 
         match result {
             Ok(results) => {
@@ -4797,6 +4826,52 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
     ];
 
     (grid, arr)
+}
+
+#[cfg(test)]
+mod busy_state_tests {
+    /// One place decides what "a query is running" looks like.
+    ///
+    /// The spinner, the words beside it and the buttons that start a query all
+    /// describe the same fact, and they were set from three call sites. That is
+    /// how the ADQL Editor's Execute came to start a search whose only sign of
+    /// life was a spinner on a tab you were not looking at, and to stay
+    /// pressable while it ran.
+    #[test]
+    fn nothing_drives_the_spinner_except_set_busy() {
+        const SOURCE: &str = include_str!("mod.rs");
+        let code = crate::testing::code(SOURCE);
+        // `set_busy` IS the definition, and the constructor sets the starting
+        // state before there is a page to ask. Everything else is a second
+        // opinion.
+        let body = code
+            .find("fn set_busy(&self, busy: bool) {")
+            .expect("set_busy is gone");
+        let body_end = code[body..]
+            .find("\n    }\n")
+            .map(|e| body + e)
+            .unwrap_or(body);
+        let mut strays: Vec<String> = Vec::new();
+        for (i, line) in code.lines().enumerate() {
+            let t = line.trim();
+            if !t.contains("search_spinner.") || t.starts_with("//") {
+                continue;
+            }
+            let at = code.lines().take(i).map(|l| l.len() + 1).sum::<usize>();
+            let in_set_busy = at >= body && at <= body_end;
+            let is_construction = t == "let search_spinner = gtk::Spinner::new();"
+                || t == "search_spinner.set_visible(false);"
+                || t == "title_row.append(&search_spinner);";
+            if !in_set_busy && !is_construction {
+                strays.push(format!("mod.rs:{}: {t}", i + 1));
+            }
+        }
+        assert!(
+            strays.is_empty(),
+            "the spinner is driven from outside `set_busy`, so the busy state \
+             can disagree with itself again: {strays:#?}"
+        );
+    }
 }
 
 #[cfg(test)]
