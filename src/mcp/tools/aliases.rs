@@ -310,6 +310,15 @@ mod tests {
          Observation on obsID.",
     ),
     (
+        "show_search_row_detail",
+        "Clicking a row in the results table opens a dialog with every column of it — the \
+         forty-one a query returns, not the dozen the grid shows. An agent could read those \
+         values (get_search_results with allColumns) and could not put them in front of the \
+         person it was explaining them to. Paired with set_search_results_view's selectRow, \
+         which highlights the row so \"this one\" means something on screen. The reference has \
+         neither because its agent surface does not steer the window.",
+    ),
+    (
         "show_observation_detail",
         "Every other control in the Search results table has a tool — sort, filter, page, \
          rows per page, column visibility and units, CSV and TSV export — and each row's three \

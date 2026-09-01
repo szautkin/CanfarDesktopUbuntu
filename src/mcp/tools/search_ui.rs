@@ -42,6 +42,7 @@ const LIVE_TOOLS: &[&str] = &[
     "execute_adql_query",
     "get_search_results",
     "set_search_results_view",
+    "show_search_row_detail",
     "export_search_results",
     "load_recent_search",
     "run_saved_query",
@@ -231,6 +232,14 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 "additionalProperties": false
             }),
         ),
+        write_tool(
+            "show_search_row_detail",
+            "Open the detail dialog for the highlighted results row — every column of it, the \
+             same window a person gets by clicking the row. Select the row first with \
+             set_search_results_view's selectRow. To READ the same values instead, without \
+             opening anything, call get_search_results with allColumns.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        ),
         read_tool(
             "get_search_results",
             "Read the results table: status, the ADQL that produced it, totalRows and \
@@ -273,7 +282,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "rowsPerPage": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Page size; resets to the first page."},
                     "pageAction": {"type": "string", "enum": ["first", "previous", "next", "last"]},
                     "page": {"type": "integer", "minimum": 0, "description": "Absolute 0-based page, clamped to the last page."},
-                    "applyFiltersToAdql": {"type": "boolean", "description": "Rewrite the ADQL query to include the active filters, and switch to the ADQL tab."}
+                    "applyFiltersToAdql": {"type": "boolean", "description": "Rewrite the ADQL query to include the active filters, and switch to the ADQL tab."},
+                    "selectRow": {"type": ["integer", "null"], "minimum": 0, "description": "Highlight one row and page to it, so a person looking at the window sees which row you mean. The index counts the FILTERED rows — the same one `rows` is indexed by and `selectedRow` reports. null clears the highlight."}
                 },
                 "additionalProperties": false
             }),

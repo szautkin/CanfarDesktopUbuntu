@@ -168,6 +168,8 @@ pub(crate) fn column_width_for(key: &str, display_name: &str) -> i32 {
 }
 
 /// A label that fills its cell and ellipsizes rather than widening it.
+/// Marks the highlighted result row. Styled in `style.css`.
+pub(crate) const SELECTED_ROW: &str = "selected-row";
 /// Marks a cell that filters the grid to its own value when clicked.
 const NARROW_CELL: &str = "narrow-cell";
 /// Marks a row's "save to Research" button.
@@ -650,6 +652,18 @@ pub struct SearchPage {
     /// grey them while one is running: a second press queued a second query
     /// against a service that answers in tens of seconds.
     run_buttons: [gtk::Button; 2],
+    /// The Rows/page dropdown. Held so a page size set from anywhere else —
+    /// `set_search_results_view`, a restored view — moves the control that is
+    /// supposed to be showing it, instead of leaving it saying 100 beside a
+    /// pagination bar counting in tens.
+    rows_combo: gtk::DropDown,
+    /// The highlighted row, as an index into the FILTERED, SORTED rows.
+    ///
+    /// That index rather than the page's, because it is the one an agent can
+    /// name and the one that survives a page turn — and it is what
+    /// `get_search_results` counts in. Cleared whenever the order changes,
+    /// since a remembered index would then point at a different observation.
+    selected_row: std::cell::Cell<Option<usize>>,
     // --- Data Train ---
     train_lists: [gtk::ListBox; 7],
     /// True while the facet rows are being set FROM the model, so the toggle
@@ -1281,6 +1295,8 @@ impl SearchPage {
             status_label,
             search_spinner,
             run_buttons: [search_btn.clone(), exec_btn.clone()],
+            rows_combo: rows_combo.clone(),
+            selected_row: std::cell::Cell::new(None),
             resolved_ra: Rc::new(RefCell::new(None)),
             resolved_dec: Rc::new(RefCell::new(None)),
             resolver_service_used: Rc::new(RefCell::new(None)),
@@ -1413,12 +1429,15 @@ impl SearchPage {
         let p = page.clone();
         rows_combo.connect_selected_notify(move |combo| {
             let idx = combo.selected() as usize;
-            let new_size = ROWS_PER_PAGE
-                .get(idx)
-                .copied()
-                .unwrap_or(ROWS_PER_PAGE[DEFAULT_ROWS_PER_PAGE]);
-            *p.page_size.borrow_mut() = new_size;
-            *p.current_page.borrow_mut() = 0;
+            // An invalid position is what `set_page_size` leaves behind for a
+            // size the menu does not offer; it is not a choice the user made.
+            let Some(new_size) = ROWS_PER_PAGE.get(idx).copied() else {
+                return;
+            };
+            if *p.page_size.borrow() == new_size {
+                return;
+            }
+            p.set_page_size(new_size);
             p.render_results_page();
         });
 
@@ -2427,7 +2446,10 @@ impl SearchPage {
             slice_took,
             built,
         };
-        for row in page_rows.iter() {
+        for (offset, row) in page_rows.iter().enumerate() {
+            // The row's index in the FILTERED list, which is what the highlight
+            // and the MCP snapshot both count in.
+            let absolute = start + offset;
             let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row_box.set_margin_top(1);
             row_box.set_margin_bottom(1);
@@ -2574,7 +2596,15 @@ impl SearchPage {
             let columns_for_detail = Rc::clone(&shared_columns);
             let services_for_detail = self.services.clone();
             let main_window_for_detail = self.main_window.clone();
+            let page_for_select = Rc::downgrade(self);
             row_btn.connect_clicked(move |_| {
+                // Clicking a row is what selecting one means here, so the
+                // highlight follows the pointer and an agent reading
+                // `selectedRow` sees what the person is looking at.
+                if let Some(page) = page_for_select.upgrade() {
+                    page.selected_row.set(Some(absolute));
+                    page.mark_selected_row();
+                }
                 let row = Rc::clone(&row_for_detail);
                 let columns = Rc::clone(&columns_for_detail);
                 let services = services_for_detail.clone();
@@ -2589,6 +2619,7 @@ impl SearchPage {
 
             self.results_panel.append(&row_btn);
         }
+        self.mark_selected_row();
     }
 
     /// Show the filter buttons only while filters are active. The ONE place
@@ -2608,6 +2639,124 @@ impl SearchPage {
         *self.sort_column.borrow_mut() = None;
         *self.sort_ascending.borrow_mut() = true;
         *self.current_page.borrow_mut() = 0;
+        // The highlight is an index into an order that has just changed, so it
+        // would point at a different observation. Dropped with the rest.
+        self.selected_row.set(None);
+    }
+
+    /// Set the page size, and move every control that shows it.
+    ///
+    /// The ONE place the size changes. It used to change in two — the dropdown's
+    /// own handler and the MCP view command — and only one of them moved the
+    /// dropdown, so an agent setting 10 rows a page left the control reading
+    /// 100 above a bar counting "31-40 of 60".
+    ///
+    /// A size the dropdown does not offer is still applied: the tool's range is
+    /// 1 to 1000 and the menu has five entries, and refusing the ones between
+    /// would be a smaller tool for no reason. The dropdown then shows nothing
+    /// selected, which is honest — none of its entries is what is in force.
+    fn set_page_size(self: &Rc<Self>, size: usize) {
+        *self.page_size.borrow_mut() = size.max(1);
+        *self.current_page.borrow_mut() = 0;
+        // The highlight is an index into rows that have just been repaginated.
+        // It still points at the same row, so it stays; the page it is on has
+        // changed, which `set_selected_row` would fix — but this is also called
+        // FROM the dropdown, where moving the page under the user is wrong.
+        let wanted = ROWS_PER_PAGE.iter().position(|n| *n == size);
+        let shown = match wanted {
+            Some(i) => i as u32,
+            None => gtk::INVALID_LIST_POSITION,
+        };
+        if self.rows_combo.selected() != shown {
+            // Setting it fires `selected-notify`, which lands back here with
+            // the same size and stops at this comparison.
+            self.rows_combo.set_selected(shown);
+        }
+    }
+
+    /// Put the highlight on whichever row is selected, and take it off the rest.
+    ///
+    /// Separate from building the rows, and the ONLY place the class is
+    /// applied, because clicking a row must not cost a rebuild: a page is a
+    /// hundred rows by fifteen columns and re-rendering it takes about a third
+    /// of a second, which would be a third of a second between the click and
+    /// the highlight following it.
+    fn mark_selected_row(&self) {
+        let selected = self.selected_row.get();
+        let start = (*self.current_page.borrow()).saturating_mul(*self.page_size.borrow());
+        let mut child = self.results_panel.first_child();
+        let mut offset = 0usize;
+        while let Some(w) = child {
+            if selected == Some(start + offset) {
+                w.add_css_class(SELECTED_ROW);
+            } else {
+                w.remove_css_class(SELECTED_ROW);
+            }
+            child = w.next_sibling();
+            offset += 1;
+        }
+    }
+
+    /// Open the row-detail dialog for the selected row.
+    ///
+    /// Built from the same three pieces the row's own click handler uses, so
+    /// the dialog an agent opens is the dialog a person opens — not a second
+    /// rendering of the same data that can drift from it.
+    async fn show_selected_row_detail(self: &Rc<Self>) -> Result<(), String> {
+        let Some(index) = self.selected_row.get() else {
+            return Err("no row is selected — pass selectRow first".to_string());
+        };
+        let rows = self.get_processed_rows();
+        let Some(row) = rows.get(index).cloned() else {
+            return Err(format!("row {index} is past the end of the results"));
+        };
+        let columns = {
+            let store = self.results_store.borrow();
+            match &*store {
+                Some(r) => build_columns_from_headers(&r.columns),
+                None => return Err("no search results — run a search first".to_string()),
+            }
+        };
+        let data = detail_rows(&row, &columns);
+        let name = detail_target_name(&row);
+        let publisher_id = row.get("publisherID").to_string();
+        show_row_detail(
+            &name,
+            &data,
+            &publisher_id,
+            &row,
+            &self.services,
+            &self.main_window,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Highlight one row of the filtered results, and go to the page it is on.
+    ///
+    /// Paging to it is the point: a highlight on row 500 of a hundred-row page
+    /// is a highlight nobody can see, and `show_observation_detail` already
+    /// established that a tool for SHOWING something has to actually show it.
+    ///
+    /// Returns what is selected afterwards — `None` for a cleared selection or
+    /// an index past the end, so a caller learns that its row is not there
+    /// rather than that its request was accepted.
+    fn set_selected_row(self: &Rc<Self>, row: Option<usize>) -> Option<usize> {
+        let total = self.get_processed_rows().len();
+        let chosen = row.filter(|i| *i < total);
+        self.selected_row.set(chosen);
+        let page_now = *self.current_page.borrow();
+        let wanted = chosen.map(|i| i / (*self.page_size.borrow()).max(1));
+        match wanted {
+            // A row on another page needs the rows rebuilt; one on this page
+            // only needs the class moved.
+            Some(p) if p != page_now => {
+                *self.current_page.borrow_mut() = p;
+                self.render_rows();
+            }
+            _ => self.mark_selected_row(),
+        }
+        chosen
     }
 
     /// Append the active client-side column filters to the current ADQL as a
@@ -4912,6 +5061,69 @@ fn build_data_train() -> (gtk::Grid, [gtk::ListBox; 7]) {
     ];
 
     (grid, arr)
+}
+
+#[cfg(test)]
+mod selection_tests {
+    /// The page size changes in one place, and that place moves the dropdown.
+    ///
+    /// It changed in two — the dropdown's handler and the MCP view command —
+    /// and only one moved the control, so an agent setting ten rows a page left
+    /// "Rows/page: 100" above a bar reading "31-40 of 60".
+    #[test]
+    fn the_page_size_is_set_in_one_place() {
+        let code = crate::testing::without_comments(crate::testing::code(include_str!("mod.rs")));
+        let mcp = crate::testing::without_comments(crate::testing::code(include_str!("mcp.rs")));
+        let writes: Vec<&str> = code
+            .lines()
+            .chain(mcp.lines())
+            .filter(|l| l.contains("page_size.borrow_mut()"))
+            .collect();
+        assert_eq!(
+            writes.len(),
+            1,
+            "the page size is written from {} places, so a control that shows \
+             it can be left behind: {writes:#?}",
+            writes.len()
+        );
+        assert!(code.contains("fn set_page_size"), "the one place is gone");
+    }
+
+    /// The highlight is applied in one place, and it is not the row builder.
+    ///
+    /// Building a page is a hundred rows by fifteen columns and takes about a
+    /// third of a second; a click that had to rebuild to move the highlight
+    /// would be a third of a second behind the pointer.
+    #[test]
+    fn the_highlight_moves_without_rebuilding_the_page() {
+        let code = crate::testing::without_comments(crate::testing::code(include_str!("mod.rs")));
+        let applies: Vec<&str> = code
+            .lines()
+            .filter(|l| l.contains("css_class(SELECTED_ROW)"))
+            .collect();
+        assert_eq!(
+            applies.len(),
+            2,
+            "the selected-row class is applied from {} places rather than the \
+             add/remove pair in `mark_selected_row`: {applies:#?}",
+            applies.len()
+        );
+        let at = code
+            .find("fn mark_selected_row")
+            .expect("mark_selected_row is gone");
+        let end = code[at..]
+            .find("\n    }")
+            .map(|e| at + e)
+            .unwrap_or(code.len());
+        assert!(
+            code[at..end].contains("css_class(SELECTED_ROW)"),
+            "the class is applied somewhere other than `mark_selected_row`"
+        );
+        assert!(
+            !code[at..end].contains("render_rows()"),
+            "moving the highlight rebuilds the page again"
+        );
+    }
 }
 
 #[cfg(test)]

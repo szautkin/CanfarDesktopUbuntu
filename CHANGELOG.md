@@ -4,6 +4,18 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### A results row can be highlighted, and its dialog opened, from MCP
+
+- **`selectRow`** highlights one row of the filtered results and pages to it, so
+  "this one" means something to the person looking at the window. Clicking a row
+  highlights it too, and `get_search_results` reports `selectedRow`.
+- **`show_search_row_detail`** opens the detail dialog for the highlighted row —
+  every column of it, the same window a click gives.
+- **The Rows/page dropdown follows the model.** Setting the page size over MCP
+  changed the model and not the control, so it read "Rows/page: 100" above a bar
+  counting "31-40 of 60". The size is set in one place now, and that place moves
+  the dropdown.
+
 ### A stack buffer overflow in the FITS error path
 
 - **Opening a FITS file that produced a long cfitsio error crashed the app.**

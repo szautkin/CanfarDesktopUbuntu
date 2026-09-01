@@ -196,3 +196,20 @@ label.warning { color: @warning_color; }
 row.item-selected {
   background-color: alpha(@accent_bg_color, 0.20);
 }
+
+/* The highlighted row in the search results table.
+ *
+ * Same accent tint as `row.item-selected`, and for the same reason: the table
+ * builds its rows as plain buttons, so there is no widget selection to reuse —
+ * the page decides which row is chosen and says so with a class.
+ *
+ * A tint rather than a border: a border changes the row's size, and every cell
+ * on the row is pinned to its column, so the columns would shift by a pixel as
+ * the highlight moved down the page. */
+button.selected-row {
+  background-color: alpha(@accent_bg_color, 0.20);
+}
+
+button.selected-row:hover {
+  background-color: alpha(@accent_bg_color, 0.28);
+}

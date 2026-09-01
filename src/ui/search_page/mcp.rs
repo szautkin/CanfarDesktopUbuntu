@@ -227,6 +227,10 @@ impl SearchPage {
 
             // ── Results table ───────────────────────────────────────────────
             "get_search_results" => Ok(self.results_snapshot(args)),
+            "show_search_row_detail" => {
+                self.show_selected_row_detail().await?;
+                Ok(json!({ "shown": true, "selectedRow": self.selected_row.get() }))
+            }
             "set_search_results_view" => {
                 self.apply_results_view(args)?;
                 Ok(self.results_snapshot(&json!({ "includeRows": false })))
@@ -442,6 +446,9 @@ impl SearchPage {
             "sortAscending": *self.sort_ascending.borrow(),
             "filters": self.column_filters.borrow().clone(),
             "columnUnits": self.column_units.borrow().clone(),
+            // Which row is highlighted, counted in the FILTERED rows — the same
+            // index `selectRow` takes and `rows` is indexed by.
+            "selectedRow": self.selected_row.get(),
             "columns": column_json,
         });
 
@@ -855,12 +862,14 @@ impl SearchPage {
             drop(chosen);
             self.persist_column_units();
         }
+        // Selection last but one, so it clamps against the filters and page
+        // size above; the detail dialog after it, so it opens on what was just
+        // selected rather than on what used to be.
         if let Some(n) = crate::mcp::tools::opt_u64(args, "rowsPerPage") {
             if !(1..=1000).contains(&n) {
                 return Err(format!("rowsPerPage must be between 1 and 1000, got {n}"));
             }
-            *self.page_size.borrow_mut() = n as usize;
-            *self.current_page.borrow_mut() = 0;
+            self.set_page_size(n as usize);
         }
 
         // Pagination last, so it clamps against the page count the filters and
@@ -885,6 +894,28 @@ impl SearchPage {
         }
 
         self.render_results_page();
+
+        // The highlight, after the render that would otherwise wipe it — and
+        // after pagination, so `selectRow` decides the page rather than
+        // fighting a `page` given in the same call.
+        if let Some(v) = crate::mcp::tools::arg(args, "selectRow") {
+            match v {
+                Value::Null => {
+                    self.set_selected_row(None);
+                }
+                other => {
+                    let Some(i) = other.as_u64() else {
+                        return Err("selectRow must be a row index or null".to_string());
+                    };
+                    let total = self.get_processed_rows().len();
+                    if self.set_selected_row(Some(i as usize)).is_none() {
+                        return Err(format!(
+                            "row {i} is past the end — there are {total} rows after filtering"
+                        ));
+                    }
+                }
+            }
+        }
         if crate::mcp::tools::bool_arg(args, "applyFiltersToAdql") {
             self.apply_filters_to_adql();
         } else {
