@@ -1329,7 +1329,7 @@ impl ResearchPage {
     /// back into the managed directory, and update `local_path` / `file_size`
     /// on the store record and the in-memory list — then re-render the detail
     /// pane so the Open actions appear.  Reuses `search_page`'s streaming idiom
-    /// (`stream_download_to_file`).  Ported from
+    /// (`transfer::download_to_file`).  Ported from
     /// `ResearchViewModel.DownloadObservationFileAsync`.
     async fn download_missing_file(self: &Rc<Self>, obs: &DownloadedObservation) {
         use crate::services::managed_dir_for;

@@ -172,16 +172,16 @@ impl PlateSpec {
                         o.wcs.lon_name().to_string(),
                         format!(
                             "{} \u{2026} {}",
-                            lon_text(o.wcs.as_ref(), 0, ny),
-                            lon_text(o.wcs.as_ref(), nx - 1, ny),
+                            cube_axes::lon_text(o.wcs.as_ref(), o.wcs.galactic, 0, ny),
+                            cube_axes::lon_text(o.wcs.as_ref(), o.wcs.galactic, nx - 1, ny),
                         ),
                     ));
                     cols.push((
                         o.wcs.lat_name().to_string(),
                         format!(
                             "{} \u{2026} {}",
-                            lat_text(o.wcs.as_ref(), 0, nx),
-                            lat_text(o.wcs.as_ref(), ny - 1, nx),
+                            cube_axes::lat_text(o.wcs.as_ref(), o.wcs.galactic, 0, nx),
+                            cube_axes::lat_text(o.wcs.as_ref(), o.wcs.galactic, ny - 1, nx),
                         ),
                     ));
                 }
@@ -214,89 +214,6 @@ impl PlateSpec {
         }
         cols
     }
-}
-
-// ── Footer WCS caption formatters (ported from `helpers::cube_axes`, whose copies
-// are module-private; the export owns these so the footer ranges match the live
-// axis captions verbatim). ───────────────────────────────────────────────────
-
-/// Formatted longitude at a 0-based X pixel, evaluated at the cube's mid Y.
-fn lon_text(wcs: &CubeWcs, pix_x0: usize, ny: usize) -> String {
-    match wcs.spatial.as_ref().filter(|s| s.is_valid()) {
-        Some(s) => {
-            let (lon, _lat) = s.pixel_to_sky(pix_x0 as f64 + 1.0, ny as f64 / 2.0);
-            if wcs.galactic {
-                format_deg(wrap360(lon))
-            } else {
-                format_ra_short(lon)
-            }
-        }
-        None => format!("px {}", pix_x0),
-    }
-}
-
-/// Formatted latitude at a 0-based Y pixel, evaluated at the cube's mid X.
-fn lat_text(wcs: &CubeWcs, pix_y0: usize, nx: usize) -> String {
-    match wcs.spatial.as_ref().filter(|s| s.is_valid()) {
-        Some(s) => {
-            let (_lon, lat) = s.pixel_to_sky(nx as f64 / 2.0, pix_y0 as f64 + 1.0);
-            if wcs.galactic {
-                format_deg(lat)
-            } else {
-                format_dec_short(lat)
-            }
-        }
-        None => format!("px {}", pix_y0),
-    }
-}
-
-/// `raDeg` → `"HH:MM:SS"` (RA folded into [0,24h)).
-fn format_ra_short(ra_deg: f64) -> String {
-    let mut ra = ra_deg / 15.0;
-    ra %= 24.0;
-    if ra < 0.0 {
-        ra += 24.0;
-    }
-    let mut h = ra as i32;
-    let mut m = ((ra - h as f64) * 60.0) as i32;
-    let mut s = ((ra - h as f64 - m as f64 / 60.0) * 3600.0).round() as i32;
-    if s == 60 {
-        s = 0;
-        m += 1;
-    }
-    if m == 60 {
-        m = 0;
-        h = (h + 1) % 24;
-    }
-    format!("{:02}:{:02}:{:02}", h, m, s)
-}
-
-/// `decDeg` → `"±DD:MM:SS"` (U+2212 MINUS SIGN for negatives).
-fn format_dec_short(dec_deg: f64) -> String {
-    let sign = if dec_deg >= 0.0 { "+" } else { "\u{2212}" };
-    let d = dec_deg.abs();
-    let mut dd = d as i32;
-    let mut m = ((d - dd as f64) * 60.0) as i32;
-    let mut s = ((d - dd as f64 - m as f64 / 60.0) * 3600.0).round() as i32;
-    if s == 60 {
-        s = 0;
-        m += 1;
-    }
-    if m == 60 {
-        m = 0;
-        dd += 1;
-    }
-    format!("{}{:02}:{:02}:{:02}", sign, dd, m, s)
-}
-
-/// Decimal degrees to 3 places with a trailing degree sign.
-fn format_deg(deg: f64) -> String {
-    format!("{:.3}\u{00B0}", deg)
-}
-
-/// Fold an angle into [0, 360).
-fn wrap360(v: f64) -> f64 {
-    ((v % 360.0) + 360.0) % 360.0
 }
 
 /// Show the publication-figure export modal: a WYSIWYG preview of the composed

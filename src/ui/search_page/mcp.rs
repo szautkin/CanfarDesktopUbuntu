@@ -112,7 +112,7 @@ pub(super) fn validate_form_patch(args: &Value) -> Result<(), String> {
             choice_index(field, value)?;
         }
     }
-    if let Some(v) = crate::mcp::tools::num_arg(args, "radius") {
+    if let Some(v) = crate::mcp::tools::opt_number(args, "radius")? {
         // The SAME bounds the widget and the schema use. A literal here would be
         // a third copy of the number, and the spinner would silently clamp
         // anything this let through.
@@ -123,7 +123,7 @@ pub(super) fn validate_form_patch(args: &Value) -> Result<(), String> {
             ));
         }
     }
-    if let Some(v) = crate::mcp::tools::opt_u64(args, "maxRecords") {
+    if let Some(v) = crate::mcp::tools::opt_whole(args, "maxRecords")? {
         let (lo, hi) = super::MAX_RECORDS_RANGE;
         if !(lo as u64..=hi as u64).contains(&v) {
             return Err(format!("maxRecords must be between {lo} and {hi}, got {v}"));
@@ -226,14 +226,14 @@ impl SearchPage {
             }
 
             // ── Results table ───────────────────────────────────────────────
-            "get_search_results" => Ok(self.results_snapshot(args)),
+            "get_search_results" => self.results_snapshot(args),
             "show_search_row_detail" => {
                 self.show_selected_row_detail().await?;
                 Ok(json!({ "shown": true, "selectedRows": self.selected_rows() }))
             }
             "set_search_results_view" => {
                 self.apply_results_view(args)?;
-                Ok(self.results_snapshot(&json!({ "includeRows": false })))
+                self.results_snapshot(&json!({ "includeRows": false }))
             }
             "export_search_results" => self.export_results(args).await,
 
@@ -399,9 +399,9 @@ impl SearchPage {
     /// The results table's full view state, and (by default) the current page's
     /// RAW cell values — raw so an agent can compute on them, matching the
     /// reference.
-    fn results_snapshot(&self, args: &Value) -> Value {
+    fn results_snapshot(&self, args: &Value) -> Result<Value, String> {
         let include_rows = crate::mcp::tools::opt_bool(args, "includeRows").unwrap_or(true);
-        let max_rows = crate::mcp::tools::opt_u64(args, "maxRows")
+        let max_rows = crate::mcp::tools::opt_whole(args, "maxRows")?
             .map(|n| (n as usize).min(MAX_INLINE_ROWS))
             .unwrap_or(MAX_INLINE_ROWS);
 
@@ -517,7 +517,7 @@ impl SearchPage {
                 out["rows"] = json!(rows);
             }
         }
-        out
+        Ok(out)
     }
 
     /// `{ran, adql, totalRows, status}` — the shared tail of `run_search` and
@@ -701,7 +701,9 @@ impl SearchPage {
             self.spectral_cutout.set_active(v);
         }
 
-        if let Some(v) = crate::mcp::tools::opt_u64(args, "maxRecords") {
+        // Already refused by `validate_form_patch` if it were unreadable, so
+        // this cannot be the read that throws a bad value away.
+        if let Some(v) = crate::mcp::tools::opt_whole(args, "maxRecords")? {
             self.max_records.set_value(v as f64);
         }
         Ok(())
@@ -1023,7 +1025,7 @@ impl SearchPage {
         // Reload rather than trusting a cached list, so indices match what
         // `list_recent_searches` most recently reported.
         let all = self.services.search_store.load_recent();
-        let index = crate::mcp::tools::opt_u64(args, "index").unwrap_or(0) as usize;
+        let index = crate::mcp::tools::opt_whole(args, "index")?.unwrap_or(0) as usize;
         let entry = all.get(index).ok_or_else(|| {
             format!(
                 "no recent search at index {index} ({} available)",

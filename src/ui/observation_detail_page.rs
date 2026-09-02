@@ -839,7 +839,7 @@ struct ObsMeta {
 ///
 /// Mirrors the Windows `OnDownloadArtifactAsync` / `DownloadUrlToFileAsync` /
 /// `RegisterInResearch` / `BuildViewerButton` flow. Reuses the same streaming
-/// helper the Search / Research pages use (`stream_download_to_file`, chunked to
+/// helper the Search / Research pages use (`transfer::download_to_file`, chunked to
 /// a sibling `.tmp` then renamed) and the same `open-fits-file` / `open-cube-file`
 /// / `navigate-research` app actions the Research page fires.
 async fn download_artifact(

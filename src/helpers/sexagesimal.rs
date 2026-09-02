@@ -79,6 +79,63 @@ pub fn format_dec(deg: f64) -> String {
     format!("{}{:02}:{:02}:{:02}.{}", sign, d, m, s, ds)
 }
 
+// ── Compact forms (ported from CubeWcs.cs) ─────────────────────────────────
+//
+// Whole seconds rather than the centi- and deci-second precision above: these
+// label a plot axis and a figure footer, where the long form does not fit. They
+// lived in `cube_axes` and again, verbatim, in `cube_export` — whose copy was
+// justified in a comment as being there "so the footer ranges match the live
+// axis captions verbatim", which is the one thing copying them cannot ensure.
+
+/// `raDeg` → `"HH:MM:SS"` (RA folded into [0,24h)).
+pub fn format_ra_short(ra_deg: f64) -> String {
+    let mut ra = ra_deg / 15.0;
+    ra %= 24.0;
+    if ra < 0.0 {
+        ra += 24.0;
+    }
+    let mut h = ra as i32;
+    let mut m = ((ra - h as f64) * 60.0) as i32;
+    let mut s = ((ra - h as f64 - m as f64 / 60.0) * 3600.0).round() as i32;
+    if s == 60 {
+        s = 0;
+        m += 1;
+    }
+    if m == 60 {
+        m = 0;
+        h = (h + 1) % 24;
+    }
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+/// `decDeg` → `"±DD:MM:SS"` (uses U+2212 MINUS SIGN for negatives, as the C#).
+pub fn format_dec_short(dec_deg: f64) -> String {
+    let sign = if dec_deg >= 0.0 { "+" } else { "\u{2212}" };
+    let d = dec_deg.abs();
+    let mut dd = d as i32;
+    let mut m = ((d - dd as f64) * 60.0) as i32;
+    let mut s = ((d - dd as f64 - m as f64 / 60.0) * 3600.0).round() as i32;
+    if s == 60 {
+        s = 0;
+        m += 1;
+    }
+    if m == 60 {
+        m = 0;
+        dd += 1;
+    }
+    format!("{}{:02}:{:02}:{:02}", sign, dd, m, s)
+}
+
+/// Decimal degrees to 3 places with a trailing degree sign.
+pub fn format_deg(deg: f64) -> String {
+    format!("{:.3}\u{00B0}", deg)
+}
+
+/// Fold an angle into [0, 360).
+pub fn wrap360(v: f64) -> f64 {
+    ((v % 360.0) + 360.0) % 360.0
+}
+
 /// RA formatter over a raw (decimal-degrees) cell string; returns the trimmed
 /// raw unchanged when it is not a finite number.
 pub fn format_ra_str(raw: &str) -> String {
@@ -196,5 +253,67 @@ mod tests {
         assert_eq!(format_ra_str("not-a-number"), "not-a-number");
         assert_eq!(format_dec_str("22.014"), format_dec(22.014));
         assert_eq!(format_dec_str("120.0"), "120.0"); // out of [-90,90] → passthrough
+    }
+
+    /// The compact forms round to whole seconds and carry no half-minutes.
+    #[test]
+    fn a_compact_form_is_the_long_one_without_the_fraction() {
+        assert_eq!(format_ra_short(180.0), "12:00:00");
+        assert_eq!(format_ra_short(0.0), "00:00:00");
+        assert_eq!(format_ra_short(-15.0), "23:00:00"); // wraps into [0,24h)
+        assert_eq!(format_dec_short(45.0), "+45:00:00");
+        assert_eq!(format_dec_short(-30.5), "\u{2212}30:30:00");
+        assert_eq!(format_deg(12.0), "12.000\u{00B0}");
+        assert!((wrap360(-10.0) - 350.0).abs() < 1e-9);
+        assert!((wrap360(370.0) - 10.0).abs() < 1e-9);
+
+        // The compact form agrees with the long one about where the sky is; it
+        // just says less. Not a prefix of it — the compact form ROUNDS to the
+        // second where the long one carries the remainder, so 05:34:31.97 reads
+        // back as 05:34:32 — but within the half-second that rounding can move
+        // it. A drift wider than that would put a figure's footer and its axis
+        // on different coordinates.
+        const HALF_SECOND_OF_RA: f64 = 0.5 * 15.0 / 3600.0;
+        for deg in [0.0_f64, 10.5, 83.63321, 180.0, 299.9] {
+            let (short, long) = (format_ra_short(deg), format_ra(deg));
+            let (a, b) = (parse_ra(&short).unwrap(), parse_ra(&long).unwrap());
+            assert!(
+                (a - b).abs() <= HALF_SECOND_OF_RA + 1e-9,
+                "{short} and {long} are more than half a second apart"
+            );
+        }
+    }
+
+    /// One implementation, and no file grows a private copy of it again.
+    ///
+    /// Three did: `cube_axes` and `cube_export` each held all four of these
+    /// verbatim, the second justified in a comment as being there "so the
+    /// footer ranges match the live axis captions verbatim" — which is the one
+    /// guarantee a copy cannot give. The copies compiled, passed, and drifted
+    /// only when someone edited one of them.
+    #[test]
+    fn nothing_else_defines_these() {
+        let mine = std::path::Path::new("helpers/sexagesimal.rs");
+        let mut elsewhere: Vec<String> = Vec::new();
+        for (path, text) in crate::testing::rust_sources() {
+            if path.ends_with(mine) {
+                continue;
+            }
+            let code = crate::testing::without_comments(crate::testing::code(&text));
+            for name in [
+                "format_ra_short",
+                "format_dec_short",
+                "format_deg",
+                "wrap360",
+            ] {
+                if code.contains(&format!("fn {name}(")) {
+                    elsewhere.push(format!("{} defines {name}", path.display()));
+                }
+            }
+        }
+        assert!(
+            elsewhere.is_empty(),
+            "a second copy of a coordinate formatter: {elsewhere:#?}"
+        );
     }
 }

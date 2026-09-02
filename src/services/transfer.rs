@@ -411,10 +411,47 @@ mod tests {
 
     #[test]
     fn a_size_reads_as_a_person_would_say_it() {
+        assert_eq!(format_byte_size(0), "0 B");
         assert_eq!(format_byte_size(512), "512 B");
+        assert_eq!(format_byte_size(1024), "1.0 KiB");
         assert_eq!(format_byte_size(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_byte_size(3 * 1024 * 1024 * 1024), "3.00 GiB");
         assert_eq!(format_download_amount(50, Some(100)), "50 B / 100 B (50%)");
         // No Content-Length: report what has arrived rather than invent a total.
         assert_eq!(format_download_amount(2048, None), "2.0 KiB");
+    }
+
+    #[test]
+    fn progress_without_a_total_invents_neither_percent_nor_denominator() {
+        let s = format_download_progress("M81", 10 * 1024 * 1024, None);
+        assert!(s.contains("M81"), "{s}");
+        assert!(s.contains("10.0 MiB"), "{s}");
+        assert!(!s.contains('%'), "{s}");
+        assert!(!s.contains('/'), "{s}");
+    }
+
+    #[test]
+    fn progress_clamps_percent_when_downloaded_exceeds_total() {
+        // A Content-Length that under-reports the body would otherwise produce
+        // a download that is 200% finished.
+        let s = format_download_progress("X", 2048, Some(1024));
+        assert!(s.contains("100%"), "{s}");
+    }
+
+    #[test]
+    fn the_toast_and_the_inline_bar_report_the_same_amount() {
+        // The detail page's progress bar and the toast are two windows onto one
+        // transfer; a reader who sees them disagree learns to trust neither.
+        // They agreed by construction until the Search page grew its own copy
+        // of all three of these, which is why this test now lives beside the
+        // one implementation rather than beside one of two.
+        let amount = format_download_amount(1024, Some(4096));
+        let toast = format_download_progress("M81", 1024, Some(4096));
+        assert!(toast.ends_with(&amount), "{toast} should end with {amount}");
+        assert!(amount.contains("25%"), "{amount}");
+
+        let amount = format_download_amount(1024, None);
+        assert!(!amount.contains('%'), "{amount}");
+        assert!(format_download_progress("M81", 1024, None).ends_with(&amount));
     }
 }

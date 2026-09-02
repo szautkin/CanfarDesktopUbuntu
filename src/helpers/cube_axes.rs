@@ -16,6 +16,7 @@
 
 use crate::helpers::cube_math::Mat4;
 use crate::helpers::cube_wcs::CubeWcs;
+use crate::helpers::sexagesimal::{format_dec_short, format_deg, format_ra_short, wrap360};
 
 /// Behind-the-near-plane threshold on clip-space `w` (matches the C# `1e-4f`).
 const W_EPS: f32 = 1e-4;
@@ -290,7 +291,7 @@ fn spatial_galactic(wcs: &CubeWcs) -> bool {
 
 /// Formatted longitude value at a 0-based X pixel, evaluated at the cube's mid Y
 /// (port of `CubeWcs.LonText`). Falls back to `px N` without a valid WCS.
-fn lon_text(wcs: &CubeWcs, galactic: bool, pix_x0: usize, ny: usize) -> String {
+pub(crate) fn lon_text(wcs: &CubeWcs, galactic: bool, pix_x0: usize, ny: usize) -> String {
     match wcs.spatial.as_ref().filter(|s| s.is_valid()) {
         Some(s) => {
             let (lon, _lat) = s.pixel_to_sky(pix_x0 as f64 + 1.0, ny as f64 / 2.0);
@@ -307,7 +308,7 @@ fn lon_text(wcs: &CubeWcs, galactic: bool, pix_x0: usize, ny: usize) -> String {
 
 /// Formatted latitude value at a 0-based Y pixel, evaluated at the cube's mid X
 /// (port of `CubeWcs.LatText`). Falls back to `px N` without a valid WCS.
-fn lat_text(wcs: &CubeWcs, galactic: bool, pix_y0: usize, nx: usize) -> String {
+pub(crate) fn lat_text(wcs: &CubeWcs, galactic: bool, pix_y0: usize, nx: usize) -> String {
     match wcs.spatial.as_ref().filter(|s| s.is_valid()) {
         Some(s) => {
             let (_lon, lat) = s.pixel_to_sky(nx as f64 / 2.0, pix_y0 as f64 + 1.0);
@@ -371,57 +372,6 @@ fn spectral_axis_name(ctype3: &str) -> String {
             }
         }
     }
-}
-
-// ── Compact sexagesimal / decimal formatters (ported from CubeWcs.cs) ───────
-
-/// `raDeg` → `"HH:MM:SS"` (RA folded into [0,24h)).
-fn format_ra_short(ra_deg: f64) -> String {
-    let mut ra = ra_deg / 15.0;
-    ra %= 24.0;
-    if ra < 0.0 {
-        ra += 24.0;
-    }
-    let mut h = ra as i32;
-    let mut m = ((ra - h as f64) * 60.0) as i32;
-    let mut s = ((ra - h as f64 - m as f64 / 60.0) * 3600.0).round() as i32;
-    if s == 60 {
-        s = 0;
-        m += 1;
-    }
-    if m == 60 {
-        m = 0;
-        h = (h + 1) % 24;
-    }
-    format!("{:02}:{:02}:{:02}", h, m, s)
-}
-
-/// `decDeg` → `"±DD:MM:SS"` (uses U+2212 MINUS SIGN for negatives, as the C#).
-fn format_dec_short(dec_deg: f64) -> String {
-    let sign = if dec_deg >= 0.0 { "+" } else { "\u{2212}" };
-    let d = dec_deg.abs();
-    let mut dd = d as i32;
-    let mut m = ((d - dd as f64) * 60.0) as i32;
-    let mut s = ((d - dd as f64 - m as f64 / 60.0) * 3600.0).round() as i32;
-    if s == 60 {
-        s = 0;
-        m += 1;
-    }
-    if m == 60 {
-        m = 0;
-        dd += 1;
-    }
-    format!("{}{:02}:{:02}:{:02}", sign, dd, m, s)
-}
-
-/// Decimal degrees to 3 places with a trailing degree sign.
-fn format_deg(deg: f64) -> String {
-    format!("{:.3}\u{00B0}", deg)
-}
-
-/// Fold an angle into [0, 360).
-fn wrap360(v: f64) -> f64 {
-    ((v % 360.0) + 360.0) % 360.0
 }
 
 /// Mimic .NET's `"0.###"`: up to 3 fractional digits, trailing zeros trimmed.

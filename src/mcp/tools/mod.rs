@@ -203,12 +203,32 @@ pub fn opt_u32(args: &Value, key: &str) -> Option<u32> {
     opt_u64(args, key).map(|n| n as u32)
 }
 
-/// A numeric argument, accepting a JSON number OR a numeric string — agents
-/// routinely send `"42"` where the schema says `number`.
-pub fn num_arg(args: &Value, key: &str) -> Option<f64> {
-    let v = arg(args, key)?;
+/// A number however it is spelled: a JSON number, or a string holding one.
+///
+/// Agents routinely send `"42"` where a schema says `number`, and refusing that
+/// is pedantry rather than safety. The one place that decides what counts as a
+/// number, so the lenient readers and the refusing ones agree.
+fn as_number(v: &Value) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
+
+/// A numeric argument, `None` when absent OR unreadable.
+///
+/// Prefer [`opt_number`] in anything that can refuse: this cannot tell a caller
+/// that their value was thrown away.
+pub fn num_arg(args: &Value, key: &str) -> Option<f64> {
+    arg(args, key).and_then(as_number)
+}
+
+/// A numeric argument that REFUSES what it cannot read.
+pub fn opt_number(args: &Value, key: &str) -> Result<Option<f64>, String> {
+    let Some(v) = arg(args, key) else {
+        return Ok(None);
+    };
+    as_number(v)
+        .map(Some)
+        .ok_or_else(|| format!("{key} takes a number, got {}", describe_json(v)))
 }
 
 /// A whole-number argument that REFUSES what it cannot read.
@@ -219,25 +239,22 @@ pub fn num_arg(args: &Value, key: &str) -> Option<f64> {
 /// reported success and changed nothing — the same "answered that it was
 /// asked, not what happened" this codebase keeps having to fix.
 ///
-/// A numeric STRING is accepted, because agents routinely send `"42"` where the
-/// schema says integer and refusing that is pedantry rather than safety. A
-/// fractional value is not: `12.5` rows a page is a request nobody meant.
+/// `"42"` and `42.0` are both whole numbers: the first is how agents spell one,
+/// the second is what a language without an integer type produces for `500 / 2`.
+/// `12.5` is not — half a row is a request nobody meant.
 pub fn opt_whole(args: &Value, key: &str) -> Result<Option<u64>, String> {
     let Some(v) = arg(args, key) else {
         return Ok(None);
     };
+    // Ahead of `as_number`, because past 2^53 an f64 no longer holds every
+    // whole number and this is the form that keeps them all.
     if let Some(n) = v.as_u64() {
         return Ok(Some(n));
     }
-    if let Some(text) = v.as_str() {
-        if let Ok(n) = text.trim().parse::<u64>() {
-            return Ok(Some(n));
-        }
-    }
-    Err(format!(
-        "{key} takes a whole number, got {}",
-        crate::mcp::tools::describe_json(v)
-    ))
+    as_number(v)
+        .filter(|n| n.fract() == 0.0 && *n >= 0.0)
+        .map(|n| Some(n as u64))
+        .ok_or_else(|| format!("{key} takes a whole number, got {}", describe_json(v)))
 }
 
 /// A JSON value in the words of a refusal — its shape, not its contents.
@@ -282,15 +299,47 @@ mod whole_number_tests {
         }
     }
 
-    /// A numeric string is a number.
+    /// A whole number is a whole number however it arrives.
     ///
-    /// Agents routinely send `"42"` where a schema says integer, and refusing
-    /// that is pedantry rather than safety.
+    /// `"42"` is how an agent spells one; `250.0` is what a language without an
+    /// integer type produces for `500 / 2`. Refusing either is pedantry.
     #[test]
-    fn a_numeric_string_is_accepted() {
-        assert_eq!(opt_whole(&json!({ "n": "42" }), "n"), Ok(Some(42)));
-        assert_eq!(opt_whole(&json!({ "n": " 7 " }), "n"), Ok(Some(7)));
-        assert_eq!(opt_whole(&json!({ "n": 3 }), "n"), Ok(Some(3)));
+    fn a_whole_number_is_accepted_however_it_is_spelled() {
+        for (spelled, expected) in [
+            (json!(3), 3),
+            (json!("42"), 42),
+            (json!(" 7 "), 7),
+            (json!(250.0), 250),
+        ] {
+            assert_eq!(
+                opt_whole(&json!({ "n": spelled.clone() }), "n"),
+                Ok(Some(expected)),
+                "{spelled} should read as {expected}"
+            );
+        }
+    }
+
+    /// The lenient and the refusing readers agree on what a number is.
+    ///
+    /// They share `as_number` so that they cannot drift: a value one accepts
+    /// and the other refuses would mean a tool validating with one and applying
+    /// with the other silently dropped it.
+    #[test]
+    fn the_lenient_and_refusing_readers_agree() {
+        for spelled in [
+            json!(1),
+            json!(-2.5),
+            json!("42"),
+            json!("abc"),
+            json!(null),
+        ] {
+            let args = json!({ "n": spelled.clone() });
+            assert_eq!(
+                num_arg(&args, "n"),
+                opt_number(&args, "n").ok().flatten(),
+                "{spelled} read differently by the two readers"
+            );
+        }
     }
 }
 
