@@ -1,5 +1,6 @@
 //! Desktop integration: the one name that has to be spelled the same in four
-//! places, and the icons that have to exist where the package says they do.
+//! places, the addresses the app hands a person, and the icons that have to
+//! exist where the package says they do.
 //!
 //! There is no runtime code here. There is a name — `net.canfar.Verbinal` —
 //! which is simultaneously:
@@ -19,9 +20,26 @@
 /// and the icon file name.
 pub const APP_ID: &str = "net.canfar.Verbinal";
 
+/// The project's own page: what the app is, where the builds are, the guides.
+///
+/// Not `canfar.net` — that is the SERVICE this app talks to, and the two
+/// answer different questions. A person opening Help wants this app's page; a
+/// person wanting to know what CANFAR is follows the link from there.
+pub const PROJECT_URL: &str = "https://verbinal.com";
+
+/// Where the source lives, and therefore where a build comes from.
+pub const REPOSITORY_URL: &str = "https://github.com/szautkin/CanfarDesktopUbuntu";
+
+/// Where a bug goes. Reachable from the About window, so the report arrives
+/// with a version beside it instead of "the latest one".
+pub const ISSUES_URL: &str = "https://github.com/szautkin/CanfarDesktopUbuntu/issues";
+
+/// Where a question goes when it is not a bug.
+pub const SUPPORT_URL: &str = "mailto:support@verbinal.com";
+
 #[cfg(test)]
 mod tests {
-    use super::APP_ID;
+    use super::{APP_ID, ISSUES_URL, PROJECT_URL, REPOSITORY_URL, SUPPORT_URL};
     use std::path::{Path, PathBuf};
 
     fn repo(rel: &str) -> PathBuf {
@@ -107,6 +125,94 @@ mod tests {
             meta.contains(&format!("<release version=\"{version}\"")),
             "the metainfo has no <release> for {version}; a software centre would \
              show the previous release's notes for this one"
+        );
+    }
+
+    /// The addresses in the packaging are the addresses in the code.
+    ///
+    /// Four files name the project's page and its bug tracker: this module,
+    /// `Cargo.toml`, the metainfo, and the README. Nothing compiles the last
+    /// three, so a moved page is found by a person clicking About and landing
+    /// on a 404 — which is a support ticket, not a build failure.
+    #[test]
+    fn every_file_that_names_the_project_names_the_same_one() {
+        let cargo = read("Cargo.toml");
+        assert!(
+            cargo.contains(&format!("homepage = \"{PROJECT_URL}\"")),
+            "Cargo.toml's homepage is not {PROJECT_URL}"
+        );
+        assert!(
+            cargo.contains(&format!("repository = \"{REPOSITORY_URL}\"")),
+            "Cargo.toml's repository is not {REPOSITORY_URL}"
+        );
+
+        let meta = read(&format!("data/{APP_ID}.metainfo.xml"));
+        // No `contact`: AppStream requires a web page there and this project's
+        // contact is a mailbox, so `appstreamcli validate` — a CI gate — refuses
+        // it. The About window offers the address instead.
+        for (kind, url) in [
+            ("homepage", PROJECT_URL),
+            ("bugtracker", ISSUES_URL),
+            ("vcs-browser", REPOSITORY_URL),
+        ] {
+            assert!(
+                meta.contains(&format!("<url type=\"{kind}\">{url}</url>")),
+                "the metainfo's {kind} url is not {url}"
+            );
+        }
+
+        assert!(
+            read("README.md").contains(PROJECT_URL),
+            "the README does not link the project page"
+        );
+    }
+
+    /// The About window offers the page, the tracker and the mailbox.
+    ///
+    /// `AboutWindow` shows each of these as a link only when it is set; an
+    /// unset one is not an error, it is a row that silently is not there.
+    #[test]
+    fn the_about_window_hands_over_all_three_addresses() {
+        let src = read("src/ui/main_window.rs");
+        for (setter, url) in [
+            (".website(", PROJECT_URL),
+            (".issue_url(", ISSUES_URL),
+            (".support_url(", SUPPORT_URL),
+        ] {
+            assert!(
+                src.contains(&format!("{setter}crate::desktop_entry::")),
+                "the About window does not set {setter}…), so {url} is not offered"
+            );
+        }
+    }
+
+    /// Every image the README shows is in the tree.
+    ///
+    /// GitHub renders a missing `src` as a broken-image icon and says nothing;
+    /// the first person to notice is a stranger deciding whether to install
+    /// this. Nothing else reads the README, so nothing else would catch it.
+    #[test]
+    fn every_image_the_readme_shows_exists() {
+        let readme = read("README.md");
+        let mut shown = 0usize;
+        let mut missing: Vec<String> = Vec::new();
+        for piece in readme.split("src=\"").skip(1) {
+            let Some(path) = piece.split('"').next() else {
+                continue;
+            };
+            // Only our own files; a badge is somebody else's server.
+            if path.starts_with("http") {
+                continue;
+            }
+            shown += 1;
+            if !repo(path).exists() {
+                missing.push(path.to_string());
+            }
+        }
+        assert!(shown >= 5, "only {shown} screenshots in the README");
+        assert!(
+            missing.is_empty(),
+            "shown but not in the tree: {missing:#?}"
         );
     }
 

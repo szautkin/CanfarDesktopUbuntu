@@ -771,7 +771,7 @@ pub fn build_main_window(
         let window_clone = window.clone();
         let help_action = gtk::gio::SimpleAction::new("help", None);
         help_action.connect_activate(move |_, _| {
-            gtk::UriLauncher::new("https://www.canfar.net").launch(
+            gtk::UriLauncher::new(crate::desktop_entry::PROJECT_URL).launch(
                 Some(&window_clone),
                 None::<&gtk::gio::Cancellable>,
                 |_| {},
@@ -1764,26 +1764,43 @@ fn show_about_dialog(window: &adw::ApplicationWindow) {
         .application_icon("net.canfar.Verbinal")
         .version(env!("CARGO_PKG_VERSION"))
         .comments(crate::tr_en!("A CANFAR Science Portal Companion\n\nLaunch, monitor, and manage your interactive computing sessions (Notebook, Desktop, CARTA, Firefly) directly from your desktop without needing a browser.\n\nCANFAR is operated by the Canadian Astronomy Data Centre (CADC) and the Digital Research Alliance of Canada."))
-        .website("https://www.canfar.net")
+        .website(crate::desktop_entry::PROJECT_URL)
+        .issue_url(crate::desktop_entry::ISSUES_URL)
+        .support_url(crate::desktop_entry::SUPPORT_URL)
         .license_type(gtk::License::Agpl30)
-        .copyright("\u{00a9} 2025 Serhii Zautkin")
+        .copyright("\u{00a9} 2025-2026 Serhii Zautkin")
         .developers(vec!["Serhii Zautkin"])
         .transient_for(window)
         .modal(true)
         .build();
 
+    // The versions a bug report needs, read at RUN time. The line used to say
+    // "Rust {CARGO_PKG_VERSION}", which is the app's version wearing the
+    // toolchain's label, and "GTK4 + libadwaita" with no version at all — so
+    // the one section meant to help someone report a bug named nothing that
+    // varies between the machines where a bug appears.
     dialog.add_legal_section(
         crate::tr_en!("Runtime Info"),
         None,
         gtk::License::Custom,
         Some(&crate::tr_fmt!(
-            "Runtime: Rust {}\nPlatform: {}\nFramework: GTK4 + libadwaita",
-            env!("CARGO_PKG_VERSION"),
+            "Platform: {}\nGTK {}\nlibadwaita {}",
             std::env::consts::OS,
+            library_version(gtk::major_version, gtk::minor_version, gtk::micro_version),
+            library_version(adw::major_version, adw::minor_version, adw::micro_version),
         )),
     );
 
     dialog.present();
+}
+
+/// "4.14.5" from a library's three version calls.
+///
+/// Takes the functions rather than the numbers so GTK's and libadwaita's are
+/// assembled by the same code; they are two different modules' free functions
+/// with one shape between them.
+fn library_version(major: fn() -> u32, minor: fn() -> u32, micro: fn() -> u32) -> String {
+    format!("{}.{}.{}", major(), minor(), micro())
 }
 
 // ---------------------------------------------------------------------------
@@ -2677,5 +2694,40 @@ mod navigation_tests {
             body.contains("navigate(page)"),
             "a tile is switching pages by hand again"
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_info_tests {
+    use super::library_version;
+    use gtk4 as gtk;
+
+    /// The line a bug report is copied from names real versions.
+    ///
+    /// It used to read "Rust {CARGO_PKG_VERSION}" — the app's own version under
+    /// the toolchain's label — and "GTK4 + libadwaita" with no number at all.
+    /// Both compiled, both were shown to every user, and neither said anything
+    /// that differs between the machines where a bug appears.
+    ///
+    /// GTK's accessors read a linked constant, so they answer without a
+    /// display. libadwaita's assert that GTK has been initialised first, so the
+    /// same check for it can only run inside the app — the shape they share is
+    /// `library_version`, which is what this actually pins.
+    #[test]
+    fn the_versions_shown_are_the_libraries_own() {
+        let gtk = library_version(gtk::major_version, gtk::minor_version, gtk::micro_version);
+        let parts: Vec<&str> = gtk.split('.').collect();
+        assert_eq!(parts.len(), 3, "GTK version {gtk} is not major.minor.micro");
+        assert!(
+            parts.iter().all(|p| p.parse::<u32>().is_ok()),
+            "GTK version {gtk} has a non-numeric component"
+        );
+        // Not the app's version wearing a library's label, which is the exact
+        // mistake this replaced.
+        assert_ne!(gtk, env!("CARGO_PKG_VERSION"));
+        assert!(gtk.starts_with("4."), "built against GTK 4, got {gtk}");
+
+        // The formatter itself, on numbers it cannot get from the environment.
+        assert_eq!(library_version(|| 1, || 5, || 0), "1.5.0");
     }
 }
