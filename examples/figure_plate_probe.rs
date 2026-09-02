@@ -20,8 +20,8 @@ fn main() {
     // plate's dark furniture.
     let capture: Rc<dyn Fn(i32, i32) -> Option<Vec<u8>>> = Rc::new(|w, h| {
         let mut v = vec![0u8; (w * h * 4) as usize];
-        for px in v.chunks_exact_mut(4) {
-            px.copy_from_slice(&[220, 30, 30, 255]);
+        for px in v.as_chunks_mut::<4>().0 {
+            *px = [220, 30, 30, 255];
         }
         Some(v)
     });

@@ -1,0 +1,17 @@
+# The compiler this project is built and linted with, everywhere.
+#
+# Not "stable". CI installed whatever stable was on the day and a developer had
+# whatever stable was on the day they last updated, so `cargo clippy --all-targets
+# -- -D warnings` — the same command on both sides — was two different checks.
+# Rust 1.98 added `clippy::chunks_exact_to_as_chunks`; three call sites that had
+# been in the tree for months went red in CI and stayed green locally, and a lint
+# that does not exist on your machine cannot be run on your machine however
+# carefully you run it.
+#
+# rustup reads this file for every cargo invocation in the tree, so pinning it
+# here is what makes "the exact command CI runs" mean the exact check CI runs.
+# Bumping it is a deliberate commit: change the version, run the gates, fix what
+# the new compiler has learned to see.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

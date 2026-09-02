@@ -22,8 +22,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libcfitsio-dev pkg-config
 
+      # Pinned, and equal to rust-toolchain.toml, so a green local run is the
+      # same check as a green CI run. A test fails if the two drift.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.0"
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4

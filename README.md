@@ -207,7 +207,11 @@ cargo test
 ## Code Quality
 
 ```bash
-# Lint — the exact command CI runs, so a green local run means a green CI run.
+# Lint — the exact command CI runs, on the compiler CI runs it with:
+# rust-toolchain.toml pins the version, so rustup uses it for every cargo
+# invocation in this tree and a green local run really is a green CI run.
+# (It was not, once: CI took the day's stable, 1.98 added a lint, and three
+# call sites went red in CI while staying green on a 1.97 desktop.)
 # `--all-targets` includes the tests. `dead_code` is NOT suppressed: an unused
 # function is usually a feature that was written and never wired up, which is
 # how several shipped defects here stayed invisible.

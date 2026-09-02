@@ -1287,10 +1287,11 @@ mod tests {
             let mut s = surface;
             s.flush();
             // Alpha only: a wider ring covers more pixels, whatever its colour.
-            let covered = s
-                .data()
-                .expect("data")
-                .chunks_exact(4)
+            let data = s.data().expect("data");
+            let covered = data
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|px| px[3] != 0)
                 .count();
             covered
@@ -1335,7 +1336,9 @@ mod tests {
         // BGRA, premultiplied: on the most opaque pixel, red must dominate.
         let data = s.data().expect("data");
         let px = data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .max_by_key(|px| px[3])
             .expect("some pixel");
         assert!(px[3] > 0, "the mark drew nothing at all");

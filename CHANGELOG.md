@@ -14,6 +14,20 @@ no version at all for GTK. Underneath, three pieces of code that existed twice
 now exist once — including a whole streaming download whose copy had quietly
 missed out on cancellation.
 
+### The compiler is pinned, so the gates mean what they say
+
+- The README promised that `cargo clippy --all-targets -- -D warnings` is "the
+  exact command CI runs, so a green local run means a green CI run". The command
+  was exact; the compiler was not. CI took `dtolnay/rust-toolchain@stable` — the
+  day's stable — and a developer had whatever stable they last updated to.
+- Rust 1.98 added `clippy::chunks_exact_to_as_chunks`, and three call sites that
+  had been in the tree for months went red in CI while staying green on a 1.97
+  desktop. No amount of care locally would have found it: a lint that does not
+  exist on your machine cannot fire on your machine.
+- `rust-toolchain.toml` now pins the version, both workflows install that
+  version, and a test fails if the three copies drift. The three sites use
+  `as_chunks::<4>()`, and `rust-version` records the 1.88 floor the code needs.
+
 ### What the app does, described as it actually is
 
 - **The feature list was written when there were seven of them.** It ran the

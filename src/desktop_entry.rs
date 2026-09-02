@@ -186,6 +186,39 @@ mod tests {
         }
     }
 
+    /// CI compiles with the compiler this tree pins.
+    ///
+    /// `dtolnay/rust-toolchain@stable` installed whatever stable was on the day,
+    /// so `cargo clippy --all-targets -- -D warnings` — the same command in both
+    /// places — was two different checks. Rust 1.98 added a lint, three call
+    /// sites that had been in the tree for months went red in CI, and no local
+    /// run could have found it: a lint that does not exist on your machine
+    /// cannot fire there.
+    ///
+    /// The version now lives in `rust-toolchain.toml` and in both workflows,
+    /// which is three copies of a string nothing else compares.
+    #[test]
+    fn the_workflows_build_with_the_toolchain_this_tree_pins() {
+        let pinned = read("rust-toolchain.toml")
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("channel = "))
+            .map(|v| v.trim().trim_matches('"').to_string())
+            .expect("rust-toolchain.toml states a channel");
+        assert!(
+            pinned.split('.').all(|p| p.parse::<u32>().is_ok()),
+            "the pin is `{pinned}`, not an exact version — \"stable\" is what \
+             made local and CI disagree in the first place"
+        );
+        for wf in ["ci.yml", "release.yml"] {
+            let text = read(&format!(".github/workflows/{wf}"));
+            assert!(
+                text.contains(&format!("toolchain: \"{pinned}\"")),
+                "{wf} does not install {pinned}, so its gates are not the gates \
+                 a developer can run"
+            );
+        }
+    }
+
     /// Every image the README shows is in the tree.
     ///
     /// GitHub renders a missing `src` as a broken-image icon and says nothing;
