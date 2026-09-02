@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "verbinal"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "base64",
  "cairo-rs",

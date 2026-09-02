@@ -4,6 +4,64 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-01
+
+A release about being told the truth. An agent asking for something impossible
+was answered "done"; the ADQL checker shipped last week had never once run,
+because its schema fetch panicked the main thread on the way in; the About
+window's Runtime Info named the app's own version as the Rust version and gave
+no version at all for GTK. Underneath, three pieces of code that existed twice
+now exist once — including a whole streaming download whose copy had quietly
+missed out on cancellation.
+
+### The ADQL checker had never run
+
+- The schema fetch that feeds it was awaited on the GLib main context, where
+  there is no tokio reactor, so it **panicked the main thread the moment the
+  Search page was built** — "there is no reactor running". The schema therefore
+  never arrived, `cached()` stayed empty, and the checker, which says nothing
+  when it has nothing to check against, said nothing. A check that silently
+  never runs is the worst way for one to fail: from the outside it is
+  indistinguishable from a query with no problems.
+- The fetch now goes through the tokio runtime like every other request. The
+  editor underlines the offending words, and Execute greys out, from a cold
+  start — which is what the previous release said it did.
+- `validate_adql_query` and `execute_adql_query` were unaffected: they fetch the
+  schema themselves, on the runtime, which is why the tool worked while the
+  editor did not.
+
+### About points at the project, and says what it is running on
+
+- **About and Help open [verbinal.com](https://verbinal.com)**, the project's own
+  page, rather than `canfar.net` — that is the SERVICE this app talks to, and the
+  two answer different questions. About also carries a "Report an Issue" link to
+  the tracker and a support address, so a report arrives with a version beside it
+  instead of "the latest one".
+- **Runtime Info names the versions a bug report needs.** It said "Rust
+  {app version}" — the app's own version wearing the toolchain's label — and
+  "GTK4 + libadwaita" with no version at all, so the one section meant to help
+  someone report a bug named nothing that varies between the machines where a bug
+  appears. It now reads the real GTK and libadwaita versions at run time.
+- The project's addresses live in one place with a test that the packaging, the
+  metainfo and the README all name the same ones; nothing compiles those three,
+  so a moved page would otherwise be found by a person landing on a 404.
+
+### One implementation of a download, and of a sky coordinate
+
+No behaviour was meant to change here, but one did, for the better.
+
+- **The Search page had its own private copy of the whole streaming download** —
+  191 lines, doc comments and all, forked from `services::transfer` and since
+  drifted: the original grew cancellation support and the copy did not. Saving an
+  observation to Research now runs the same code every other transfer does.
+- **Four sky-coordinate formatters existed twice**, in `cube_axes` and again in
+  `cube_export`, whose copy was justified in a comment as being there "so the
+  footer ranges match the live axis captions verbatim" — the one guarantee that
+  copying them cannot give. They now live once, in `helpers::sexagesimal` beside
+  their long-form siblings, with a test that no file grows a private copy again.
+- The two readers that decide what counts as a number now share one definition,
+  so a tool that validates with one and applies with the other cannot disagree.
+
 ### An agent can see what a dropdown offers, and a bad value is refused
 
 - **`rowsPerPageOptions`** reports the Rows/page menu — 25, 50, 100, 250, 500 —

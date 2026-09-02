@@ -1,12 +1,12 @@
 [package]
 name = "verbinal"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2021"
 description = "Verbinal - a CANFAR Science Portal companion for Linux"
 license = "AGPL-3.0"
 authors = ["Serhii Zautkin"]
 repository = "https://github.com/szautkin/CanfarDesktopUbuntu"
-homepage = "https://www.canfar.net"
+homepage = "https://verbinal.com"
 readme = "README.md"
 keywords = ["canfar", "astronomy", "science", "gtk4"]
 categories = ["science", "gui"]

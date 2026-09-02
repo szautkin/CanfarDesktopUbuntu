@@ -31,8 +31,11 @@
 
   <launchable type="desktop-id">net.canfar.Verbinal.desktop</launchable>
 
-  <url type="homepage">https://www.canfar.net</url>
+  <url type="homepage">https://verbinal.com</url>
   <url type="bugtracker">https://github.com/szautkin/CanfarDesktopUbuntu/issues</url>
+  <url type="vcs-browser">https://github.com/szautkin/CanfarDesktopUbuntu</url>
+  <!-- No <url type="contact">: AppStream requires a web page there and the
+       project's contact is a mailbox. The About window offers it directly. -->
 
   <developer id="net.canfar">
     <name>Serhii Zautkin</name>
@@ -59,6 +62,16 @@
   </provides>
 
   <releases>
+    <release version="1.4.2" date="2026-09-01">
+      <description>
+        <p>
+          A release about being told the truth: an agent asking for something
+          impossible was answered "done", the new ADQL checker had never once
+          run, and the About window named the wrong versions. Underneath, three
+          pieces of code that existed twice now exist once.
+        </p>
+      </description>
+    </release>
     <release version="1.4.1" date="2026-08-30">
       <description>
         <p>
