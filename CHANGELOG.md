@@ -4,6 +4,16 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+### The workflows run on a Node that is still supported
+
+- All four actions — `checkout`, `cache`, `upload-artifact` and
+  `action-gh-release` — declared `using: node20`, whose runtime is past
+  end-of-life on GitHub's runners. A deprecated runtime is a warning on every
+  run first and a failure on a morning nobody chose second.
+- Bumped to the majors that declare `node24`: checkout v4 → v7, cache v4 → v6,
+  upload-artifact v4 → v7, action-gh-release v2 → v3. Each `action.yml` was read
+  at both the old and the new tag rather than inferred from the version number.
+
 ## [1.4.2] - 2026-09-01
 
 A release about being told the truth. An agent asking for something impossible

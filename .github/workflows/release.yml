@@ -4,6 +4,10 @@ on:
   push:
     tags: ["v*"]
 
+# Actions are on their node24 majors. The node20 runtime they used before is
+# past end-of-life on GitHub's runners, and a deprecated runtime is first a
+# warning on every run and then a failure on a morning nobody chose.
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -15,7 +19,7 @@ jobs:
     name: Build .deb package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -30,7 +34,7 @@ jobs:
           toolchain: "1.98.0"
 
       - name: Cache cargo registry & build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -52,13 +56,13 @@ jobs:
         run: cargo deb --no-build
 
       - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verbinal-deb
           path: target/debian/*.deb
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: target/debian/*.deb
           generate_release_notes: true
