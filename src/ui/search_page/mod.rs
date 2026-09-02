@@ -1406,11 +1406,20 @@ impl SearchPage {
         // And once the service's schema arrives, since until then the check has
         // nothing to check against and stays quiet.
         //
+        // The FETCH goes through `services.spawn` onto the tokio runtime;
+        // awaiting it directly on the GLib context panicked the main thread
+        // with "there is no reactor running" the moment the Search page was
+        // built, because reqwest's timer needs tokio's. The schema therefore
+        // never arrived and the checker stayed permanently quiet — a check that
+        // silently never runs, which is the worst way for one to fail.
         {
             let p = page.clone();
             glib::spawn_future_local(async move {
                 let svc = p.services.clone();
-                let _ = svc.tap_schema.schema().await;
+                let schema = svc.clone();
+                let _ = svc
+                    .spawn(async move { schema.tap_schema.schema().await })
+                    .await;
                 p.recheck_adql();
             });
         }
