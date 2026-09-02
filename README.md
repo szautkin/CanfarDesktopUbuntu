@@ -2,11 +2,47 @@
 
 A native Linux desktop companion for the [CANFAR Science Portal](https://www.canfar.net/), built with Rust, GTK 4, and libadwaita.
 
-This is the Linux counterpart of [Verbinal for Windows](https://github.com/szautkin/CanfarDesktop) (C#/WinUI 3).
-
 [![CI](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/ci.yml/badge.svg)](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/ci.yml)
 [![Release](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/release.yml/badge.svg)](https://github.com/szautkin/CanfarDesktopUbuntu/actions/workflows/release.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
+Project page, guides and downloads for every platform: **[verbinal.com](https://verbinal.com)**.
+
+This is the Linux member of the Verbinal family.
+
+## The same app on other platforms
+
+Verbinal is one application per platform, each written natively for it, sharing
+the behaviour rather than the code. Where they differ, this repository is the
+one that leads.
+
+| Platform | Source | Install |
+| --- | --- | --- |
+| **Linux** (this repo) | [CanfarDesktopUbuntu](https://github.com/szautkin/CanfarDesktopUbuntu) — Rust · GTK 4 · libadwaita | [Latest `.deb`](https://github.com/szautkin/CanfarDesktopUbuntu/releases/latest) |
+| **Windows** | [CanfarDesktop](https://github.com/szautkin/CanfarDesktop) — C# · WinUI 3 | [Microsoft Store](https://apps.microsoft.com/detail/9p8jqvk4pjch) |
+| **macOS** | [canfar-macos](https://github.com/szautkin/canfar-macos) — Swift · SwiftUI | — |
+| **iOS / iPadOS** | — | [App Store](https://apps.apple.com/app/verbinal/id6761290036) |
+| **Android** | [canfar-android](https://github.com/szautkin/canfar-android) — Kotlin | [Play (testing)](https://play.google.com/apps/testing/net.canfar.verbinal) |
+
+The service all of them talk to is the CANFAR Science Portal
+([opencadc/science-portal](https://github.com/opencadc/science-portal)), operated
+by the [Canadian Astronomy Data Centre](https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/).
+
+## Related projects
+
+These open-source companions are what two of Verbinal's features actually run on
+the platform:
+
+- **[verbinal-execution](https://github.com/szautkin/verbinal-execution)** — a
+  CANFAR/Skaha contributed-session image that powers Verbinal's AI **remote compute**
+  (`run_code`). It is a file-drop watcher that runs agent-supplied Python/bash snippets
+  and writes JSON results back — no shell, no inbound network. Run it in a contributed
+  session to let your AI assistant execute code on the platform on your behalf.
+- **[inspector-image](https://github.com/szautkin/inspector-image)** — a minimal
+  Alpine container image with [Anchore syft](https://github.com/anchore/syft) preinstalled,
+  used as the Skaha/CANFAR inspector that powers Verbinal's **image content discovery**
+  (probing container images for their Python, R, system, and OS-level packages) — the
+  "Find image by package" dialog above.
 
 ## Features
 
@@ -22,11 +58,41 @@ This is the Linux counterpart of [Verbinal for Windows](https://github.com/szaut
 - **Marks** - Draw circles and boxes on an image or a cube, label them, move and resize them; they persist with the file and appear in exported figures
 - **Archive Search** - CADC observation search with faceting, an ADQL editor, and previews
 - **Notebooks** - Open and run Jupyter notebooks, with rendered cell output
-- **AI Agent Access** - 134 MCP tools over a local socket, so an assistant can drive the app, read what is on screen, and point at things in it
+- **AI Agent Access** - 160+ MCP tools over a local socket, so an assistant can drive the app, read what is on screen, point at things in it, and hand back a figure
 
-## Screenshot
+## Screenshots
 
-*(coming soon)*
+<p align="center">
+  <img src="docs/screenshots/home.png" alt="The Home page: one tile per area of the app, with the signed-in account and the agent's state at the top of the sidebar" width="820">
+</p>
+
+**Portal** — active sessions, launch form, storage quota, batch jobs, platform load
+and the CANFAR image catalogue on one page.
+
+<p align="center">
+  <img src="docs/screenshots/portal.png" alt="The Portal page" width="820">
+</p>
+
+**Find an image by package** — search 368 container images by what is installed in
+them, faceted by OS family and version.
+
+<p align="center">
+  <img src="docs/screenshots/find-image-by-package.png" alt="The find-image-by-package dialog, with OS facets on the left and matching images on the right" width="820">
+</p>
+
+**Archive search** — the CADC observation search: four constraint columns, the
+faceted data train, an ADQL editor, and a recent-searches rail.
+
+<p align="center">
+  <img src="docs/screenshots/archive-search.png" alt="The CADC archive search form" width="820">
+</p>
+
+**Export a figure** — what the FITS viewer hands back: the marks you drew with
+their labels, the region's real sky coordinates, the cut levels and a colorbar.
+
+<p align="center">
+  <img src="docs/screenshots/fits-figure-export.jpg" alt="An exported figure of a JWST NIRCam image with four labelled marks, sky coordinates, cut levels and a colorbar" width="820">
+</p>
 
 ## Requirements
 
