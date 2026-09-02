@@ -46,19 +46,65 @@ the platform:
 
 ## Features
 
-- **Session Management** - Launch, monitor, renew, and delete CANFAR science sessions (Notebook, Desktop, CARTA, Contributed, Firefly, Headless)
-- **Storage Quota** - View VOSpace home directory usage at a glance
-- **Platform Load** - Real-time cluster CPU, GPU, and RAM utilisation
-- **Recent Launches** - Quick re-launch from session history
-- **Standard & Advanced Launch** - Pick from the CANFAR image catalogue or supply a custom registry image with auth credentials
-- **Auto-Refresh** - Active sessions poll automatically while any session is pending
-- **Secure Credentials** - Tokens stored in the system keyring via Secret Service (GNOME Keyring / KDE Wallet)
-- **FITS Viewer** - Multi-tab image viewer with WCS, colormaps and stretches, an extension selector, a crosshair with sky coordinates, saved coordinates, and blink / linked-crosshair / synced-zoom comparison across tabs
-- **Cube Viewer** - GPU ray-marched 3D volume rendering with an opacity transfer function, plus a 2D slice view with a channel scrubber and per-voxel spectra
-- **Marks** - Draw circles and boxes on an image or a cube, label them, move and resize them; they persist with the file and appear in exported figures
-- **Archive Search** - CADC observation search with faceting, an ADQL editor, and previews
-- **Notebooks** - Open and run Jupyter notebooks, with rendered cell output
-- **AI Agent Access** - 160+ MCP tools over a local socket, so an assistant can drive the app, read what is on screen, point at things in it, and hand back a figure
+Each area is reachable from the Home tiles or the sidebar.
+
+**Portal** — launch, monitor, renew and delete CANFAR sessions (Notebook,
+Desktop, CARTA, Contributed, Firefly, Headless), from the image catalogue or a
+custom registry image with its own credentials. Alongside them: VOSpace home
+quota, live cluster CPU/GPU/RAM load, batch-job counts, and recent launches you
+can re-run in a click. Active sessions refresh themselves while any one is
+pending.
+
+**Find an image by package** — the catalogue runs to hundreds of container
+images, and their names do not say what is inside them. Search by installed package instead
+(Python, R, system, OS), faceted by OS family and version, with inspection run
+on the platform by [inspector-image](https://github.com/szautkin/inspector-image).
+
+**Archive search** — CADC observation search across four constraint columns,
+narrowed by a faceted data train of many thousands of entries, or written
+directly in ADQL. The editor checks a query against the service's own schema as
+you type: the offending words are underlined, the fix is named, and Execute
+greys out rather than spending a round trip on a query that cannot work.
+Results paginate, sort, filter, hide columns, switch units per column, and
+export as CSV or TSV.
+
+**Research** — observations you saved are downloaded whole (preview + FITS) to a
+local library that then needs no network, with your notes attached and a record
+of which agent, if any, put them there. The whole library exports as a single
+citable `.zip`.
+
+**Storage** — browse, upload and download VOSpace files.
+
+**Notebooks** — open and run `.ipynb` files, with cell output rendered for every
+MIME type the parser models.
+
+**FITS viewer** — multi-tab, with WCS, colormaps and stretches, percentile and
+zscale cut levels, an extension selector, a crosshair reading sky coordinates,
+saved coordinates, and blink / linked-crosshair / synced-zoom comparison across
+tabs.
+
+**Cube viewer** — GPU ray-marched volume rendering with an opacity transfer
+function, plus a 2D slice view with a channel scrubber and per-voxel spectra.
+
+**Marks and figures** — draw circles and boxes on an image or a cube, label
+them, move and resize them, and give each its own colour, weight and thickness.
+They persist with the file. Export the view, or a region you drag out of it, as
+a publication figure carrying the region's real sky coordinates, the cut levels
+and a colorbar — at 1×, 2× or 4×.
+
+**Workflows** — research protocols as check-off step cards, from built-in
+templates or your own local copies. The file is the state, so a protocol is
+something you can commit.
+
+**AI agent access** — 160+ MCP tools over a local Unix socket, so an assistant
+can drive the app, read what is on screen, point at part of it and hand back a
+figure. Writes are proposed and applied rather than silently performed, and the
+sidebar says when an agent is working. With
+[verbinal-execution](https://github.com/szautkin/verbinal-execution) in a
+contributed session, it can run code on the platform on your behalf.
+
+**Secure credentials** — tokens stored in the system keyring via Secret Service
+(GNOME Keyring / KDE Wallet).
 
 ## Screenshots
 

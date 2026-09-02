@@ -14,6 +14,20 @@ no version at all for GTK. Underneath, three pieces of code that existed twice
 now exist once — including a whole streaming download whose copy had quietly
 missed out on cancellation.
 
+### What the app does, described as it actually is
+
+- **The feature list was written when there were seven of them.** It ran the
+  Portal's own minutiae (Auto-Refresh, Recent Launches) alongside whole
+  applications (FITS Viewer, Archive Search) as thirteen equal bullets, and left
+  out Research, Workflows, the AI Guide, finding an image by package, figure
+  export and the ADQL editor entirely. It is now written by area, the way the
+  app presents itself on its Home page.
+- **The AppStream description** — what a software centre shows — gained the same
+  areas. It had described two viewers and an agent, which was a third of the app.
+- Counts that came from one screenshot ("368 images", "17106 entries") are
+  described by their scale instead, because the numbers change and the README
+  does not.
+
 ### The ADQL checker had never run
 
 - The schema fetch that feeds it was awaited on the GLib main context, where

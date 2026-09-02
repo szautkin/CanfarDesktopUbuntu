@@ -13,19 +13,33 @@
       and manage science sessions, browse VOSpace, search the CADC archive, and
       look at the data without leaving the desktop.
     </p>
+    <p>Working on the platform:</p>
+    <ul>
+      <li>Launch, monitor, renew and delete sessions — Notebook, Desktop, CARTA, Contributed, Firefly and Headless — beside the VOSpace quota, the live cluster load and your recent launches.</li>
+      <li>Find a container image by what is installed in it rather than by its name, faceted by OS family and version.</li>
+      <li>Open and run Jupyter notebooks, with cell output rendered for every MIME type the parser models.</li>
+      <li>Keep research protocols as check-off step cards, from built-in templates or your own copies.</li>
+    </ul>
+    <p>Finding and keeping data:</p>
+    <ul>
+      <li>Search the CADC archive across four constraint columns, narrowed by a faceted data train — or write ADQL directly, checked against the service's own schema as you type, so a query that cannot work is refused before it is sent.</li>
+      <li>Save an observation whole — preview and FITS — into a local research library that then needs no network, with your notes attached, exportable as a single citable archive.</li>
+    </ul>
     <p>Its two viewers are built for astronomical data rather than for pictures:</p>
     <ul>
       <li>A FITS viewer with WCS, colormaps and stretches, percentile and zscale cut levels, an extension selector, a crosshair reading sky coordinates, and blink, linked-crosshair and synced-zoom comparison across tabs.</li>
       <li>A cube viewer with GPU volume rendering and an opacity transfer function, plus a 2D slice view with a channel scrubber and per-voxel spectra.</li>
     </ul>
     <p>
-      Marks can be drawn on an image or a cube, labelled, moved and resized. They
-      persist with the file and appear in exported figures, which carry the
-      region's real sky coordinates, the cut levels and a colorbar.
+      Marks can be drawn on an image or a cube, labelled, moved and resized, each
+      with its own colour, weight and thickness. They persist with the file and
+      appear in exported figures, which carry the region's real sky coordinates,
+      the cut levels and a colorbar.
     </p>
     <p>
       An AI assistant can drive the whole application over a local MCP socket:
-      read what is on screen, point at part of it, and hand back a figure.
+      read what is on screen, point at part of it, and hand back a figure. Writes
+      are proposed and applied rather than silently performed.
     </p>
   </description>
 
