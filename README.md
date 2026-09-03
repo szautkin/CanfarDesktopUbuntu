@@ -112,11 +112,13 @@ contributed session, it can run code on the platform on your behalf.
   <img src="docs/screenshots/home.png" alt="The Home page: one tile per area of the app, with the signed-in account and the agent's state at the top of the sidebar" width="820">
 </p>
 
-**Portal** — active sessions, launch form, storage quota, batch jobs, platform load
-and the CANFAR image catalogue on one page.
+**Portal** — platform load, your storage quota and batch jobs across the top;
+running sessions with what they are actually using; and the image catalogue,
+filtered by session type and by project. Launching is one button away rather than
+a form taking up the page.
 
 <p align="center">
-  <img src="docs/screenshots/portal.png" alt="The Portal page" width="820">
+  <img src="docs/screenshots/portal.png" alt="The Portal page: platform load, storage quota and batch job counts across the top, two running notebook sessions with their resource use, and the CANFAR image catalogue filtered by session type and project, beside a list of recent launches" width="820">
 </p>
 
 **Find an image by package** — search 368 container images by what is installed in
