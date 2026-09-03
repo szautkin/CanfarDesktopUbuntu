@@ -186,9 +186,32 @@ The release binary will be at `target/release/verbinal`.
 Download the latest `.deb` from [Releases](https://github.com/szautkin/CanfarDesktopUbuntu/releases), then:
 
 ```bash
-sudo dpkg -i verbinal_*_amd64.deb
-sudo apt-get install -f  # install any missing dependencies
+sudo apt install ./verbinal_*_amd64.deb
 ```
+
+The leading `./` is what tells apt this is a local file rather than a package
+name, and apt pulls in any missing dependencies in the same step — which is why
+this is preferred over `dpkg -i` followed by `apt-get install -f`, which is the
+same job in two commands with a broken state in between.
+
+Everything it needs is in Ubuntu's own archive: GTK 4, libadwaita, glib and
+cfitsio. On Ubuntu 24.04 the last two are named `libglib2.0-0t64` and
+`libcfitsio10t64` after the 64-bit `time_t` transition; both carry versioned
+`Provides:` for the old names, so the dependencies resolve without anything
+special. `libgtk-4-media-gstreamer` is *recommended*, not required — it is what
+plays the agent's sound cues, and without it the app is silent and otherwise
+unchanged.
+
+To remove it:
+
+```bash
+sudo apt remove verbinal
+```
+
+**Updates are manual.** There is no APT repository or PPA yet, so `apt upgrade`
+will not find new versions — watch [Releases](https://github.com/szautkin/CanfarDesktopUbuntu/releases)
+(or the [project page](https://verbinal.com)) and install the new `.deb` over
+the old one.
 
 Or build the `.deb` yourself:
 
