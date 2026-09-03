@@ -260,8 +260,8 @@ impl JsonManifestStore {
         // caller is looking for is nearly always the word itself, at the front
         // of the name.
         out.sort_by(|a, b| {
-            let a_leads = a.0.to_lowercase().starts_with(&needle);
-            let b_leads = b.0.to_lowercase().starts_with(&needle);
+            let a_leads = crate::helpers::discovery_formatting::leads_with(&a.0, &needle);
+            let b_leads = crate::helpers::discovery_formatting::leads_with(&b.0, &needle);
             b_leads
                 .cmp(&a_leads)
                 .then_with(|| b.1.cmp(&a.1))

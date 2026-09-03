@@ -3,22 +3,37 @@
 Hands-on regression checks for the Portal work in this cycle: notification timing, the
 CANFAR Images card, the registry browser, the image detail view, and six new MCP tools.
 
-Figures below are measured against the live CANFAR platform and a real manifest cache, so a
-check that disagrees is a finding, not a rounding difference.
+### Reference figures
 
-| Figure | Value |
+**These are observations, not pass criteria.** The catalogue is live — images are published
+and withdrawn — so a run reading 364 rather than 365 has found platform churn, not a
+regression. A QA pass has already hit exactly that. Check the *invariants* below and treat
+the counts as orientation.
+
+| Figure | As measured, 2026-09-03 |
 | --- | ---: |
-| Images returned by `/v1/image` | 365 |
-| Launchable — what the card shows | 288 |
-| `desktop-app`-only, hidden | 77 |
-| Projects in filter row 2 | 21 |
+| Images returned by `/v1/image` | ~365 |
+| Launchable — what the card shows | ~288 |
+| `desktop-app`-only, hidden | ~77 |
+| Projects in filter row 2 | ~21 |
 | Manifests cached | 219 |
 | Distinct packages known | 6,511 |
 | Median packages per image | 624 |
-| Unit tests passing | 1,964 |
 
-**Build state:** uncommitted working tree — 49 files changed, 4,858 insertions, 801
-deletions, plus 14 new untracked files, on top of `33b39b0`.
+**Invariants — these are the pass criteria:**
+
+- `shown + hidden == total`. The card partitions the catalogue; it never loses an image.
+- Every hidden image has types ⊆ `{desktop-app}`. Anything else hidden is a bug.
+- No image the card shows lacks a launchable type, unless the user added it themselves.
+- `hidden` changes only when the platform publishes or withdraws a `desktop-app`-only image.
+
+Drift in `total` with `hidden` unchanged and the sum holding is the platform. If `hidden`
+jumps or the sum breaks, that is the code.
+
+**Build state:** committed on branch `portal-images-registry` — six commits on top of
+`33b39b0`, plus the launch-modal fix. Each was verified to compile in isolation. For the
+test count run `cargo test --features fits --lib` rather than matching a number here;
+grepping test names undercounts, because several tests loop over cases.
 
 ---
 
@@ -64,10 +79,10 @@ filter row for projects. The subtle behaviour is what happens when the two rows 
 
 | # | Do | Expect |
 | --- | --- | --- |
-| 2.1 | Read the count badge beside "CANFAR Images". | **288**, not 365. The 77 `desktop-app`-only images — every CASA tag back to `3.4.0` — are gone. |
+| 2.1 | Read the count badge beside "CANFAR Images". | Well below the catalogue total — ~288 of ~365 at the time of writing. The exact figure drifts with the platform; what must hold is that the difference is the `desktop-app`-only images and nothing else. |
 | 2.2 | Look for `images.canfar.net/casa-4/casa:4.2.0`. | Absent. No launch tab offers it, and Inspect on it would spend a probe job for nothing. |
 | 2.3 | Check which filter is selected on first load. | **All** — the first button in row 1. *Changed default:* it used to open filtered to one type. |
-| 2.4 | With All selected, count row 2. | 21 projects plus All. Alphabetical, and stable between refreshes. |
+| 2.4 | With All selected, count row 2. | ~21 projects plus All — one per project present in the shown set. Alphabetical, stable between refreshes. GUI only; no MCP tool exposes the project filter. |
 | 2.5 | Select type **CARTA**; watch row 2. | Narrows to 2 projects. Only projects that still have an image appear — never a button that selects nothing. |
 | 2.6 | **Regression** — select project `uvickbos`, then type **CARTA** (that project has no CARTA image). | Project resets to All and CARTA images show. An empty list means `surviving_project` failed, and the cause would be a pressed button in a row that just rebuilt without it. |
 | 2.7 | **Regression** — click rapidly between type and project buttons, 15–20 times. | No freeze, no crash. Both rows previously held a `RefCell` borrow across widget rebuilds; a handler reaching the same cell aborts the process rather than panicking. |
@@ -156,7 +171,7 @@ report that no image does it — while nine images carry `specutils`.
 | 7.1 | List tools; confirm all six. | `search_packages`, `describe_image`, `search_image_registry`, `list_my_images`, `add_registry_image`, `remove_registry_image`. Total 168. |
 | 7.2 | `search_packages` with term `spec`. | Prefix matches lead: `spectres`, `specutils`, `spectral-cube`, `specviz`, `specreduce` — **above** `jsonschema-specifications` (71 images) and `fsspec` (56). A package in 71 images distinguishes nothing. |
 | 7.3 | `search_packages` with no term. | The commonest packages overall, and `totalKnown: 6511`. Not an error. |
-| 7.4 | `describe_image` on `images.canfar.net/crispasa/mufasa:latest` with `packages: "spec"`. | Ubuntu 22.04.4 LTS, 1398 packages, capabilities `python3, conda`, matches incl. `pyspeckit`, `spectral-cube`, `specutils`. |
+| 7.4 | `describe_image` on `images.canfar.net/crispasa/mufasa:latest` with `packages: "spec"`. | Ubuntu 22.04.4 LTS, ~1398 packages, capabilities `python3, conda`. `packages` is an **array** in reading order (Python before system), each entry naming its `ecosystem`. Leading matches first — `specutils`, `spectral-cube`, `pyspeckit` before `archspec`. An ecosystem with no match is omitted. |
 | 7.5 | `describe_image` on a failed image, and on a never-inspected one. | `discovered: false` with failure + job id; `discovered: null` with a pointer to `discover_image_packages`. Neither is an error. |
 | 7.6 | `search_image_registry` with term `astroml`. | ~16 images with types from labels and an `alreadyAdded` flag per result. |
 | 7.7 | `search_image_registry` with a blank term. | Error "term is required" — never a whole-registry enumeration. |
@@ -177,8 +192,11 @@ The comparison those two `describe_image` calls support:
 
 ```
 mufasa:latest   Ubuntu 22.04 · 1398 pkgs · pyspeckit + spectral-cube + specutils + conda
-iraf:0.3        Ubuntu 24.04 ·  972 pkgs · specutils only
+iraf:0.3        Ubuntu 24.04 ·  972 pkgs · specutils, and nothing else spectral
 ```
+
+Both also match `archspec` and `jsonschema-specifications` on a `spec` filter — substring
+noise every image carries. They sort last, which is what keeps the comparison readable.
 
 ---
 
@@ -198,3 +216,9 @@ Things this plan deliberately does not claim, so nobody chases them as bugs.
   (jobs) — better than the previous 15 s and 45 s, and never worse.
 - **Cadence rules are unit-tested; wall-clock behaviour is not.** §1 is the only place that
   gets verified.
+- **Sections 1, 5 and 6 cannot be run over MCP.** Poll timing, the layout breakpoint, the
+  launch flow and the status bar are GUI-only. An MCP-driven pass should record them as
+  untested rather than infer them from tool output.
+- **`describe_image` filters by substring.** Asking for `spec` also matches `archspec` and
+  `jsonschema-specifications` — plumbing nearly every image carries. Leading matches sort
+  first, but the count includes the rest, so "specutils only" means one *leading* match.

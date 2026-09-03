@@ -152,7 +152,11 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                 which is the better fit, and 'better' usually means the OS, the Python version \
                 alongside the match, or whether the rest of the toolchain is there too. \
                 `packages` optionally filters the returned names by substring, so you can ask \
-                'what else astro* does this one have'. Free: reads the local cache, no network. \
+                'what else astro* does this one have'; names that LEAD with the term are listed \
+                first, because a substring match also catches unrelated plumbing (searching 'spec' \
+                finds archspec and jsonschema-specifications beside specutils), and an ecosystem \
+                with no match is omitted. `packages` is an ARRAY in reading order — Python first, \
+                then system packages — not a keyed object. Free: reads the local cache, no network. \
                 Returns discovered=false with a reason for an image that failed inspection, and \
                 discovered=null for one never inspected (discover_image_packages probes it)."
                 .to_string(),
@@ -355,17 +359,41 @@ fn describe_image(services: &AppServices, args: &Value) -> ToolResult {
                 ("rpm", &m.rpm),
                 ("apk", &m.apk),
             ];
-            let mut out = serde_json::Map::new();
+            // An ARRAY, not an object. A JSON object's key order is the
+            // serializer's business — serde_json sorts them, so "python first,
+            // system packages after" became "apk, dpkg, python, rpm" on the
+            // wire, and the order an agent reads top-down was alphabetical by
+            // accident. An array makes the order a contract.
+            let mut out: Vec<Value> = Vec::new();
             let mut total_matching = 0usize;
             for (name, packages) in ecosystems {
                 if packages.is_empty() {
                     continue;
                 }
-                let matching: Vec<&String> = packages
+                let mut matching: Vec<&String> = packages
                     .iter()
                     .filter(|p| filter.is_empty() || p.to_lowercase().contains(&filter))
                     .collect();
                 total_matching += matching.len();
+
+                // An ecosystem with no match under an explicit filter is left
+                // out, the way the detail view drops a section that would only
+                // ever read zero. Unfiltered, every ecosystem present is worth
+                // reporting — its count is the answer.
+                if matching.is_empty() && !filter.is_empty() {
+                    continue;
+                }
+
+                // Names that LEAD with the term first: `spec` otherwise reports
+                // `archspec` and `jsonschema-specifications` beside `specutils`
+                // with nothing to separate them, and the caller has to know
+                // which of the three they meant.
+                matching.sort_by(|a, b| {
+                    let a_leads = crate::helpers::discovery_formatting::leads_with(a, &filter);
+                    let b_leads = crate::helpers::discovery_formatting::leads_with(b, &filter);
+                    b_leads.cmp(&a_leads).then_with(|| a.cmp(b))
+                });
+
                 // Every match when the caller filtered — they asked a specific
                 // question and a truncated answer to it is a wrong one. A
                 // sample otherwise.
@@ -374,14 +402,12 @@ fn describe_image(services: &AppServices, args: &Value) -> ToolResult {
                 } else {
                     matching.len()
                 };
-                out.insert(
-                    name.to_string(),
-                    json!({
-                        "total": packages.len(),
-                        "matching": matching.len(),
-                        "names": matching.iter().take(listed).collect::<Vec<_>>(),
-                    }),
-                );
+                out.push(json!({
+                    "ecosystem": name,
+                    "total": packages.len(),
+                    "matching": matching.len(),
+                    "names": matching.iter().take(listed).collect::<Vec<_>>(),
+                }));
             }
 
             ToolResult::Data(json!({
@@ -399,7 +425,7 @@ fn describe_image(services: &AppServices, args: &Value) -> ToolResult {
                 "shells": m.shells,
                 "packageCount": crate::helpers::discovery_formatting::package_count(m),
                 "matchingCount": total_matching,
-                "packages": Value::Object(out),
+                "packages": out,
             }))
         }
     }
@@ -626,6 +652,28 @@ mod tests {
 
     fn s(list: &[&str]) -> Vec<String> {
         list.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn the_ecosystem_order_is_a_contract_not_the_serializers_choice() {
+        // A JSON object's key order belongs to serde_json, which sorts: the
+        // intended "Python first, system packages after" arrived on the wire as
+        // apk, dpkg, python, rpm. An agent reading top-down was reading
+        // alphabetical order by accident. QA caught this against a live image.
+        let code = crate::testing::without_comments(crate::testing::code(include_str!(
+            "imagediscovery.rs"
+        )));
+        let at = code.find("fn describe_image").expect("describe_image is gone");
+        let body = &code[at..];
+        assert!(
+            !body.contains("serde_json::Map::new()"),
+            "describe_image returns ecosystems in a map, so their order is the \
+             serializer's rather than the one the tool documents"
+        );
+        assert!(
+            body.contains("\"ecosystem\": name"),
+            "the ecosystem no longer names itself, so an array loses which is which"
+        );
     }
 
     #[test]

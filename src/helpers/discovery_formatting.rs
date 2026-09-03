@@ -74,6 +74,18 @@ pub fn time_ago(rfc3339: &str, now_rfc3339: &str) -> String {
 ///
 /// Mirrors `DiscoveryFormatting.PackageCount`. Uses the flat `python` list (not
 /// the per-env map) to match the C# `PythonPackages.Count`.
+/// Does `name` lead with `needle`, case-insensitively?
+///
+/// The lead half of package-name relevance, shared so the vocabulary search and
+/// the per-image filter rank the same way. Searching "spec" over this cache
+/// otherwise surfaces `archspec` and `jsonschema-specifications` ahead of
+/// `specutils`: names that merely CONTAIN the term are usually Python plumbing
+/// every image carries, which is exactly what does not answer the question.
+pub fn leads_with(name: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    !needle.is_empty() && name.to_lowercase().starts_with(&needle.to_lowercase())
+}
+
 pub fn package_count(m: &ImageManifest) -> usize {
     m.dpkg.len() + m.rpm.len() + m.apk.len() + m.python.len() + m.r_packages.len()
 }
