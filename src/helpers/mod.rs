@@ -57,6 +57,7 @@ pub mod search_exporter;
 pub mod sexagesimal;
 pub mod simple_html;
 pub mod store_events;
+pub mod tasks;
 pub mod transfer_function;
 pub mod unit_converter;
 pub mod vospace_parser;
