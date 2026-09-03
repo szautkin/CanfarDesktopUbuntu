@@ -148,7 +148,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
 /// state at propose time — the real service call happens in [`apply`].
 pub async fn dispatch(
     name: &str,
-    _services: &AppServices,
+    services: &AppServices,
     args: &Value,
     proposals: &Arc<InMemoryProposalStore>,
 ) -> Option<ToolResult> {
@@ -156,11 +156,39 @@ pub async fn dispatch(
         "save_query" => propose_save_query(args, proposals),
         "delete_saved_query" => propose_delete_saved_query(args, proposals),
         "launch_session" => propose_launch_session(args, proposals),
-        "delete_session" => propose_delete_session(args, proposals),
-        "renew_session" => propose_renew_session(args, proposals),
+        "delete_session" => {
+            propose_delete_session(args, proposals, session_warning(services, args).await)
+        }
+        "renew_session" => {
+            propose_renew_session(args, proposals, session_warning(services, args).await)
+        }
         _ => return None,
     };
     Some(result)
+}
+
+/// A note for the proposal summary when the session named does not exist.
+///
+/// A typo used to queue a perfectly ordinary-looking proposal to terminate a
+/// session that was never there, and the mistake only surfaced on approval —
+/// after a human had read the summary and agreed to it. QA queued two of these
+/// in one session without noticing.
+///
+/// Deliberately a WARNING, not a refusal: the listing can lag, and a caller who
+/// means it should still be able to queue. It just should not look routine.
+async fn session_warning(services: &AppServices, args: &Value) -> Option<String> {
+    let id = str_arg(args, "id");
+    if id.is_empty() {
+        return None;
+    }
+    let token = services.get_token().await?;
+    match services.sessions.get_session(&token, &id).await {
+        // Only a definite "not there" is worth saying. A lookup that failed
+        // says nothing about the session, and guessing would be worse than
+        // silence.
+        Ok(None) => Some(crate::tr_fmt!("no session with id '{}' is running", id)),
+        _ => None,
+    }
 }
 
 fn propose_save_query(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
@@ -246,7 +274,11 @@ fn propose_launch_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) 
     ToolResult::Proposed(p)
 }
 
-fn propose_delete_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+fn propose_delete_session(
+    args: &Value,
+    proposals: &Arc<InMemoryProposalStore>,
+    warning: Option<String>,
+) -> ToolResult {
     let id = str_arg(args, "id");
     if id.is_empty() {
         return ToolResult::Failed("id is required".to_string());
@@ -254,14 +286,26 @@ fn propose_delete_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) 
     let payload = json!({ "id": id });
     let p = proposals.enqueue(
         "delete_session",
-        &format!("Terminate session {}", id),
+        &summary_with(&format!("Terminate session {id}"), warning),
         true,
         payload,
     );
     ToolResult::Proposed(p)
 }
 
-fn propose_renew_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) -> ToolResult {
+/// Append a warning to a proposal summary, so it is read by whoever approves it.
+fn summary_with(summary: &str, warning: Option<String>) -> String {
+    match warning {
+        Some(w) => format!("{summary} — {w}"),
+        None => summary.to_string(),
+    }
+}
+
+fn propose_renew_session(
+    args: &Value,
+    proposals: &Arc<InMemoryProposalStore>,
+    warning: Option<String>,
+) -> ToolResult {
     let id = str_arg(args, "id");
     if id.is_empty() {
         return ToolResult::Failed("id is required".to_string());
@@ -269,7 +313,7 @@ fn propose_renew_session(args: &Value, proposals: &Arc<InMemoryProposalStore>) -
     let payload = json!({ "id": id });
     let p = proposals.enqueue(
         "renew_session",
-        &format!("Renew session {}", id),
+        &summary_with(&format!("Renew session {id}"), warning),
         false,
         payload,
     );
@@ -428,7 +472,7 @@ mod tests {
     #[test]
     fn destructive_kinds_are_flagged() {
         let store = Arc::new(InMemoryProposalStore::new());
-        let del = propose_delete_session(&json!({ "id": "abc123" }), &store);
+        let del = propose_delete_session(&json!({ "id": "abc123" }), &store, None);
         match del {
             ToolResult::Proposed(p) => assert!(p.destructive, "delete_session must be destructive"),
             _ => panic!("expected Proposed"),

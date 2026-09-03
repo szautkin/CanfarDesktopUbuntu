@@ -535,6 +535,7 @@ mod payload_contract_tests {
         ("ai_compute.rs", include_str!("ai_compute.rs")),
         ("aiguide_ext.rs", include_str!("aiguide_ext.rs")),
         ("imagediscovery.rs", include_str!("imagediscovery.rs")),
+        ("registry.rs", include_str!("registry.rs")),
         ("search_ui.rs", include_str!("search_ui.rs")),
         ("caom2_vizier.rs", include_str!("caom2_vizier.rs")),
     ];
@@ -740,6 +741,7 @@ mod advertised_argument_tests {
         include_str!("workflows.rs"),
         include_str!("search_ui.rs"),
         include_str!("imagediscovery.rs"),
+        include_str!("registry.rs"),
         include_str!("aiguide_ext.rs"),
         include_str!("ai_compute.rs"),
         include_str!("router.rs"),

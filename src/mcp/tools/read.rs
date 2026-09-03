@@ -474,6 +474,26 @@ async fn list_sessions(services: &crate::state::AppServices) -> ToolResult {
     }
 }
 
+/// How many children to ask VOSpace for in one listing.
+///
+/// Comfortably more than the result budget will keep, so the trim — not this —
+/// decides what the caller sees, while the server is still spared walking a
+/// directory of hundreds.
+const LIST_NODES_LIMIT: usize = 500;
+
+/// Accept the spellings a caller reasonably uses for "my home directory".
+///
+/// The path is joined onto `/arc/home/<user>`, so home is the EMPTY string.
+/// QA tried `"/"` — the obvious thing — and got "path is required", which reads
+/// as though root cannot be listed at all rather than that it is spelled
+/// differently.
+fn normalise_vospace_path(path: &str) -> &str {
+    match path.trim() {
+        "/" | "." | "~" => "",
+        other => other,
+    }
+}
+
 async fn list_storage(services: &crate::state::AppServices, args: &Value) -> ToolResult {
     let token = match services.get_token().await {
         Some(t) => t,
@@ -485,9 +505,18 @@ async fn list_storage(services: &crate::state::AppServices, args: &Value) -> Too
         Some(u) => u,
         None => return ToolResult::Failed("no signed-in username available".to_string()),
     };
-    let path = arg_str(args, "path").unwrap_or("");
+    let path = normalise_vospace_path(arg_str(args, "path").unwrap_or(""));
 
-    match services.vospace.list_nodes(&token, &username, path).await {
+    // Ask for what we are prepared to show. The reply is trimmed to a budget a
+    // few lines below regardless, so fetching a whole home directory — which
+    // costs VOSpace a recursive size for every folder in it, 59 seconds on this
+    // developer's account, past every client's timeout — only to discard most
+    // of it is waste at both ends.
+    match services
+        .vospace
+        .list_nodes_limited(&token, &username, path, Some(LIST_NODES_LIMIT))
+        .await
+    {
         Ok(nodes) => {
             let items: Vec<Value> = nodes
                 .into_iter()
@@ -612,6 +641,34 @@ fn health_payload(results: &[crate::services::ServiceProbeResult]) -> Value {
             .count(),
         "services": entries,
     })
+}
+
+#[cfg(test)]
+mod home_path_tests {
+    use super::normalise_vospace_path;
+
+    #[test]
+    fn the_obvious_spellings_of_home_all_reach_home() {
+        // The path is joined onto `/arc/home/<user>`, so home is the EMPTY
+        // string. A QA pass tried `"/"` — the obvious thing — and got
+        // "path is required", which reads as though the root cannot be listed
+        // at all rather than that it is spelled differently.
+        for spelling in ["/", "", "  ", ".", "~"] {
+            assert_eq!(
+                normalise_vospace_path(spelling),
+                "",
+                "`{spelling}` should mean the home directory"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_path_is_left_alone() {
+        assert_eq!(normalise_vospace_path("data/run1"), "data/run1");
+        // Not over-eager: a folder legitimately called "." inside a path is
+        // still part of that path.
+        assert_eq!(normalise_vospace_path("a/./b"), "a/./b");
+    }
 }
 
 #[cfg(test)]

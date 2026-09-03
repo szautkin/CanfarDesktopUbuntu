@@ -363,8 +363,16 @@ pub fn category_id_for_tool(name: &str) -> &'static str {
         | "get_headless_job_logs"
         | "get_headless_job_events"
         | "launch_headless_job" => "headless",
-        // Image Discovery
-        "find_images_with_packages" | "discover_image_packages" => "discovery",
+        // Image Discovery — what the app knows about an image, and how to reach
+        // an image it does not know about yet.
+        "find_images_with_packages"
+        | "discover_image_packages"
+        | "search_image_registry"
+        | "list_my_images"
+        | "add_registry_image"
+        | "remove_registry_image"
+        | "search_packages"
+        | "describe_image" => "discovery",
         // AI Compute
         "run_code" | "run_code_output" | "start_compute" | "stop_compute" => "compute",
         // Workflows

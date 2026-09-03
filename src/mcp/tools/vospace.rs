@@ -236,10 +236,12 @@ async fn read_get_node(services: &AppServices, args: &Value) -> ToolResult {
         Ok(v) => v,
         Err(e) => return ToolResult::Failed(e),
     };
+    // An empty path IS a path here: it is the home directory. `norm_path`
+    // strips the leading slash, so the obvious spelling — `"/"` — arrived as
+    // empty and was refused with "path is required", which reads as though the
+    // root cannot be read at all rather than that it is spelled differently.
+    // Writes still require one; this is a read of a node that always exists.
     let path = norm_path(&str_arg(args, "path"));
-    if path.is_empty() {
-        return ToolResult::Failed("path is required".to_string());
-    }
     match services.vospace.get_node(&token, &username, &path).await {
         Ok(node) => ToolResult::Data(node_to_json(&path, &node)),
         Err(e) => ToolResult::Failed(format!("could not read node {}: {}", path, e)),

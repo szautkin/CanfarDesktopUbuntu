@@ -302,6 +302,51 @@ mod tests {
     /// and an entry the reference later gains is itself reported.
     const VERBINAL_FIRST: &[(&str, &str)] = &[
     (
+        "search_packages",
+        "find_images_with_packages matches real package names, and neither app gives an agent \
+         any way to learn what those names are. Asked \"which image is best for spectra\", an \
+         agent searches for \"spectroscopy\", gets zero hits and zero near-misses, and reports \
+         that no image does it — while nine images carry `specutils`. A silent wrong answer, \
+         from the tool working exactly as designed. This is the vocabulary, commonest first, and \
+         it is the same argument describe_tap_schema was added on: an agent that has to guess \
+         identifiers will guess wrong and sound certain.",
+    ),
+    (
+        "describe_image",
+        "find_images_with_packages answers which images match; nothing answered which of them is \
+         the better fit. That is the actual question a user asks — \"which image should I use\" — \
+         and it turns on the OS, what else is installed beside the match, and whether the image \
+         was ever inspected at all. The card gained this view as a dialog in the same change; \
+         this is the same manifest, for an agent.",
+    ),
+    (
+        "search_image_registry",
+        "Both apps let an agent search the images the platform PUBLISHES, and neither lets it \
+         look at the registry those images come from. So an agent asked for something CANFAR \
+         does not list — a colleague's build, a tag newer than Skaha's catalogue — could only \
+         report that no such image exists, when the registry had it all along. Bounded on \
+         purpose: an empty term is refused rather than enumerating a shared Harbor instance.",
+    ),
+    (
+        "list_my_images",
+        "The counterpart to add_registry_image: an agent that has added an image needs to be \
+         able to say what is in the list, and to avoid proposing something already there. Free \
+         and local. The reference has no such list because it has no way to add to one.",
+    ),
+    (
+        "add_registry_image",
+        "What makes search_image_registry actionable. An added image joins the app's one \
+         catalogue, so it becomes launchable and searchable everywhere at once — the images \
+         widget, find_images_with_packages, the launch form. Without it an agent can find the \
+         right image and do nothing with it.",
+    ),
+    (
+        "remove_registry_image",
+        "The undo for add_registry_image. Marked destructive despite touching nothing outside \
+         the user's own list: it takes away a choice they made, and the app does not know how \
+         they found the image in the first place.",
+    ),
+    (
         "describe_tap_schema",
         "Neither app tells an agent what the CAOM2 tables contain. An agent writing ADQL had \
          two table names and one join, both from a sentence in a tool description, and had to \

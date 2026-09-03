@@ -272,8 +272,36 @@ async fn get_session_logs(services: &AppServices, args: &Value) -> ToolResult {
         None => return not_signed_in(),
     };
     match services.sessions.get_logs(&token, &id).await {
+        Ok(logs) if logs.trim().is_empty() => {
+            // Skaha answers a request for a NONEXISTENT job's logs with 200 and
+            // an empty body, so "no such job" and "a job that printed nothing"
+            // arrived identically — as `isError:false, logs:""`, which reads as
+            // the quiet job. The events endpoint 404s properly; this one has to
+            // ask. Only on the empty path, which is the anomaly anyway.
+            let exists = matches!(
+                services.sessions.get_session(&token, &id).await,
+                Ok(Some(_))
+            );
+            empty_logs_result(&id, exists)
+        }
         Ok(logs) => ToolResult::Data(json!({ "id": id, "logs": logs })),
         Err(e) => ToolResult::Failed(format!("could not fetch logs for '{id}': {e}")),
+    }
+}
+
+/// What an empty log body means, once we know whether the job is real.
+///
+/// Split out so the decision is testable without a Skaha: the round trip is
+/// the untestable part, the meaning is not.
+fn empty_logs_result(id: &str, job_exists: bool) -> ToolResult {
+    if job_exists {
+        ToolResult::Data(json!({
+            "id": id,
+            "logs": "",
+            "note": "the job exists and has produced no log output yet",
+        }))
+    } else {
+        ToolResult::Failed(format!("no job with id '{id}'"))
     }
 }
 
@@ -570,6 +598,41 @@ fn dedup_ids(value: Option<&Value>) -> Vec<String> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod empty_logs_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_job_is_an_error_not_a_quiet_one() {
+        // Skaha answers a nonexistent job's logs with 200 and an empty body, so
+        // "no such job" used to arrive as `isError:false, logs:""` — which
+        // reads as a job that simply had not printed anything. The events
+        // endpoint 404s properly; this one has to ask.
+        match empty_logs_result("no-such-id", false) {
+            ToolResult::Failed(msg) => assert!(
+                msg.contains("no job with id 'no-such-id'"),
+                "the error does not name the missing job: {msg}"
+            ),
+            _ => panic!("a missing job must be reported as an error"),
+        }
+    }
+
+    #[test]
+    fn a_real_job_with_no_output_says_which_it_is() {
+        match empty_logs_result("abc123", true) {
+            ToolResult::Data(v) => {
+                assert_eq!(v["logs"], "");
+                assert!(
+                    v["note"].as_str().unwrap_or("").contains("exists"),
+                    "an empty log body must say the job is real, or it reads as \
+                     the missing-job case it was just distinguished from"
+                );
+            }
+            _ => panic!("a real job with no output is not an error"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

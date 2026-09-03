@@ -18,6 +18,7 @@ pub mod catalog;
 pub mod cube;
 pub mod fits;
 pub mod imagediscovery;
+pub mod registry;
 pub mod notebook;
 pub mod proposals;
 pub mod read;
@@ -423,6 +424,9 @@ pub async fn apply_any(
     if let Some(r) = aiguide_ext::apply(services, proposal).await {
         return r;
     }
+    if let Some(r) = registry::apply(services, proposal).await {
+        return r;
+    }
     if let Some(r) = imagediscovery::apply(services, proposal).await {
         return r;
     }
@@ -452,6 +456,7 @@ pub fn family_descriptors() -> Vec<ToolDescriptor> {
     v.extend(notebook::descriptors());
     v.extend(fits::descriptors());
     v.extend(imagediscovery::descriptors());
+    v.extend(registry::descriptors());
     v.extend(caom2_vizier::descriptors());
     v.extend(search_ui::descriptors());
     v.extend(ai_compute::descriptors());
@@ -490,6 +495,9 @@ pub async fn family_dispatch(
         return Some(r);
     }
     if let Some(r) = fits::dispatch(name, services, args, proposals).await {
+        return Some(r);
+    }
+    if let Some(r) = registry::dispatch(name, services, args, proposals).await {
         return Some(r);
     }
     if let Some(r) = imagediscovery::dispatch(name, services, args, proposals).await {

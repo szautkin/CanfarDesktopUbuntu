@@ -111,6 +111,73 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             agent_safe: true,
         },
         ToolDescriptor {
+            name: "search_packages".to_string(),
+            description: "Search the VOCABULARY of package names known across every inspected \
+                image, and how many images carry each. Call this BEFORE find_images_with_packages \
+                whenever the user described a task rather than naming a package — \
+                'spectra', 'radio imaging', 'photometry'. find_images_with_packages matches real \
+                package names, so a subject word finds nothing and looks like a definitive 'no \
+                image does that': 'spectroscopy' returns zero hits here while nine images carry \
+                'specutils'. `term` matches case-insensitively by substring, so 'spec' surfaces \
+                specutils, specreduce, spectral-cube. Results are commonest-first — a name in 30 \
+                images is what the platform supports, one in a single image is somebody's \
+                pin. Free: reads the local cache, no network, no jobs. Returns packages[] of \
+                {name, imageCount} plus count and totalKnown."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "term": {
+                        "type": "string",
+                        "description": "Substring to look for, case-insensitive. Omit or leave \
+                            empty for the most common packages overall."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "How many names to return (default 40)."
+                    }
+                },
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
+            name: "describe_image".to_string(),
+            description: "Everything known about ONE image: OS, kernel, capabilities, conda \
+                environments, and per-ecosystem package counts. Use it to COMPARE the candidates \
+                find_images_with_packages returned — that tool says which images match, this says \
+                which is the better fit, and 'better' usually means the OS, the Python version \
+                alongside the match, or whether the rest of the toolchain is there too. \
+                `packages` optionally filters the returned names by substring, so you can ask \
+                'what else astro* does this one have'. Free: reads the local cache, no network. \
+                Returns discovered=false with a reason for an image that failed inspection, and \
+                discovered=null for one never inspected (discover_image_packages probes it)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "image": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Full image reference, e.g. \
+                            'images.canfar.net/skaha/astroml:24.07'."
+                    },
+                    "packages": {
+                        "type": "string",
+                        "description": "Only return package names containing this substring, \
+                            case-insensitive. Omit for counts plus a sample."
+                    }
+                },
+                "required": ["image"],
+                "additionalProperties": false
+            }),
+            verb: VerbClass::Read,
+            agent_safe: true,
+        },
+        ToolDescriptor {
             name: "discover_image_packages".to_string(),
             description: "Run a probe job to enumerate the named image's installed packages \
                 (apt/rpm/apk + pip + conda + R) and cache the result so it becomes queryable via \
@@ -177,6 +244,8 @@ pub async fn dispatch(
 ) -> Option<ToolResult> {
     let result = match name {
         "find_images_with_packages" => find_images(services, args),
+        "search_packages" => search_packages(services, args),
+        "describe_image" => describe_image(services, args),
         "discover_image_packages" => propose_discover(args, proposals),
         _ => return None,
     };
@@ -211,6 +280,129 @@ fn find_images(services: &AppServices, args: &Value) -> ToolResult {
         partials,
         known_package_count,
     ))
+}
+
+/// Default and ceiling for how many package names `search_packages` returns.
+const PACKAGE_NAMES_DEFAULT: usize = 40;
+const PACKAGE_NAMES_MAX: usize = 200;
+
+/// How many package names `describe_image` samples per ecosystem when the
+/// caller did not filter.
+///
+/// A manifest here holds up to 1400 names; returning them all would spend the
+/// agent's context on a list it did not ask for. The counts say how big each
+/// ecosystem is, the sample says what kind of thing is in it, and `packages`
+/// narrows to the ones actually in question.
+const SAMPLE_PER_ECOSYSTEM: usize = 25;
+
+/// Search the known package vocabulary.
+fn search_packages(services: &AppServices, args: &Value) -> ToolResult {
+    let term = str_arg(args, "term");
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| (n as usize).clamp(1, PACKAGE_NAMES_MAX))
+        .unwrap_or(PACKAGE_NAMES_DEFAULT);
+
+    let found = services.image_manifests.packages_matching(&term, limit);
+    let packages: Vec<Value> = found
+        .iter()
+        .map(|(name, images)| json!({ "name": name, "imageCount": images }))
+        .collect();
+
+    ToolResult::Data(json!({
+        "term": term,
+        "count": packages.len(),
+        "totalKnown": services.image_manifests.all_packages().len(),
+        "packages": packages,
+    }))
+}
+
+/// Everything known about one image.
+fn describe_image(services: &AppServices, args: &Value) -> ToolResult {
+    let image = image_arg(args);
+    if image.trim().is_empty() {
+        return ToolResult::Failed("image is required".to_string());
+    }
+    let filter = str_arg(args, "packages").trim().to_lowercase();
+
+    let Some(outcome) = services.image_manifests.get(&image) else {
+        // Not a failure: "never inspected" is a real, actionable answer, and
+        // saying so beats an error the agent has to interpret.
+        return ToolResult::Data(json!({
+            "image": image,
+            "discovered": Value::Null,
+            "reason": "This image has not been inspected yet. Call discover_image_packages \
+                       to probe it.",
+        }));
+    };
+
+    match &outcome.outcome {
+        DiscoveryOutcome::Failure {
+            category,
+            message,
+            job_id,
+        } => ToolResult::Data(json!({
+            "image": image,
+            "discovered": false,
+            "failure": { "category": category, "message": message, "jobId": job_id },
+        })),
+        DiscoveryOutcome::Manifest(m) => {
+            let ecosystems = [
+                ("python", &m.python),
+                ("r", &m.r_packages),
+                ("dpkg", &m.dpkg),
+                ("rpm", &m.rpm),
+                ("apk", &m.apk),
+            ];
+            let mut out = serde_json::Map::new();
+            let mut total_matching = 0usize;
+            for (name, packages) in ecosystems {
+                if packages.is_empty() {
+                    continue;
+                }
+                let matching: Vec<&String> = packages
+                    .iter()
+                    .filter(|p| filter.is_empty() || p.to_lowercase().contains(&filter))
+                    .collect();
+                total_matching += matching.len();
+                // Every match when the caller filtered — they asked a specific
+                // question and a truncated answer to it is a wrong one. A
+                // sample otherwise.
+                let listed = if filter.is_empty() {
+                    SAMPLE_PER_ECOSYSTEM
+                } else {
+                    matching.len()
+                };
+                out.insert(
+                    name.to_string(),
+                    json!({
+                        "total": packages.len(),
+                        "matching": matching.len(),
+                        "names": matching.iter().take(listed).collect::<Vec<_>>(),
+                    }),
+                );
+            }
+
+            ToolResult::Data(json!({
+                "image": image,
+                "discovered": true,
+                "inspectedAt": m.captured_at.clone().unwrap_or_else(|| outcome.discovered_at.clone()),
+                "os": {
+                    "family": m.os_family,
+                    "version": m.os_version,
+                    "release": m.os_release,
+                },
+                "kernel": m.kernel.as_deref().filter(|k| !k.starts_with("unknown")),
+                "capabilities": m.capabilities,
+                "condaEnvs": m.conda_envs,
+                "shells": m.shells,
+                "packageCount": crate::helpers::discovery_formatting::package_count(m),
+                "matchingCount": total_matching,
+                "packages": Value::Object(out),
+            }))
+        }
+    }
 }
 
 /// The image reference to probe.
@@ -439,7 +631,7 @@ mod tests {
     #[test]
     fn descriptor_names_unique_and_verbs_correct() {
         let ds = descriptors();
-        assert_eq!(ds.len(), 2);
+        assert_eq!(ds.len(), 4);
         let mut seen = HashSet::new();
         for d in &ds {
             assert!(!d.name.is_empty());
@@ -452,6 +644,13 @@ mod tests {
             .find(|d| d.name == "find_images_with_packages")
             .unwrap();
         assert_eq!(find.verb, VerbClass::Read);
+        // Both new tools read the local cache and cost nothing. If either ever
+        // becomes a Write, it is because it started running something — which
+        // is the thing an agent must be asked about first.
+        for name in ["search_packages", "describe_image"] {
+            let d = ds.iter().find(|d| d.name == name).unwrap();
+            assert_eq!(d.verb, VerbClass::Read, "{name} should be a free read");
+        }
         let disc = ds
             .iter()
             .find(|d| d.name == "discover_image_packages")

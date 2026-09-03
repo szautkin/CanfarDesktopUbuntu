@@ -70,6 +70,14 @@ fn current_view_payload(
             "reason": ai_compute_ready,
         },
         "followAgentActivityEnabled": services.mcp_follow_activity.load(Ordering::Relaxed),
+        // What the app is DOING, not just where it is.
+        //
+        // `mode: "portal"` said where the user was and nothing about whether a
+        // probe was three minutes into waiting on a Skaha job. A caller asking
+        // "is anything happening?" had no way to find out, which is the same
+        // gap the status bar closes for a person — answered here from the same
+        // registry, so the two surfaces cannot disagree.
+        "activity": activity_summary(),
         "pendingProposalsCount": pending,
         "proposalBudget": { "cap": budget.cap(), "remaining": budget.remaining(pending) },
         // Beyond the reference, whose FITS viewer is the only multi-document
@@ -564,6 +572,81 @@ async fn on_whichever_viewer_holds(op: &str, args: &Value) -> ToolResult {
         "no annotation '{id}' in either viewer — it may already be gone; \
          list_fits_annotations or list_cube_annotations show what is there"
     ))
+}
+
+/// Running and recently-failed work, from the shared task registry.
+fn activity_summary() -> Value {
+    use crate::helpers::tasks::{self, TaskState};
+    let tasks = tasks::snapshot();
+    let running: Vec<Value> = tasks
+        .iter()
+        .filter(|t| !t.state.is_finished())
+        .map(|t| {
+            json!({
+                "label": t.label,
+                // The stage is the useful half: "waiting for job vi-abc" says
+                // something "running" never could.
+                "stage": t.stage,
+                "seconds": t.elapsed().as_secs(),
+            })
+        })
+        .collect();
+    let failed: Vec<Value> = tasks
+        .iter()
+        .filter_map(|t| match &t.state {
+            TaskState::Failed(why) => Some(json!({ "label": t.label, "reason": why })),
+            _ => None,
+        })
+        .collect();
+    json!({
+        "runningCount": running.len(),
+        "running": running,
+        "failedCount": failed.len(),
+        "failed": failed,
+    })
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use crate::helpers::tasks::{self, TaskKind};
+
+    /// The registry is global, so these take turns.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn the_view_reports_what_is_running_and_why_anything_failed() {
+        // `mode: "portal"` told a caller where the user was and nothing about
+        // whether a probe was three minutes into waiting on a Skaha job.
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        tasks::clear_finished();
+
+        let running = tasks::begin(TaskKind::Discovery, "Inspect skaha/base:1.0");
+        running.stage("waiting for job vi-abc");
+        tasks::begin(TaskKind::Launch, "Launch notebook1").fail("no quota");
+
+        let a = activity_summary();
+        assert_eq!(a["runningCount"], 1);
+        assert_eq!(a["running"][0]["label"], "Inspect skaha/base:1.0");
+        assert_eq!(
+            a["running"][0]["stage"], "waiting for job vi-abc",
+            "the stage is the half that says something `running` cannot"
+        );
+        assert_eq!(a["failedCount"], 1);
+        assert_eq!(a["failed"][0]["reason"], "no quota");
+
+        running.succeed();
+        tasks::clear_finished();
+    }
+
+    #[test]
+    fn an_idle_app_says_so_rather_than_omitting_the_field() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        tasks::clear_finished();
+        let a = activity_summary();
+        assert_eq!(a["runningCount"], 0);
+        assert!(a["running"].as_array().unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]

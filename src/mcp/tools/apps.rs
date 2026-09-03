@@ -215,11 +215,94 @@ pub fn man(tool: &str, manifest: Vec<ToolDescriptor>) -> Result<Value, String> {
         "name": found.name,
         "description": found.description,
         "inputSchema": found.input_schema,
+        "example": example_call(&found.name, &found.input_schema),
         "app": app,
         "appTitle": category.map(|c| c.title),
         "appDescription": category.map(|c| c.summary),
         "alsoInThisApp": siblings,
     }))
+}
+
+/// A ready-to-send call for this tool, built from its own schema.
+///
+/// Three of the nine failures in a full QA pass were the caller guessing an
+/// argument name — `type` for `kind`, `vospacePath` for `path`. The schema said
+/// so all along, but a list of properties does not show the SHAPE of a call the
+/// way one filled-in example does.
+///
+/// Generated rather than written per tool, so it cannot drift from the schema
+/// it documents: 42 hand-written examples would be 42 things to forget.
+/// How many arguments to show for a tool that requires none.
+const MAX_EXAMPLE_ARGS: usize = 6;
+
+fn example_call(name: &str, schema: &Value) -> Value {
+    let props = schema.get("properties").and_then(|p| p.as_object());
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let mut args = serde_json::Map::new();
+    if let Some(props) = props {
+        if required.is_empty() {
+            // Nothing is required, so the smallest call that works is an empty
+            // one — and an empty example is useless in exactly the place
+            // guessing is likeliest. `launch_session` requires none of its
+            // arguments, which is how a caller came to invent `type` when the
+            // schema says `kind`. Show the shape instead, capped so a
+            // wide-surface tool does not answer with a wall.
+            for (key, spec) in props.iter().take(MAX_EXAMPLE_ARGS) {
+                args.insert(key.clone(), example_value(key, spec));
+            }
+        } else {
+            // The required ones, in the schema's own order — that is the
+            // smallest call that works, which is what an example is for.
+            for key in &required {
+                if let Some(spec) = props.get(*key) {
+                    args.insert((*key).to_string(), example_value(key, spec));
+                }
+            }
+        }
+    }
+    json!({ "name": name, "arguments": Value::Object(args) })
+}
+
+/// A plausible value for one argument, taken from the schema where it says.
+fn example_value(key: &str, spec: &Value) -> Value {
+    // An enum states its own answers; anything else would be a guess.
+    if let Some(first) = spec
+        .get("enum")
+        .and_then(|e| e.as_array())
+        .and_then(|e| e.first())
+    {
+        return first.clone();
+    }
+    match spec.get("type").and_then(|t| t.as_str()) {
+        Some("integer") | Some("number") => spec
+            .get("minimum")
+            .cloned()
+            .unwrap_or_else(|| Value::from(1)),
+        Some("boolean") => Value::Bool(true),
+        Some("array") => Value::Array(vec![]),
+        // A description that already carries an "e.g." is the author's own
+        // example, and better than anything invented here.
+        _ => Value::String(
+            spec.get("description")
+                .and_then(|d| d.as_str())
+                .and_then(example_from_description)
+                .unwrap_or_else(|| format!("<{key}>")),
+        ),
+    }
+}
+
+/// Pull the sample out of a description that says "e.g. `something`".
+fn example_from_description(description: &str) -> Option<String> {
+    let at = description.find("e.g. ")? + "e.g. ".len();
+    let rest = description[at..].trim_start_matches(['\'', '`', '"']);
+    let end = rest.find([',', '\'', '`', '"', ')']).unwrap_or(rest.len());
+    let sample = rest[..end].trim().trim_end_matches('.');
+    (!sample.is_empty()).then(|| sample.to_string())
 }
 
 /// Why that tool name did not match, with the nearest ones that do.
@@ -424,6 +507,79 @@ pub fn dispatch(name: &str, args: &Value, manifest: Vec<ToolDescriptor>) -> Opti
             Some(ToolResult::Data(search_tools(&query, limit, manifest)))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod example_tests {
+    use super::*;
+
+    #[test]
+    fn the_example_uses_the_schemas_own_argument_names() {
+        // The failure this prevents: a caller guessing `type` when the schema
+        // says `kind`, or `vospacePath` when it says `path`. Three of nine
+        // failures in a full QA pass were exactly that.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "enum": ["notebook", "desktop"] },
+                "image": { "type": "string", "description": "Container image, e.g. `skaha/base:1.0`." },
+                "cores": { "type": "integer", "minimum": 2 },
+                "name": { "type": "string", "description": "Optional." }
+            },
+            "required": ["kind", "image", "cores"]
+        });
+        let example = example_call("launch_session", &schema);
+        let args = &example["arguments"];
+
+        assert_eq!(example["name"], "launch_session");
+        // An enum states its own answer.
+        assert_eq!(args["kind"], "notebook");
+        // A description carrying "e.g." is the author's own sample.
+        assert_eq!(args["image"], "skaha/base:1.0");
+        // A number takes its own minimum rather than an invented 1.
+        assert_eq!(args["cores"], 2);
+        // Optional arguments stay out: the example is the smallest call that
+        // works, not a catalogue.
+        assert!(args.get("name").is_none(), "an optional argument crept in");
+    }
+
+    #[test]
+    fn a_tool_that_requires_nothing_still_shows_its_argument_names() {
+        // `launch_session` requires none of its arguments, so "the smallest
+        // call that works" is `{}` — and an empty example is useless exactly
+        // where guessing is likeliest. A caller invented `type` because nothing
+        // showed them `kind`.
+        let schema = json!({
+            "properties": {
+                "kind": { "type": "string", "enum": ["notebook"] },
+                "image": { "type": "string" }
+            }
+        });
+        let args = example_call("launch_session", &schema)["arguments"].clone();
+        assert_eq!(args["kind"], "notebook");
+        assert!(args.get("image").is_some());
+        assert!(
+            args.get("type").is_none(),
+            "the example must show the schema's names, not a caller's guess"
+        );
+    }
+
+    #[test]
+    fn an_argument_with_nothing_to_go_on_is_named_not_guessed() {
+        let schema = json!({
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"]
+        });
+        let example = example_call("read_vospace_file", &schema);
+        assert_eq!(example["arguments"]["path"], "<path>");
+    }
+
+    #[test]
+    fn a_tool_that_takes_nothing_still_shows_the_shape() {
+        let example = example_call("get_auth_state", &json!({ "type": "object" }));
+        assert_eq!(example["name"], "get_auth_state");
+        assert!(example["arguments"].as_object().unwrap().is_empty());
     }
 }
 
