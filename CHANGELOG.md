@@ -4,6 +4,65 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-09-03
+
+A release about the Portal telling you things when they happen, and about
+finding an image you can actually run.
+
+Notifications were only ever a side effect of a poll, so the poll interval WAS
+the delay: a finished job was announced up to 45 seconds late, a session up to
+15, and a job that started and finished inside one window was never seen in a
+non-terminal state at all — so nothing was raised. The cadence follows the work
+now: five seconds after something changes, easing off to a ceiling, and forty-
+five when nothing is in flight. Worst case over a five-minute watch went from
+45s to 19s and the mean from 22s to 9s, with each surface's ceiling at or below
+the interval it already ran at, so nothing can arrive later than it did before.
+
+Two things the old timing hid. The session strip stopped polling entirely once
+nothing was pending, which is why "session expiring soon" could only fire by
+accident of some other session being pending. And a session that failed before
+the app started was announced on every launch, because the check asked "is it
+Failed and was it not Failed before?" — trivially true of a session never seen.
+
+Toasts stopped queueing. The overlay shows one at a time, so in a burst the
+sixth reached the screen half a minute after the thing it described.
+
+The CANFAR Images card listed all 365 images the platform returns. Seventy-seven
+of those are `desktop-app` and nothing else — an application published inside a
+desktop session, not a session you can start, every CASA tag back to 3.4.0 among
+them. They were a fifth of the card, and Inspect on one spent a real probe job
+on an image no launch tab would ever offer. The card now shows what the launch
+form can offer, filtered by session type and by project.
+
+Images the platform does not publish are reachable for the first time. A search
+of the registry behind it — only when asked, never on a timer — adds what you
+find to one merged catalogue that the card, the package search and the launch
+form all read. Clicking a row shows what is inside an image: OS, capabilities,
+and packages by ecosystem, with a filter, because the median image here holds
+624 of them.
+
+For agents, the question "which image is best for spectra on M51" used to end at
+a search for "spectroscopy" that returned zero hits and zero near-misses — which
+reads as "no image does that", while nine images carry `specutils`.
+`search_packages` is the vocabulary that was missing, and `describe_image` says
+which of the matches is the better fit.
+
+The launch modal answers in place instead of opening a second window over
+itself, and stops at the height of its content rather than 250 pixels past it.
+
+### Fixed
+
+- Image probes failing for five distinct reasons, each found by reading what
+  the job said: an OOM at `ram: 1` on a 12 GB image; a 10-minute poll ceiling
+  cutting off a probe that took 17; a missing `python3` treated as a dead end
+  rather than a fallback; syft unpacking into the container's own layer and
+  evicting a shared node for ephemeral storage; and diagnoses lost because
+  Skaha returns neither logs nor terminal events for a killed container.
+- A modal raised from a modal on launch, and a `RefCell` borrow held across a
+  GTK signal that aborted the process rather than panicking.
+- Dialogs opening at a fixed height regardless of content, which their own
+  height policy said they should hug.
+
 ### The workflows run on a Node that is still supported
 
 - All four actions — `checkout`, `cache`, `upload-artifact` and

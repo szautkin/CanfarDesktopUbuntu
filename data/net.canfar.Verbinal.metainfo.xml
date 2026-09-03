@@ -76,6 +76,18 @@
   </provides>
 
   <releases>
+    <release version="1.4.3" date="2026-09-03">
+      <description>
+        <p>
+          A release about being told things when they happen. Notifications were
+          a side effect of polling, so the interval was the delay; a session that
+          had failed before the app started was announced on every launch. The
+          images list now shows what you can actually launch, filtered by type
+          and project, and images the platform does not publish can be searched
+          for in the registry behind it and added to your own.
+        </p>
+      </description>
+    </release>
     <release version="1.4.2" date="2026-09-01">
       <description>
         <p>
