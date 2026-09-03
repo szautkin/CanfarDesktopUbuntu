@@ -127,13 +127,37 @@ impl Dialog {
         self.actions.set_visible(true);
     }
 
-    /// Show it, transient for whatever window `parent` is in.
+    /// Show it, transient for the window `parent` belongs to.
     pub fn present(&self, parent: &impl IsA<gtk::Widget>) {
-        if let Some(root) = parent.root().and_downcast::<gtk::Window>() {
-            self.window.set_transient_for(Some(&root));
-        }
+        self.window
+            .set_transient_for(anchor_window(parent).as_ref());
         self.window.present();
     }
+}
+
+/// The window a new dialog should hang from.
+///
+/// Not simply `widget.root()`. A widget can live INSIDE a dialog — the launch
+/// form does, now that it is presented in one — and a modal parented to another
+/// modal is at the window manager's mercy: when the inner one closed, the new
+/// dialog was left with no visible parent, dropped behind the main window, and
+/// went on holding the input grab. The app looked frozen, and the only thing
+/// wrong was a dialog nobody could see.
+///
+/// So: the widget's toplevel, and if that toplevel is itself transient for
+/// something, the window at the end of that chain — the real application
+/// window.
+pub fn anchor_window(widget: &impl IsA<gtk::Widget>) -> Option<gtk::Window> {
+    let mut window = widget.root().and_downcast::<gtk::Window>()?;
+    // Bounded: a transient chain is two or three deep in this app, and a cycle
+    // would otherwise hang the UI it is meant to protect.
+    for _ in 0..8 {
+        match window.transient_for() {
+            Some(parent) => window = parent,
+            None => break,
+        }
+    }
+    Some(window)
 }
 
 #[cfg(test)]
@@ -144,6 +168,40 @@ mod tests {
     /// countable: a file on it builds its own shell and may have no scroller
     /// under its content, which is how a Done button ends up past the bottom
     /// edge. A file NOT on it may not start.
+    #[test]
+    fn every_dialog_anchors_to_a_real_window_not_to_another_dialog() {
+        // A modal parented to a modal that then closes is left behind the main
+        // window still holding the input grab — the app appears frozen and the
+        // cause is invisible. That is what `.root()` gives you: the toplevel the
+        // widget happens to be in, which may itself be a dialog.
+        //
+        // Flags the risky idiom specifically. A dialog handed an explicit window
+        // it already holds is fine; one that reaches for `.root()` is not.
+        let mut bare: Vec<String> = Vec::new();
+        for (path, source) in crate::testing::rust_sources() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "dialog.rs" {
+                continue; // where anchor_window lives
+            }
+            let code = crate::testing::without_comments(crate::testing::code(&source));
+            for needle in ["set_transient_for(", "MessageDialog::new("] {
+                for (at, _) in code.match_indices(needle) {
+                    let arg = &code[at..(at + 160).min(code.len())];
+                    if arg.contains(".root()") {
+                        bare.push(format!("{name}:{}", code[..at].lines().count()));
+                    }
+                }
+            }
+        }
+        bare.sort();
+        assert!(
+            bare.is_empty(),
+            "dialog(s) taking their parent from `.root()`, which is the window \
+             they were raised FROM and may itself be a dialog that is closing — \
+             use `ui::dialog::anchor_window`: {bare:#?}"
+        );
+    }
+
     #[test]
     fn no_new_dialog_builds_its_own_shell() {
         // Not yet migrated. Shrink this; never extend it.

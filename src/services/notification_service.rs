@@ -129,8 +129,10 @@ impl NotificationService {
             return false;
         }
 
-        let notification =
-            gio::Notification::new(&format!("{} Session Ready", capitalize(session_type)));
+        let notification = gio::Notification::new(&format!(
+            "{} Session Ready",
+            crate::models::session::type_label(session_type)
+        ));
         notification.set_body(Some(&format!(
             "Your {} session '{}' is now running. Click to open.",
             session_type, name
@@ -245,14 +247,6 @@ impl NotificationService {
     }
 }
 
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
-    }
-}
-
 impl Default for NotificationService {
     fn default() -> Self {
         Self::new()
@@ -265,9 +259,10 @@ mod tests {
 
     #[test]
     fn capitalize_works() {
-        assert_eq!(capitalize("notebook"), "Notebook");
-        assert_eq!(capitalize(""), "");
-        assert_eq!(capitalize("a"), "A");
+        use crate::models::session::type_label;
+        assert_eq!(type_label("notebook"), "Notebook");
+        assert_eq!(type_label(""), "");
+        assert_eq!(type_label("a"), "A");
     }
 
     #[test]

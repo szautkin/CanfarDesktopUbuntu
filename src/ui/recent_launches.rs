@@ -15,7 +15,8 @@ pub struct RecentLaunchesView {
     filter_entry: gtk::SearchEntry,
     services: Arc<AppServices>,
     #[allow(clippy::type_complexity)]
-    on_relaunch: Rc<RefCell<Option<Box<dyn Fn(RecentLaunch)>>>>,
+    #[allow(clippy::type_complexity)]
+    on_relaunch: Rc<RefCell<Option<Box<dyn Fn(RecentLaunch, crate::ui::busy::Working)>>>>,
     session_limit_reached: Rc<RefCell<bool>>,
 }
 
@@ -73,11 +74,31 @@ impl RecentLaunchesView {
         view
     }
 
-    pub fn set_on_relaunch(&self, callback: impl Fn(RecentLaunch) + 'static) {
+    /// The callback is handed a [`Working`] guard — the pressed button and the
+    /// registry entry as one thing — and owns it for the length of the work.
+    /// Reporting the outcome restores the button and records it; dropping it
+    /// does both too, marking the work abandoned.
+    ///
+    /// [`Working`]: crate::ui::busy::Working
+    pub fn set_on_relaunch(
+        &self,
+        callback: impl Fn(RecentLaunch, crate::ui::busy::Working) + 'static,
+    ) {
         *self.on_relaunch.borrow_mut() = Some(Box::new(callback));
     }
 
     pub fn set_session_limit_reached(&self, reached: bool) {
+        // Only when it actually changes.
+        //
+        // The session list calls this on every poll, and `refresh` tears down
+        // and rebuilds every row. So the list was being reconstructed on a
+        // timer whether or not anything had changed — and a press that landed
+        // in that window was lost, because the button it was pressing had been
+        // destroyed and replaced. "The play button does nothing", intermittently
+        // and never reproducibly.
+        if *self.session_limit_reached.borrow() == reached {
+            return;
+        }
         *self.session_limit_reached.borrow_mut() = reached;
         self.refresh();
     }
@@ -145,9 +166,16 @@ impl RecentLaunchesView {
             {
                 let launch = launch.clone();
                 let on_relaunch = self.on_relaunch.clone();
-                relaunch_btn.connect_clicked(move |_| {
+                relaunch_btn.connect_clicked(move |btn| {
                     if let Some(ref cb) = *on_relaunch.borrow() {
-                        cb(launch.clone());
+                        cb(
+                            launch.clone(),
+                            crate::ui::busy::Working::start(
+                                btn,
+                                crate::helpers::tasks::TaskKind::Launch,
+                                crate::tr_fmt!("Relaunch {}", launch.name),
+                            ),
+                        );
                     }
                 });
             }

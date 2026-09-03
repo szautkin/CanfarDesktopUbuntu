@@ -814,10 +814,7 @@ fn tool_count_text(n: usize) -> String {
 /// Confirmation for removing a user guide tool.
 async fn confirm_remove_guide(parent: &impl IsA<gtk::Widget>, name: &str) -> bool {
     let dialog = adw::MessageDialog::new(
-        parent
-            .root()
-            .and_then(|r| r.downcast::<gtk::Window>().ok())
-            .as_ref(),
+        crate::ui::dialog::anchor_window(parent).as_ref(),
         Some(crate::tr_en!("Remove guide tool")),
         Some(&format!(
             "Remove the guide tool '{name}'? The agent will no longer see it in tools/list.\n\n\

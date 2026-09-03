@@ -13,6 +13,57 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// Which of the launch form's three tabs is meant.
+///
+/// The notebook page index used to be written as a bare `0` / `1` / `2` at
+/// every site that switched or interrogated a tab — including the branch that
+/// decides WHICH LAUNCH TO PERFORM. Three spellings of the same mapping, none
+/// of which said what the number meant. The floating launch button now opens
+/// the form on a caller-chosen tab, which would have made that a fourth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchTab {
+    Standard,
+    Advanced,
+    Headless,
+}
+
+impl LaunchTab {
+    /// Tabs in the order the notebook appends them; the index IS the position.
+    pub const ORDER: [LaunchTab; 3] = [
+        LaunchTab::Standard,
+        LaunchTab::Advanced,
+        LaunchTab::Headless,
+    ];
+
+    /// The notebook page this tab lives on.
+    fn page(self) -> u32 {
+        match self {
+            LaunchTab::Standard => 0,
+            LaunchTab::Advanced => 1,
+            LaunchTab::Headless => 2,
+        }
+    }
+
+    /// The tab showing on `page`, or `Standard` for anything unexpected — a
+    /// launch has to do something, and Standard is the safe reading.
+    fn from_page(page: Option<u32>) -> Self {
+        match page {
+            Some(1) => LaunchTab::Advanced,
+            Some(2) => LaunchTab::Headless,
+            _ => LaunchTab::Standard,
+        }
+    }
+
+    /// The tab's label, which is also what the launch button offers.
+    pub fn label(self) -> &'static str {
+        match self {
+            LaunchTab::Standard => crate::tr_en!("Standard"),
+            LaunchTab::Advanced => crate::tr_en!("Advanced"),
+            LaunchTab::Headless => crate::tr_en!("Headless"),
+        }
+    }
+}
+
 pub struct LaunchFormView {
     pub container: gtk::Box,
     services: Arc<AppServices>,
@@ -25,6 +76,12 @@ pub struct LaunchFormView {
     resource_selector: ResourceSelector,
     images: Rc<RefCell<Vec<ParsedImage>>>,
     launch_btn: gtk::Button,
+    /// The status + launch row. Held so a modal host can pin it below its
+    /// scroller instead of letting the form's primary action scroll away.
+    action_row: gtk::Box,
+    /// The card's heading. A dialog supplies its own title, so a host that has
+    /// one hides this rather than showing "Launch Session" twice.
+    card_header: gtk::Box,
     status_label: gtk::Label,
     #[allow(clippy::type_complexity)]
     on_launched: Rc<RefCell<Option<Box<dyn Fn()>>>>,
@@ -360,10 +417,10 @@ impl LaunchFormView {
         headless_resource_selector.widget().set_visible(false);
         headless_box.append(headless_resource_selector.widget());
 
+        // Built here with the rest of the Headless tab, but PARENTED in the
+        // shared bottom row below — see there for why.
         let headless_launch_btn = gtk::Button::with_label(crate::tr_en!("Launch Job"));
         headless_launch_btn.add_css_class("suggested-action");
-        headless_launch_btn.set_halign(gtk::Align::End);
-        headless_box.append(&headless_launch_btn);
 
         notebook.append_page(
             &headless_box,
@@ -382,9 +439,18 @@ impl LaunchFormView {
         status_label.set_halign(gtk::Align::Start);
         bottom.append(&status_label);
 
+        // Both launch buttons live in the one row, and `sync_launch_button`
+        // shows whichever belongs to the visible tab.
+        //
+        // "Launch Job" used to sit at the bottom of the Headless PAGE, inside
+        // the scrolling area. In a modal that puts it below the fold — the
+        // form is taller than the dialog — so the primary action of the tab was
+        // reachable only by scrolling to it. One row, pinned by the host, is
+        // also one place to look for "how do I start this".
         let launch_btn = gtk::Button::with_label(crate::tr_en!("Launch"));
         launch_btn.add_css_class("suggested-action");
         bottom.append(&launch_btn);
+        bottom.append(&headless_launch_btn);
 
         card.content.append(&bottom);
 
@@ -404,6 +470,7 @@ impl LaunchFormView {
             });
         }
 
+        let card_header = card.header.clone();
         let view = Rc::new(LaunchFormView {
             container,
             services,
@@ -416,6 +483,8 @@ impl LaunchFormView {
             resource_selector,
             images: Rc::new(RefCell::new(Vec::new())),
             launch_btn,
+            action_row: bottom,
+            card_header,
             status_label,
             on_launched: Rc::new(RefCell::new(None)),
             session_limit_reached: Rc::new(RefCell::new(false)),
@@ -444,6 +513,18 @@ impl LaunchFormView {
             let type_combo = view.type_combo.clone();
             type_combo.connect_selected_notify(move |_| {
                 view_clone.update_registries();
+            });
+        }
+
+        // Tab change -> the shared Launch button follows the visible tab.
+        //
+        // Wired as well as called from `show_tab`, because the user can switch
+        // tabs inside the modal and the button must not be left offering a
+        // Standard launch over the Headless form.
+        {
+            let view_clone = view.clone();
+            view.notebook.connect_switch_page(move |_, _, page| {
+                view_clone.sync_launch_button(LaunchTab::from_page(Some(page)));
             });
         }
 
@@ -544,6 +625,65 @@ impl LaunchFormView {
         view
     }
 
+    /// Show `tab`. The floating launch button opens the form on the one the
+    /// user picked; `select_image_by_id` uses it to land on the tab that can
+    /// actually express the image it was given.
+    /// The status + launch row, for a host that wants to pin it.
+    ///
+    /// Reparenting it is the host's business; `restore_action_row` puts it back.
+    pub fn action_row(&self) -> &gtk::Box {
+        &self.action_row
+    }
+
+    /// Put the action row back under the form, where it lives when nothing has
+    /// borrowed it.
+    pub fn restore_action_row(&self) {
+        if self.action_row.parent().is_none() {
+            self.card_content_append(&self.action_row);
+        }
+    }
+
+    /// Show or hide the card's own heading.
+    ///
+    /// A dialog already has a title bar; leaving this on prints "Launch
+    /// Session" twice, once in the header bar and once inside the card.
+    pub fn set_header_visible(&self, visible: bool) {
+        self.card_header.set_visible(visible);
+    }
+
+    /// The card's content box — the action row's home.
+    fn card_content_append(&self, child: &impl IsA<gtk::Widget>) {
+        // `container` is the card; its content box is the last child, the one
+        // the header is not.
+        if let Some(content) = self.container.last_child().and_downcast::<gtk::Box>() {
+            content.append(child);
+        }
+    }
+
+    pub fn show_tab(&self, tab: LaunchTab) {
+        self.notebook.set_current_page(Some(tab.page()));
+        self.sync_launch_button(tab);
+    }
+
+    /// The tab currently showing.
+    pub fn current_tab(&self) -> LaunchTab {
+        LaunchTab::from_page(self.notebook.current_page())
+    }
+
+    /// Keep the shared bottom Launch button honest about the visible tab.
+    ///
+    /// Standard and Advanced share it; Headless has its own "Launch Job" button
+    /// and its own launch path. The shared button used to stay visible and
+    /// enabled on the Headless tab while `do_launch` — which only asked whether
+    /// the page was Advanced — ran the STANDARD launch. Nobody hit it often
+    /// because reaching Headless took two deliberate clicks; opening the form
+    /// directly on Headless makes that button the nearest thing to hand.
+    fn sync_launch_button(&self, tab: LaunchTab) {
+        let headless = tab == LaunchTab::Headless;
+        self.launch_btn.set_visible(!headless);
+        self.headless_launch_btn.set_visible(headless);
+    }
+
     pub fn set_on_launched(&self, callback: impl Fn() + 'static) {
         *self.on_launched.borrow_mut() = Some(Box::new(callback));
     }
@@ -570,7 +710,9 @@ impl LaunchFormView {
                 let Some(token) = token else {
                     return Err("Not authenticated".to_string());
                 };
-                let images = svc.images.get_images(&token).await?;
+                // The merged catalogue: an image the user added from the
+                // registry is launchable, so it belongs in the picker too.
+                let images = svc.image_catalogue(&token).await?;
                 let context = svc.images.get_context(&token).await.ok();
                 let repos = svc
                     .images
@@ -582,8 +724,7 @@ impl LaunchFormView {
             .await;
 
         match result {
-            Ok((raw_images, context, repos)) => {
-                let parsed = ImageParser::parse_all(&raw_images);
+            Ok((parsed, context, repos)) => {
                 *self.images.borrow_mut() = parsed;
                 self.update_registries();
 
@@ -844,8 +985,7 @@ impl LaunchFormView {
                 self.update_images();
                 if let Some(index) = self.visible_images().iter().position(|i| i.id == image_id) {
                     self.image_combo.set_selected(index as u32);
-                    // Standard tab is page 0.
-                    self.notebook.set_current_page(Some(0));
+                    self.show_tab(LaunchTab::Standard);
                     self.status_label
                         .set_text(&crate::tr_fmt!("Selected image: {}", image_id));
                     return true;
@@ -905,8 +1045,7 @@ impl LaunchFormView {
     fn apply_picked_image(&self, id: &str) {
         *self.picked_image.borrow_mut() = Some(id.to_string());
         self.custom_image_entry.set_text(id);
-        // Advanced tab is page index 1 (Standard=0, Advanced=1, Headless=2).
-        self.notebook.set_current_page(Some(1));
+        self.show_tab(LaunchTab::Advanced);
         self.status_label
             .set_text(&crate::tr_fmt!("Selected image: {}", id));
     }
@@ -934,8 +1073,12 @@ impl LaunchFormView {
         if *self.session_limit_reached.borrow() {
             return;
         }
+        let task = crate::helpers::tasks::begin(
+            crate::helpers::tasks::TaskKind::Launch,
+            crate::tr_en!("Launch session"),
+        );
 
-        let is_advanced = self.notebook.current_page() == Some(1);
+        let is_advanced = self.current_tab() == LaunchTab::Advanced;
 
         let (session_type, image, reg_user, reg_secret) = if is_advanced {
             let st = self.advanced_session_type().to_string();
@@ -1041,6 +1184,7 @@ impl LaunchFormView {
         self.status_label
             .set_text(crate::tr_en!("Launching session..."));
 
+        task.stage(crate::tr_fmt!("submitting {}", params.name));
         let svc = self.services.clone();
         let params_clone = params.clone();
         let launch_result = self
@@ -1059,6 +1203,11 @@ impl LaunchFormView {
             Some((_, tail)) => tail.to_string(),
             None => image.clone(),
         };
+
+        match &launch_result {
+            Ok(_) => task.succeed(),
+            Err(e) => task.fail(e.clone()),
+        }
 
         show_launch_dialog(
             &self.container,

@@ -5,13 +5,13 @@ use crate::ui::session_card::{ActionCallback, SessionAction, SessionCard};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
+use libadwaita as adw;
 use std::cell::RefCell;
 use std::rc::Rc;
+use crate::ui::poll;
 use std::sync::Arc;
 
 type OptionalCallback<T> = Rc<RefCell<Option<Box<dyn Fn(T)>>>>;
-
-const AUTO_REFRESH_SECS: u32 = 15;
 
 /// Session-type choices in the strip's filter dropdown, `All` first.
 ///
@@ -57,6 +57,21 @@ pub struct SessionListView {
     services: Arc<AppServices>,
     on_action: ActionCallback,
     on_sessions_changed: OptionalCallback<usize>,
+    /// What the last update saw, which is what the poller's next interval is
+    /// chosen from: `pending` — a session is still coming up, so a "ready"
+    /// notification is still to come; `changed` — something actually moved.
+    pending: std::cell::Cell<bool>,
+    changed: std::cell::Cell<bool>,
+    /// Asked to open the launch form. Set by the dashboard, which owns the
+    /// form and the modal it lives in.
+    on_launch_requested: OptionalCallback<()>,
+    /// Whether the poll loop is already running.
+    ///
+    /// The loop no longer stops when nothing is pending, so it can no longer
+    /// rely on ending to keep itself unique. Without this, every call to
+    /// `update_sessions` would start another one and they would accumulate for
+    /// the life of the window.
+    polling: std::cell::Cell<bool>,
 }
 
 impl SessionListView {
@@ -67,6 +82,25 @@ impl SessionListView {
         let header = card.header.clone();
         let loading_spinner = card.spinner.clone();
         let refresh_btn = card.with_refresh();
+
+        // An explicit way to start a session, next to the list of the ones you
+        // have. The floating button over the Portal is the other route, and it
+        // is easy to miss: it carries no label, it sits away from anything it
+        // relates to, and a user who has not noticed it has no way in at all.
+        // Deliberately NOT `suggested-action` — that is spent on the floating
+        // button, and two primaries in one view is neither.
+        let launch_btn = gtk::Button::builder()
+            .child(
+                &adw::ButtonContent::builder()
+                    .icon_name("list-add-symbolic")
+                    .label(crate::tr_en!("Launch session"))
+                    .build(),
+            )
+            .valign(gtk::Align::Center)
+            .build();
+        launch_btn.add_css_class("flat");
+        launch_btn.set_tooltip_text(Some(crate::tr_en!("Start a new interactive session")));
+        header.append(&launch_btn);
 
         let countdown_label = gtk::Label::new(None);
         countdown_label.add_css_class("dim-label");
@@ -105,7 +139,7 @@ impl SessionListView {
         scrolled.set_child(Some(&cards_box));
         card.content.append(&scrolled);
 
-        let on_action: ActionCallback = Rc::new(RefCell::new(Box::new(|_| {})));
+        let on_action: ActionCallback = Rc::new(RefCell::new(Box::new(|_, _| {})));
 
         let view = Rc::new(SessionListView {
             container,
@@ -120,6 +154,13 @@ impl SessionListView {
             services,
             on_action,
             on_sessions_changed: Rc::new(RefCell::new(None)),
+            on_launch_requested: Rc::new(RefCell::new(None)),
+            // Assume a session may be coming up until the first update says
+            // otherwise: the alternative is starting slow on exactly the case
+            // that needs to be fast.
+            pending: std::cell::Cell::new(true),
+            changed: std::cell::Cell::new(true),
+            polling: std::cell::Cell::new(false),
         });
 
         // Filter dropdown
@@ -145,26 +186,70 @@ impl SessionListView {
             });
         }
 
+        {
+            let cb = view.on_launch_requested.clone();
+            launch_btn.connect_clicked(move |_| {
+                if let Some(cb) = cb.borrow().as_ref() {
+                    cb(());
+                }
+            });
+        }
+
+        // Started here rather than only from `update_sessions`, which runs only
+        // after a load succeeds: a first load that fails with nothing cached
+        // would otherwise leave the strip with no periodic refresh at all, and
+        // the poller is now the only one there is.
+        view.start_polling();
+
         view
     }
 
-    pub fn set_on_action(&self, callback: impl Fn(SessionAction) + 'static) {
+    /// The handler is given a `Working` guard with the action and owns it for
+    /// the length of the work — see [`crate::ui::busy`].
+    pub fn set_on_action(
+        &self,
+        callback: impl Fn(SessionAction, crate::ui::busy::Working) + 'static,
+    ) {
         *self.on_action.borrow_mut() = Box::new(callback);
+    }
+
+    /// Register what happens when the header's Launch button is pressed.
+    ///
+    /// The card does not own the launch form — the dashboard does, along with
+    /// the modal it opens in — so this asks rather than acts.
+    pub fn set_on_launch_requested(&self, callback: impl Fn() + 'static) {
+        *self.on_launch_requested.borrow_mut() = Some(Box::new(move |()| callback()));
     }
 
     pub fn set_on_sessions_changed(&self, callback: impl Fn(usize) + 'static) {
         *self.on_sessions_changed.borrow_mut() = Some(Box::new(callback));
     }
 
-    pub async fn refresh(&self) {
+    /// Fetch the session list and render it, showing the loading spinner.
+    ///
+    /// For anything the user asked for: the spinner is the acknowledgement that
+    /// the click landed.
+    pub async fn refresh(self: &Rc<Self>) {
+        self.load(true).await;
+    }
+
+    /// Fetch and render.
+    ///
+    /// `announce` draws the loading spinner. The background poller passes
+    /// `false`: it runs for the life of the window, and a spinner flashing on
+    /// its own every few seconds reads as the app doing something the user did
+    /// not ask for.
+    async fn load(self: &Rc<Self>, announce: bool) {
         use crate::services::cache_service::CacheKey;
         use crate::services::health_tracker::{ServiceName, ServiceStatus};
 
-        self.loading_spinner.set_visible(true);
-        self.loading_spinner.start();
+        if announce {
+            self.loading_spinner.set_visible(true);
+            self.loading_spinner.start();
 
-        // Yield so GTK renders the spinner before the async call
-        glib::timeout_future(std::time::Duration::from_millis(50)).await;
+            // Yield so GTK renders the spinner before the async call
+            glib::timeout_future(std::time::Duration::from_millis(50)).await;
+        }
 
         let svc = self.services.clone();
         let result = self
@@ -201,10 +286,17 @@ impl SessionListView {
                         .cached_time_label(&CacheKey::Sessions)
                         .unwrap_or_else(|| "unknown".into());
                     self.update_sessions(entry.data);
-                    self.services.toast.toast(crate::tr_fmt!(
-                        "Sessions unreachable — cached list from {}",
-                        time_label
-                    ));
+                    // Only for a refresh the user asked for. The poller runs
+                    // for the life of the window, so an outage would otherwise
+                    // raise this toast every interval until the network came
+                    // back — the health tracker below is the right place for a
+                    // condition that persists, and it is already told.
+                    if announce {
+                        self.services.toast.toast(crate::tr_fmt!(
+                            "Sessions unreachable — cached list from {}",
+                            time_label
+                        ));
+                    }
                 }
                 self.services.health.set(
                     ServiceName::Sessions,
@@ -216,8 +308,10 @@ impl SessionListView {
             }
         }
 
-        self.loading_spinner.stop();
-        self.loading_spinner.set_visible(false);
+        if announce {
+            self.loading_spinner.stop();
+            self.loading_spinner.set_visible(false);
+        }
     }
 
     fn active_filter(&self) -> Option<String> {
@@ -258,7 +352,7 @@ impl SessionListView {
         rendered.extend(visible.iter().map(|s| (*s).clone()));
     }
 
-    fn update_sessions(&self, sessions: Vec<Session>) {
+    fn update_sessions(self: &Rc<Self>, sessions: Vec<Session>) {
         let filter = self.active_filter();
         // Headless (batch) jobs are shown in the Batch Jobs panel, never here, and
         // never count toward the interactive-session cap (matches the reference).
@@ -290,6 +384,9 @@ impl SessionListView {
             &self.services.notifications,
             &self.container,
         );
+        // The same question the notification check asks, kept for the poller:
+        // movement now means movement is likely again soon.
+        self.changed.set(differs(&self.sessions.borrow(), &sessions));
 
         let has_pending = sessions.iter().any(|s| s.is_pending());
         *self.sessions.borrow_mut() = sessions;
@@ -298,99 +395,54 @@ impl SessionListView {
             cb(count);
         }
 
-        // Auto-poll every 15s while any session is pending, with countdown
-        if has_pending {
-            let services = self.services.clone();
-            let sessions_ref = self.sessions.clone();
-            let cards_box = self.cards_box.clone();
-            let count_label = self.count_label.clone();
-            let countdown_label = self.countdown_label.clone();
-            let empty_label = self.empty_label.clone();
-            let on_action = self.on_action.clone();
-            let on_changed = self.on_sessions_changed.clone();
-            let container = self.container.clone();
-            let filter_dropdown = self.filter_dropdown.clone();
+        // Record what the poller chooses its next interval from, and make sure
+        // exactly one poller is running. See `start_polling`.
+        self.pending.set(has_pending);
+        self.start_polling();
+    }
 
-            countdown_label.set_visible(true);
-
-            glib::spawn_future_local(async move {
-                loop {
-                    // Countdown from 15 to 1
-                    for remaining in (1..=AUTO_REFRESH_SECS).rev() {
-                        countdown_label.set_text(&crate::tr_fmt!("refresh in {}s", remaining));
-                        glib::timeout_future_seconds(1).await;
-                    }
-                    countdown_label.set_text(crate::tr_en!("refreshing..."));
-
-                    let svc = services.clone();
-                    let result = services
-                        .spawn(async move {
-                            let token = svc.get_token().await;
-                            if let Some(token) = token {
-                                svc.sessions.get_sessions(&token).await.ok()
-                            } else {
-                                None
-                            }
-                        })
-                        .await;
-
-                    let Some(new_sessions) = result else {
-                        countdown_label.set_visible(false);
-                        break;
-                    };
-
-                    let active_filter =
-                        selected_session_filter(filter_dropdown.selected() as usize);
-
-                    while let Some(child) = cards_box.first_child() {
-                        cards_box.remove(&child);
-                    }
-                    // Headless (batch) jobs never render as cards nor count toward
-                    // the interactive cap (matches update_sessions above).
-                    let count = new_sessions.iter().filter(|s| !s.is_headless()).count();
-                    let count_tmpl = if count == 1 {
-                        "{} session"
-                    } else {
-                        "{} sessions"
-                    };
-                    count_label.set_text(&crate::tr_fmt!(count_tmpl, count));
-                    let visible: Vec<&Session> = new_sessions
-                        .iter()
-                        .filter(|s| !s.is_headless())
-                        .filter(|s| match active_filter {
-                            None => true,
-                            Some(f) => s.session_type.eq_ignore_ascii_case(f),
-                        })
-                        .collect();
-                    empty_label.set_visible(visible.is_empty());
-                    for session in visible {
-                        let card = SessionCard::new(session, on_action.clone());
-                        cards_box.append(card.widget());
-                    }
-                    if let Some(ref cb) = *on_changed.borrow() {
-                        cb(count);
-                    }
-
-                    // Notify on state transitions during poll
-                    check_notifications(
-                        &sessions_ref.borrow(),
-                        &new_sessions,
-                        &services.notifications,
-                        &container,
-                    );
-
-                    let still_pending = new_sessions.iter().any(|s| s.is_pending());
-                    *sessions_ref.borrow_mut() = new_sessions;
-
-                    if !still_pending {
-                        countdown_label.set_visible(false);
-                        break;
-                    }
-                }
-            });
-        } else {
-            self.countdown_label.set_visible(false);
+    /// Keep the strip in step with the platform, for as long as the window is
+    /// open.
+    ///
+    /// This used to run only while a session was pending, and stop the moment
+    /// none was. That left the strip blind whenever the app was merely sitting
+    /// there: a session started from another machine never appeared, one that
+    /// died was never noticed, and `notify_session_expiring` — which has no
+    /// other trigger — could only fire in the accident of some *other* session
+    /// being pending at the time.
+    ///
+    /// So it runs continuously now, and the cadence carries the cost: quick
+    /// while a session is coming up, [`poll::IDLE_SECS`] apart when nothing is
+    /// in flight and the poll is only there to notice the unexpected.
+    fn start_polling(self: &Rc<Self>) {
+        if self.polling.replace(true) {
+            return;
         }
+
+        let weak = Rc::downgrade(self);
+        let countdown_label = self.countdown_label.clone();
+        glib::spawn_future_local(async move {
+            let mut cadence = poll::Cadence::new(poll::SESSION_WATCH_SECS);
+            loop {
+                // The countdown is for someone waiting on a session to come up.
+                // Ticking away for the rest of the day, next to nothing, is
+                // just a moving thing on screen with no meaning.
+                let waiting = weak.upgrade().is_some_and(|v| v.pending.get());
+                countdown_label.set_visible(waiting);
+                if waiting {
+                    poll::countdown(&countdown_label, cadence.secs()).await;
+                } else {
+                    glib::timeout_future_seconds(cadence.secs()).await;
+                }
+
+                let Some(view) = weak.upgrade() else { break };
+                // `load` calls `update_sessions`, which calls `start_polling`
+                // again; the `polling` flag makes that call a no-op rather than
+                // a second poller.
+                view.load(false).await;
+                cadence.observe(view.pending.get(), view.changed.get());
+            }
+        });
     }
 
     pub fn session_count(&self) -> usize {
@@ -409,6 +461,20 @@ impl SessionListView {
     pub fn widget(&self) -> &gtk::Box {
         &self.container
     }
+}
+
+/// Did anything move between two polls — a session appearing, going, or
+/// changing status?
+///
+/// Only the identity and status matter: the rest of a `Session` carries fields
+/// that shift on their own (remaining time, most obviously), and treating those
+/// as movement would hold the poller on the fast lane forever, which is the
+/// thing the backoff exists to prevent.
+fn differs(old: &[Session], new: &[Session]) -> bool {
+    old.len() != new.len()
+        || new
+            .iter()
+            .any(|n| !old.iter().any(|o| o.id == n.id && o.status == n.status))
 }
 
 /// Check for session state transitions and fire desktop notifications.
@@ -465,6 +531,28 @@ fn check_notifications(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn starting_a_session_is_reachable_without_finding_the_floating_button() {
+        // The floating button carries no label, sits away from anything it
+        // relates to, and is the kind of control a user can simply not notice —
+        // at which point there is no way into the launch form at all. This card
+        // is where someone looking at their sessions goes to start another.
+        let code =
+            crate::testing::without_comments(crate::testing::code(include_str!("session_list.rs")));
+        assert!(
+            code.contains("on_launch_requested"),
+            "the Active Sessions card no longer offers a way to launch"
+        );
+        // Not a second primary: `suggested-action` belongs to the floating
+        // button, and two of them in one view is neither.
+        let at = code.find("launch_btn").expect("launch button is gone");
+        let window = &code[at..(at + 600).min(code.len())];
+        assert!(
+            !window.contains("suggested-action"),
+            "the header launch button competes with the floating one"
+        );
+    }
+
     use super::{selected_session_filter, SESSION_FILTER_ALL, SESSION_FILTER_TYPES};
 
     #[test]

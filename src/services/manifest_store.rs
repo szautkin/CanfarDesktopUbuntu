@@ -28,6 +28,53 @@ pub struct PartialMatch {
     pub missing: Vec<String>,
 }
 
+/// What a list row needs to know about one image, without its package lists.
+///
+/// The lists are the expensive part of a manifest — a few hundred to a few
+/// thousand `String`s — and no collapsed row displays them; it shows a status,
+/// a count and a date. Keeping those separate is what lets a rebuild read every
+/// image's state without copying every package name in the cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowSummary {
+    /// A manifest was recorded (as opposed to a failure).
+    pub discovered: bool,
+    /// Total packages across every ecosystem, or 0 for a failure.
+    pub package_count: usize,
+    pub os_family: Option<String>,
+    pub os_version: Option<String>,
+    /// RFC-3339, when this outcome was recorded.
+    pub discovered_at: String,
+    /// Failure category + message; `None` for a success.
+    pub failure: Option<(String, String)>,
+}
+
+impl RowSummary {
+    /// Summarise one cached outcome. `pub(crate)` so the UI tests can build
+    /// a summary from a `LastOutcome` and keep asserting on real records.
+    pub(crate) fn of(outcome: &LastOutcome) -> Self {
+        match &outcome.outcome {
+            DiscoveryOutcome::Manifest(m) => RowSummary {
+                discovered: true,
+                package_count: crate::helpers::discovery_formatting::package_count(m),
+                os_family: m.os_family.clone(),
+                os_version: m.os_version.clone(),
+                discovered_at: outcome.discovered_at.clone(),
+                failure: None,
+            },
+            DiscoveryOutcome::Failure {
+                category, message, ..
+            } => RowSummary {
+                discovered: false,
+                package_count: 0,
+                os_family: None,
+                os_version: None,
+                discovered_at: outcome.discovered_at.clone(),
+                failure: Some((category.clone(), message.clone())),
+            },
+        }
+    }
+}
+
 /// In-memory mirror of the on-disk cache, hydrated lazily.
 #[derive(Default)]
 struct Inner {
@@ -108,6 +155,48 @@ impl JsonManifestStore {
         ids
     }
 
+    /// Run `f` over every cached successful manifest, borrowed.
+    ///
+    /// The facet pane needs all of them at once, and the only way to get them
+    /// used to be `known_images()` + `get()` per id — which takes the mutex once
+    /// per image and DEEP-COPIES each outcome, manifest and all, only to read
+    /// it and drop it. On this developer's cache (65 outcomes, the largest
+    /// carrying 1,275 packages) that was 11.3 ms per call, and the dialog calls
+    /// it on every keystroke. Handing out references costs one lock and a
+    /// pointer per manifest.
+    ///
+    /// The closure runs with the store locked, so it must not call back into
+    /// the store.
+    pub fn with_manifests<R>(&self, f: impl FnOnce(&[&ImageManifest]) -> R) -> R {
+        let mut inner = self.lock();
+        self.ensure_hydrated(&mut inner);
+        let manifests: Vec<&ImageManifest> = inner
+            .loaded
+            .values()
+            .filter_map(|o| match &o.outcome {
+                DiscoveryOutcome::Manifest(m) => Some(m),
+                DiscoveryOutcome::Failure { .. } => None,
+            })
+            .collect();
+        f(&manifests)
+    }
+
+    /// Everything the two image lists show per row, in one locked pass.
+    ///
+    /// A row needs a status, a package count and a date — none of which require
+    /// the package LISTS. Both surfaces were calling `get()` three times per
+    /// image per rebuild (filter, row build, subtitle), deep-copying a full
+    /// manifest each time to read a boolean off it.
+    pub fn row_summaries(&self) -> HashMap<String, RowSummary> {
+        let mut inner = self.lock();
+        self.ensure_hydrated(&mut inner);
+        inner
+            .loaded
+            .iter()
+            .map(|(id, o)| (id.clone(), RowSummary::of(o)))
+            .collect()
+    }
+
     /// Distinct package names across every cached *successful* manifest, sorted.
     /// Feeds the discovery facet pane.
     pub fn all_packages(&self) -> Vec<String> {
@@ -122,6 +211,64 @@ impl JsonManifestStore {
         names.sort();
         names.dedup();
         names
+    }
+
+    /// Package names containing `needle` (case-insensitive), with how many
+    /// images carry each, most-common first.
+    ///
+    /// The vocabulary itself, which nothing could ask for before. Searching for
+    /// images by package assumes you know the package's name — and the failure
+    /// when you do not is silent and wrong: `spectroscopy` matches nothing, so
+    /// the honest-looking answer is "no image does that", while nine images
+    /// carry `specutils`. This is what turns a subject into the names to search
+    /// for, the same way `describe_tap_schema` turns a table into its columns.
+    ///
+    /// The count is the useful half. `spec` matches 60-odd names here, and it
+    /// is the ones present in 30 images rather than 1 that say what the
+    /// platform actually supports.
+    pub fn packages_matching(&self, needle: &str, limit: usize) -> Vec<(String, usize)> {
+        let needle = needle.trim().to_lowercase();
+        let mut inner = self.lock();
+        self.ensure_hydrated(&mut inner);
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for outcome in inner.loaded.values() {
+            if let DiscoveryOutcome::Manifest(m) = &outcome.outcome {
+                // Per image, not per occurrence: a package listed in three
+                // conda envs is still one image that has it.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for name in m.all_package_names() {
+                    if !needle.is_empty() && !name.to_lowercase().contains(&needle) {
+                        continue;
+                    }
+                    if seen.insert(name.clone()) {
+                        *counts.entry(name).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let mut out: Vec<(String, usize)> = counts.into_iter().collect();
+        // Names that START with the term first, then commonest, then
+        // alphabetical for a stable order between ties.
+        //
+        // Count alone is the wrong lead. Searching "spec" over this cache puts
+        // `jsonschema-specifications` (71 images), `fsspec` (56) and `pathspec`
+        // (28) above `specutils` (9) and `spectral-cube` (8) — the packages in
+        // most images are Python plumbing every image happens to carry, which
+        // is exactly what does NOT distinguish one image from another. What the
+        // caller is looking for is nearly always the word itself, at the front
+        // of the name.
+        out.sort_by(|a, b| {
+            let a_leads = a.0.to_lowercase().starts_with(&needle);
+            let b_leads = b.0.to_lowercase().starts_with(&needle);
+            b_leads
+                .cmp(&a_leads)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out.truncate(limit);
+        out
     }
 
     /// Image ids whose manifest satisfies **all** of `q`, ranked by score
@@ -353,6 +500,130 @@ mod tests {
             packages: names.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_vocabulary_can_be_searched_by_a_fragment() {
+        // The whole point: an agent asked about "spectra" does not know that
+        // the package is called `specutils`. Searching for a subject word finds
+        // nothing and reads as a definitive no.
+        let tmp = TempDir::new();
+        let store = tmp.store();
+        store.set_manifest(
+            "img:1",
+            manifest("img:1", "ubuntu", &["specutils", "astropy"]),
+            AT.into(),
+        );
+        store.set_manifest(
+            "img:2",
+            manifest("img:2", "ubuntu", &["specreduce", "numpy"]),
+            AT.into(),
+        );
+
+        let hits: Vec<String> = store
+            .packages_matching("spec", 10)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(hits.contains(&"specutils".to_string()), "{hits:?}");
+        assert!(hits.contains(&"specreduce".to_string()), "{hits:?}");
+        assert!(!hits.contains(&"numpy".to_string()));
+    }
+
+    #[test]
+    fn the_word_itself_beats_a_package_that_merely_contains_it() {
+        // Measured against the real cache: searching "spec" ranks
+        // `jsonschema-specifications` (71 images), `fsspec` (56) and `pathspec`
+        // (28) above `specutils` (9). Those are Python plumbing that nearly
+        // every image carries, so they are the names that distinguish nothing —
+        // and they crowd out the one the caller meant.
+        let tmp = TempDir::new();
+        let store = tmp.store();
+        for id in ["img:1", "img:2", "img:3"] {
+            store.set_manifest(
+                id,
+                manifest(id, "ubuntu", &["fsspec", "pathspec"]),
+                AT.into(),
+            );
+        }
+        store.set_manifest(
+            "img:4",
+            manifest("img:4", "ubuntu", &["specutils", "fsspec"]),
+            AT.into(),
+        );
+
+        let ranked = store.packages_matching("spec", 10);
+        assert_eq!(
+            ranked[0].0, "specutils",
+            "a name merely containing the term outranked the term itself: {ranked:?}"
+        );
+    }
+
+    #[test]
+    fn the_commonest_package_leads() {
+        // A name in most images is what the platform supports; one in a single
+        // image is somebody's pin. An agent choosing an image needs that
+        // ordering to pick a sensible default.
+        let tmp = TempDir::new();
+        let store = tmp.store();
+        for id in ["img:1", "img:2", "img:3"] {
+            store.set_manifest(id, manifest(id, "ubuntu", &["astropy"]), AT.into());
+        }
+        store.set_manifest(
+            "img:4",
+            manifest("img:4", "ubuntu", &["astroquery", "astropy"]),
+            AT.into(),
+        );
+
+        let ranked = store.packages_matching("astro", 10);
+        assert_eq!(ranked[0], ("astropy".to_string(), 4));
+        assert_eq!(ranked[1], ("astroquery".to_string(), 1));
+    }
+
+    #[test]
+    fn a_package_counts_once_per_image_however_often_it_is_listed() {
+        // The same name appears in the flat python list and again in each conda
+        // env. Counting occurrences would rank an image's private env above a
+        // package the whole platform ships.
+        let tmp = TempDir::new();
+        let store = tmp.store();
+        let mut m = manifest("img:1", "ubuntu", &["astropy"]);
+        m.python_by_env = BTreeMap::from([
+            ("base".to_string(), vec!["astropy".to_string()]),
+            ("dev".to_string(), vec!["astropy".to_string()]),
+        ]);
+        store.set_manifest("img:1", m, AT.into());
+
+        assert_eq!(store.packages_matching("astropy", 10)[0].1, 1);
+    }
+
+    #[test]
+    fn an_empty_term_returns_the_commonest_packages() {
+        // "What does this platform generally have" is a reasonable opening
+        // question, and it must not be an error or an empty list.
+        let tmp = TempDir::new();
+        let store = tmp.store();
+        store.set_manifest("img:1", manifest("img:1", "ubuntu", &["numpy"]), AT.into());
+        assert_eq!(store.packages_matching("", 10).len(), 1);
+    }
+
+    #[test]
+    fn the_vocabulary_search_is_case_insensitive() {
+        let tmp = TempDir::new();
+        let store = tmp.store();
+        store.set_manifest("img:1", manifest("img:1", "ubuntu", &["AstroPy"]), AT.into());
+        assert_eq!(store.packages_matching("astropy", 10).len(), 1);
+    }
+
+    #[test]
+    fn a_failed_image_contributes_no_vocabulary() {
+        // It has no manifest, so it has no packages — and counting it would
+        // inflate a name's image count above the number that actually have it.
+        let tmp = TempDir::new();
+        let store = tmp.store();
+        store.set_manifest("img:1", manifest("img:1", "ubuntu", &["numpy"]), AT.into());
+        store.set_failure("img:2", "timeout", "took too long", None, AT.into());
+        assert_eq!(store.packages_matching("numpy", 10)[0].1, 1);
     }
 
     #[test]

@@ -32,9 +32,7 @@ pub async fn show_batch_jobs_dialog(
         .modal(true)
         .build();
 
-    if let Some(root) = parent.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
-        window.set_transient_for(Some(&root));
-    }
+    window.set_transient_for(crate::ui::dialog::anchor_window(parent).as_ref());
 
     let notebook = gtk::Notebook::new();
 

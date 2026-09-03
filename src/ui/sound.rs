@@ -25,6 +25,17 @@ pub enum Cue {
 }
 
 impl Cue {
+    /// How many cues there are — the number of players ever held.
+    pub const COUNT: usize = 2;
+
+    /// This cue's slot in the player array.
+    fn slot(self) -> usize {
+        match self {
+            Cue::AgentStarted => 0,
+            Cue::AgentFinished => 1,
+        }
+    }
+
     fn file_name(self) -> &'static str {
         match self {
             Cue::AgentStarted => "agent-start.wav",
@@ -50,14 +61,27 @@ pub fn file_for(cue: Cue) -> Option<PathBuf> {
 }
 
 thread_local! {
-    /// Sounds currently playing.
+    /// One player per cue, reused.
     ///
     /// A `MediaFile` stops when it is dropped, so playing one and letting it go
-    /// out of scope plays nothing at all. Held until it reports it has ended,
-    /// then released — the list is normally empty and never longer than the
-    /// number of cues, because a cue that is already playing is restarted
-    /// rather than layered.
-    static PLAYING: RefCell<Vec<gtk::MediaFile>> = const { RefCell::new(Vec::new()) };
+    /// out of scope plays nothing at all — it has to be held. It used to be
+    /// held in a `Vec` that a `connect_ended_notify` handler was supposed to
+    /// prune, with a comment claiming a playing cue was "restarted rather than
+    /// layered". Nothing in the code did that, and the pruning only ran if the
+    /// file reported ENDED — which it does not when playback errors, when there
+    /// is no working backend, or when it is cut off.
+    ///
+    /// Every unpruned entry keeps a live GStreamer pipeline and its threads.
+    /// Eighteen of them accumulated during a burst of job notifications
+    /// (`GtkGstPlay`, `typefind:sink`, `aqueue:src`, `wavparse*` — three threads
+    /// each), all attached to the GLib main context, and the window stopped
+    /// responding to its own close button.
+    ///
+    /// One slot per cue makes that unrepresentable: replaying seeks the
+    /// existing player back to the start instead of building a second one, so
+    /// this can never hold more than [`Cue::COUNT`] pipelines.
+    static PLAYERS: RefCell<[Option<gtk::MediaFile>; Cue::COUNT]> =
+        const { RefCell::new([None, None]) };
 }
 
 /// Play `cue`, if sounds are on and the file is there.
@@ -73,19 +97,23 @@ pub fn play(cue: Cue) {
     let Some(path) = file_for(cue) else {
         return;
     };
-    let media = gtk::MediaFile::for_filename(path);
-    media.set_volume(0.6);
-    {
-        let media = media.clone();
-        media.clone().connect_ended_notify(move |m| {
-            if m.is_ended() {
-                PLAYING.with(|p| p.borrow_mut().retain(|x| x != &media));
-            }
+    PLAYERS.with(|players| {
+        let mut players = players.borrow_mut();
+        let slot = &mut players[cue.slot()];
+        let media = slot.get_or_insert_with(|| {
+            let media = gtk::MediaFile::for_filename(path);
+            media.set_volume(VOLUME);
+            media
         });
-    }
-    PLAYING.with(|p| p.borrow_mut().push(media.clone()));
-    media.play();
+        // Already playing: back to the start rather than a second pipeline
+        // over the top of the first.
+        media.seek(0);
+        media.play();
+    });
 }
+
+/// Cue volume — a cue, not a notification jingle.
+const VOLUME: f64 = 0.6;
 
 /// Whether the agent cues are switched on.
 ///
@@ -100,6 +128,33 @@ pub fn enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SOURCE: &str = include_str!("sound.rs");
+
+    /// A cue can never hold more than one player.
+    ///
+    /// Each `MediaFile` is a live GStreamer pipeline with about three threads
+    /// of its own, attached to the GLib main context. The old code appended a
+    /// new one per play and pruned only on an `ended` notify that does not
+    /// arrive when playback errors or is cut short; a burst of job
+    /// notifications left eighteen pipelines running and the window would not
+    /// respond to its own close button.
+    #[test]
+    fn a_cue_reuses_its_player_rather_than_stacking_another() {
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        assert!(
+            !code.contains("borrow_mut().push("),
+            "sounds are being collected in a growing list again; each entry is a \
+             GStreamer pipeline that outlives the sound"
+        );
+        assert!(
+            code.contains("media.seek(0)"),
+            "a replay no longer restarts the existing player, so it must be \
+             building a second one"
+        );
+        // The array is the bound: as many slots as cues, no more.
+        assert_eq!(Cue::COUNT, 2);
+    }
 
     /// Both cues exist, and they are different sounds.
     ///

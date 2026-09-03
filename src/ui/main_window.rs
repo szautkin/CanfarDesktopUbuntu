@@ -254,7 +254,10 @@ pub fn build_main_window(
 
     // Wire cross-thread toast dispatch: any thread can call services.toast.toast("...")
     {
-        let overlay = toast_overlay.clone();
+        // Through a stream rather than straight at the overlay: the overlay
+        // queues, so in a burst each message waits out the ones before it and
+        // lands long after the event it describes. See ui::toasts.
+        let stream = crate::ui::toasts::ToastStream::new(&toast_overlay);
         let app_for_toast = app.clone();
         let mut rx = toast_rx;
         glib::spawn_future_local(async move {
@@ -264,6 +267,7 @@ pub fn build_main_window(
 
                 // Attach an action button if the message has one.  Clicking it
                 // activates the named app action (e.g. "navigate-research").
+                let has_action = msg.action.is_some();
                 if let Some(action) = msg.action {
                     toast.set_button_label(Some(&action.label));
                     let app_ref = app_for_toast.clone();
@@ -277,7 +281,10 @@ pub fn build_main_window(
                     });
                 }
 
-                overlay.add_toast(toast);
+                // A toast that never times out, or that offers a button, is
+                // something the user is meant to act on: it keeps the screen.
+                let holds_attention = msg.timeout == 0 || has_action;
+                stream.present(&msg.body, toast, holds_attention);
             }
         });
     }
@@ -477,6 +484,14 @@ pub fn build_main_window(
 
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.set_content(Some(&split_view));
+
+    // What the app is doing, along the bottom of every page.
+    //
+    // Deliberately window-level rather than per-page: work outlives the widget
+    // that started it. A probe launched from a dialog kept running after the
+    // dialog closed, with nothing anywhere saying so.
+    let status_bar = crate::ui::status_bar::StatusBar::new();
+    toolbar_view.add_bottom_bar(status_bar.widget());
 
     // Banner "Details" opens the health popover
     {

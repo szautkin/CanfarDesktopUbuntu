@@ -1244,7 +1244,7 @@ impl NotebookTabHost {
 
     /// Open a file chooser dialog and load the selected notebook.
     async fn open_file_dialog(self: Rc<Self>, parent: &gtk::Widget) {
-        let root = parent.root().and_downcast::<gtk::Window>();
+        let root = crate::ui::dialog::anchor_window(parent);
 
         let filter = gtk::FileFilter::new();
         filter.set_name(Some(crate::tr_en!("Notebooks")));
@@ -1397,7 +1397,7 @@ impl NotebookTabHost {
                 .map(|p| format!("  - {p}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let root = host.widget.root().and_downcast::<gtk::Window>();
+            let root = crate::ui::dialog::anchor_window(&host.widget);
             let dialog = adw::MessageDialog::new(
                 root.as_ref(),
                 Some(&crate::i18n::tr_args(
@@ -1497,7 +1497,7 @@ impl NotebookTabHost {
     /// for what it risks, and the risk is to a machine we do not own.
     async fn confirm_override_system_python(self: &Rc<Self>, packages: &[String]) -> bool {
         let dialog = adw::MessageDialog::new(
-            self.widget.root().and_downcast_ref::<gtk::Window>(),
+            crate::ui::dialog::anchor_window(&self.widget).as_ref(),
             Some(crate::tr_en!("This Python is managed by your system")),
             Some(&crate::tr_fmt!(
                 "Its packages come from your distribution, so pip will not add {} on its own \
@@ -1844,7 +1844,7 @@ impl NotebookTabHost {
             Some(p) => p,
             None => return,
         };
-        let root = parent.root().and_downcast::<gtk::Window>();
+        let root = crate::ui::dialog::anchor_window(parent);
 
         let filter = gtk::FileFilter::new();
         filter.set_name(Some(crate::tr_en!("Jupyter Notebook")));

@@ -43,11 +43,12 @@ pub async fn show_launch_dialog(
         Err(e) => ("Launch failed".to_string(), e.clone()),
     };
 
+    // Anchored to the application window, not to `parent`'s immediate toplevel.
+    // This is raised from inside the launch modal, and a modal parented to a
+    // modal that is closing gets stranded behind the main window with the input
+    // grab still held — which presents as a frozen app.
     let dialog = adw::MessageDialog::new(
-        parent
-            .root()
-            .and_then(|r| r.downcast::<gtk::Window>().ok())
-            .as_ref(),
+        crate::ui::dialog::anchor_window(parent).as_ref(),
         Some(&format!("{} {}", session_type, heading)),
         Some(&body),
     );

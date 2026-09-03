@@ -7,6 +7,7 @@ use crate::helpers::batch_jobs_helper::{self, BatchJobCounts, BatchJobState, Job
 use crate::models::job_record::{JobOrigin, JobOutcome, JobRecord};
 use crate::models::session::Session;
 use crate::state::AppServices;
+use crate::ui::poll;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -17,9 +18,6 @@ use std::sync::Arc;
 
 type OnStateClickCb = Rc<RefCell<Option<Box<dyn Fn(BatchJobState, Vec<JobEntry>)>>>>;
 
-/// Auto-poll interval for the batch/headless job list (matches the Windows
-/// reference `BatchJobsControl.PollSeconds`).
-const POLL_SECS: u32 = 45;
 
 /// Kind of terminal transition detected between two polls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +54,15 @@ pub struct BatchJobsView {
     /// Live jobs plus the finished ones we remember — what the tiles count and
     /// what the dialog lists.
     entries: Rc<RefCell<Vec<JobEntry>>>,
+    /// What the last poll saw, which is what the next interval is chosen from.
+    /// Set in `refresh`, where the jobs are in hand with their names —
+    /// `prev_states` keeps only statuses, and the probe filter needs the name.
+    ///
+    /// `awaiting`: a job of the user's can still change state, so a
+    /// notification is still to come. `changed`: something actually moved since
+    /// the previous poll.
+    awaiting: std::cell::Cell<bool>,
+    changed: std::cell::Cell<bool>,
     /// Previous status keyed by job id, used to diff transitions between polls.
     prev_states: Rc<RefCell<HashMap<String, String>>>,
     on_state_click: OnStateClickCb,
@@ -110,6 +117,10 @@ impl BatchJobsView {
             countdown_label,
             services,
             entries: Rc::new(RefCell::new(Vec::new())),
+            // Assume so until the first poll says otherwise: the alternative is
+            // starting slow on exactly the case that needs to be fast.
+            awaiting: std::cell::Cell::new(true),
+            changed: std::cell::Cell::new(true),
             prev_states: Rc::new(RefCell::new(HashMap::new())),
             on_state_click: Rc::new(RefCell::new(None)),
             spinner,
@@ -149,21 +160,28 @@ impl BatchJobsView {
             });
         }
 
-        // Auto-poll: a single long-lived loop that counts down from POLL_SECS
-        // and then refreshes, forever, while the view is alive. A weak ref lets
-        // the loop stop cleanly once the view is dropped.
+        // Auto-poll: a single long-lived loop that counts down and then
+        // refreshes, forever, while the view is alive. A weak ref lets the loop
+        // stop cleanly once the view is dropped.
         {
             let weak = Rc::downgrade(&view);
             let countdown_label = view.countdown_label.clone();
             glib::spawn_future_local(async move {
+                // Start on the busy cadence: the first poll is what populates
+                // the state map, and until it has run we do not know whether
+                // anything is in flight.
+                let mut cadence = poll::Cadence::new(poll::JOBS_WATCH_SECS);
                 loop {
-                    for remaining in (1..=POLL_SECS).rev() {
-                        countdown_label.set_text(&crate::tr_fmt!("refresh in {}s", remaining));
-                        glib::timeout_future_seconds(1).await;
-                    }
-                    countdown_label.set_text(crate::tr_en!("refreshing…"));
+                    poll::countdown(&countdown_label, cadence.secs()).await;
                     match weak.upgrade() {
-                        Some(v) => v.refresh().await,
+                        Some(v) => {
+                            v.load(false).await;
+                            // The interval is the upper bound on how late the
+                            // next notification can be, so it follows the
+                            // evidence rather than being a constant. See
+                            // ui::poll.
+                            cadence.observe(v.awaiting.get(), v.changed.get());
+                        }
                         None => break,
                     }
                 }
@@ -184,9 +202,25 @@ impl BatchJobsView {
     /// Fetch sessions, filter to headless, update the 4 count labels, and fire
     /// desktop notifications for any Pending/Running → Succeeded/Failed
     /// transition detected since the previous poll.
+    /// Fetch the job list and render it, showing the spinner.
+    ///
+    /// For anything the user asked for: the spinner is the acknowledgement that
+    /// the click landed.
     pub async fn refresh(&self) {
-        self.spinner.set_visible(true);
-        self.spinner.start();
+        self.load(true).await;
+    }
+
+    /// Fetch and render.
+    ///
+    /// `announce` draws the spinner. The background poller passes `false`: it
+    /// can now come round as often as every few seconds, and a spinner blinking
+    /// on its own a dozen times a minute reads as the app doing something the
+    /// user did not ask for.
+    async fn load(&self, announce: bool) {
+        if announce {
+            self.spinner.set_visible(true);
+            self.spinner.start();
+        }
 
         // Snapshot previous states before the async fetch (never hold the
         // RefCell borrow across an await point).
@@ -204,8 +238,10 @@ impl BatchJobsView {
             })
             .await;
 
-        self.spinner.stop();
-        self.spinner.set_visible(false);
+        if announce {
+            self.spinner.stop();
+            self.spinner.set_visible(false);
+        }
 
         match result {
             Ok(sessions) => {
@@ -217,10 +253,15 @@ impl BatchJobsView {
                     .cloned()
                     .collect();
                 let events = detect_transitions(&old_states, &jobs);
-                *self.prev_states.borrow_mut() = jobs
+                let new_states: HashMap<String, String> = jobs
                     .iter()
                     .map(|s| (s.id.clone(), s.status.clone()))
                     .collect();
+                // Not just the transitions: a job appearing or being reaped is
+                // movement too, and means the next one is probably close.
+                self.awaiting.set(awaits_transition(&jobs));
+                self.changed.set(new_states != old_states);
+                *self.prev_states.borrow_mut() = new_states;
 
                 self.fire_notifications(&events);
                 // Before CANFAR reaps them. A job that has finished is on
@@ -235,11 +276,15 @@ impl BatchJobsView {
                 // listing left Completed and Failed reading zero permanently:
                 // CANFAR reaps finished headless jobs, and the image-discovery
                 // coordinator deletes its own probes within seconds.
-                let entries = batch_jobs_helper::merge(
-                    &sessions,
-                    &self.services.job_history.load(),
-                    &chrono::Utc::now().to_rfc3339(),
-                );
+                // Read off the GTK thread. `load` parses the whole history
+                // file — fifty records, each carrying up to 4,000 characters of
+                // a failed job's logs — and this runs on a 45-second timer, so
+                // it was a periodic parse of a couple of hundred kilobytes
+                // between frames.
+                let history = Arc::clone(&self.services.job_history);
+                let history = self.services.spawn(async move { history.load() }).await;
+                let entries =
+                    batch_jobs_helper::merge(&sessions, &history, &chrono::Utc::now().to_rfc3339());
                 self.update_counts(batch_jobs_helper::count_by_state(&entries));
                 *self.entries.borrow_mut() = entries;
             }
@@ -286,7 +331,17 @@ impl BatchJobsView {
                 failure_reason,
                 target_image: None,
             };
-            let _ = self.services.job_history.record(record);
+            // Off the GTK thread. `record` is a read-modify-write of the whole
+            // history file, and this loop runs once per finished job on a
+            // 45-second poll — a burst of them was doing synchronous disk I/O
+            // on the main loop, between frames.
+            let history = Arc::clone(&self.services.job_history);
+            let _ = self
+                .services
+                .spawn(async move {
+                    let _ = history.record(record);
+                })
+                .await;
         }
     }
 
@@ -339,6 +394,23 @@ impl BatchJobsView {
     }
 }
 
+/// Can any of these jobs still change state — that is, is a notification still
+/// to come?
+///
+/// Deliberately the same two filters `detect_transitions` applies, because the
+/// question is precisely "will that function have anything to report next
+/// time": the user's own jobs only (a coordinator probe never notifies, and a
+/// catalogue sweep would otherwise hold the card at the busy interval for half
+/// an hour), and only those not already finished.
+fn awaits_transition(jobs: &[Session]) -> bool {
+    jobs.iter().filter(|j| !is_app_probe(&j.name)).any(|j| {
+        !matches!(
+            BatchJobState::from_status(&j.status),
+            BatchJobState::Completed | BatchJobState::Failed
+        )
+    })
+}
+
 /// Diff the previous status map against the current headless jobs and return
 /// the terminal transitions (Pending/Running → Succeeded/Failed) that just
 /// happened. A job whose *previous* status was already terminal is skipped so
@@ -349,6 +421,17 @@ fn detect_transitions(
 ) -> Vec<JobTransitionEvent> {
     let mut out = Vec::new();
     for job in jobs {
+        // Not the user's job — skip it entirely.
+        //
+        // The image-discovery coordinator launches its own headless jobs, and
+        // they land in the same listing as anything the user submitted. Every
+        // probe that failed raised a desktop notification about "a batch job"
+        // the user never launched, and inspecting a catalogue means dozens of
+        // them. It also filled the remembered history with probe rows, pushing
+        // out the user's own.
+        if is_app_probe(&job.name) {
+            continue;
+        }
         let Some(old_status) = old_states.get(&job.id) else {
             // Unknown job (first time seen) — nothing to compare against.
             continue;
@@ -376,6 +459,17 @@ fn detect_transitions(
         });
     }
     out
+}
+
+/// Whether this job is one the app launched for itself.
+///
+/// The coordinator names its probes with these prefixes
+/// (`ImageDiscoveryCoordinator::run_discovery`): `vp-` for the in-target probe,
+/// `vi-` for the syft inspector. Matching on the name is what there is — Skaha
+/// has no notion of who asked, and the local `JobOrigin` is only known once a
+/// record has already been written.
+fn is_app_probe(name: &str) -> bool {
+    name.starts_with("vp-") || name.starts_with("vi-")
 }
 
 /// Reduce a fully-qualified image reference to its last path segment.
@@ -484,6 +578,34 @@ mod tests {
             .iter()
             .map(|(id, s)| ((*id).to_string(), (*s).to_string()))
             .collect()
+    }
+
+    #[test]
+    fn the_app_does_not_notify_about_its_own_probes() {
+        // Inspecting a catalogue launches hundreds of headless jobs. Every one
+        // that failed raised a desktop notification about a "batch job" the
+        // user never submitted, and wrote a history row that pushed out one
+        // they did.
+        let old = states(&[("p1", "Running"), ("p2", "Running"), ("mine", "Running")]);
+        let mut probe_in_target = job("p1", "Failed");
+        probe_in_target.name = "vp-images-canfar-net-skaha-base-1-0-abcd1234".into();
+        let mut probe_inspector = job("p2", "Failed");
+        probe_inspector.name = "vi-images-canfar-net-canucs-canucs-1-2-4-beef".into();
+        let mine = job("mine", "Failed");
+
+        let events = detect_transitions(&old, &[probe_in_target, probe_inspector, mine]);
+        assert_eq!(events.len(), 1, "a probe was reported as the user's job");
+        assert_eq!(events[0].id, "mine");
+    }
+
+    #[test]
+    fn a_users_job_named_like_nothing_in_particular_still_reports() {
+        // The prefixes are specific; an ordinary name must not be swallowed.
+        assert!(!is_app_probe("batch-1"));
+        assert!(!is_app_probe("visualisation"));
+        assert!(!is_app_probe("vprobe-mine"));
+        assert!(is_app_probe("vp-x"));
+        assert!(is_app_probe("vi-x"));
     }
 
     #[test]

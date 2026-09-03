@@ -5,6 +5,7 @@ pub mod ai_guide_page;
 pub mod annotations_panel;
 pub mod batch_jobs_dialog;
 pub mod batch_jobs_view;
+pub mod busy;
 pub mod canfar_images;
 pub mod card;
 pub mod coord_chip;
@@ -31,6 +32,7 @@ pub mod fits_viewer;
 pub mod image_discovery_dialog;
 pub mod item_list_section;
 pub mod launch_dialog;
+pub mod launch_fab;
 pub mod launch_form;
 pub mod login_dialog;
 pub mod main_window;
@@ -42,6 +44,7 @@ pub mod notebook_page;
 pub mod observation_detail_page;
 pub mod panel;
 pub mod platform_load;
+pub mod poll;
 pub mod recent_launches;
 pub mod recents_section;
 pub mod rename_dialog;
@@ -57,9 +60,11 @@ pub mod settings_page;
 pub mod share_dialog;
 pub mod sound;
 pub mod space;
+pub mod status_bar;
 pub mod storage_quota;
 pub mod text_viewer_dialog;
 pub mod tiles;
+pub mod toasts;
 pub mod toast;
 pub mod vospace_browser;
 pub mod workflows_page;
@@ -123,7 +128,14 @@ mod markup_tests {
                     // `use_markup`: the same window the popover guard in
                     // `viewer_shell` uses, for the same reason — a widget is
                     // configured within a few lines of being built.
-                    let start = at.saturating_sub(900);
+                    // Floored to a char boundary: the window is a byte count,
+                    // and landing inside a multi-byte character panics the
+                    // guard instead of reporting on it. A file with a box-
+                    // drawing comment near a `set_subtitle` is enough.
+                    let mut start = at.saturating_sub(900);
+                    while start < at && !code.is_char_boundary(start) {
+                        start += 1;
+                    }
                     if code[start..at].contains("set_use_markup(false)") {
                         continue;
                     }

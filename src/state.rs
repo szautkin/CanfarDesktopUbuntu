@@ -1,5 +1,5 @@
 use crate::config::ApiEndpoints;
-use crate::models::UserInfo;
+use crate::models::{ParsedImage, UserInfo};
 use crate::services::*;
 use reqwest::Client;
 use std::future::Future;
@@ -37,6 +37,17 @@ pub struct AppServices {
     /// Persisted MCP client allow-list / seen-clients registry, shared between the
     /// approval gate and (future) settings UI.
     pub mcp_clients: Arc<crate::mcp::client_approval::McpClientApprovalStore>,
+    /// Images the user added from the registry by hand.
+    ///
+    /// Shared: the images widget, the registry browser and the launch form all
+    /// read it, and a per-call store would each hold their own idea of the
+    /// list.
+    pub user_images: Arc<crate::services::user_image_store::UserImageStore>,
+    /// Searches the container registry behind the platform. Only ever called
+    /// because the user asked — see [`registry_service`].
+    ///
+    /// [`registry_service`]: crate::services::registry_service
+    pub registry: crate::services::registry_service::RegistryService,
     /// Per-image container-manifest discovery cache (shared with the coordinator).
     pub image_manifests: Arc<crate::services::manifest_store::JsonManifestStore>,
     /// The last finished batch jobs, kept after CANFAR has reaped them.
@@ -110,6 +121,8 @@ impl AppServices {
             ai_guide: Arc::new(crate::services::ai_guide::AiGuideService::new()),
             mcp_host: Arc::new(crate::mcp::host::McpHost::new()),
             mcp_clients: Arc::new(crate::mcp::client_approval::McpClientApprovalStore::load()),
+            user_images: Arc::new(crate::services::user_image_store::UserImageStore::new()),
+            registry: crate::services::registry_service::RegistryService::new(client.clone()),
             image_manifests: Arc::clone(&image_manifests),
             job_history: Arc::clone(&job_history),
             jobs: Arc::new(crate::services::job_registry::JobRegistry::new()),
@@ -176,6 +189,19 @@ impl AppServices {
         self.username.read().await.clone()
     }
 
+    /// Every image the app offers, parsed and ready to show.
+    ///
+    /// The platform's own catalogue plus the ones the user added from the
+    /// registry by hand. One method rather than three call sites doing the
+    /// fetch-and-parse themselves, because they were already drifting: the
+    /// images widget, the find-by-package dialog and the launch form each asked
+    /// `/v1/image` and parsed it their own way, so an image added to the app
+    /// would appear in one and not the others.
+    pub async fn image_catalogue(&self, token: &str) -> Result<Vec<ParsedImage>, String> {
+        let platform = self.images.get_images(token).await?;
+        Ok(merge_catalogue(&platform, &self.user_images.list()))
+    }
+
     /// Attempt silent re-authentication using credentials stored in the keyring.
     ///
     /// Returns `true` and refreshes the in-memory token if successful.
@@ -200,5 +226,90 @@ impl AppServices {
         }
 
         false
+    }
+}
+
+/// The platform's catalogue and the user's own additions as one list.
+///
+/// Pure, and separate from [`AppServices::image_catalogue`], so the merge rule
+/// can be tested without a token, a registry, or a file on disk.
+///
+/// A user image whose id the platform also lists is dropped in favour of the
+/// platform's own entry: Skaha's types are authoritative, and two rows for one
+/// image is a thing the user would have to reason about.
+pub fn merge_catalogue(
+    platform: &[crate::models::RawImage],
+    added: &[crate::models::RegistryImage],
+) -> Vec<ParsedImage> {
+    let mut raw = platform.to_vec();
+    for image in added {
+        if raw.iter().any(|p| p.id == image.id) {
+            continue;
+        }
+        raw.push(image.as_raw());
+    }
+    crate::helpers::image_parser::ImageParser::parse_all(&raw)
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::merge_catalogue;
+    use crate::models::{RawImage, RegistryImage};
+
+    fn platform(id: &str) -> RawImage {
+        RawImage {
+            id: id.into(),
+            types: vec!["notebook".into()],
+        }
+    }
+
+    #[test]
+    fn an_added_image_joins_the_catalogue() {
+        // The point of adding one: it has to show up everywhere the platform's
+        // own images do — the widget, the package search, the launch form.
+        let merged = merge_catalogue(
+            &[platform("h/skaha/base:1")],
+            &[RegistryImage::new("h/me/mine:1", &["notebook".into()])],
+        );
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|i| i.id == "h/me/mine:1"));
+    }
+
+    #[test]
+    fn the_platform_wins_a_duplicate() {
+        // Reachable: someone adds an image by hand and Skaha later publishes
+        // it. Two rows for one image is a thing the user has to reason about,
+        // and Skaha's types are the authoritative ones.
+        let merged = merge_catalogue(
+            &[platform("h/skaha/base:1")],
+            &[RegistryImage::new("h/skaha/base:1", &[])],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].types, vec!["notebook"]);
+    }
+
+    #[test]
+    fn no_additions_is_the_platform_catalogue_unchanged() {
+        // The common case, and it must cost nothing: most users never add an
+        // image, and the merge must not reorder or re-type what Skaha sent.
+        let raw = [platform("a:1"), platform("b:1")];
+        let merged = merge_catalogue(&raw, &[]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].id, "a:1");
+        assert_eq!(merged[1].id, "b:1");
+    }
+
+    #[test]
+    fn an_added_image_keeps_the_types_its_labels_gave_it() {
+        // This is what makes it filterable in the widget and offerable on the
+        // Standard launch tab.
+        let merged = merge_catalogue(
+            &[],
+            &[RegistryImage::new(
+                "h/me/carta:1",
+                &["carta".into(), "gpu".into()],
+            )],
+        );
+        assert_eq!(merged[0].types, vec!["carta"]);
     }
 }

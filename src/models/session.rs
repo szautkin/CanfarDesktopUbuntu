@@ -28,6 +28,41 @@ pub const LAUNCHABLE_SESSION_TYPES: [&str; 6] = [
     "headless",
 ];
 
+/// The type a filter groups this one under.
+///
+/// Skaha reports `desktop` and `desktop-app` separately — the second is an
+/// application published inside a desktop session rather than a different kind
+/// of thing to launch — and a filter bar that offers both gives the reader two
+/// buttons for one idea, and splits the desktop images across them.
+///
+/// One function, used by every surface that groups by type, so the two filter
+/// bars cannot disagree about what "Desktop" contains.
+pub fn type_group(session_type: &str) -> &str {
+    match session_type {
+        "desktop-app" => "desktop",
+        other => other,
+    }
+}
+
+/// A session type as a person reads it: `"notebook"` → `"Notebook"`.
+///
+/// Skaha spells these lowercase and three surfaces wanted them capitalised for
+/// display — the images card's filter bar, the discovery dialog's, and the
+/// session-ready notification — so three identical `capitalize` helpers grew in
+/// three modules. It lives here because this is where the types themselves are
+/// defined, and because a type added to the lists above should not need a
+/// fourth copy of this to be shown.
+///
+/// Deliberately not translated: these are Skaha's own type names, and the
+/// French catalog carries them under their own keys where a screen needs them.
+pub fn type_label(session_type: &str) -> String {
+    let mut chars = session_type.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SkahaSessionResponse {
     pub id: String,
@@ -141,6 +176,17 @@ mod tests {
             !INTERACTIVE_SESSION_TYPES.contains(&"headless"),
             "a batch job is not an interactive session and has no Open URL"
         );
+    }
+
+    #[test]
+    fn desktop_app_groups_under_desktop_and_nothing_else_moves() {
+        assert_eq!(type_group("desktop-app"), "desktop");
+        assert_eq!(type_group("desktop"), "desktop");
+        // Every other type is its own group; grouping must not quietly merge
+        // things the platform keeps apart.
+        for t in LAUNCHABLE_SESSION_TYPES {
+            assert_eq!(type_group(t), t, "`{t}` was folded into another group");
+        }
     }
 
     #[test]

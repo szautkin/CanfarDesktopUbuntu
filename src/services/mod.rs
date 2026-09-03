@@ -26,6 +26,7 @@ pub mod observation_store;
 pub mod platform_service;
 pub mod recent_files_service;
 pub mod recent_launch_service;
+pub mod registry_service;
 pub mod search_store_service;
 pub mod service_health_probe;
 pub mod session_service;
@@ -36,6 +37,7 @@ pub mod tap_service;
 pub mod token_storage;
 pub mod transfer;
 pub mod vizier_service;
+pub mod user_image_store;
 pub mod vospace_service;
 pub mod workflow_store;
 

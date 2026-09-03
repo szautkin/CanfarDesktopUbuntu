@@ -4,7 +4,32 @@ use gtk4::{self as gtk};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub type ActionCallback = Rc<RefCell<Box<dyn Fn(SessionAction)>>>;
+/// The card's action sink.
+///
+/// Takes a [`Working`] guard as well as the action: every one of these is a
+/// round trip (open resolves a URL, renew and delete call Skaha, events fetches
+/// logs), so the pressed button says so AND the work appears in the status bar
+/// — previously these had the spinner but no registry entry, so the one place
+/// that answers "what is the app doing" could not see them.
+///
+/// [`Working`]: crate::ui::busy::Working
+#[allow(clippy::type_complexity)]
+pub type ActionCallback = Rc<RefCell<Box<dyn Fn(SessionAction, crate::ui::busy::Working)>>>;
+
+/// Every session card is this wide, whatever its state.
+///
+/// They sit in a horizontal scroller, so a card sized to its own contents made
+/// the strip ragged: a running session carries an "In use" line a pending one
+/// has not got yet, so the two rendered at different widths AND different
+/// heights, side by side, for no reason the reader could act on.
+const CARD_WIDTH: i32 = 264;
+
+/// What a field shows when there is nothing to put in it.
+///
+/// Blanking the row instead would change the card's height, which is the thing
+/// this is here to stop; an em dash also says "nothing yet" rather than leaving
+/// the reader to wonder whether the app forgot to ask.
+const NOTHING_YET: &str = "—";
 
 pub struct SessionCard {
     pub container: gtk::Box,
@@ -18,10 +43,18 @@ pub enum SessionAction {
     Events(String, String),
 }
 
+/// A dim em dash, for a field the platform has not filled in yet.
+fn placeholder_label() -> gtk::Label {
+    let label = gtk::Label::new(Some(NOTHING_YET));
+    label.add_css_class("caption");
+    label.add_css_class("dim-label");
+    label
+}
+
 impl SessionCard {
     pub fn new(session: &Session, on_action: ActionCallback) -> Self {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        container.set_size_request(220, -1);
+        container.set_size_request(CARD_WIDTH, -1);
         container.set_hexpand(false);
         container.set_halign(gtk::Align::Start);
         container.set_valign(gtk::Align::Start);
@@ -78,18 +111,23 @@ impl SessionCard {
         header.append(&title_box);
         inner.append(&header);
 
-        // Times
-        if !session.start_time.is_empty() {
+        // Times. Always a row, even before Skaha has reported one: an absent
+        // row would shorten the card relative to its neighbours.
+        {
             let times_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
 
-            let start_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            let start_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
-            start_icon.set_pixel_size(12);
-            start_box.append(&start_icon);
-            let start_text = gtk::Label::new(Some(&format_time(&session.start_time)));
-            start_text.add_css_class("caption");
-            start_box.append(&start_text);
-            times_box.append(&start_box);
+            if session.start_time.is_empty() {
+                times_box.append(&placeholder_label());
+            } else {
+                let start_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                let start_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
+                start_icon.set_pixel_size(12);
+                start_box.append(&start_icon);
+                let start_text = gtk::Label::new(Some(&format_time(&session.start_time)));
+                start_text.add_css_class("caption");
+                start_box.append(&start_text);
+                times_box.append(&start_box);
+            }
 
             if !session.expiry_time.is_empty() {
                 let expiry_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -159,18 +197,22 @@ impl SessionCard {
 
         inner.append(&res_box);
 
-        // In-use resources (only for running sessions with non-zero usage)
-        if session.is_running()
-            && (!session.cpu_cores_in_use.is_empty() || !session.ram_in_use.is_empty())
+        // In-use resources. ALWAYS a row.
+        //
+        // It used to appear only for a running session reporting non-zero
+        // usage, so a pending card was one line shorter than the running card
+        // beside it — the cards in a row were different heights purely because
+        // of what the platform had got round to reporting.
         {
+            let usage_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let prefix = gtk::Label::new(Some(crate::tr_en!("In use:")));
+            prefix.add_css_class("caption");
+            prefix.add_css_class("dim-label");
+            usage_box.append(&prefix);
+
             let has_cpu = !session.cpu_cores_in_use.is_empty() && session.cpu_cores_in_use != "0";
             let has_ram = !session.ram_in_use.is_empty() && session.ram_in_use != "0";
-            if has_cpu || has_ram {
-                let usage_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                let prefix = gtk::Label::new(Some(crate::tr_en!("In use:")));
-                prefix.add_css_class("caption");
-                prefix.add_css_class("dim-label");
-                usage_box.append(&prefix);
+            if session.is_running() && (has_cpu || has_ram) {
                 if has_cpu {
                     let lbl =
                         gtk::Label::new(Some(&crate::tr_fmt!("CPU: {}", session.cpu_cores_in_use)));
@@ -182,8 +224,10 @@ impl SessionCard {
                     lbl.add_css_class("caption");
                     usage_box.append(&lbl);
                 }
-                inner.append(&usage_box);
+            } else {
+                usage_box.append(&placeholder_label());
             }
+            inner.append(&usage_box);
         }
 
         // Action buttons
@@ -199,8 +243,15 @@ impl SessionCard {
         {
             let url = session.connect_url.clone();
             let on_action = on_action.clone();
-            open_btn.connect_clicked(move |_| {
-                (on_action.borrow())(SessionAction::Open(url.clone()));
+            open_btn.connect_clicked(move |b| {
+                (on_action.borrow())(
+                    SessionAction::Open(url.clone()),
+                    crate::ui::busy::Working::start(
+                        b,
+                        crate::helpers::tasks::TaskKind::Session,
+                        crate::tr_en!("Open session").to_string(),
+                    ),
+                );
             });
         }
         actions.append(&open_btn);
@@ -213,8 +264,15 @@ impl SessionCard {
             let id = session.id.clone();
             let name = session.name.clone();
             let on_action = on_action.clone();
-            renew_btn.connect_clicked(move |_| {
-                (on_action.borrow())(SessionAction::Renew(id.clone(), name.clone()));
+            renew_btn.connect_clicked(move |b| {
+                (on_action.borrow())(
+                    SessionAction::Renew(id.clone(), name.clone()),
+                    crate::ui::busy::Working::start(
+                        b,
+                        crate::helpers::tasks::TaskKind::Session,
+                        crate::tr_fmt!("Renew {}", name),
+                    ),
+                );
             });
         }
         actions.append(&renew_btn);
@@ -227,8 +285,15 @@ impl SessionCard {
             let id = session.id.clone();
             let name = session.name.clone();
             let on_action = on_action.clone();
-            events_btn.connect_clicked(move |_| {
-                (on_action.borrow())(SessionAction::Events(id.clone(), name.clone()));
+            events_btn.connect_clicked(move |b| {
+                (on_action.borrow())(
+                    SessionAction::Events(id.clone(), name.clone()),
+                    crate::ui::busy::Working::start(
+                        b,
+                        crate::helpers::tasks::TaskKind::Session,
+                        crate::tr_fmt!("Events for {}", name),
+                    ),
+                );
             });
         }
         actions.append(&events_btn);
@@ -241,8 +306,15 @@ impl SessionCard {
             let id = session.id.clone();
             let name = session.name.clone();
             let on_action = on_action.clone();
-            delete_btn.connect_clicked(move |_| {
-                (on_action.borrow())(SessionAction::Delete(id.clone(), name.clone()));
+            delete_btn.connect_clicked(move |b| {
+                (on_action.borrow())(
+                    SessionAction::Delete(id.clone(), name.clone()),
+                    crate::ui::busy::Working::start(
+                        b,
+                        crate::helpers::tasks::TaskKind::Session,
+                        crate::tr_fmt!("Delete {}", name),
+                    ),
+                );
             });
         }
         actions.append(&delete_btn);

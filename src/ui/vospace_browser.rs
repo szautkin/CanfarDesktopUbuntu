@@ -1065,6 +1065,10 @@ impl VoSpaceBrowser {
         let remote_path = self.build_remote_path(name);
         let svc = self.services.clone();
         let name_owned = name.to_string();
+        let task = crate::helpers::tasks::begin(
+            crate::helpers::tasks::TaskKind::Storage,
+            crate::tr_fmt!("Delete {}", name),
+        );
 
         let result = self
             .services
@@ -1082,11 +1086,13 @@ impl VoSpaceBrowser {
 
         match result {
             Ok(()) => {
+                task.succeed();
                 self.show_toast(&crate::tr_fmt!("Deleted {}", name_owned));
                 self.reload().await;
             }
             Err(e) => {
                 self.show_toast(&crate::tr_fmt!("Delete failed: {}", e));
+                task.fail(e.to_string());
             }
         }
     }
@@ -1339,7 +1345,7 @@ impl VoSpaceBrowser {
     // -----------------------------------------------------------------------
 
     async fn upload_files_dialog(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>) {
-        let root = parent.root().and_downcast::<gtk::Window>();
+        let root = crate::ui::dialog::anchor_window(parent);
 
         let dialog = gtk::FileDialog::builder()
             .title(crate::tr_en!("Upload Files"))
@@ -1377,6 +1383,15 @@ impl VoSpaceBrowser {
         let current = self.current_path.borrow().clone();
         let total = paths.len();
         let mut any_error = false;
+
+        // Visible for the whole batch. A multi-file upload to a network store
+        // is the longest thing this page does, and outside the row it was
+        // happening on there was no sign of it at all.
+        let task = crate::helpers::tasks::begin(
+            crate::helpers::tasks::TaskKind::Storage,
+            crate::tr_plural!(total, "Upload {} file", "Upload {} files"),
+        );
+        let mut done = 0usize;
 
         for local_path in paths {
             let filename = local_path
@@ -1451,7 +1466,11 @@ impl VoSpaceBrowser {
             self.end_transfer();
 
             match result {
-                Ok(_) => self.show_toast(&crate::tr_fmt!("Uploaded {}", fname)),
+                Ok(_) => {
+                    done += 1;
+                    task.stage(crate::tr_fmt!("{} of {} uploaded", done, total));
+                    self.show_toast(&crate::tr_fmt!("Uploaded {}", fname))
+                }
                 Err(crate::services::transfer::TransferError::Cancelled) => {
                     self.show_toast(&crate::tr_fmt!("Upload cancelled: {}", fname));
                     break;
@@ -1461,6 +1480,15 @@ impl VoSpaceBrowser {
                     any_error = true;
                 }
             }
+        }
+
+        // One outcome for the batch, so a partly-failed upload is not recorded
+        // as a success. `done < total` also covers the cancelled case, which
+        // breaks out of the loop above.
+        if any_error {
+            task.fail(crate::tr_fmt!("{} of {} uploaded", done, total));
+        } else {
+            task.succeed();
         }
 
         if !any_error && total > 1 {
@@ -1476,10 +1504,7 @@ impl VoSpaceBrowser {
 
     async fn confirm_delete(&self, parent: &impl IsA<gtk::Widget>, name: &str) -> bool {
         let dialog = adw::MessageDialog::new(
-            parent
-                .root()
-                .and_then(|r| r.downcast::<gtk::Window>().ok())
-                .as_ref(),
+            crate::ui::dialog::anchor_window(parent).as_ref(),
             Some(crate::tr_en!("Delete Item")),
             Some(&crate::tr_fmt!(
                 "Are you sure you want to delete '{}'? This cannot be undone.",

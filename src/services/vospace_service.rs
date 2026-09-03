@@ -114,7 +114,25 @@ impl VoSpaceService {
         username: &str,
         path: &str,
     ) -> Result<Vec<VoSpaceNode>, ApiError> {
-        let url = self.endpoints.vospace_nodes_url(username, path);
+        self.list_nodes_limited(token, username, path, None).await
+    }
+
+    /// List a container, asking the server for at most `limit` children.
+    ///
+    /// The cost of a listing is on VOSpace's side and scales with the number of
+    /// sub-CONTAINERS, because it sizes each one. A caller that will only show
+    /// the first N should say so rather than making the server compute — and
+    /// the client wait for — a hundred it will discard.
+    pub async fn list_nodes_limited(
+        &self,
+        token: &str,
+        username: &str,
+        path: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<VoSpaceNode>, ApiError> {
+        let url = self
+            .endpoints
+            .vospace_nodes_url_limited(username, path, limit);
         let resp = self
             .client
             .get(&url)
