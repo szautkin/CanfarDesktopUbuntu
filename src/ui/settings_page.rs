@@ -1,5 +1,6 @@
 use crate::config::{api_endpoint_defaults as dflt, AppConfig};
 use crate::helpers::registry_credential_test::{test_registry_credentials, CredTestResult};
+use crate::models::image_discovery_settings::{MAX_INSPECTOR_CORES, MAX_INSPECTOR_RAM_GB};
 use crate::models::session::INTERACTIVE_SESSION_TYPES;
 use crate::services::ai_compute_service::AIComputeService;
 use crate::services::image_discovery_settings_service::ImageDiscoverySettingsService;
@@ -899,14 +900,17 @@ impl SettingsPage {
         )));
 
         // Snapshot the persisted values to seed the rows.
-        let (host0, repo0, user0, inspector0) = {
+        let (host0, repo0, user0, inspector0, cores0, ram0) = {
             let s = service.borrow();
             let st = s.settings();
+            let (cores, ram) = st.resolved_inspector_resources();
             (
                 st.registry_host.clone(),
                 st.registry_repository.clone(),
                 st.username.clone(),
                 st.inspector_image.clone(),
+                cores,
+                ram,
             )
         };
 
@@ -925,6 +929,60 @@ impl SettingsPage {
             });
         }
         group.add(&inspector_row);
+
+        // Inspector job size. Only the inspector reads these: the in-target
+        // probe reads package databases already on disk and is fixed small.
+        //
+        // These are here because 1 GB was hard-coded, and at 1 GB `syft` was
+        // killed part-way through unpacking any large image — a third of all
+        // inspections, with no logs and no events to say why.
+        let cores_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                cores0 as f64,
+                1.0,
+                MAX_INSPECTOR_CORES as f64,
+                1.0,
+                1.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        cores_row.set_title(crate::tr_en!("Inspector CPU cores"));
+        cores_row.set_subtitle(crate::tr_en!(
+            "Size of the job that inspects an image; the in-target probe is always small"
+        ));
+        {
+            let service = service.clone();
+            cores_row.connect_value_notify(move |r| {
+                service.borrow_mut().set_inspector_cores(r.value() as u32);
+            });
+        }
+        group.add(&cores_row);
+
+        let ram_row = adw::SpinRow::new(
+            Some(&gtk::Adjustment::new(
+                ram0 as f64,
+                1.0,
+                MAX_INSPECTOR_RAM_GB as f64,
+                1.0,
+                4.0,
+                0.0,
+            )),
+            1.0,
+            0,
+        );
+        ram_row.set_title(crate::tr_en!("Inspector RAM (GB)"));
+        ram_row.set_subtitle(crate::tr_en!(
+            "The inspector unpacks the whole target image — too little memory and it is killed part-way"
+        ));
+        {
+            let service = service.clone();
+            ram_row.connect_value_notify(move |r| {
+                service.borrow_mut().set_inspector_ram(r.value() as u32);
+            });
+        }
+        group.add(&ram_row);
 
         // Registry host.
         let host_row = adw::EntryRow::new();

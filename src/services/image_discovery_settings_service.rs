@@ -13,7 +13,8 @@
 //! ([`ImageDiscoverySettingsService::test_registry_credentials`]).
 
 use crate::models::image_discovery_settings::{
-    ImageDiscoverySettings, DEFAULT_INSPECTOR_IMAGE, DEFAULT_REGISTRY_HOST,
+    clamp_inspector_cores, clamp_inspector_ram, ImageDiscoverySettings, DEFAULT_INSPECTOR_IMAGE,
+    DEFAULT_REGISTRY_HOST,
 };
 use directories::ProjectDirs;
 use keyring::Entry;
@@ -91,6 +92,18 @@ impl ImageDiscoverySettingsService {
         } else {
             v.to_string()
         };
+        let _ = self.save();
+    }
+
+    /// Set the inspector job's CPU cores (clamped; 0 resets to the default).
+    pub fn set_inspector_cores(&mut self, value: u32) {
+        self.settings.inspector_cores = clamp_inspector_cores(value);
+        let _ = self.save();
+    }
+
+    /// Set the inspector job's RAM in GB (clamped; 0 resets to the default).
+    pub fn set_inspector_ram(&mut self, value: u32) {
+        self.settings.inspector_ram = clamp_inspector_ram(value);
         let _ = self.save();
     }
 

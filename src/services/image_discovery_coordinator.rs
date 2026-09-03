@@ -60,6 +60,43 @@ const MAX_CONSECUTIVE_POLL_ERRORS: usize = 10;
 /// looking for "timed out" in prose that may have come from elsewhere.
 const PROBE_TIMED_OUT: &str = "Probe timed out";
 
+/// How many times to poll before declaring a probe timed out.
+///
+/// At [`Self::poll_delay`] of 3s this is the ceiling on how long one image may
+/// take. It was 200 — ten minutes — and two large images sat right on it: with
+/// syft staged on /scratch they stopped being killed and started simply taking
+/// longer, reporting `Probe timed out` at 797s of wall clock (200 polls plus
+/// request latency) with the job still working.
+///
+/// 500 is about 25 minutes. The cost of waiting is patience, not quota: the
+/// coordinator reaps its own job either way, and giving up early throws away a
+/// probe that was going to succeed — the most expensive failure there is.
+///
+/// [`Self::poll_delay`]: ImageDiscoveryCoordinator::poll_delay
+pub const MAX_PROBE_POLLS: usize = 500;
+
+/// Job size for the **in-target** probe.
+///
+/// Deliberately not the configurable inspector size. `probe.sh` reads package
+/// databases that are already on disk in the image it is running in — no pull,
+/// no unpack, no syft — and at this size it has not failed once: 26 of 26 in
+/// this user's cache, against a 32% failure rate on the syft path at the same
+/// 1 GB. Spending the inspector's memory here would cost quota to fix nothing.
+pub const IN_TARGET_PROBE_CORES: u32 = 1;
+/// See [`IN_TARGET_PROBE_CORES`].
+pub const IN_TARGET_PROBE_RAM_GB: u32 = 1;
+
+/// The parts of a probe that do not change between attempts: which inspector to
+/// launch, the registry credentials that let Skaha pull it, and how big to make
+/// the job. Resolved once per discovery and reused if the strategy is retried.
+struct ProbeContext {
+    inspector_image: String,
+    registry_username: Option<String>,
+    registry_secret: Option<String>,
+    /// `(cores, ram_gb)` for the inspector; the in-target probe has its own.
+    inspector_resources: (u32, u32),
+}
+
 /// Which probe strategy applies to a target image (port of `ProbeStrategy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbeStrategy {
@@ -80,7 +117,7 @@ pub struct ImageDiscoveryCoordinator {
     history: Arc<JobHistoryStore>,
     settings: Mutex<ImageDiscoverySettingsService>,
     /// Image ids with a probe currently in flight (coalescing gate).
-    in_flight: Mutex<HashSet<String>>,
+    in_flight: Arc<Mutex<HashSet<String>>>,
     /// Script filenames already uploaded this run (mirrors the reference's
     /// `_probeUploaded` / `_inspectorUploaded` flags). The name is a hash of
     /// the body, so this is a cache, never a staleness risk.
@@ -96,13 +133,13 @@ pub struct ImageDiscoveryCoordinator {
 impl ImageDiscoveryCoordinator {
     /// Create a coordinator over `store`, with a freshly-loaded settings service
     /// and the default Skaha timing schedule (3s/7s/15s race backoffs, 3s poll
-    /// interval, 200 poll cap ≈ 10 min).
+    /// interval, [`MAX_PROBE_POLLS`] poll cap).
     pub fn new(store: Arc<JsonManifestStore>, history: Arc<JobHistoryStore>) -> Self {
         ImageDiscoveryCoordinator {
             store,
             history,
             settings: Mutex::new(ImageDiscoverySettingsService::new()),
-            in_flight: Mutex::new(HashSet::new()),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
             uploaded: Mutex::new(HashSet::new()),
             race_backoffs: vec![
                 Duration::from_secs(3),
@@ -110,7 +147,7 @@ impl ImageDiscoveryCoordinator {
                 Duration::from_secs(15),
             ],
             poll_delay: Duration::from_secs(3),
-            max_polls: 200,
+            max_polls: MAX_PROBE_POLLS,
         }
     }
 
@@ -137,17 +174,37 @@ impl ImageDiscoveryCoordinator {
         }
 
         // (2) In-flight coalescing. The guard removes the id on drop.
-        let _guard = match self.claim_in_flight(image_id) {
+        let guard = match self.claim(image_id) {
             Some(g) => g,
-            None => {
-                return DiscoveryOutcome::Failure {
-                    category: category::BUSY.to_string(),
-                    message: format!("A probe for {image_id} is already running"),
-                    job_id: None,
-                };
-            }
+            None => return busy_outcome(image_id),
         };
 
+        self.discover_claimed(services, image_id, force, guard)
+            .await
+    }
+
+    /// Probe using a slot the caller has already claimed with [`Self::claim`].
+    ///
+    /// The split exists for the UI. `discover_image` claims inside its own
+    /// future, which does not begin until the runtime polls it — so a list that
+    /// asked for a probe and then redrew still saw `is_probing` as false, drew
+    /// the row unchanged, and the Inspect button looked dead until the probe
+    /// finished minutes later. Claiming on the caller's thread closes that gap
+    /// without a second copy of the in-flight set.
+    pub async fn discover_claimed(
+        &self,
+        services: &AppServices,
+        image_id: &str,
+        force: bool,
+        guard: InFlightGuard,
+    ) -> DiscoveryOutcome {
+        // Held for the whole probe; released when this returns.
+        let _guard = guard;
+        if !force {
+            if let Some(cached) = self.cached_success(image_id) {
+                return DiscoveryOutcome::Manifest(cached);
+            }
+        }
         self.run_discovery(services, image_id, force).await
     }
 
@@ -161,16 +218,34 @@ impl ImageDiscoveryCoordinator {
         }
     }
 
-    /// Claim the in-flight slot for `image_id`. Returns `None` if a probe is
-    /// already running for it (the caller should report `Busy`).
-    fn claim_in_flight(&self, image_id: &str) -> Option<InFlightGuard<'_>> {
+    /// Whether a probe for `image_id` is running right now.
+    ///
+    /// The one answer to that question. Both image lists used to keep their own
+    /// `HashSet` of "currently probing", so three sets described the same fact
+    /// and only this one gated any work — a row could read "Discovering…" for an
+    /// image the coordinator had already declined as `Busy`, and the two lists
+    /// could disagree with each other about the same image.
+    pub fn is_probing(&self, image_id: &str) -> bool {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(image_id)
+    }
+
+    /// Claim the in-flight slot for `image_id`, synchronously.
+    ///
+    /// `None` means a probe is already running for it. The returned guard
+    /// releases the slot when dropped, so [`Self::is_probing`] answers true for
+    /// exactly as long as the caller holds it — which is what lets a list draw
+    /// the row as busy the instant the button is pressed.
+    pub fn claim(&self, image_id: &str) -> Option<InFlightGuard> {
         let mut set = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         if set.contains(image_id) {
             return None;
         }
         set.insert(image_id.to_string());
         Some(InFlightGuard {
-            set: &self.in_flight,
+            set: Arc::clone(&self.in_flight),
             id: image_id.to_string(),
         })
     }
@@ -183,8 +258,35 @@ impl ImageDiscoveryCoordinator {
         image_id: &str,
         force: bool,
     ) -> DiscoveryOutcome {
+        // Visible for its whole life, in stages. A probe spends most of its
+        // time somewhere specific — looking for a published manifest, waiting
+        // on a job — and reporting it as one boolean is what made three rows
+        // read "Discovering…" against two actual jobs, with no way to tell
+        // which was which or whether anything had been submitted at all.
+        let task = crate::helpers::tasks::begin(
+            crate::helpers::tasks::TaskKind::Discovery,
+            crate::tr_fmt!("Inspect {}", image_id),
+        );
+        let outcome = self.run_tracked(services, image_id, force, &task).await;
+        match &outcome {
+            DiscoveryOutcome::Manifest(_) => task.succeed(),
+            DiscoveryOutcome::Failure { message, .. } => {
+                task.fail(crate::helpers::job_diagnostics::summary_line(message).to_string())
+            }
+        }
+        outcome
+    }
+
+    async fn run_tracked(
+        &self,
+        services: &AppServices,
+        image_id: &str,
+        force: bool,
+        task: &crate::helpers::tasks::TaskHandle,
+    ) -> DiscoveryOutcome {
         // Auth: every headless launch and log fetch needs a bearer token, and a
         // blank username fails opaquely deeper in the stack — reject clearly.
+        task.stage(crate::tr_en!("checking sign-in"));
         let token = match services.get_token().await {
             Some(t) if !t.trim().is_empty() => t,
             _ => {
@@ -198,6 +300,7 @@ impl ImageDiscoveryCoordinator {
         };
 
         // Strategy: headless-capable target → in-target probe, else inspector.
+        task.stage(crate::tr_en!("looking up the image"));
         let types = self.lookup_image_types(services, &token, image_id).await;
         let strategy = strategy(types.as_deref());
 
@@ -207,13 +310,14 @@ impl ImageDiscoveryCoordinator {
         // — otherwise the coordinator's stale copy would fall back to the default
         // `skaha/terminal` inspector. (Extracted before any await so the std Mutex
         // guard is never held across a suspension point.)
-        let (inspector_image, auth_header) = {
+        let (inspector_image, auth_header, inspector_resources) = {
             let fresh = ImageDiscoverySettingsService::new();
             let mut cached = self.settings.lock().unwrap_or_else(|e| e.into_inner());
             *cached = fresh;
             (
                 cached.resolve_inspector_image(),
                 cached.current_auth_header(),
+                cached.settings().resolved_inspector_resources(),
             )
         };
         let (registry_username, registry_secret) = match auth_header.as_deref() {
@@ -224,22 +328,17 @@ impl ImageDiscoveryCoordinator {
             None => (None, None),
         };
 
-        let (launch_image, env_name, script_body) = match strategy {
-            ProbeStrategy::InTarget => (image_id.to_string(), "IMAGE_ID", probe_script()),
-            ProbeStrategy::Inspector => (inspector_image, "TARGET_IMAGE", inspector_script()),
+        let ctx = ProbeContext {
+            inspector_image,
+            registry_username,
+            registry_secret,
+            inspector_resources,
         };
-        if launch_image.trim().is_empty() {
-            return self.fail(
-                image_id,
-                category::JOB_SUBMIT_FAILED,
-                "Probe submit failed: no image to launch (inspector image unresolved)",
-                None,
-            );
-        }
 
         // Everything below needs the account name; resolve it once. A failure
         // here is not fatal on its own — only the upload truly requires it, and
         // it reports its own error.
+        task.stage(crate::tr_en!("resolving your CANFAR account"));
         let username = Self::username(services, &token).await;
 
         // A manifest a previous probe published is a probe we do not have to
@@ -248,6 +347,10 @@ impl ImageDiscoveryCoordinator {
         // how you ask for a fresh look.
         if !force {
             if let Ok(ref user) = username {
+                // Named, because it is slow and invisible: a VOSpace round trip
+                // that happens BEFORE any job exists. This is the gap between
+                // pressing Inspect and seeing a job on Skaha.
+                task.stage(crate::tr_en!("looking for a published manifest"));
                 if let Some(manifest) = self
                     .fetch_manifest_if_present(services, &token, user, image_id)
                     .await
@@ -271,6 +374,72 @@ impl ImageDiscoveryCoordinator {
             }
         };
 
+        let outcome = self
+            .attempt_probe(services, &token, image_id, strategy, &username, &ctx, task)
+            .await;
+
+        // An in-target probe that could not run for want of an interpreter is
+        // not an answer about the image — the inspector reads the same image
+        // from OUTSIDE, with syft, and needs nothing installed in it.
+        //
+        // `strategy()` commits to in-target the moment an image advertises
+        // `headless` and never reconsidered. Old CASA images advertise it and
+        // ship no python3, so they failed permanently while the tool that could
+        // read them sat unused: seven of the first ten failures in a
+        // full-catalogue sweep, out of 81 images on that path.
+        if strategy == ProbeStrategy::InTarget && in_target_dead_end(&outcome) {
+            return self
+                .attempt_probe(
+                    services,
+                    &token,
+                    image_id,
+                    ProbeStrategy::Inspector,
+                    &username,
+                    &ctx,
+                    task,
+                )
+                .await;
+        }
+        outcome
+    }
+
+    /// One probe run with one strategy: stage the script, launch the job, watch
+    /// it, and turn what it left behind into an outcome.
+    ///
+    /// Split out of [`Self::run_discovery`] so a strategy can be RETRIED — the
+    /// in-target probe and the inspector differ only in which image is launched,
+    /// which script it runs and how big the job is.
+    #[allow(clippy::too_many_arguments)]
+    async fn attempt_probe(
+        &self,
+        services: &AppServices,
+        token: &str,
+        image_id: &str,
+        strategy: ProbeStrategy,
+        username: &str,
+        ctx: &ProbeContext,
+        task: &crate::helpers::tasks::TaskHandle,
+    ) -> DiscoveryOutcome {
+        let (launch_image, env_name, script_body) = match strategy {
+            ProbeStrategy::InTarget => (image_id.to_string(), "IMAGE_ID", probe_script()),
+            ProbeStrategy::Inspector => (
+                ctx.inspector_image.clone(),
+                "TARGET_IMAGE",
+                inspector_script(),
+            ),
+        };
+        let (cores, ram) = probe_resources(strategy, ctx.inspector_resources);
+        if launch_image.trim().is_empty() {
+            return self.fail(
+                image_id,
+                category::JOB_SUBMIT_FAILED,
+                "Probe submit failed: no image to launch (inspector image unresolved)",
+                None,
+            );
+        }
+        let registry_username = ctx.registry_username.clone();
+        let registry_secret = ctx.registry_secret.clone();
+
         // Upload the script and launch `bash <path>`.
         //
         // This used to pass the script INLINE as `bash -c <body>`, to skip the
@@ -281,8 +450,9 @@ impl ImageDiscoveryCoordinator {
         // split on whitespace at the far end. The reference uploads and passes
         // a path — one argument, no spaces in it — which is why the script
         // names have been content-hashed all along.
+        task.stage(crate::tr_en!("staging the probe script"));
         let script_path = match self
-            .ensure_uploaded(services, &token, &username, strategy, script_body)
+            .ensure_uploaded(services, token, username, strategy, script_body)
             .await
         {
             Ok(path) => path,
@@ -305,8 +475,8 @@ impl ImageDiscoveryCoordinator {
             name: make_job_name(prefix, image_id, &new_job_suffix()),
             image: launch_image,
             session_type: "headless".to_string(),
-            cores: 1,
-            ram: 1,
+            cores,
+            ram,
             gpus: 0,
             cmd: Some("bash".to_string()),
             // The id the script keys off of, as the reference passes it.
@@ -318,7 +488,8 @@ impl ImageDiscoveryCoordinator {
         };
 
         // (4)+(5-launch) Launch with the Skaha submit-race retry.
-        let job_id = match self.launch_with_retry(services, &token, &params).await {
+        task.stage(crate::tr_fmt!("submitting a {} job", strategy.label()));
+        let job_id = match self.launch_with_retry(services, token, &params).await {
             Ok(id) => id,
             Err(msg) => {
                 let reason = format!("Probe submit failed: {msg}");
@@ -328,16 +499,20 @@ impl ImageDiscoveryCoordinator {
         };
 
         // (5) Poll until terminal, tolerating the informer-cache visibility race.
-        if let Err(msg) = self.poll_until_terminal(services, &token, &job_id).await {
+        // The job now EXISTS, and the stage names it. This is the line that
+        // answers "is anything actually running?" — the question three rows
+        // reading "Discovering…" against two jobs could not.
+        task.stage(crate::tr_fmt!("waiting for job {}", job_id));
+        if let Err(msg) = self.poll_until_terminal(services, token, &job_id).await {
             // The job may have published just after our last poll — the
             // reference calls this a "late manifest fetch", and it turns the
             // most expensive failure mode (a slow probe, marked failed, job
             // deleted) into a success.
             if let Some(manifest) = self
-                .fetch_manifest_if_present(services, &token, &username, image_id)
+                .fetch_manifest_if_present(services, token, username, image_id)
                 .await
             {
-                self.best_effort_delete(services, &token, &job_id).await;
+                self.best_effort_delete(services, token, &job_id).await;
                 self.remember(image_id, &params, &job_id, JobOutcome::Succeeded, "");
                 self.store
                     .set_manifest(image_id, manifest.clone(), captured_at(&manifest));
@@ -348,17 +523,18 @@ impl ImageDiscoveryCoordinator {
             // to report "job ended in failed state: Failed" and then destroy the
             // only copy of the logs and events that said why — leaving a status
             // word where a reason should be.
-            let diagnosis = self.diagnose(services, &token, &job_id, &msg).await;
-            self.best_effort_delete(services, &token, &job_id).await;
+            let diagnosis = self.diagnose(services, token, &job_id, &msg).await;
+            self.best_effort_delete(services, token, &job_id).await;
             let category = failure_category(&msg);
             self.remember(image_id, &params, &job_id, JobOutcome::Failed, &diagnosis);
             return self.fail(image_id, category, &diagnosis, Some(job_id));
         }
 
         // (6) Recover the manifest JSON from the job's stdout logs.
+        task.stage(crate::tr_en!("reading the job's output"));
         let logs = services
             .sessions
-            .get_logs(&token, &job_id)
+            .get_logs(token, &job_id)
             .await
             .unwrap_or_default();
         let json = match extract_manifest_json(&logs) {
@@ -370,12 +546,12 @@ impl ImageDiscoveryCoordinator {
                 let reason = self
                     .diagnose(
                         services,
-                        &token,
+                        token,
                         &job_id,
                         "Manifest fetch failed: job produced no manifest JSON in its logs.",
                     )
                     .await;
-                self.best_effort_delete(services, &token, &job_id).await;
+                self.best_effort_delete(services, token, &job_id).await;
                 self.remember(image_id, &params, &job_id, JobOutcome::Failed, &reason);
                 return self.fail(
                     image_id,
@@ -386,11 +562,12 @@ impl ImageDiscoveryCoordinator {
             }
         };
 
+        task.stage(crate::tr_en!("reading the manifest"));
         let manifest = match parse_manifest(&json) {
             Ok(m) => m,
             Err(e) => {
                 let reason = format!("Manifest parse failed: {e}");
-                self.best_effort_delete(services, &token, &job_id).await;
+                self.best_effort_delete(services, token, &job_id).await;
                 self.remember(image_id, &params, &job_id, JobOutcome::Failed, &reason);
                 return self.fail(
                     image_id,
@@ -404,7 +581,7 @@ impl ImageDiscoveryCoordinator {
         // A "stub" manifest is the placeholder a failed probe writes (no packages
         // + a probeNotes reason). Refuse to cache it — surface the reason instead.
         if is_stub_manifest(&manifest, probe_notes_of(&json).as_deref()) {
-            self.best_effort_delete(services, &token, &job_id).await;
+            self.best_effort_delete(services, token, &job_id).await;
             let notes = probe_notes_of(&json).unwrap_or_else(|| "no software detected".to_string());
             let reason = format!("Manifest fetch failed: probe wrote a stub manifest — {notes}");
             self.remember(image_id, &params, &job_id, JobOutcome::Failed, &reason);
@@ -417,7 +594,7 @@ impl ImageDiscoveryCoordinator {
         }
 
         // (7) Success — best-effort reap the job, then cache and return.
-        self.best_effort_delete(services, &token, &job_id).await;
+        self.best_effort_delete(services, token, &job_id).await;
         self.remember(image_id, &params, &job_id, JobOutcome::Succeeded, "");
         let now = chrono::Utc::now().to_rfc3339();
         self.store.set_manifest(image_id, manifest.clone(), now);
@@ -859,12 +1036,15 @@ impl ImageDiscoveryCoordinator {
 }
 
 /// RAII release of an in-flight coalescing slot.
-struct InFlightGuard<'a> {
-    set: &'a Mutex<HashSet<String>>,
+///
+/// Owns its `Arc` rather than borrowing the coordinator, so a caller can claim
+/// on one thread and hand the guard to the future that does the work.
+pub struct InFlightGuard {
+    set: Arc<Mutex<HashSet<String>>>,
     id: String,
 }
 
-impl Drop for InFlightGuard<'_> {
+impl Drop for InFlightGuard {
     fn drop(&mut self) {
         if let Ok(mut set) = self.set.lock() {
             set.remove(&self.id);
@@ -884,6 +1064,64 @@ fn strategy(types: Option<&[String]>) -> ProbeStrategy {
         None => ProbeStrategy::Inspector,
         Some(t) if t.iter().any(|s| s.eq_ignore_ascii_case("headless")) => ProbeStrategy::InTarget,
         Some(_) => ProbeStrategy::Inspector,
+    }
+}
+
+impl ProbeStrategy {
+    /// How the strategy reads in a status line.
+    fn label(self) -> &'static str {
+        match self {
+            ProbeStrategy::InTarget => crate::tr_en!("probe"),
+            ProbeStrategy::Inspector => crate::tr_en!("inspector"),
+        }
+    }
+}
+
+/// The outcome for a probe that is already running.
+fn busy_outcome(image_id: &str) -> DiscoveryOutcome {
+    DiscoveryOutcome::Failure {
+        category: category::BUSY.to_string(),
+        message: format!("A probe for {image_id} is already running"),
+        job_id: None,
+    }
+}
+
+/// Whether an in-target probe failed for a reason the INSPECTOR would not hit.
+///
+/// The in-target probe runs inside the image and needs an interpreter there;
+/// the inspector reads the image from outside with syft and needs nothing in
+/// it. So a stub blaming the image's own tooling is a reason to try the other
+/// strategy, not a verdict on the image.
+///
+/// Deliberately narrow. A timeout, a submit failure or an unparseable manifest
+/// says nothing about the strategy, and retrying those would double the cost of
+/// every real failure.
+fn in_target_dead_end(outcome: &DiscoveryOutcome) -> bool {
+    let DiscoveryOutcome::Failure {
+        category, message, ..
+    } = outcome
+    else {
+        return false;
+    };
+    if category != category::MANIFEST_FETCH_FAILED {
+        return false;
+    }
+    let m = message.to_lowercase();
+    m.contains("stub manifest") && (m.contains("python3 not found") || m.contains("no python"))
+}
+
+/// How big a probe job to ask for, given the strategy and the user's configured
+/// inspector size.
+///
+/// The two paths have nothing in common but the word "probe". In-target reads
+/// package databases already on disk; the inspector pulls and unpacks an entire
+/// container image through syft. Sizing them the same is what made discovery
+/// unreliable — so the size follows the work, and only the expensive one is
+/// configurable.
+fn probe_resources(strategy: ProbeStrategy, inspector: (u32, u32)) -> (u32, u32) {
+    match strategy {
+        ProbeStrategy::InTarget => (IN_TARGET_PROBE_CORES, IN_TARGET_PROBE_RAM_GB),
+        ProbeStrategy::Inspector => inspector,
     }
 }
 
@@ -1195,6 +1433,155 @@ mod tests {
         assert_eq!(strategy(Some(&[])), ProbeStrategy::Inspector);
     }
 
+    fn stub_failure(message: &str) -> DiscoveryOutcome {
+        DiscoveryOutcome::Failure {
+            category: category::MANIFEST_FETCH_FAILED.to_string(),
+            message: message.to_string(),
+            job_id: None,
+        }
+    }
+
+    #[test]
+    fn only_the_coordinator_tracks_which_images_are_being_probed() {
+        // Three sets described the same fact and only one of them gated any
+        // work, so a row could read "Discovering…" for an image this had
+        // already declined as Busy, and the Portal card and the discovery
+        // dialog could disagree with each other about the same image.
+        let mut copies = Vec::new();
+        for (path, text) in crate::testing::rust_sources() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "image_discovery_coordinator.rs" {
+                continue; // the owner
+            }
+            if crate::testing::without_comments(crate::testing::code(&text))
+                .contains("running: RefCell<HashSet<String>>")
+            {
+                copies.push(name.to_string());
+            }
+        }
+        assert!(
+            copies.is_empty(),
+            "a second copy of the in-flight probe set, which can disagree with \
+             the one that actually gates probes: {copies:?}"
+        );
+    }
+
+    #[test]
+    fn a_probe_reports_where_it_has_got_to_not_merely_that_it_is_running() {
+        // A probe resolves an account, checks VOSpace for a published manifest,
+        // uploads a script and only THEN submits a job — tens of seconds during
+        // which nothing exists on Skaha. Reported as one boolean, that produced
+        // three rows reading "Discovering…" against two actual jobs, with no
+        // way to tell which was which.
+        //
+        // The stage that matters most is the one naming the job id: it is the
+        // difference between "still deciding" and "running, here is what to
+        // look at".
+        // Raw source, not `testing::code`: that helper cuts a file at its first
+        // `#[cfg(test)]`, and this one has a test-only `store()` accessor a
+        // hundred lines above the pipeline. Same reason the guards module below
+        // scans raw.
+        let code = include_str!("image_discovery_coordinator.rs");
+        for stage in [
+            "looking for a published manifest",
+            "staging the probe script",
+            "submitting a {} job",
+            "waiting for job {}",
+        ] {
+            assert!(
+                code.contains(stage),
+                "the probe no longer reports the `{stage}` stage"
+            );
+        }
+        // And the outcome is recorded either way, so nothing is left running.
+        assert!(code.contains("task.succeed()") && code.contains("task.fail("));
+    }
+
+    #[test]
+    fn a_missing_interpreter_sends_the_probe_to_the_inspector() {
+        // The in-target probe runs INSIDE the image and needs python3 there.
+        // The inspector reads the same image from outside with syft and needs
+        // nothing in it — so this failure is about the strategy, not the image.
+        // Old CASA images advertise `headless`, ship no python3, and were
+        // failing permanently: seven of the first ten failures in a full sweep.
+        assert!(in_target_dead_end(&stub_failure(
+            "Manifest fetch failed: probe wrote a stub manifest — python3 not found in image [job x]"
+        )));
+    }
+
+    #[test]
+    fn the_fallback_does_not_fire_for_failures_the_inspector_would_share() {
+        // Retrying these would double the cost of every real failure without
+        // changing the answer.
+        assert!(!in_target_dead_end(&stub_failure(
+            "Manifest fetch failed: probe wrote a stub manifest — syft failed (rc=137)"
+        )));
+        assert!(!in_target_dead_end(&DiscoveryOutcome::Failure {
+            category: category::JOB_TIMED_OUT.to_string(),
+            message: "Probe timed out".to_string(),
+            job_id: None,
+        }));
+        assert!(!in_target_dead_end(&DiscoveryOutcome::Failure {
+            category: category::JOB_SUBMIT_FAILED.to_string(),
+            message: "Probe submit failed: python3 not found in image".to_string(),
+            job_id: None,
+        }));
+        // And a success is never a dead end.
+        assert!(!in_target_dead_end(&DiscoveryOutcome::Manifest(
+            ImageManifest::default()
+        )));
+    }
+
+    #[test]
+    fn the_probe_watches_for_longer_than_the_ten_minutes_that_cut_it_off() {
+        // Two images stopped being killed once syft moved to /scratch and then
+        // hit this ceiling instead, at 797s with the job still running. Giving
+        // up on a probe that was about to succeed is the most expensive
+        // failure available: the job ran, the quota was spent, and the answer
+        // was thrown away.
+        // Asserted as the ceiling it buys, in minutes, which is the thing that
+        // actually matters — and which a reader can check against the 797s that
+        // exposed it.
+        let polls = std::hint::black_box(MAX_PROBE_POLLS);
+        let ceiling_minutes = polls * 3 / 60;
+        assert!(
+            ceiling_minutes >= 20,
+            "a probe now gets {ceiling_minutes} minutes; the two images that \
+             hit the old ceiling were still working at 13"
+        );
+    }
+
+    #[test]
+    fn the_inspector_gets_the_configured_size_and_the_in_target_probe_does_not() {
+        // Sizing both paths the same is the bug: the inspector unpacks a whole
+        // container image through syft, the in-target probe reads files that
+        // are already there.
+        assert_eq!(
+            probe_resources(ProbeStrategy::Inspector, (4, 16)),
+            (4, 16),
+            "the inspector ignores the configured job size"
+        );
+        assert_eq!(
+            probe_resources(ProbeStrategy::InTarget, (4, 16)),
+            (IN_TARGET_PROBE_CORES, IN_TARGET_PROBE_RAM_GB),
+            "the in-target probe should not spend the inspector's quota"
+        );
+    }
+
+    #[test]
+    fn no_probe_is_launched_at_the_one_gigabyte_that_broke_discovery() {
+        use crate::models::image_discovery_settings::ImageDiscoverySettings;
+        // What ships by default is what almost every probe runs at, so assert
+        // on the default rather than on a hand-picked pair.
+        let defaults = ImageDiscoverySettings::default().resolved_inspector_resources();
+        let (_, ram) = probe_resources(ProbeStrategy::Inspector, defaults);
+        assert!(
+            ram >= 4,
+            "the syft inspector is back at {ram} GB, where it was SIGKILLed on \
+             every large image"
+        );
+    }
+
     #[test]
     fn terminal_and_failed_state_detection() {
         for ok in ["Succeeded", "Completed", "succeeded"] {
@@ -1413,17 +1800,17 @@ mod tests {
         let dir = std::env::temp_dir().join("verbinal_coord_inflight_test");
         let store = Arc::new(JsonManifestStore::with_dir(dir.clone()));
         let coord = ImageDiscoveryCoordinator::new(store, history_in(&dir));
-        let g1 = coord.claim_in_flight("img:1");
+        let g1 = coord.claim("img:1");
         assert!(g1.is_some(), "first claim succeeds");
         assert!(
-            coord.claim_in_flight("img:1").is_none(),
+            coord.claim("img:1").is_none(),
             "second concurrent claim is refused (Busy)"
         );
         // A different image is independent.
-        assert!(coord.claim_in_flight("img:2").is_some());
+        assert!(coord.claim("img:2").is_some());
         drop(g1);
         // Slot released → reclaimable.
-        assert!(coord.claim_in_flight("img:1").is_some());
+        assert!(coord.claim("img:1").is_some());
     }
 }
 
@@ -1802,20 +2189,30 @@ mod failure_reporting_guards {
 
     const SOURCE: &str = include_str!("image_discovery_coordinator.rs");
 
-    /// The body of `run_discovery`, which is where every failure path lives.
+    /// The discovery pipeline, which is where every failure path lives.
+    ///
+    /// Spans `run_discovery` AND `attempt_probe`: the pipeline was one function
+    /// until the in-target probe gained a fallback to the inspector, which
+    /// needed the per-attempt half to be callable twice. The guards below are
+    /// about the pipeline, not about which function happens to hold a line, so
+    /// the slice runs from the first to the end of the second.
     ///
     /// Scanned from the raw source rather than through `testing::code`: that
     /// helper cuts at the first `#[cfg(test)]`, and this file has one on a real
     /// item — the `store()` accessor — a hundred lines above `run_discovery`.
-    /// The slice below ends at the function's own closing brace, well before
-    /// any test module, so a guard still cannot find itself.
+    /// The slice ends at `attempt_probe`'s own closing brace, well before any
+    /// test module, so a guard still cannot find itself.
     fn run_discovery(code: &str) -> &str {
         let at = code
             .find("async fn run_discovery")
             .expect("run_discovery is gone");
-        let end = code[at..]
+        let attempt = code
+            .find("async fn attempt_probe")
+            .expect("attempt_probe is gone");
+        assert!(attempt > at, "attempt_probe moved above run_discovery");
+        let end = code[attempt..]
             .find("\n    }\n")
-            .map(|e| at + e)
+            .map(|e| attempt + e)
             .unwrap_or(code.len());
         &code[at..end]
     }

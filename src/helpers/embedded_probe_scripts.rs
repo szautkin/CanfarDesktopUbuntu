@@ -372,6 +372,44 @@ mod tests {
     /// for. The stub branches keep the marker deliberately: a stub is rejected
     /// before anything looks at its hash.
     #[test]
+    fn syft_unpacks_onto_scratch_not_the_pods_ephemeral_storage() {
+        // syft unpacks every layer of the target, so its scratch is the size of
+        // the image. On the default /tmp that is the pod's overlay — tens of GB,
+        // shared node-wide — and the kubelet kills the container for exceeding
+        // its ephemeral storage. The kill is external, so none of the script's
+        // error branches run: no stub manifest, and Skaha reports neither logs
+        // nor a termination event. Two images failed exactly that way at 1 GB
+        // and again at 8 GB of RAM, because memory was never the shortage.
+        let s = inspector_script();
+        assert!(
+            s.contains("/scratch/verbinal-syft."),
+            "the inspector no longer stages syft on /scratch"
+        );
+        // `mkdir -p` alone would CREATE /scratch on a host that has none — in
+        // the container's writable layer, which is the pod's ephemeral storage,
+        // the one resource this whole block exists to stay off. Without the
+        // directory test the fix silently becomes the bug it was written for.
+        assert!(
+            s.contains("[ -d /scratch ] && mkdir -p"),
+            "syft's scratch dir is created without checking /scratch is a real \
+             mount, so a host without one gets its ephemeral storage filled"
+        );
+        let at = s.find("registry:$TARGET_IMAGE").expect("syft call is gone");
+        let call = &s[at.saturating_sub(400)..at];
+        assert!(
+            call.contains("TMPDIR=\"$SYFT_TMPDIR\""),
+            "syft is invoked without the scratch TMPDIR, so it unpacks onto \
+             the pod's ephemeral storage again"
+        );
+        // The fallback has to be the OLD behaviour, not a hard failure: an
+        // inspector image on a host with no /scratch must still work.
+        assert!(
+            s.contains("if [ -n \"$SYFT_TMPDIR\" ]; then"),
+            "no fallback for a host without /scratch"
+        );
+    }
+
+    #[test]
     fn the_success_path_publishes_a_computed_content_hash() {
         assert!(
             inspector_script().contains(r#""contentHash": content_hash,"#),

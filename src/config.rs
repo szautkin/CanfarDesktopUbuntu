@@ -396,11 +396,34 @@ impl ApiEndpoints {
     }
 
     pub fn vospace_nodes_url(&self, username: &str, path: &str) -> String {
+        self.vospace_nodes_url_limited(username, path, None)
+    }
+
+    /// The nodes URL, optionally capped with VOSpace's `limit`.
+    ///
+    /// Listing a container is not cheap at the far end: VOSpace reports a size
+    /// for every child, and for a child that is itself a container that means
+    /// walking it. Time therefore tracks the number of DIRECTORIES, not the
+    /// number of nodes — `.verbinal` (16 nodes, mostly folders) took 20s while
+    /// `.verbinal/manifests` (231 nodes, all files) took 8s, and a home
+    /// directory of project folders took 59s, past every client's timeout.
+    ///
+    /// A caller that is going to show the first N anyway should ask for N.
+    pub fn vospace_nodes_url_limited(
+        &self,
+        username: &str,
+        path: &str,
+        limit: Option<usize>,
+    ) -> String {
         let arc_nodes = self.bases.read().unwrap().arc_nodes.clone();
-        if path.is_empty() {
+        let base = if path.is_empty() {
             format!("{}/home/{}", arc_nodes, username)
         } else {
             format!("{}/home/{}/{}", arc_nodes, username, path)
+        };
+        match limit {
+            Some(n) => format!("{base}?limit={n}"),
+            None => base,
         }
     }
 
@@ -611,6 +634,32 @@ mod tests {
         assert_eq!(
             endpoints().storage_url("testuser"),
             "https://ws-uv.canfar.net/arc/nodes/home/testuser?limit=0"
+        );
+    }
+
+    #[test]
+    fn a_listing_can_ask_the_server_for_less() {
+        // Listing a container is not cheap at the far end: VOSpace reports a
+        // size for every child, and sizing a child that is itself a container
+        // means walking it. Measured on a real account: `.verbinal` (16 nodes,
+        // mostly folders) 20.2s, `.verbinal/manifests` (231 nodes, all files)
+        // 8.1s, and a home directory 59s — past every client's timeout.
+        //
+        // A caller that will show the first N should ask for N.
+        assert_eq!(
+            endpoints().vospace_nodes_url_limited("testuser", "", Some(500)),
+            "https://ws-uv.canfar.net/arc/nodes/home/testuser?limit=500"
+        );
+        assert_eq!(
+            endpoints().vospace_nodes_url_limited("testuser", "sub/dir", Some(10)),
+            "https://ws-uv.canfar.net/arc/nodes/home/testuser/sub/dir?limit=10"
+        );
+        // No cap asked for, no cap sent — the browser and the manifest sync
+        // need every node, and a truncated listing there would silently lose
+        // files.
+        assert_eq!(
+            endpoints().vospace_nodes_url_limited("testuser", "sub", None),
+            endpoints().vospace_nodes_url("testuser", "sub")
         );
     }
 

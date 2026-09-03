@@ -32,7 +32,52 @@ new_temp() {
 SYFT_OUT="$(new_temp syft-out)"
 SYFT_ERR="$(new_temp syft-err)"
 TRANSFORMER="$(new_temp transform)"
-cleanup() { rm -f "$SYFT_OUT" "$SYFT_ERR" "$TRANSFORMER" "$TMP"; }
+
+# ---- Where syft unpacks the target image.
+#
+# syft pulls EVERY LAYER of the target and unpacks it to disk before it can
+# catalogue anything, so the scratch it needs is the size of the image. Left on
+# the default /tmp that lands on the pod's overlay filesystem — measured at 54 GB
+# free and shared with every other pod on the node — and the kubelet kills the
+# container for exceeding its ephemeral storage.
+#
+# That kill comes from OUTSIDE, which is why it looks like nothing: none of the
+# error branches below get to run, so there is no stub manifest, and Skaha
+# reports neither logs nor a termination event. The caller is left with "job
+# ended in failed state: Failed" and no way to learn more. Two images failed
+# exactly that way on every attempt, unchanged by going from 1 GB to 8 GB of
+# RAM — because memory was never the resource they were short of.
+#
+# Skaha mounts /scratch as real per-session disk (6.2 TB free where this was
+# measured) and wipes it when the session ends.
+# `-d /scratch` FIRST, and it is not a formality: `mkdir -p` would happily
+# create /scratch itself on a host that has no such mount — as a plain directory
+# in the container's own writable layer, which IS the pod's ephemeral storage.
+# That is the exact resource this block exists to stay off, so without the test
+# the "fix" quietly becomes the bug, and does it while looking like it worked.
+SYFT_TMPDIR=""
+if [ -d /scratch ] && mkdir -p "/scratch/verbinal-syft.$$" 2>/dev/null; then
+    SYFT_TMPDIR="/scratch/verbinal-syft.$$"
+fi
+# Say which it picked. The fallback is silent by design — an inspector host
+# without /scratch must still work — and a silent fallback is indistinguishable
+# from the bug it was meant to fix: syft back on the pod's ephemeral storage,
+# the container evicted, and no logs left to say so. This line is the only way
+# to tell the two apart from the outside.
+if [ -n "$SYFT_TMPDIR" ]; then
+    echo "syft scratch: $SYFT_TMPDIR" >&2
+else
+    echo "syft scratch: ${TMPDIR:-/tmp} (no writable /scratch — syft will unpack onto the pod's ephemeral storage)" >&2
+fi
+
+cleanup() {
+    rm -f "$SYFT_OUT" "$SYFT_ERR" "$TRANSFORMER" "$TMP"
+    # An `if`, not `[ … ] && …`: a trailing test that fails is the trap's exit
+    # status, and this trap runs on the success path too.
+    if [ -n "$SYFT_TMPDIR" ]; then
+        rm -rf "$SYFT_TMPDIR"
+    fi
+}
 trap cleanup EXIT
 
 # Helper: write a minimal manifest with a `probeNotes` field set
@@ -317,7 +362,16 @@ PYEOF
 # than a silent 0-byte file. `set -o pipefail` makes syft
 # failures abort the pipeline below.
 syft_rc=0
-"$SYFT" "registry:$TARGET_IMAGE" -o syft-json >"$SYFT_OUT" 2>"$SYFT_ERR" || syft_rc=$?
+# TMPDIR only for syft: the small temp files above are already staged, and this
+# is the one command whose scratch is measured in gigabytes. An unavailable
+# /scratch leaves SYFT_TMPDIR empty and the default applies, which is exactly
+# the old behaviour.
+if [ -n "$SYFT_TMPDIR" ]; then
+    TMPDIR="$SYFT_TMPDIR" "$SYFT" "registry:$TARGET_IMAGE" -o syft-json \
+        >"$SYFT_OUT" 2>"$SYFT_ERR" || syft_rc=$?
+else
+    "$SYFT" "registry:$TARGET_IMAGE" -o syft-json >"$SYFT_OUT" 2>"$SYFT_ERR" || syft_rc=$?
+fi
 
 if [ "$syft_rc" -ne 0 ]; then
     # Truncate stderr to ~400 chars so the manifest stays small.
