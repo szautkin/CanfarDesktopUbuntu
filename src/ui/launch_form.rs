@@ -173,6 +173,11 @@ impl LaunchFormView {
         let notebook = gtk::Notebook::new();
         notebook.set_vexpand(false);
         notebook.set_valign(gtk::Align::Start);
+        // No frame of its own. Whatever holds this form — the dialog, or a
+        // card — is already a box; a notebook drawing a second one around the
+        // tabs and every field under them is the border with nothing on the
+        // other side of it. See `.flat-tabs` in style.css.
+        notebook.add_css_class("flat-tabs");
 
         // === Standard Tab ===
         let standard_box = gtk::Box::new(gtk::Orientation::Vertical, 12);

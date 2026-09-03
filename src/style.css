@@ -213,3 +213,24 @@ button.selected-row {
 button.selected-row:hover {
   background-color: alpha(@accent_bg_color, 0.28);
 }
+
+/* Launch form tabs.
+ *
+ * A GtkNotebook draws a frame around itself — the tab strip and the content
+ * as one box. On a card that is a box inside a box; in the launch dialog it
+ * is a box inside a dialog that is already the frame, which is the border
+ * wrapping the tabs and every field under them.
+ *
+ * The line under the tab strip stays. That one is doing work: it separates
+ * the tabs from the thing they switch. */
+.flat-tabs,
+.flat-tabs > stack {
+    border: none;
+    background: none;
+}
+
+.flat-tabs > header {
+    border: none;
+    border-bottom: 1px solid alpha(@borders, 0.5);
+    background: none;
+}
