@@ -663,7 +663,9 @@ mod tests {
         let code = crate::testing::without_comments(crate::testing::code(include_str!(
             "imagediscovery.rs"
         )));
-        let at = code.find("fn describe_image").expect("describe_image is gone");
+        let at = code
+            .find("fn describe_image")
+            .expect("describe_image is gone");
         let body = &code[at..];
         assert!(
             !body.contains("serde_json::Map::new()"),

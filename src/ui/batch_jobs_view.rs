@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 type OnStateClickCb = Rc<RefCell<Option<Box<dyn Fn(BatchJobState, Vec<JobEntry>)>>>>;
 
-
 /// Kind of terminal transition detected between two polls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobTransition {

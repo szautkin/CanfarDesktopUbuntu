@@ -95,7 +95,9 @@ impl ToastStream {
             let stream = Rc::downgrade(self);
             let mine = toast.clone();
             toast.connect_dismissed(move |_| {
-                let Some(stream) = stream.upgrade() else { return };
+                let Some(stream) = stream.upgrade() else {
+                    return;
+                };
                 // Only if it is still ours: by the time a displaced toast
                 // reports back, the replacement is already on screen.
                 let is_mine = stream

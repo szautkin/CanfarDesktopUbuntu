@@ -297,12 +297,14 @@ fn build_failure_view(dialog: &Dialog, category: &str, message: &str, job_id: Op
     // The job's own words, collapsed — the same treatment the Batch Jobs
     // history and the status bar give a failure, from the same helper.
     if !message.trim().is_empty() {
-        dialog.content().append(&crate::ui::failure_detail::reason_row(
-            crate::tr_en!("What the probe reported"),
-            crate::tr_en!("Open for the full output"),
-            message,
-            None,
-        ));
+        dialog
+            .content()
+            .append(&crate::ui::failure_detail::reason_row(
+                crate::tr_en!("What the probe reported"),
+                crate::tr_en!("Open for the full output"),
+                message,
+                None,
+            ));
     }
 }
 

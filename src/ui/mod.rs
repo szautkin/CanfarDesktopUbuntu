@@ -66,8 +66,8 @@ pub mod status_bar;
 pub mod storage_quota;
 pub mod text_viewer_dialog;
 pub mod tiles;
-pub mod toasts;
 pub mod toast;
+pub mod toasts;
 pub mod vospace_browser;
 pub mod workflows_page;
 

@@ -611,7 +611,11 @@ mod tests {
     fn the_vocabulary_search_is_case_insensitive() {
         let tmp = TempDir::new();
         let store = tmp.store();
-        store.set_manifest("img:1", manifest("img:1", "ubuntu", &["AstroPy"]), AT.into());
+        store.set_manifest(
+            "img:1",
+            manifest("img:1", "ubuntu", &["AstroPy"]),
+            AT.into(),
+        );
         assert_eq!(store.packages_matching("astropy", 10).len(), 1);
     }
 

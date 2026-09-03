@@ -149,8 +149,11 @@ impl RegistryService {
         );
         let found: SearchResponse = self.get_json(&url, auth).await?;
 
-        let repositories: Vec<SearchRepository> =
-            found.repository.into_iter().take(MAX_REPOSITORIES).collect();
+        let repositories: Vec<SearchRepository> = found
+            .repository
+            .into_iter()
+            .take(MAX_REPOSITORIES)
+            .collect();
 
         // Bounded fan-out. Each chunk is awaited before the next starts, so at
         // most CONCURRENT_REPOSITORY_READS requests are ever in flight — this
@@ -364,7 +367,9 @@ mod tests {
         assert!(RegistryAuth::from_credentials("me", "").basic.is_none());
         // base64("me:secret")
         assert_eq!(
-            RegistryAuth::from_credentials("me", "secret").basic.unwrap(),
+            RegistryAuth::from_credentials("me", "secret")
+                .basic
+                .unwrap(),
             "bWU6c2VjcmV0"
         );
     }

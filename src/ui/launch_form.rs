@@ -742,13 +742,17 @@ impl LaunchFormView {
     /// dismiss for one action was the least of it: a modal raised from a modal
     /// is the arrangement that left this app frozen behind its own dialog.
     fn show_result(&self, ok: bool, title: &str, detail: &str) {
-        self.result_icon
-            .set_icon_name(Some(if ok { "emblem-ok-symbolic" } else { "dialog-error-symbolic" }));
+        self.result_icon.set_icon_name(Some(if ok {
+            "emblem-ok-symbolic"
+        } else {
+            "dialog-error-symbolic"
+        }));
         // Semantic colour, not the accent: this says what happened, and it has
         // to read as the same thing here as it does on a session card.
         self.result_icon.remove_css_class("success");
         self.result_icon.remove_css_class("error");
-        self.result_icon.add_css_class(if ok { "success" } else { "error" });
+        self.result_icon
+            .add_css_class(if ok { "success" } else { "error" });
 
         self.result_title.set_text(title);
         self.result_detail.set_text(detail);
@@ -1351,16 +1355,8 @@ impl LaunchFormView {
         );
 
         match &launch_result {
-            Ok(_) => self.show_result(
-                true,
-                &crate::tr_fmt!("{} is starting", name),
-                &detail,
-            ),
-            Err(e) => self.show_result(
-                false,
-                crate::tr_en!("The session could not be started"),
-                e,
-            ),
+            Ok(_) => self.show_result(true, &crate::tr_fmt!("{} is starting", name), &detail),
+            Err(e) => self.show_result(false, crate::tr_en!("The session could not be started"), e),
         }
 
         match launch_result {
@@ -1585,7 +1581,6 @@ mod result_tests {
         );
     }
 }
-
 
 #[cfg(test)]
 mod use_this_image_tests {

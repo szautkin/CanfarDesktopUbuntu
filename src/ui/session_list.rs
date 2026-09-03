@@ -1,6 +1,7 @@
 use crate::models::session::INTERACTIVE_SESSION_TYPES;
 use crate::models::Session;
 use crate::state::AppServices;
+use crate::ui::poll;
 use crate::ui::session_card::{ActionCallback, SessionAction, SessionCard};
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -8,7 +9,6 @@ use gtk4::{self as gtk};
 use libadwaita as adw;
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::ui::poll;
 use std::sync::Arc;
 
 type OptionalCallback<T> = Rc<RefCell<Option<Box<dyn Fn(T)>>>>;
@@ -386,7 +386,8 @@ impl SessionListView {
         );
         // The same question the notification check asks, kept for the poller:
         // movement now means movement is likely again soon.
-        self.changed.set(differs(&self.sessions.borrow(), &sessions));
+        self.changed
+            .set(differs(&self.sessions.borrow(), &sessions));
 
         let has_pending = sessions.iter().any(|s| s.is_pending());
         *self.sessions.borrow_mut() = sessions;

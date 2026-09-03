@@ -380,19 +380,14 @@ impl CanfarImagesView {
         // early-return in the handler is too thin a thing to rest it on.
         let selected = self.selected_type.borrow().clone();
         let view = self.clone();
-        fill_filter_row(
-            &self.filter_bar,
-            &choices,
-            &selected,
-            move |picked| {
-                *view.selected_type.borrow_mut() = picked.to_string();
-                // The projects on offer depend on the type, so this row is not
-                // just re-filtered but rebuilt — and the project selection may
-                // not survive it.
-                view.rebuild_project_bar();
-                view.rebuild_rows();
-            },
-        );
+        fill_filter_row(&self.filter_bar, &choices, &selected, move |picked| {
+            *view.selected_type.borrow_mut() = picked.to_string();
+            // The projects on offer depend on the type, so this row is not
+            // just re-filtered but rebuilt — and the project selection may
+            // not survive it.
+            view.rebuild_project_bar();
+            view.rebuild_rows();
+        });
         self.filter_scroll.set_visible(!types.is_empty());
     }
 
@@ -413,15 +408,10 @@ impl CanfarImagesView {
         let choices = with_all(projects.iter().map(|p| (p.clone(), p.clone())));
         let selected = self.selected_project.borrow().clone();
         let view = self.clone();
-        fill_filter_row(
-            &self.project_bar,
-            &choices,
-            &selected,
-            move |picked| {
-                *view.selected_project.borrow_mut() = picked.to_string();
-                view.rebuild_rows();
-            },
-        );
+        fill_filter_row(&self.project_bar, &choices, &selected, move |picked| {
+            *view.selected_project.borrow_mut() = picked.to_string();
+            view.rebuild_rows();
+        });
 
         // One project is no choice at all — the row would be "All | srcnet",
         // both showing the same list. Hidden until it can actually narrow
@@ -907,9 +897,10 @@ fn in_project(project: &str, selected: &str) -> bool {
 /// [`LAUNCHABLE_SESSION_TYPES`]: crate::models::session::LAUNCHABLE_SESSION_TYPES
 fn launchable_here(img: &ParsedImage, mine: &std::collections::HashSet<String>) -> bool {
     mine.contains(&img.id)
-        || img.types.iter().any(|t| {
-            crate::models::session::LAUNCHABLE_SESSION_TYPES.contains(&t.as_str())
-        })
+        || img
+            .types
+            .iter()
+            .any(|t| crate::models::session::LAUNCHABLE_SESSION_TYPES.contains(&t.as_str()))
 }
 
 fn in_type_group(types: &[String], selected: &str) -> bool {

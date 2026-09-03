@@ -95,10 +95,7 @@ fn report(what: &str, before: u32, ceiling: u32, horizon: u32) {
         new_worst <= old_worst,
         "{what}: worst-case delay rose from {old_worst}s to {new_worst}s"
     );
-    assert!(
-        new_total <= old_total,
-        "{what}: mean delay rose"
-    );
+    assert!(new_total <= old_total, "{what}: mean delay rose");
 }
 
 fn main() {

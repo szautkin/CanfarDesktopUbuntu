@@ -344,9 +344,8 @@ mod tests {
         // so this asserts the guard is in the code path rather than building
         // the whole app to watch it not make a request; the service layer has
         // the executable version of this test.
-        let code = crate::testing::without_comments(crate::testing::code(include_str!(
-            "registry.rs"
-        )));
+        let code =
+            crate::testing::without_comments(crate::testing::code(include_str!("registry.rs")));
         let at = code
             .find("async fn search(")
             .expect("search is gone from the registry family");
@@ -375,7 +374,10 @@ mod tests {
     #[test]
     fn adding_does_not_ask_because_nothing_is_lost() {
         let store = Arc::new(InMemoryProposalStore::new());
-        match propose_add(&json!({ "image": "h/p/n:1", "types": ["notebook"] }), &store) {
+        match propose_add(
+            &json!({ "image": "h/p/n:1", "types": ["notebook"] }),
+            &store,
+        ) {
             ToolResult::Proposed(p) => {
                 assert!(!p.destructive);
                 assert_eq!(p.payload["types"][0], "notebook");

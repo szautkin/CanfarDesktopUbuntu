@@ -197,9 +197,8 @@ mod tests {
         // whatever it holds, so a short form gets a band of dead space and its
         // buttons sit far from the thing they act on — 250px of nothing under
         // the launch form's Standard tab.
-        let code = crate::testing::without_comments(crate::testing::code(include_str!(
-            "dialog.rs"
-        )));
+        let code =
+            crate::testing::without_comments(crate::testing::code(include_str!("dialog.rs")));
         let at = code.find("fn new(").expect("Dialog::new is gone");
         let body = &code[at..(at + 1200).min(code.len())];
         assert!(
