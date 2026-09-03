@@ -2,7 +2,6 @@ use crate::helpers::ImageParser;
 use crate::models::session::{INTERACTIVE_SESSION_TYPES, LAUNCHABLE_SESSION_TYPES};
 use crate::models::{ParsedImage, RecentLaunch, Session, SessionLaunchParams};
 use crate::state::AppServices;
-use crate::ui::launch_dialog::show_launch_dialog;
 use crate::ui::resource_selector::ResourceSelector;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -12,6 +11,24 @@ use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// Stack page names for the modal body.
+const BODY_FORM: &str = "form";
+const BODY_RESULT: &str = "result";
+
+/// Crossfade between the form and its result. Inside the range a modal
+/// transition should sit in, and short enough not to delay the close.
+const RESULT_FADE_MS: u32 = 200;
+
+/// How big the confirmation glyph is.
+const RESULT_ICON_PX: i32 = 48;
+
+/// How long the confirmation stays up before the modal closes itself.
+///
+/// Long enough to read four words and register that the thing worked, short
+/// enough that nobody reaches for the close button first. A launch is a rare,
+/// deliberate act — the one moment in this app with any budget for a beat.
+const RESULT_DWELL_MS: u32 = 1400;
 
 /// Which of the launch form's three tabs is meant.
 ///
@@ -79,6 +96,12 @@ pub struct LaunchFormView {
     /// The status + launch row. Held so a modal host can pin it below its
     /// scroller instead of letting the form's primary action scroll away.
     action_row: gtk::Box,
+    /// The form, or the result of submitting it. See `show_result`.
+    body_stack: gtk::Stack,
+    result_icon: gtk::Image,
+    result_title: gtk::Label,
+    result_detail: gtk::Label,
+    result_back_btn: gtk::Button,
     /// The card's heading. A dialog supplies its own title, so a host that has
     /// one hides this rather than showing "Launch Session" twice.
     card_header: gtk::Box,
@@ -427,7 +450,51 @@ impl LaunchFormView {
             Some(&gtk::Label::new(Some(crate::tr_en!("Headless")))),
         );
 
-        card.content.append(&notebook);
+        // The form, or the result of submitting it — never both, and never a
+        // second window on top of this one. A launch used to raise its own
+        // dialog over the modal, which is a modal on a modal: the pattern that
+        // froze this app once, and two things to dismiss for one action.
+        //
+        // A Stack rather than toggled visibility, for the crossfade. This is a
+        // content swap in a modal the user is looking straight at — one of the
+        // few places in this app where motion earns its keep, because an
+        // instant substitution reads as the window having been replaced.
+        let body_stack = gtk::Stack::new();
+        body_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        body_stack.set_transition_duration(RESULT_FADE_MS);
+        body_stack.add_named(&notebook, Some(BODY_FORM));
+
+        let result_panel = gtk::Box::new(gtk::Orientation::Vertical, crate::ui::space::CARD);
+        result_panel.set_valign(gtk::Align::Center);
+        result_panel.set_halign(gtk::Align::Center);
+        result_panel.set_vexpand(true);
+        crate::ui::space::edge_all(&result_panel);
+
+        let result_icon = gtk::Image::from_icon_name("emblem-ok-symbolic");
+        result_icon.set_pixel_size(RESULT_ICON_PX);
+        result_panel.append(&result_icon);
+
+        let result_title = gtk::Label::new(None);
+        result_title.add_css_class("title-2");
+        result_title.set_wrap(true);
+        result_title.set_justify(gtk::Justification::Center);
+        result_panel.append(&result_title);
+
+        let result_detail = gtk::Label::new(None);
+        result_detail.add_css_class("dim-label");
+        result_detail.set_wrap(true);
+        result_detail.set_justify(gtk::Justification::Center);
+        result_panel.append(&result_detail);
+
+        // Only for a failure. A success closes itself, so a button there would
+        // be one nobody can press in time.
+        let result_back_btn = gtk::Button::with_label(crate::tr_en!("Back to the form"));
+        result_back_btn.set_halign(gtk::Align::Center);
+        result_back_btn.set_visible(false);
+        result_panel.append(&result_back_btn);
+
+        body_stack.add_named(&result_panel, Some(BODY_RESULT));
+        card.content.append(&body_stack);
 
         // Status + Launch button
         let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -484,6 +551,11 @@ impl LaunchFormView {
             images: Rc::new(RefCell::new(Vec::new())),
             launch_btn,
             action_row: bottom,
+            body_stack,
+            result_icon,
+            result_title,
+            result_detail,
+            result_back_btn,
             card_header,
             status_label,
             on_launched: Rc::new(RefCell::new(None)),
@@ -622,6 +694,14 @@ impl LaunchFormView {
             });
         }
 
+        // The way back from a failure. Nothing else returns to the form: a
+        // success closes the modal, and closing it resets the page anyway.
+        {
+            let back = view.result_back_btn.clone();
+            let form = view.clone();
+            back.connect_clicked(move |_| form.clear_result());
+        }
+
         view
     }
 
@@ -649,6 +729,50 @@ impl LaunchFormView {
     /// Session" twice, once in the header bar and once inside the card.
     pub fn set_header_visible(&self, visible: bool) {
         self.card_header.set_visible(visible);
+    }
+
+    /// Put the result of a launch where the form was.
+    ///
+    /// Replaces the dialog that used to open on top of this one. Two windows to
+    /// dismiss for one action was the least of it: a modal raised from a modal
+    /// is the arrangement that left this app frozen behind its own dialog.
+    fn show_result(&self, ok: bool, title: &str, detail: &str) {
+        self.result_icon
+            .set_icon_name(Some(if ok { "emblem-ok-symbolic" } else { "dialog-error-symbolic" }));
+        // Semantic colour, not the accent: this says what happened, and it has
+        // to read as the same thing here as it does on a session card.
+        self.result_icon.remove_css_class("success");
+        self.result_icon.remove_css_class("error");
+        self.result_icon.add_css_class(if ok { "success" } else { "error" });
+
+        self.result_title.set_text(title);
+        self.result_detail.set_text(detail);
+        // A success closes itself, so a button there is one nobody can press in
+        // time. A failure stays, and needs the way back.
+        self.result_back_btn.set_visible(!ok);
+
+        // The launch controls belong to the form; on the result page they would
+        // offer to do again what has just been done.
+        self.launch_btn.set_visible(false);
+        self.headless_launch_btn.set_visible(false);
+        self.status_label.set_text("");
+        self.body_stack.set_visible_child_name(BODY_RESULT);
+    }
+
+    /// Back to the form.
+    pub fn clear_result(&self) {
+        self.body_stack.set_visible_child_name(BODY_FORM);
+        self.result_back_btn.set_visible(false);
+        self.sync_launch_button(self.current_tab());
+    }
+
+    /// Show or hide the card's frame.
+    ///
+    /// On the Portal this is one card among seven and the frame is what makes
+    /// it one. In a dialog it is the only thing there, so the frame draws a
+    /// second box a few pixels inside the first.
+    pub fn set_framed(&self, framed: bool) {
+        crate::ui::card::set_framed(&self.container, framed);
     }
 
     /// The card's content box — the action row's home.
@@ -1209,17 +1333,30 @@ impl LaunchFormView {
             Err(e) => task.fail(e.clone()),
         }
 
-        show_launch_dialog(
-            &self.container,
-            &name,
-            &image_display,
-            &session_type,
-            cores,
-            ram,
-            gpus,
-            launch_result.clone(),
-        )
-        .await;
+        // Shown where the form was, not in a window on top of it.
+        let mut summary = vec![format!("CPU {cores}"), format!("RAM {ram}G")];
+        if gpus > 0 {
+            summary.push(format!("GPU {gpus}"));
+        }
+        let detail = format!(
+            "{}  \u{00B7}  {}  \u{00B7}  {}",
+            image_display,
+            session_type,
+            summary.join("  \u{00B7}  ")
+        );
+
+        match &launch_result {
+            Ok(_) => self.show_result(
+                true,
+                &crate::tr_fmt!("{} is starting", name),
+                &detail,
+            ),
+            Err(e) => self.show_result(
+                false,
+                crate::tr_en!("The session could not be started"),
+                e,
+            ),
+        }
 
         match launch_result {
             Ok(_) => {
@@ -1244,13 +1381,20 @@ impl LaunchFormView {
                 };
                 let _ = self.services.recent_launches.save(recent);
 
+                // Let the confirmation be read, then let the host close the
+                // modal. The dwell is here rather than in the host because it
+                // is the confirmation's own timing — the host only knows that
+                // the launch is done.
+                glib::timeout_future(std::time::Duration::from_millis(RESULT_DWELL_MS as u64))
+                    .await;
                 if let Some(ref cb) = *self.on_launched.borrow() {
                     cb();
                 }
             }
             Err(e) => {
-                self.status_label
-                    .set_text(&crate::tr_fmt!("Launch failed: {}", e));
+                // The result panel carries the reason; the status line under a
+                // form nobody is looking at would be saying it to the wall.
+                let _ = e;
             }
         }
 
@@ -1378,13 +1522,19 @@ impl LaunchFormView {
                 };
                 let _ = self.services.recent_launches.save(recent);
 
+                self.show_result(
+                    true,
+                    &crate::tr_fmt!("{} submitted", params.name),
+                    &crate::tr_fmt!("Batch job \u{00B7} {}", params.image),
+                );
+                glib::timeout_future(std::time::Duration::from_millis(RESULT_DWELL_MS as u64))
+                    .await;
                 if let Some(ref cb) = *self.on_launched.borrow() {
                     cb();
                 }
             }
             Err(e) => {
-                self.status_label
-                    .set_text(&crate::tr_fmt!("Batch launch failed: {}", e));
+                self.show_result(false, crate::tr_en!("The batch job was not submitted"), &e);
             }
         }
         self.headless_launch_btn.set_sensitive(true);
@@ -1394,6 +1544,43 @@ impl LaunchFormView {
         &self.container
     }
 }
+
+#[cfg(test)]
+mod result_tests {
+    #[test]
+    fn a_launch_answers_inside_the_modal_rather_than_over_it() {
+        // The form lives in a modal, so a result dialog raised from here is a
+        // modal on a modal — two things to dismiss for one action, and the
+        // arrangement that once left the app frozen behind a window it had
+        // opened itself. The result goes where the form was.
+        let code =
+            crate::testing::without_comments(crate::testing::code(include_str!("launch_form.rs")));
+        assert!(
+            !code.contains("show_launch_dialog"),
+            "the launch form opens a dialog on top of the modal it lives in"
+        );
+        assert!(
+            code.contains("self.show_result("),
+            "the launch form no longer shows its result in place"
+        );
+    }
+
+    #[test]
+    fn a_failure_leaves_a_way_back_and_a_success_does_not_need_one() {
+        // A success closes the modal on its own, so a button there is one
+        // nobody can press in time. A failure stays put and has to be
+        // recoverable without closing and re-opening the whole form.
+        let code =
+            crate::testing::without_comments(crate::testing::code(include_str!("launch_form.rs")));
+        let at = code.find("fn show_result").expect("show_result is gone");
+        let body = &code[at..(at + 1400).min(code.len())];
+        assert!(
+            body.contains("result_back_btn.set_visible(!ok)"),
+            "the way back is not tied to the outcome"
+        );
+    }
+}
+
 
 #[cfg(test)]
 mod use_this_image_tests {

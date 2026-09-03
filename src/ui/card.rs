@@ -14,6 +14,23 @@ use crate::ui::space;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 
+/// Turn a card's frame off, or back on.
+///
+/// A card's frame says "separate object on a page". Inside a dialog there is no
+/// page and nothing to be separate from, so the frame draws a second box just
+/// inside the first — visible in the launch modal as a white card sitting on
+/// the dialog's own ground, one inset in from every edge.
+///
+/// Lives here because the class name does: a caller toggling it would have to
+/// name `"card"` itself, which is the thing the guard below forbids.
+pub fn set_framed(widget: &gtk::Box, framed: bool) {
+    if framed {
+        widget.add_css_class("card");
+    } else {
+        widget.remove_css_class("card");
+    }
+}
+
 /// A titled card: frame, heading row, and a content area to fill.
 pub struct Card {
     /// The whole card — put this in the layout.

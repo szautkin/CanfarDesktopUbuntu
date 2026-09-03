@@ -620,16 +620,22 @@ fn show_launch_modal(
         return;
     }
 
+    // Tall enough for the Advanced tab, which is twice the length of Standard,
+    // without the Standard tab opening as a band of empty space. The cap is a
+    // share of the window rather than a number, because the three tabs differ
+    // enough that any fixed height is wrong for two of them.
     let dialog = crate::ui::dialog::Dialog::new(
         crate::tr_en!("Launch Session"),
-        crate::ui::fit::FORM,
-        LAUNCH_MODAL_HEIGHT,
+        crate::ui::fit::DETAIL,
+        crate::ui::dialog::viewport_share(parent, LAUNCH_MODAL_SHARE, LAUNCH_MODAL_HEIGHT),
     );
     form.show_tab(tab);
 
     // The dialog's header bar already says "Launch Session"; the card's own
-    // heading would say it a second time, ten pixels below.
+    // heading would say it a second time, ten pixels below — and its frame
+    // would draw a second box just inside the dialog's own edge.
     form.set_header_visible(false);
+    form.set_framed(false);
 
     // Take the form off whatever holds it. The close handler does this on the
     // normal path, but re-entry would otherwise parent a parented widget.
@@ -660,6 +666,11 @@ fn show_launch_modal(
                 content.remove(form.widget());
             }
             form.set_header_visible(true);
+            form.set_framed(true);
+            // Back to the form for the next opening: a modal reopened on the
+            // confirmation of the last launch would be showing an answer to a
+            // question nobody has asked yet.
+            form.clear_result();
             *open.borrow_mut() = None;
             gtk::glib::Propagation::Proceed
         });
@@ -675,6 +686,9 @@ fn show_launch_modal(
 /// plus a resource selector, so the cap is generous; anything taller scrolls
 /// rather than pushing the window off the screen.
 const LAUNCH_MODAL_HEIGHT: i32 = 640;
+
+/// How much of the window the launch modal may fill before it scrolls.
+const LAUNCH_MODAL_SHARE: f64 = 0.8;
 
 fn update_session_limits(
     session_list: &Rc<SessionListView>,

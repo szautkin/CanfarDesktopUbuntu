@@ -56,10 +56,14 @@ impl Dialog {
     /// a window taller than the display puts its own action row below the
     /// bottom edge of the screen, which is where the buttons went.
     pub fn new(title: &str, width: i32, height: i32) -> Self {
+        // No `default_height`. The scroller below already says "as tall as the
+        // content, and no taller than `height`", and a default height fights
+        // it: the window opens at that size whatever the content asks for, so a
+        // short form gets a band of dead space under it and the buttons sit far
+        // from the thing they act on. The launch form showed 250px of nothing.
         let window = adw::Window::builder()
             .title(title)
             .default_width(width)
-            .default_height(height)
             .modal(true)
             .resizable(true)
             .build();
@@ -77,7 +81,8 @@ impl Dialog {
         // `propagate_natural_height` keeps a short dialog short — a rename
         // prompt should not open at the height of a wizard. `max_content_height`
         // is what stops the other end: past it the window stays put and the
-        // content scrolls.
+        // content scrolls. Together they are the whole height policy, which is
+        // why the window sets no default height of its own.
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -147,6 +152,23 @@ impl Dialog {
 /// So: the widget's toplevel, and if that toplevel is itself transient for
 /// something, the window at the end of that chain — the real application
 /// window.
+/// A height cap of `fraction` of the window this dialog opens over.
+///
+/// For a dialog whose content varies — the launch form has three tabs of very
+/// different lengths — a fixed cap is either too short for the longest or too
+/// tall for the shortest. Tying it to the window means the cap is "most of what
+/// you can see" on any display, rather than a number chosen against one.
+///
+/// Falls back to `default_cap` before the parent is mapped, which is when its
+/// height reads as zero.
+pub fn viewport_share(parent: &impl IsA<gtk::Widget>, fraction: f64, default_cap: i32) -> i32 {
+    let height = anchor_window(parent).map(|w| w.height()).unwrap_or(0);
+    if height <= 0 {
+        return default_cap;
+    }
+    ((height as f64) * fraction).round() as i32
+}
+
 pub fn anchor_window(widget: &impl IsA<gtk::Widget>) -> Option<gtk::Window> {
     let mut window = widget.root().and_downcast::<gtk::Window>()?;
     // Bounded: a transient chain is two or three deep in this app, and a cycle
@@ -168,6 +190,28 @@ mod tests {
     /// countable: a file on it builds its own shell and may have no scroller
     /// under its content, which is how a Done button ends up past the bottom
     /// edge. A file NOT on it may not start.
+    #[test]
+    fn a_dialog_is_as_tall_as_its_content_and_no_taller() {
+        // `height` is a CAP, applied to the scroller. Setting it as the
+        // window's default height as well makes every dialog open at the cap
+        // whatever it holds, so a short form gets a band of dead space and its
+        // buttons sit far from the thing they act on — 250px of nothing under
+        // the launch form's Standard tab.
+        let code = crate::testing::without_comments(crate::testing::code(include_str!(
+            "dialog.rs"
+        )));
+        let at = code.find("fn new(").expect("Dialog::new is gone");
+        let body = &code[at..(at + 1200).min(code.len())];
+        assert!(
+            !body.contains(".default_height("),
+            "Dialog sets a default height, which overrides the hug-to-content policy"
+        );
+        assert!(
+            body.contains("propagate_natural_height(true)") && body.contains("max_content_height"),
+            "the height policy is no longer 'as tall as the content, capped'"
+        );
+    }
+
     #[test]
     fn every_dialog_anchors_to_a_real_window_not_to_another_dialog() {
         // A modal parented to a modal that then closes is left behind the main
