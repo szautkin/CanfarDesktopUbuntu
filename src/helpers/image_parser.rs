@@ -53,8 +53,17 @@ impl ImageParser {
         filtered
     }
 
+    /// The distinct type GROUPS present, in the canonical order.
+    ///
+    /// Grouped rather than raw, so `desktop` and `desktop-app` are one button
+    /// covering both rather than two buttons splitting the desktop images
+    /// between them — see [`crate::models::session::type_group`].
     pub fn available_types(images: &[ParsedImage]) -> Vec<String> {
-        let mut types: Vec<String> = images.iter().flat_map(|img| img.types.clone()).collect();
+        let mut types: Vec<String> = images
+            .iter()
+            .flat_map(|img| img.types.iter())
+            .map(|t| crate::models::session::type_group(t).to_string())
+            .collect();
         types.sort();
         types.dedup();
 
@@ -107,6 +116,30 @@ mod tests {
         let images = sample_images();
         let types = ImageParser::available_types(&images);
         assert_eq!(types, vec!["notebook", "desktop", "carta", "contributed"]);
+    }
+
+    #[test]
+    fn desktop_app_is_offered_under_desktop() {
+        // Skaha reports `desktop-app` as its own type — an application published
+        // inside a desktop session, not a different thing to launch. Offering
+        // both gave the filter bar two buttons for one idea and split the
+        // desktop images between them.
+        let raws = vec![
+            RawImage {
+                id: "images.canfar.net/skaha/desktop:1.0".to_string(),
+                types: vec!["desktop".to_string()],
+            },
+            RawImage {
+                id: "images.canfar.net/casa-4/casa:4.5.1".to_string(),
+                types: vec!["headless".to_string(), "desktop-app".to_string()],
+            },
+        ];
+        let types = ImageParser::available_types(&ImageParser::parse_all(&raws));
+        assert!(
+            !types.iter().any(|t| t == "desktop-app"),
+            "desktop-app is still its own filter: {types:?}"
+        );
+        assert_eq!(types, vec!["desktop", "headless"]);
     }
 
     #[test]

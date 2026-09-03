@@ -13,7 +13,7 @@
 
 use crate::models::image_manifest::{ImageManifest, PackageQuery};
 use crate::services::manifest_store::JsonManifestStore;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 /// One selectable value inside a [`Facet`], with the number of discovered images
 /// it would still match (`count`) and whether ticking it keeps results non-empty
@@ -77,22 +77,30 @@ impl Category {
     /// family/version skip the sentinel `"unknown"`; Python unions the flat pip
     /// snapshot with every per-conda-env snapshot (matching the store's package
     /// universe).
-    fn values_of(self, m: &ImageManifest) -> Vec<String> {
+    /// This category's values in `m`, BORROWED.
+    ///
+    /// Returned `Vec<String>` until it was measured: every value here is a
+    /// package name already owned by the manifest, and the facet builder asks
+    /// for them twice per category per manifest — once to build the value
+    /// universe, once to count. Eight categories over a 65-image cache whose
+    /// largest manifest holds 1,275 packages meant a few hundred thousand
+    /// `String` clones per keystroke, which was 9.4 ms of the 11.3 ms the
+    /// dialog spent rebuilding its facets. Borrowing costs one boxed iterator.
+    fn values_of(self, m: &ImageManifest) -> Box<dyn Iterator<Item = &str> + '_> {
         match self {
-            Category::OsFamily => opt_value(&m.os_family),
-            Category::OsVersion => opt_value(&m.os_version),
-            Category::Python => {
-                let mut v: Vec<String> = m.python.clone();
-                for pkgs in m.python_by_env.values() {
-                    v.extend(pkgs.iter().cloned());
-                }
-                v
-            }
-            Category::R => m.r_packages.clone(),
-            Category::Dpkg => m.dpkg.clone(),
-            Category::Rpm => m.rpm.clone(),
-            Category::Apk => m.apk.clone(),
-            Category::Capabilities => m.capabilities.clone(),
+            Category::OsFamily => Box::new(opt_value(&m.os_family)),
+            Category::OsVersion => Box::new(opt_value(&m.os_version)),
+            Category::Python => Box::new(
+                m.python
+                    .iter()
+                    .map(String::as_str)
+                    .chain(m.python_by_env.values().flatten().map(String::as_str)),
+            ),
+            Category::R => Box::new(m.r_packages.iter().map(String::as_str)),
+            Category::Dpkg => Box::new(m.dpkg.iter().map(String::as_str)),
+            Category::Rpm => Box::new(m.rpm.iter().map(String::as_str)),
+            Category::Apk => Box::new(m.apk.iter().map(String::as_str)),
+            Category::Capabilities => Box::new(m.capabilities.iter().map(String::as_str)),
         }
     }
 
@@ -139,64 +147,75 @@ impl Category {
 /// The value universe stays the full catalogue so a filtered-out value can still
 /// be un-ticked. Empty categories are omitted.
 pub fn facets_for_query(store: &JsonManifestStore, q: &PackageQuery) -> Vec<Facet> {
-    let manifests = discovered_manifests(store);
-    facets_from(&manifests, Some(q))
+    // Borrowed, under one lock. This used to list the ids and `get()` each one,
+    // deep-copying every manifest twice over — 11.3 ms a call on a 65-image
+    // cache, on every keystroke in the dialog.
+    store.with_manifests(|manifests| facets_from(manifests, Some(q)))
 }
 
 // ---------------------------------------------------------------------------
 // internals
 // ---------------------------------------------------------------------------
 
-/// Every cached successful manifest (failures carry no manifest and are skipped).
-fn discovered_manifests(store: &JsonManifestStore) -> Vec<ImageManifest> {
-    store
-        .known_images()
-        .into_iter()
-        .filter_map(|id| store.get(&id).and_then(|o| o.manifest().cloned()))
-        .collect()
-}
-
 /// Shared facet builder. With `query = None` every value is enabled and counted
 /// across all manifests; with `query = Some(q)` counts are scoped to the
 /// query-minus-this-category matches and unreachable values are greyed out.
-fn facets_from(manifests: &[ImageManifest], query: Option<&PackageQuery>) -> Vec<Facet> {
+fn facets_from(manifests: &[&ImageManifest], query: Option<&PackageQuery>) -> Vec<Facet> {
     let mut facets = Vec::new();
+    // One scratch set, cleared per manifest rather than allocated per manifest.
+    // The old shape built a fresh `HashSet` for every (category, manifest) pair
+    // — 1,596 allocations on a 266-image cache, per call.
+    let mut seen: HashSet<&str> = HashSet::new();
+
     for category in Category::ORDER {
-        // The full value universe for this category (all discovered manifests),
-        // so an already-ticked value is always present to un-tick.
-        let mut universe: BTreeMap<String, ()> = BTreeMap::new();
+        // The query with THIS category's own constraint dropped, so faceting a
+        // value never greys itself out. `None` means no query: everything is
+        // reachable and every value stays enabled.
+        let scoped = query.map(|q| category.scoped_without(q));
+
+        // Value universe and reachable counts in ONE pass.
+        //
+        // They used to be two: a pass to collect the universe, then another to
+        // count. Both walk every value of every manifest, so the second was the
+        // same work twice — 26.9 ms on this developer's cache, over a frame,
+        // and growing with the catalogue.
+        // A hash map, sorted once at the end rather than kept ordered on every
+        // insert: a `BTreeMap<&str, _>` pays string comparisons on all 6,769
+        // values, and the pane only needs them ordered once.
+        let mut universe: HashMap<&str, usize> = HashMap::new();
         for m in manifests {
-            for v in category.values_of(m) {
-                universe.insert(v, ());
+            let reachable = scoped.as_ref().map(|s| s.matches(m)).unwrap_or(true);
+            seen.clear();
+            for value in category.values_of(m) {
+                let count = universe.entry(value).or_insert(0);
+                // Each manifest counts once per value, however many times it
+                // lists it — and only if the rest of the query admits it.
+                if reachable && seen.insert(value) {
+                    *count += 1;
+                }
             }
         }
         if universe.is_empty() {
             continue;
         }
 
-        // Which manifests + values are reachable given the rest of the query.
-        let (reachable_counts, has_query) = match query {
-            Some(q) => (scoped_counts(category, q, manifests), true),
-            None => (unscoped_counts(category, manifests), false),
-        };
-
-        let mut values = Vec::with_capacity(universe.len());
-        for value in universe.into_keys() {
-            let count = reachable_counts.get(&value).copied().unwrap_or(0);
-            let enabled = if has_query {
-                count > 0
+        let has_query = query.is_some();
+        let mut ordered: Vec<(&str, usize)> = universe.into_iter().collect();
+        ordered.sort_unstable_by_key(|(value, _)| *value);
+        let values = ordered
+            .into_iter()
+            .map(|(value, count)| FacetValue {
+                // A ticked value stays enabled even when it would collapse the
+                // results, so it can be un-ticked.
+                enabled: !has_query
+                    || count > 0
                     || query
-                        .map(|q| category.is_selected(q, &value))
-                        .unwrap_or(false)
-            } else {
-                true
-            };
-            values.push(FacetValue {
-                value,
+                        .map(|q| category.is_selected(q, value))
+                        .unwrap_or(false),
+                value: value.to_string(),
                 count,
-                enabled,
-            });
-        }
+            })
+            .collect();
 
         facets.push(Facet {
             category: category.label().to_string(),
@@ -206,49 +225,12 @@ fn facets_from(manifests: &[ImageManifest], query: Option<&PackageQuery>) -> Vec
     facets
 }
 
-/// Per-value image counts with no query applied: how many manifests contain each
-/// value of this category.
-fn unscoped_counts(category: Category, manifests: &[ImageManifest]) -> BTreeMap<String, usize> {
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for m in manifests {
-        for v in distinct(category.values_of(m)) {
-            *counts.entry(v).or_insert(0) += 1;
-        }
-    }
-    counts
-}
-
-/// Per-value image counts scoped to the manifests that satisfy `q` with this
-/// category's own constraint dropped — the count a checkbox would narrow to.
-fn scoped_counts(
-    category: Category,
-    q: &PackageQuery,
-    manifests: &[ImageManifest],
-) -> BTreeMap<String, usize> {
-    let scoped = category.scoped_without(q);
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for m in manifests {
-        if !scoped.matches(m) {
-            continue;
-        }
-        for v in distinct(category.values_of(m)) {
-            *counts.entry(v).or_insert(0) += 1;
-        }
-    }
-    counts
-}
-
-/// De-duplicate one manifest's contribution so each image counts a value once.
-fn distinct(values: Vec<String>) -> HashSet<String> {
-    values.into_iter().collect()
-}
-
-/// A non-`unknown`, non-empty option as a single-element value list.
-fn opt_value(value: &Option<String>) -> Vec<String> {
-    match value {
-        Some(v) if !v.is_empty() && v != "unknown" => vec![v.clone()],
-        _ => Vec::new(),
-    }
+/// A non-`unknown`, non-empty option as a zero- or one-element borrowed value.
+fn opt_value(value: &Option<String>) -> impl Iterator<Item = &str> {
+    value
+        .as_deref()
+        .filter(|v| !v.is_empty() && *v != "unknown")
+        .into_iter()
 }
 
 fn opt_eq(actual: &Option<String>, expected: &str) -> bool {
@@ -320,13 +302,14 @@ mod tests {
             );
         }
 
-        // And the part every rebuild pays before faceting even starts.
+        // And the part every rebuild pays before faceting even starts. This was
+        // `known_images()` + `get()` per id, which deep-copied every manifest
+        // twice; it is now one lock and a pointer each.
         let started = std::time::Instant::now();
-        let manifests = discovered_manifests(&store);
+        let count = store.with_manifests(|m| m.len());
         println!(
-            "{:>14} -> {} manifests in {:?}",
+            "{:>14} -> {count} manifests in {:?}",
             "loading them",
-            manifests.len(),
             started.elapsed()
         );
     }

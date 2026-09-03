@@ -16,26 +16,61 @@
 //!     [`show_image_discovery_dialog`]; picking an image there also fires
 //!     `on_use_image` and refreshes the list (the dialog may have probed images).
 //!
-//! A per-type filter bar (the SelectorBar analog, single-select linked toggle
-//! buttons) plus a total-count badge sit in the header. Rows are ordered
-//! discovered → failed → never, then by image id (mirrors the reference sort).
+//! Two filter rows (the SelectorBar analog, single-select linked toggles) plus a
+//! total-count badge sit in the header: session type, then project. The type
+//! answers "what kind of session", the project answers "whose images", and the
+//! second row is rebuilt from whatever the first leaves — so it only ever
+//! offers projects that still have something in them, and picking CARTA
+//! narrows it from 21 buttons to 2. Rows are ordered discovered → failed →
+//! never, then by image id (mirrors the reference sort).
+//!
+//! The list is what the LAUNCH FORM can offer, not everything `/v1/image`
+//! returns — see [`launchable_here`]. Of the platform's 365 images, 77 are
+//! `desktop-app` and nothing else: an application published inside a desktop
+//! session, which no launch tab starts on its own. They made up a fifth of the
+//! card, and Inspect on one spent a probe job on something the user could never
+//! run. Images the user added from the registry are always kept, whatever their
+//! labels say.
 
-use crate::helpers::discovery_formatting::{failure_summary, package_count, time_ago};
+use crate::helpers::discovery_formatting::{failure_summary, time_ago};
 use crate::helpers::image_parser::ImageParser;
-use crate::models::image_manifest::{DiscoveryOutcome, LastOutcome};
+use crate::models::image_manifest::DiscoveryOutcome;
 use crate::models::ParsedImage;
 use crate::services::image_discovery_coordinator::SyncProgress;
+use crate::services::manifest_store::RowSummary;
 use crate::state::AppServices;
 use crate::ui::image_discovery_dialog::show_image_discovery_dialog;
+use crate::ui::registry_browser_dialog::show_registry_browser_dialog;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// How many image rows to build.
+///
+/// The list is 180–360px tall, so about six rows are ever on screen. GTK4's
+/// `ListBox` does not virtualise — every row is a live widget — and the Portal
+/// pays a measure pass over all of them on every layout, resize and scroll:
+///
+/// ```text
+///  50 rows ->   5.3 ms per measure
+/// 171 rows ->  17.6 ms per measure
+/// 368 rows ->  38.5 ms per measure
+/// ```
+///
+/// (`cargo run --release --features fits --example row_cost_probe`.) At a full
+/// catalogue that is more than two frames of budget spent measuring rows nobody
+/// is looking at. Anyone hunting a specific image has the search in
+/// "Find images by package…"; this list is for browsing the top of the order.
+const MAX_ROWS: usize = 50;
+
+/// Width reserved for the Inspect button, so its contents can change without
+/// moving the row's other action.
+const INSPECT_BTN_WIDTH: i32 = 96;
 
 /// 3-state discovery status for one image row (mirrors `ImageDiscoveryStatus`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +84,13 @@ pub struct CanfarImagesView {
     container: gtk::Box,
     services: Arc<AppServices>,
     filter_bar: gtk::Box,
+    /// The scroller around `filter_bar`; visibility belongs to it, since it is
+    /// what occupies space in the card.
+    filter_scroll: gtk::ScrolledWindow,
+    /// The project filter, and its scroller. Second row, rebuilt whenever the
+    /// type selection changes.
+    project_bar: gtk::Box,
+    project_scroll: gtk::ScrolledWindow,
     count_badge: gtk::Label,
     subtitle: gtk::Label,
     list_box: gtk::ListBox,
@@ -58,9 +100,12 @@ pub struct CanfarImagesView {
     /// The distinct session types available, in `available_types` order.
     types: RefCell<Vec<String>>,
     /// The type currently selected in the filter bar (empty ⇒ show all).
-    selected_type: RefCell<String>,
-    /// Image ids with a probe currently in flight (shown as "Inspecting…").
-    running: RefCell<HashSet<String>>,
+    ///
+    /// `Rc` because the ListBox's filter function reads it. Capturing the whole
+    /// view there would make the widget own the view that owns the widget.
+    selected_type: Rc<RefCell<String>>,
+    /// The project currently selected (empty ⇒ every project).
+    selected_project: Rc<RefCell<String>>,
     #[allow(clippy::type_complexity)]
     on_use_image: Rc<RefCell<Option<Box<dyn Fn(String)>>>>,
 }
@@ -96,14 +141,44 @@ impl CanfarImagesView {
         find_btn.set_valign(gtk::Align::Center);
         header.append(&find_btn);
 
+        // Next to the package search, because they are the two ways of finding
+        // an image and the difference between them is where it looks: the
+        // package search looks inside images the app already knows about, this
+        // one goes and asks the registry for images it does not.
+        let registry_btn = gtk::Button::with_label(crate::tr_en!("Add image from registry"));
+        registry_btn.add_css_class("flat");
+        registry_btn.set_valign(gtk::Align::Center);
+        registry_btn.set_tooltip_text(Some(crate::tr_en!(
+            "Search the container registry for an image the platform does not list, and add it to your own"
+        )));
+        header.append(&registry_btn);
+
         let spinner = card.spinner.clone();
         let refresh_btn = card.with_refresh();
 
         // ── Per-type filter bar (linked toggle buttons) ──
-        let filter_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        filter_bar.add_css_class("linked");
-        filter_bar.set_halign(gtk::Align::Start);
-        card.content.append(&filter_bar);
+        //
+        // Inside a horizontal scroller, because the number of buttons is not
+        // ours to choose: it is however many session types Skaha reports, seven
+        // today. A plain Box makes all of them the card's MINIMUM width, and the
+        // card spans two of three homogeneous columns, so seven buttons set the
+        // minimum width of the entire Portal grid — past the window, where the
+        // page scroller (`hscrollbar_policy(Never)`, deliberately) clips the
+        // right-hand column instead of scrolling it.
+        //
+        // `propagate_natural_width` keeps the bar at its natural size whenever
+        // there is room, so this changes nothing until there is not.
+        let (filter_bar, filter_scroll) = filter_row();
+        card.content.append(&filter_scroll);
+
+        // Second row: the projects. The type answers "what kind of session",
+        // the project answers "whose images" — and with 21 projects behind the
+        // catalogue, and 62 images in the largest, the type alone still leaves
+        // a list nobody browses. Rebuilt from whatever the type selection
+        // leaves, so it only ever offers projects that have something in them:
+        // picking CARTA narrows this row from 21 buttons to 2.
+        let (project_bar, project_scroll) = filter_row();
+        card.content.append(&project_scroll);
 
         // ── Discovered X of Y subtitle + row list, grouped with a tight 6px
         // gap so the caption reads as directly describing the list below it
@@ -128,6 +203,17 @@ impl CanfarImagesView {
         list_box.add_css_class("boxed-list");
         list_box.set_selection_mode(gtk::SelectionMode::None);
         list_box.set_margin_bottom(12);
+
+        // A placeholder rather than an appended row: with filtering in play
+        // "no images" and "none of this type" are the same picture, and the
+        // placeholder shows for both without being filtered itself — an
+        // appended label would be a row, and the filter would have to special-
+        // case it.
+        let empty = gtk::Label::new(Some(crate::tr_en!("No images available")));
+        empty.add_css_class("dim-label");
+        empty.set_margin_top(12);
+        empty.set_margin_bottom(12);
+        list_box.set_placeholder(Some(&empty));
         scrolled.set_child(Some(&list_box));
         list_section.append(&scrolled);
         card.content.append(&list_section);
@@ -136,14 +222,17 @@ impl CanfarImagesView {
             container,
             services,
             filter_bar,
+            filter_scroll,
+            project_bar,
+            project_scroll,
             count_badge,
             subtitle,
             list_box,
             spinner,
             images: RefCell::new(Vec::new()),
             types: RefCell::new(Vec::new()),
-            selected_type: RefCell::new(String::new()),
-            running: RefCell::new(HashSet::new()),
+            selected_type: Rc::new(RefCell::new(String::new())),
+            selected_project: Rc::new(RefCell::new(String::new())),
             on_use_image: Rc::new(RefCell::new(None)),
         });
 
@@ -186,6 +275,16 @@ impl CanfarImagesView {
             });
         }
 
+        // Add-from-registry opens the browser. Its callback re-reads the
+        // catalogue, so an image added in there appears in this list without
+        // the user having to know to refresh.
+        {
+            let view = view.clone();
+            registry_btn.connect_clicked(move |_| {
+                view.clone().open_registry_browser();
+            });
+        }
+
         view
     }
 
@@ -199,7 +298,7 @@ impl CanfarImagesView {
         *self.on_use_image.borrow_mut() = Some(Box::new(callback));
     }
 
-    /// Fetch the image catalogue, rebuild the type filter bar and the row list.
+    /// Fetch the image catalogue, then rebuild both filter rows and the list.
     pub async fn refresh(self: &Rc<Self>) {
         self.spinner.set_visible(true);
         self.spinner.start();
@@ -209,7 +308,9 @@ impl CanfarImagesView {
             .services
             .spawn(async move {
                 let token = svc.get_token().await.unwrap_or_default();
-                svc.images.get_images(&token).await
+                // The platform's catalogue AND the images the user added from
+                // the registry, from the one place that knows about both.
+                svc.image_catalogue(&token).await
             })
             .await;
 
@@ -217,23 +318,34 @@ impl CanfarImagesView {
         self.spinner.set_visible(false);
 
         match result {
-            Ok(raw) => {
-                let parsed = ImageParser::parse_all(&raw);
+            Ok(parsed) => {
+                // Only what can actually be launched. See `launchable_here`.
+                let mine = self.my_image_ids();
+                let parsed: Vec<ParsedImage> = parsed
+                    .into_iter()
+                    .filter(|img| launchable_here(img, &mine))
+                    .collect();
+
                 self.count_badge.set_text(&format!("({})", parsed.len()));
                 let types = ImageParser::available_types(&parsed);
 
-                // Keep the current selection if it still exists, else pick the first.
+                // Keep the current selection if it still exists, else fall back
+                // to All (the empty string), never to the first type: an image
+                // the user just added may carry no session-type label at all,
+                // and landing on a type would leave it filtered out of the very
+                // list they added it to see.
                 let want = self.selected_type.borrow().clone();
-                let selected = if types.iter().any(|t| t == &want) {
+                let selected = if want.is_empty() || types.iter().any(|t| t == &want) {
                     want
                 } else {
-                    types.first().cloned().unwrap_or_default()
+                    String::new()
                 };
                 *self.images.borrow_mut() = parsed;
                 *self.types.borrow_mut() = types;
                 *self.selected_type.borrow_mut() = selected;
 
                 self.rebuild_filter_bar();
+                self.rebuild_project_bar();
                 self.rebuild_rows();
             }
             Err(e) => {
@@ -245,59 +357,145 @@ impl CanfarImagesView {
 
     // ── Filter bar ─────────────────────────────────────────────────────────
 
+    /// The session-type row.
+    ///
+    /// "All" leads it, and it is not a session type — it is the absence of a
+    /// filter, which is why it carries the empty string. Without it every view
+    /// of this card is filtered, and an image whose registry labels name no
+    /// session type has nowhere to appear: the user adds it and the list they
+    /// added it to does not show it.
     fn rebuild_filter_bar(self: &Rc<Self>) {
-        while let Some(child) = self.filter_bar.first_child() {
-            self.filter_bar.remove(&child);
-        }
-
         let types = self.types.borrow().clone();
+        let choices = with_all(
+            types
+                .iter()
+                .map(|t| (t.clone(), crate::models::session::type_label(t).to_string())),
+        );
+
+        // Read out of the cell BEFORE the row is built, not borrowed across it.
+        // `fill_filter_row` mutates widgets and GTK emits `toggled` while it
+        // does; a handler that reaches this same cell would meet a live borrow
+        // inside a signal trampoline, which cannot unwind — the process aborts
+        // rather than panicking. The Portal has hit that once already, and the
+        // early-return in the handler is too thin a thing to rest it on.
         let selected = self.selected_type.borrow().clone();
-        let mut group: Option<gtk::ToggleButton> = None;
+        let view = self.clone();
+        fill_filter_row(
+            &self.filter_bar,
+            &choices,
+            &selected,
+            move |picked| {
+                *view.selected_type.borrow_mut() = picked.to_string();
+                // The projects on offer depend on the type, so this row is not
+                // just re-filtered but rebuilt — and the project selection may
+                // not survive it.
+                view.rebuild_project_bar();
+                view.rebuild_rows();
+            },
+        );
+        self.filter_scroll.set_visible(!types.is_empty());
+    }
 
-        for ty in &types {
-            let btn = gtk::ToggleButton::with_label(&capitalize(ty));
-            match &group {
-                Some(first) => btn.set_group(Some(first)),
-                None => group = Some(btn.clone()),
-            }
-            btn.set_active(ty == &selected);
+    /// The project row, built from whatever the type selection leaves.
+    ///
+    /// Only projects that still have an image in them: offering a button that
+    /// selects nothing is offering the user a dead end. A project that has gone
+    /// away with the type change takes the selection with it, back to All —
+    /// otherwise the card shows an empty list and the reason is a button in a
+    /// row the user is not looking at.
+    fn rebuild_project_bar(self: &Rc<Self>) {
+        let projects = self.projects_for_selected_type();
 
-            let view = self.clone();
-            let ty = ty.clone();
-            btn.connect_toggled(move |b| {
-                // Only react to the newly-activated button; the paired
-                // deactivation of the previous button is ignored.
-                if b.is_active() {
-                    *view.selected_type.borrow_mut() = ty.clone();
-                    view.rebuild_rows();
-                }
-            });
-            self.filter_bar.append(&btn);
-        }
-        self.filter_bar.set_visible(!types.is_empty());
+        // A project the new type does not have takes the selection with it.
+        let surviving = surviving_project(&self.selected_project.borrow(), &projects);
+        *self.selected_project.borrow_mut() = surviving;
+
+        let choices = with_all(projects.iter().map(|p| (p.clone(), p.clone())));
+        let selected = self.selected_project.borrow().clone();
+        let view = self.clone();
+        fill_filter_row(
+            &self.project_bar,
+            &choices,
+            &selected,
+            move |picked| {
+                *view.selected_project.borrow_mut() = picked.to_string();
+                view.rebuild_rows();
+            },
+        );
+
+        // One project is no choice at all — the row would be "All | srcnet",
+        // both showing the same list. Hidden until it can actually narrow
+        // something.
+        self.project_scroll.set_visible(projects.len() > 1);
+    }
+
+    /// The ids of the images the user added themselves, for one pass of work.
+    ///
+    /// Both callers want the same set and neither wants it per row: asking the
+    /// store per row took its lock once for every row drawn, to answer a
+    /// one-word question fifty times.
+    fn my_image_ids(&self) -> std::collections::HashSet<String> {
+        self.services
+            .user_images
+            .list()
+            .into_iter()
+            .map(|i| i.id)
+            .collect()
+    }
+
+    /// The distinct projects among the images the current type selection shows.
+    ///
+    /// Alphabetical, not by size. The biggest two (`srcnet` and `skaha`, 62 and
+    /// 61 images) would lead a size-ordered row today and swap places the week
+    /// one of them publishes a tag — a filter bar whose buttons move is one the
+    /// user has to re-read every time.
+    fn projects_for_selected_type(&self) -> Vec<String> {
+        let selected = self.selected_type.borrow().clone();
+        let images = self.images.borrow();
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<String> = images
+            .iter()
+            .filter(|img| in_type_group(&img.types, &selected))
+            .filter(|img| !img.project.is_empty())
+            .filter(|img| seen.insert(img.project.as_str()))
+            .map(|img| img.project.clone())
+            .collect();
+        out.sort();
+        out
     }
 
     // ── Row list ───────────────────────────────────────────────────────────
 
+    /// Build every row in the catalogue, once, ordered discovered → failed →
+    /// never and then by image id.
+    ///
+    /// Called when the shown set changes: a catalogue refresh, a type toggle,
+    /// or a probe starting or finishing.
     fn rebuild_rows(self: &Rc<Self>) {
         while let Some(child) = self.list_box.first_child() {
             self.list_box.remove(&child);
         }
 
         let selected = self.selected_type.borrow().clone();
-        let running = self.running.borrow().clone();
+        // One locked pass over the cache for the whole rebuild. This used to
+        // call `store.get()` — which deep-copies an outcome, package lists and
+        // all — once here, again inside `build_row`, and a third time in
+        // `update_subtitle`: three full manifest copies per image to render a
+        // status glyph and a one-line subtitle.
+        let summaries = self.services.image_manifests.row_summaries();
 
-        // Filter to the selected type, resolve each image's status, and order
-        // discovered → failed → never, then by image id.
-        let mut rows: Vec<(DiscoveryStatus, ParsedImage)> = self
-            .images
-            .borrow()
+        // Filtered HERE rather than by a `set_filter_func` over every image in
+        // the catalogue. Filtering by visibility is cheaper per keystroke, but
+        // it keeps a widget alive for every image whether shown or not, and
+        // that cost is paid on every layout pass forever — 38ms at 368 images
+        // against 5ms at fifty. Rebuilding a short list is the cheaper trade.
+        let project = self.selected_project.borrow().clone();
+        let images = self.images.borrow();
+        let mut rows: Vec<(DiscoveryStatus, &ParsedImage)> = images
             .iter()
-            .filter(|img| selected.is_empty() || img.types.iter().any(|t| t == &selected))
-            .map(|img| {
-                let outcome = self.services.image_manifests.get(&img.id);
-                (status_of(outcome.as_ref()), img.clone())
-            })
+            .filter(|img| in_type_group(&img.types, &selected))
+            .filter(|img| in_project(&img.project, &project))
+            .map(|img| (status_of(summaries.get(&img.id)), img))
             .collect();
         rows.sort_by(|a, b| {
             status_order(a.0)
@@ -305,25 +503,33 @@ impl CanfarImagesView {
                 .then_with(|| a.1.id.cmp(&b.1.id))
         });
 
-        for (_, img) in &rows {
-            let is_running = running.contains(&img.id);
-            self.list_box.append(&self.build_row(img, is_running));
+        // One snapshot for the whole rebuild, like the summaries above.
+        let mine = self.my_image_ids();
+
+        let matched = rows.len();
+        for (_, img) in rows.iter().take(MAX_ROWS) {
+            // Asked of the coordinator, which is the thing that actually runs
+            // probes. A second copy here could — and did — disagree with it.
+            let is_running = self.services.image_discovery.is_probing(&img.id);
+            self.list_box.append(&self.build_row(
+                img,
+                is_running,
+                summaries.get(&img.id),
+                mine.contains(&img.id),
+            ));
         }
 
-        if rows.is_empty() {
-            let empty = gtk::Label::new(Some(crate::tr_en!("No images available")));
-            empty.add_css_class("dim-label");
-            empty.set_margin_top(12);
-            empty.set_margin_bottom(12);
-            self.list_box.append(&empty);
-        }
-
-        self.update_subtitle();
+        self.update_subtitle(matched);
     }
 
-    fn build_row(self: &Rc<Self>, img: &ParsedImage, is_running: bool) -> adw::ActionRow {
-        let outcome = self.services.image_manifests.get(&img.id);
-        let status = status_of(outcome.as_ref());
+    fn build_row(
+        self: &Rc<Self>,
+        img: &ParsedImage,
+        is_running: bool,
+        summary: Option<&RowSummary>,
+        is_mine: bool,
+    ) -> adw::ActionRow {
+        let status = status_of(summary);
 
         let row = adw::ActionRow::new();
         row.set_use_markup(false);
@@ -331,7 +537,7 @@ impl CanfarImagesView {
         row.set_subtitle(&if is_running {
             crate::tr_en!("Inspecting…").to_string()
         } else {
-            meta_line(outcome.as_ref(), &img.id, &chrono::Utc::now().to_rfc3339())
+            meta_line(summary, &img.id, &chrono::Utc::now().to_rfc3339())
         });
         row.set_subtitle_lines(0);
 
@@ -344,15 +550,42 @@ impl CanfarImagesView {
         row.add_prefix(&icon);
 
         // Inspect button.
+        // Label stays "Inspect" in both states on purpose. A button that
+        // renames itself changes width, and this one sits in a column beside
+        // "Use this image" — the discovery dialog's button did exactly that and
+        // knocked every busy row's primary action out of line.
         let inspect_btn = gtk::Button::with_label(crate::tr_en!("Inspect"));
         inspect_btn.add_css_class("flat");
         inspect_btn.set_valign(gtk::Align::Center);
-        inspect_btn.set_sensitive(!is_running);
+        // Pinned, because the label is replaced by a spinner while a probe
+        // runs. Unpinned, the button would shrink to the spinner and drag
+        // "Use this image" left for exactly the rows that are busy — the same
+        // way the discovery dialog's button used to when it relabelled itself.
+        inspect_btn.set_size_request(INSPECT_BTN_WIDTH, -1);
+        let already = status == DiscoveryStatus::Discovered;
+        inspect_btn.set_tooltip_text(Some(if already {
+            crate::tr_en!("Inspect again — the image may have been rebuilt under the same tag")
+        } else {
+            crate::tr_en!("Run a probe job to list this image's packages")
+        }));
+        if is_running {
+            // A rebuilt row must show the probe that is still going: without
+            // this the list redraws a fresh, enabled "Inspect" over running
+            // work, which is indistinguishable from a button that did nothing.
+            crate::ui::busy::render_busy(&inspect_btn);
+        }
         {
             let view = self.clone();
             let id = img.id.clone();
             inspect_btn.connect_clicked(move |_| {
-                view.clone().start_inspect(id.clone());
+                // FORCED when the image already has a manifest. Without this the
+                // coordinator short-circuits on the cached success and returns
+                // instantly: the row flashed "Inspecting…" and settled back
+                // showing the same thing, which is indistinguishable from a
+                // button that does nothing. A successful manifest never expires,
+                // so pressing Inspect on a discovered image can only mean
+                // "look again".
+                view.clone().start_inspect(id.clone(), already);
             });
         }
         row.add_suffix(&inspect_btn);
@@ -374,15 +607,83 @@ impl CanfarImagesView {
         }
         row.add_suffix(&use_btn);
 
+        // The row itself opens what is inside the image. A fourth suffix button
+        // would crowd a row that already carries three, and GNOME's own lists
+        // put "show me this thing" on the row rather than on a control — the
+        // buttons keep their own clicks, so the two do not compete.
+        row.set_activatable(true);
+        row.set_tooltip_text(Some(crate::tr_en!(
+            "Show the packages and OS found inside this image"
+        )));
+        {
+            let view = self.clone();
+            let id = img.id.clone();
+            row.connect_activated(move |row| {
+                crate::ui::image_detail_dialog::show_image_detail_dialog(
+                    row,
+                    view.services.clone(),
+                    &id,
+                );
+            });
+        }
+
+        // An image the user added themselves can be taken out again from where
+        // they see it. Sending them back through the registry browser to undo
+        // something they are looking at is the kind of detour that leaves stale
+        // entries in a list forever.
+        if is_mine {
+            let remove_btn = gtk::Button::from_icon_name("user-trash-symbolic");
+            remove_btn.add_css_class("flat");
+            remove_btn.set_valign(gtk::Align::Center);
+            remove_btn.set_tooltip_text(Some(crate::tr_en!(
+                "Remove this image from your list (it stays in the registry)"
+            )));
+            let view = self.clone();
+            let id = img.id.clone();
+            remove_btn.connect_clicked(move |_| {
+                view.clone().remove_user_image(id.clone());
+            });
+            row.add_suffix(&remove_btn);
+        }
+
         row
+    }
+
+    /// Drop one of the user's own images and redraw.
+    ///
+    /// A full `refresh`, not a `rebuild_rows`: the row's absence has to come
+    /// from the catalogue being rebuilt without it, and the catalogue is what
+    /// merges the two sources.
+    fn remove_user_image(self: Rc<Self>, image_id: String) {
+        match self.services.user_images.remove(&image_id) {
+            Ok(()) => {
+                self.services
+                    .toast
+                    .toast(crate::tr_fmt!("Removed {}", image_id));
+                glib::spawn_future_local(async move {
+                    self.refresh().await;
+                });
+            }
+            Err(e) => {
+                self.services
+                    .toast
+                    .toast(crate::tr_fmt!("Could not save your image list: {}", e));
+            }
+        }
     }
 
     /// Kick off (or refresh) a probe for `image_id`, marking the row running,
     /// then refresh the row when the coordinator returns.
-    fn start_inspect(self: &Rc<Self>, image_id: String) {
-        if !self.running.borrow_mut().insert(image_id.clone()) {
-            return; // already running
-        }
+    fn start_inspect(self: &Rc<Self>, image_id: String, force: bool) {
+        // Claimed HERE, on this thread, before anything redraws.
+        //
+        // `discover_image` claims inside its own future, which does not begin
+        // until the runtime polls it — so the redraw below still saw the image
+        // as idle, drew an ordinary enabled button, and Inspect looked dead
+        // until the probe finished minutes later.
+        let Some(guard) = self.services.image_discovery.claim(&image_id) else {
+            return; // a probe for this image is already running
+        };
         self.rebuild_rows();
 
         let view = self.clone();
@@ -391,11 +692,25 @@ impl CanfarImagesView {
         glib::spawn_future_local(async move {
             let svc = services.clone();
             let id = image_id.clone();
-            let _ = services
-                .spawn(async move { coordinator.discover_image(&svc, &id, false).await })
+            let outcome = services
+                .spawn(async move { coordinator.discover_claimed(&svc, &id, force, guard).await })
                 .await;
-            view.running.borrow_mut().remove(&image_id);
             view.rebuild_rows();
+
+            // Say what happened. The outcome used to be dropped on the floor,
+            // so a probe that could not even be submitted — not signed in, no
+            // registry credentials, another probe already running for this
+            // image — looked exactly like one that had not been asked for.
+            if let DiscoveryOutcome::Failure {
+                category, message, ..
+            } = outcome
+            {
+                services.toast.toast(crate::tr_fmt!(
+                    "Could not inspect {}: {}",
+                    image_id,
+                    crate::helpers::discovery_formatting::failure_summary(&category, &message)
+                ));
+            }
         });
     }
 
@@ -412,29 +727,61 @@ impl CanfarImagesView {
         show_image_discovery_dialog(self.widget(), self.services.clone(), on_pick);
     }
 
-    fn update_subtitle(self: &Rc<Self>) {
-        let total = self.images.borrow().len();
-        if total == 0 {
+    /// Open the registry browser.
+    ///
+    /// A full `refresh` on change, not a `rebuild_rows`: the catalogue this
+    /// widget holds is the platform's list merged with the user's, so an added
+    /// image is not in it yet and re-rendering what we have would show nothing
+    /// new. The platform half comes from a five-minute cache, so this is not a
+    /// round trip in the common case.
+    fn open_registry_browser(self: Rc<Self>) {
+        let view = self.clone();
+        let on_changed: Rc<dyn Fn()> = Rc::new(move || {
+            let view = view.clone();
+            glib::spawn_future_local(async move {
+                view.refresh().await;
+            });
+        });
+        show_registry_browser_dialog(self.widget(), self.services.clone(), on_changed);
+    }
+
+    /// The caption above the list. `matched` is how many images the current
+    /// type filter selects, which may be more than the list shows.
+    fn update_subtitle(self: &Rc<Self>, matched: usize) {
+        if self.images.borrow().is_empty() {
             self.subtitle.set_text("");
             return;
         }
-        let discovered = self
-            .images
-            .borrow()
-            .iter()
-            .filter(|i| {
-                self.services
-                    .image_manifests
-                    .get(&i.id)
-                    .map(|o| o.is_success())
-                    .unwrap_or(false)
-            })
+        // Counted over the rows actually on screen. This counted the WHOLE
+        // catalogue while the list showed one session type, so the caption sat
+        // 6px above a list of twelve notebooks reading "Discovered 3 of 58" —
+        // and that gap exists precisely to make it read as describing them.
+        let selected = self.selected_type.borrow().clone();
+        let project = self.selected_project.borrow().clone();
+        let images = self.images.borrow();
+        let shown = || {
+            images
+                .iter()
+                .filter(|i| in_type_group(&i.types, &selected))
+                .filter(|i| in_project(&i.project, &project))
+        };
+        // Same single snapshot the rows use.
+        let summaries = self.services.image_manifests.row_summaries();
+        let discovered = shown()
+            .filter(|i| summaries.get(&i.id).map(|s| s.discovered).unwrap_or(false))
             .count();
-        self.subtitle.set_text(&crate::tr_fmt!(
-            "Discovered {} of {} images",
-            discovered,
-            total
-        ));
+
+        let mut text = crate::tr_fmt!("Discovered {} of {} images", discovered, matched);
+        if matched > MAX_ROWS {
+            // Say so rather than silently truncating: a list that stops at
+            // fifty without mentioning it reads as a catalogue that stops at
+            // fifty.
+            text.push_str(&crate::tr_fmt!(
+                " · showing the first {}, search to narrow",
+                MAX_ROWS
+            ));
+        }
+        self.subtitle.set_text(&text);
     }
 }
 
@@ -442,10 +789,140 @@ impl CanfarImagesView {
 // Pure presentation helpers (mirror CanfarImageRow / ApplyStatus / StatusOrder)
 // ---------------------------------------------------------------------------
 
-/// Map a cached outcome to the 3-state row status.
-fn status_of(outcome: Option<&LastOutcome>) -> DiscoveryStatus {
-    match outcome {
-        Some(o) if o.is_success() => DiscoveryStatus::Discovered,
+/// Whether any of `types` belongs to the selected group; empty selection is all.
+///
+/// Grouped, so the Desktop filter shows `desktop` and `desktop-app` alike.
+/// A linked toggle row inside a horizontal scroller.
+///
+/// Both filter rows are this shape, and the scroller is not decoration: the
+/// number of buttons is not ours to choose — seven session types today, and 21
+/// projects — while the card spans two of the Portal's three homogeneous
+/// columns. A plain Box makes every button part of the card's MINIMUM width, so
+/// a wide row sets the minimum width of the entire grid, past the window, where
+/// the page scroller (`hscrollbar_policy(Never)`, deliberately) clips the
+/// right-hand column instead of scrolling it.
+///
+/// `propagate_natural_width` keeps the row at its natural size whenever there is
+/// room, so this changes nothing until there is not.
+fn filter_row() -> (gtk::Box, gtk::ScrolledWindow) {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    bar.add_css_class("linked");
+    bar.set_halign(gtk::Align::Start);
+
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    scroll.set_propagate_natural_width(true);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_child(Some(&bar));
+    (bar, scroll)
+}
+
+/// `choices` with an "All" entry in front, carrying the empty string.
+///
+/// Shared so both rows mean the same thing by "no filter" — `in_type_group` and
+/// `in_project` both read an empty selection as "everything", and two rows each
+/// inventing their own sentinel is how one of them ends up filtering on the
+/// literal word "All".
+fn with_all(choices: impl Iterator<Item = (String, String)>) -> Vec<(String, String)> {
+    std::iter::once((String::new(), crate::tr_en!("All").to_string()))
+        .chain(choices)
+        .collect()
+}
+
+/// Fill `bar` with one linked toggle per choice, calling `on_pick` with the
+/// value of whichever becomes active.
+///
+/// One builder for both rows. They were going to be the same twenty lines
+/// twice — including the subtlety that a radio group emits `toggled` for the
+/// button being switched OFF as well as the one coming on, which read naively
+/// fires the handler twice per click with the wrong value on one of them.
+fn fill_filter_row(
+    bar: &gtk::Box,
+    choices: &[(String, String)],
+    selected: &str,
+    on_pick: impl Fn(&str) + Clone + 'static,
+) {
+    while let Some(child) = bar.first_child() {
+        bar.remove(&child);
+    }
+
+    let mut group: Option<gtk::ToggleButton> = None;
+    for (value, label) in choices {
+        let btn = gtk::ToggleButton::with_label(label);
+        match &group {
+            Some(first) => btn.set_group(Some(first)),
+            None => group = Some(btn.clone()),
+        }
+        btn.set_active(value == selected);
+
+        let on_pick = on_pick.clone();
+        let value = value.clone();
+        btn.connect_toggled(move |b| {
+            // Only the newly-activated button; the paired deactivation of the
+            // previous one is ignored.
+            if b.is_active() {
+                on_pick(&value);
+            }
+        });
+        bar.append(&btn);
+    }
+}
+
+/// The project selection that survives a change of session type.
+///
+/// Selecting CARTA when `uvickbos` is the chosen project leaves a card
+/// filtered to a combination with nothing in it — an empty list whose cause is
+/// a pressed button in a row that has just been rebuilt without it. Falling
+/// back to All shows the CARTA images, which is what pressing CARTA meant.
+fn surviving_project(selected: &str, projects: &[String]) -> String {
+    if projects.iter().any(|p| p == selected) {
+        selected.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Whether an image belongs to the selected project. Empty ⇒ every project.
+fn in_project(project: &str, selected: &str) -> bool {
+    selected.is_empty() || project == selected
+}
+
+/// Can this image be launched from the launch form, and so is it worth a probe?
+///
+/// The platform's catalogue is not a list of things you can start. Of the 365
+/// images `/v1/image` returns, 77 carry `desktop-app` and nothing else — an
+/// application published INSIDE a desktop session, not a session you can
+/// launch. Every CASA tag back to 3.4.0 is one. They filled this card, they
+/// filled the type filter, and inspecting one spends a probe job on an image no
+/// tab in the launch form will ever offer.
+///
+/// [`LAUNCHABLE_SESSION_TYPES`] is the union of what the tabs accept — the
+/// Standard tab's interactive types plus Headless — so it is exactly the
+/// question "is this offered anywhere".
+///
+/// An image the user added themselves is kept whatever its labels say. They
+/// went and found it, the Advanced tab launches it by reference, and hiding it
+/// from the list they added it to would be the app overruling them.
+///
+/// [`LAUNCHABLE_SESSION_TYPES`]: crate::models::session::LAUNCHABLE_SESSION_TYPES
+fn launchable_here(img: &ParsedImage, mine: &std::collections::HashSet<String>) -> bool {
+    mine.contains(&img.id)
+        || img.types.iter().any(|t| {
+            crate::models::session::LAUNCHABLE_SESSION_TYPES.contains(&t.as_str())
+        })
+}
+
+fn in_type_group(types: &[String], selected: &str) -> bool {
+    selected.is_empty()
+        || types
+            .iter()
+            .any(|t| crate::models::session::type_group(t) == selected)
+}
+
+/// Map a cached outcome summary to the 3-state row status.
+fn status_of(summary: Option<&RowSummary>) -> DiscoveryStatus {
+    match summary {
+        Some(s) if s.discovered => DiscoveryStatus::Discovered,
         Some(_) => DiscoveryStatus::Failed,
         None => DiscoveryStatus::Unknown,
     }
@@ -463,16 +940,12 @@ fn status_order(s: DiscoveryStatus) -> u8 {
 /// Row subtitle: "os_family os_version · N packages · inspected 3d ago" for a
 /// discovered image, a one-line failure summary for a failed probe, else the
 /// image id.
-fn meta_line(outcome: Option<&LastOutcome>, image_id: &str, now: &str) -> String {
-    match outcome {
-        Some(o) if o.is_success() => {
-            let m = match o.manifest() {
-                Some(m) => m,
-                None => return image_id.to_string(),
-            };
-            let os = match &m.os_family {
+fn meta_line(summary: Option<&RowSummary>, image_id: &str, now: &str) -> String {
+    match summary {
+        Some(s) if s.discovered => {
+            let os = match &s.os_family {
                 Some(f) if !f.is_empty() && f != "unknown" => {
-                    format!("{} {} · ", f, m.os_version.clone().unwrap_or_default())
+                    format!("{} {} · ", f, s.os_version.clone().unwrap_or_default())
                 }
                 _ => String::new(),
             };
@@ -484,15 +957,13 @@ fn meta_line(outcome: Option<&LastOutcome>, image_id: &str, now: &str) -> String
             // acts on it.
             format!(
                 "{os}{} packages · {}",
-                package_count(m),
-                crate::tr_fmt!("inspected {}", time_ago(&o.discovered_at, now))
+                s.package_count,
+                crate::tr_fmt!("inspected {}", time_ago(&s.discovered_at, now))
             )
         }
-        Some(o) => match &o.outcome {
-            DiscoveryOutcome::Failure {
-                category, message, ..
-            } => failure_summary(category, message),
-            DiscoveryOutcome::Manifest(_) => image_id.to_string(),
+        Some(s) => match &s.failure {
+            Some((category, message)) => failure_summary(category, message),
+            None => image_id.to_string(),
         },
         None => image_id.to_string(),
     }
@@ -528,21 +999,131 @@ fn status_tooltip(status: DiscoveryStatus) -> &'static str {
     }
 }
 
-/// Capitalize the first character (ASCII), leaving the rest untouched.
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::launchable_here;
+
+    fn img(id: &str, types: &[&str]) -> crate::models::ParsedImage {
+        crate::models::ParsedImage::from_raw(&crate::models::RawImage {
+            id: id.to_string(),
+            types: types.iter().map(|t| t.to_string()).collect(),
+        })
+    }
+
+    fn nothing_added() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
+    #[test]
+    fn narrowing_the_type_drops_a_project_that_went_with_it() {
+        // Pick CARTA while filtered to `uvickbos`, which publishes no CARTA
+        // image: the combination has nothing in it, and the card would go empty
+        // with the cause sitting in a row that just rebuilt without that button.
+        let carta_projects = vec!["cadc".to_string(), "skaha".to_string()];
+        assert_eq!(super::surviving_project("uvickbos", &carta_projects), "");
+    }
+
+    #[test]
+    fn a_project_that_is_still_there_is_kept() {
+        // Narrowing the type should not throw away a narrowing the user already
+        // made, when the two agree.
+        let projects = vec!["cadc".to_string(), "skaha".to_string()];
+        assert_eq!(super::surviving_project("skaha", &projects), "skaha");
+    }
+
+    #[test]
+    fn all_survives_anything() {
+        // The empty selection is never in `projects`, so a naive membership
+        // test would reset it to itself — harmless here, but it must not become
+        // a special case that gets it wrong.
+        assert_eq!(super::surviving_project("", &[]), "");
+        assert_eq!(super::surviving_project("", &["skaha".to_string()]), "");
+    }
+
+    #[test]
+    fn all_means_every_project() {
+        // Both rows read an empty selection as "no filter". A second sentinel
+        // here — the literal word "All", say — would filter on a project of
+        // that name and show nothing.
+        assert!(super::in_project("skaha", ""));
+        assert!(super::in_project("", ""));
+        assert!(super::in_project("skaha", "skaha"));
+        assert!(!super::in_project("skaha", "srcnet"));
+    }
+
+    #[test]
+    fn the_project_row_leads_with_all() {
+        // Without it the card is always filtered to one project, and there is
+        // no way back to the whole list.
+        let choices = super::with_all(
+            ["skaha", "srcnet"]
+                .into_iter()
+                .map(|p| (p.to_string(), p.to_string())),
+        );
+        assert_eq!(choices.len(), 3);
+        assert_eq!(choices[0].0, "", "the first entry is not the no-filter one");
+    }
+
+    #[test]
+    fn a_desktop_app_is_not_something_you_can_launch() {
+        // 77 of the platform's 365 images carry `desktop-app` and nothing else —
+        // an application published inside a desktop session, not a session. They
+        // filled this card and the type filter, and every Inspect on one spent a
+        // probe job on an image no launch tab offers. Every CASA tag back to
+        // 3.4.0 is one of these.
+        assert!(!launchable_here(
+            &img("images.canfar.net/casa-4/casa:4.2.0", &["desktop-app"]),
+            &nothing_added()
+        ));
+    }
+
+    #[test]
+    fn everything_a_launch_tab_offers_stays() {
+        // The Standard tab's interactive types plus Headless. Losing any of
+        // these would hide an image the user can actually start.
+        for ty in crate::models::session::LAUNCHABLE_SESSION_TYPES {
+            assert!(
+                launchable_here(&img("h/p/n:1", &[ty]), &nothing_added()),
+                "`{ty}` is launchable but the card would hide it"
+            );
+        }
+    }
+
+    #[test]
+    fn one_launchable_type_is_enough() {
+        // The common shape: a CASA image that is both a desktop-app and
+        // headless is launchable as a batch job, so it belongs here.
+        assert!(launchable_here(
+            &img("h/casa-6/casa:6.5", &["desktop-app", "headless"]),
+            &nothing_added()
+        ));
+    }
+
+    #[test]
+    fn an_image_the_user_added_is_kept_whatever_its_labels_say() {
+        // They went and found it in the registry, and the Advanced tab launches
+        // it by reference. Hiding it from the list they added it to would be the
+        // app overruling them — and a registry image often carries no
+        // session-type label at all.
+        let mine: std::collections::HashSet<String> =
+            std::iter::once("h/me/mine:1".to_string()).collect();
+        assert!(launchable_here(&img("h/me/mine:1", &[]), &mine));
+        // ...but an unlabelled image nobody added is still not launchable.
+        assert!(!launchable_here(&img("h/other/x:1", &[]), &mine));
+    }
+
     use super::*;
-    use crate::models::image_manifest::ImageManifest;
+    use crate::models::image_manifest::{ImageManifest, LastOutcome};
 
     const AT: &str = "2026-07-07T00:00:00Z";
+
+    /// The rows render from a `RowSummary`, but the thing that really exists is
+    /// a `LastOutcome` on disk — so the tests still build one of those and
+    /// summarise it, rather than hand-rolling the summary the code under test
+    /// would have produced.
+    fn summary(o: &LastOutcome) -> RowSummary {
+        RowSummary::of(o)
+    }
 
     fn discovered_outcome(os: Option<&str>, ver: Option<&str>, python: &[&str]) -> LastOutcome {
         let m = ImageManifest {
@@ -555,19 +1136,75 @@ mod tests {
         LastOutcome::success(m, AT)
     }
 
+    const SOURCE: &str = include_str!("canfar_images.rs");
+
+    #[test]
+    fn inspect_claims_the_probe_before_it_redraws() {
+        // The defect this prevents, exactly: `discover_image` claims the
+        // in-flight slot inside its OWN future, which the runtime has not
+        // polled when the list redraws. So the redraw saw the image as idle,
+        // drew an ordinary enabled "Inspect", and the button looked dead until
+        // the probe finished minutes later.
+        //
+        // Claim on this thread, THEN redraw.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        let at = code
+            .find("fn start_inspect")
+            .expect("start_inspect is gone");
+        let body = &code[at..];
+        let end = body.find("\n    }\n").unwrap_or(body.len());
+        let body = &body[..end];
+
+        let claim = body.find("image_discovery.claim(").expect(
+            "Inspect no longer claims the probe slot, so nothing can \
+                     show the row as busy",
+        );
+        let redraw = body
+            .find("self.rebuild_rows()")
+            .expect("Inspect no longer redraws, so the row never changes");
+        assert!(
+            claim < redraw,
+            "the list redraws before the slot is claimed, so the row is drawn \
+             idle and the button looks dead"
+        );
+        assert!(
+            body.contains("discover_claimed("),
+            "the probe re-claims a slot the caller already holds, which would \
+             report itself Busy"
+        );
+    }
+
+    #[test]
+    fn a_running_row_shows_its_button_as_working() {
+        // Disabling alone is not enough — a greyed button next to an identical
+        // enabled one reads as broken rather than busy. The user reported it
+        // "stays saying Inspect, no disabled state".
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE));
+        assert!(
+            code.contains("render_busy(&inspect_btn)"),
+            "a row with a probe running draws an ordinary Inspect button"
+        );
+        // And the button is pinned, or swapping its label for a spinner would
+        // shrink it and drag the row's other action leftwards.
+        assert!(
+            code.contains("inspect_btn.set_size_request(INSPECT_BTN_WIDTH"),
+            "the Inspect button is unpinned, so it changes width while working"
+        );
+    }
+
     #[test]
     fn status_of_maps_three_states() {
         assert_eq!(status_of(None), DiscoveryStatus::Unknown);
         assert_eq!(
-            status_of(Some(&discovered_outcome(
+            status_of(Some(&summary(&discovered_outcome(
                 Some("ubuntu"),
                 Some("22.04"),
                 &["numpy"]
-            ))),
+            )))),
             DiscoveryStatus::Discovered
         );
         let failed = LastOutcome::failure("img:1", "JobTimedOut", "timed out", None, AT);
-        assert_eq!(status_of(Some(&failed)), DiscoveryStatus::Failed);
+        assert_eq!(status_of(Some(&summary(&failed))), DiscoveryStatus::Failed);
     }
 
     #[test]
@@ -612,7 +1249,7 @@ mod tests {
         // is nothing to tell the reader that.
         let o = discovered_outcome(Some("ubuntu"), Some("22.04"), &["numpy", "scipy"]);
         assert_eq!(
-            meta_line(Some(&o), "img:1", NOW),
+            meta_line(Some(&summary(&o)), "img:1", NOW),
             "ubuntu 22.04 · 2 packages · inspected 5m ago"
         );
     }
@@ -621,12 +1258,12 @@ mod tests {
     fn meta_line_discovered_hides_unknown_os() {
         let o = discovered_outcome(Some("unknown"), None, &["numpy"]);
         assert_eq!(
-            meta_line(Some(&o), "img:1", NOW),
+            meta_line(Some(&summary(&o)), "img:1", NOW),
             "1 packages · inspected 5m ago"
         );
         let none_os = discovered_outcome(None, None, &[]);
         assert_eq!(
-            meta_line(Some(&none_os), "img:1", NOW),
+            meta_line(Some(&summary(&none_os)), "img:1", NOW),
             "0 packages · inspected 5m ago"
         );
     }
@@ -641,12 +1278,15 @@ mod tests {
                     --- job logs ---\nline\nline\nline";
         let with_msg = LastOutcome::failure("img:1", "JobTimedOut", long, None, AT);
         assert_eq!(
-            meta_line(Some(&with_msg), "img:1", NOW),
+            meta_line(Some(&summary(&with_msg)), "img:1", NOW),
             "Timed out · Manifest fetch failed: no JSON in the logs"
         );
 
         let blank_msg = LastOutcome::failure("img:1", "JobTimedOut", "  ", None, AT);
-        assert_eq!(meta_line(Some(&blank_msg), "img:1", NOW), "Timed out");
+        assert_eq!(
+            meta_line(Some(&summary(&blank_msg)), "img:1", NOW),
+            "Timed out"
+        );
     }
 
     #[test]
@@ -655,14 +1295,6 @@ mod tests {
             meta_line(None, "images.canfar.net/skaha/base:1.0", NOW),
             "images.canfar.net/skaha/base:1.0"
         );
-    }
-
-    #[test]
-    fn capitalize_first_char_only() {
-        assert_eq!(capitalize("notebook"), "Notebook");
-        assert_eq!(capitalize("carta"), "Carta");
-        assert_eq!(capitalize(""), "");
-        assert_eq!(capitalize("R"), "R");
     }
 
     #[test]
@@ -715,6 +1347,10 @@ impl CanfarImagesView {
     /// weeks ago on another machine, and this is how someone fixes that when
     /// they notice it.
     pub(crate) async fn sync_manifests_from_vospace(self: &Rc<Self>) {
+        let task = crate::helpers::tasks::begin(
+            crate::helpers::tasks::TaskKind::Sync,
+            crate::tr_en!("Check images"),
+        );
         let services = Arc::clone(&self.services);
         let coordinator = Arc::clone(&services.image_discovery);
         let toast = services.toast.clone();
@@ -758,9 +1394,24 @@ impl CanfarImagesView {
                     }
                 };
 
-                if let Err(e) = coordinator.sync_from_vospace(&svc, report).await {
-                    // Silence was right when nobody asked. Now somebody did.
-                    toast_error(&svc, &e);
+                match coordinator.sync_from_vospace(&svc, report).await {
+                    Ok(summary) => {
+                        // The counts, not just "done": the interesting outcome
+                        // is usually "76 checked, 0 new, 27 unusable", which the
+                        // toast has never said.
+                        task.stage(crate::tr_fmt!(
+                            "{} checked · {} new · {} unusable",
+                            summary.scanned,
+                            summary.imported,
+                            summary.unusable
+                        ));
+                        task.succeed();
+                    }
+                    Err(e) => {
+                        // Silence was right when nobody asked. Now somebody did.
+                        toast_error(&svc, &e);
+                        task.fail(e);
+                    }
                 }
             })
             .await;

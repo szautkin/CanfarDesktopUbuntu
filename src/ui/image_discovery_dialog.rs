@@ -34,13 +34,34 @@ use gtk4::{self as gtk};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 /// One chip in the active-filter bar: its label, and the mutation that clears
 /// just that constraint when the chip's ✕ is clicked.
 type ActiveFilterChip = (String, Box<dyn Fn(&mut PackageQuery)>);
+
+/// One built image row, kept so filtering can hide it instead of rebuilding it.
+///
+/// Everything the filter needs is on here — types, a pre-lowercased search
+/// haystack, and the last query verdict — so deciding a row's visibility never
+/// touches the manifest store or allocates.
+struct ImageRow {
+    id: String,
+    /// `"<id> <display name>"`, lowercased once at build time.
+    haystack: String,
+    types: Vec<String>,
+    /// Index into `DiscoveryUi::groups`, so an empty project heading can be
+    /// hidden along with its rows.
+    group_index: usize,
+    /// Whether this row satisfied the package query as of the last
+    /// `recompute_query_match`.
+    matches_query: Cell<bool>,
+    row: adw::ExpanderRow,
+    icon: gtk::Image,
+    discover_btn: gtk::Button,
+}
 
 /// Public entry point. Opens the modal discovery dialog over `parent`; when the
 /// user commits, `on_pick` is called with the chosen image id and the window is
@@ -56,9 +77,7 @@ pub fn show_image_discovery_dialog(
         .default_height(700)
         .modal(true)
         .build();
-    if let Some(root) = parent.root().and_downcast::<gtk::Window>() {
-        window.set_transient_for(Some(&root));
-    }
+    window.set_transient_for(crate::ui::dialog::anchor_window(parent).as_ref());
 
     // ── Chrome ────────────────────────────────────────────────────────────
     let toolbar = adw::ToolbarView::new();
@@ -139,9 +158,36 @@ pub fn show_image_discovery_dialog(
     right.set_margin_top(12);
     right.set_margin_bottom(12);
 
+    // The image search, and beside it the way out to the registry. Someone who
+    // searched here and found nothing has just learned the image is not in what
+    // the app knows about, which is exactly the moment to offer the place that
+    // has more — rather than making them close this and find another button.
+    let search_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let img_search = gtk::SearchEntry::new();
+    img_search.set_hexpand(true);
     img_search.set_placeholder_text(Some(crate::tr_en!("Search images…")));
-    right.append(&img_search);
+    search_row.append(&img_search);
+
+    let registry_btn = gtk::Button::with_label(crate::tr_en!("Add image from registry"));
+    registry_btn.add_css_class("flat");
+    registry_btn.set_valign(gtk::Align::Center);
+    search_row.append(&registry_btn);
+    right.append(&search_row);
+
+    // ── Per-type filter bar (linked toggles, matching the CANFAR Images card) ──
+    //
+    // The session type is the first thing anyone narrows by — "I want a
+    // notebook" — and it was the one axis this dialog could not express. The
+    // facets on the left come from the manifest cache, which stores no
+    // per-session-type metadata, so this has to read `ParsedImage::types` from
+    // the images listing instead. Leads with All, as the card's bar now does
+    // too — a bar that can only ever select a type has nowhere to show an image
+    // whose registry labels name none.
+    let type_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    type_bar.add_css_class("linked");
+    type_bar.set_halign(gtk::Align::Start);
+    type_bar.set_visible(false);
+    right.append(&type_bar);
 
     let subtitle = gtk::Label::new(Some(crate::tr_en!("Loading images…")));
     subtitle.add_css_class("dim-label");
@@ -168,12 +214,17 @@ pub fn show_image_discovery_dialog(
         query: RefCell::new(PackageQuery::default()),
         pkg_filter: RefCell::new(String::new()),
         img_filter: RefCell::new(String::new()),
-        running: RefCell::new(HashSet::new()),
+        type_filter: RefCell::new(String::new()),
         loaded: Cell::new(false),
         rebuild_pending: Cell::new(false),
+        facets_dirty: Cell::new(false),
         facet_container,
         chips_box,
         chips_scroll,
+        rows: RefCell::new(Vec::new()),
+        groups: RefCell::new(Vec::new()),
+        empty_label: dim_label(crate::tr_en!("Loading images…")),
+        type_bar,
         img_container,
         subtitle,
     });
@@ -190,7 +241,8 @@ pub fn show_image_discovery_dialog(
         let ui = ui.clone();
         img_search.connect_search_changed(move |e| {
             *ui.img_filter.borrow_mut() = e.text().to_string();
-            ui.schedule_rebuild();
+            // Facets cannot change: this narrows which images are LISTED.
+            ui.schedule_rebuild_images();
         });
     }
     {
@@ -201,33 +253,25 @@ pub fn show_image_discovery_dialog(
         });
     }
 
-    // ── Load the catalogue, then populate ─────────────────────────────────
+    // Adding an image from the registry changes what this dialog is searching,
+    // so it reloads through the same path the initial load takes.
     {
         let ui = ui.clone();
-        let services = ui.services.clone();
-        glib::spawn_future_local(async move {
-            let svc = services.clone();
-            let result = services
-                .spawn(async move {
-                    let token = svc.get_token().await.unwrap_or_default();
-                    svc.images.get_images(&token).await
-                })
-                .await;
-
-            match result {
-                Ok(raw) => {
-                    *ui.all_images.borrow_mut() = ImageParser::parse_all(&raw);
-                }
-                Err(e) => {
-                    ui.subtitle
-                        .set_text(&crate::tr_fmt!("Failed to load images: {}", e));
-                }
-            }
-            ui.loaded.set(true);
-            ui.rebuild();
+        registry_btn.connect_clicked(move |button| {
+            let ui = ui.clone();
+            let on_changed: Rc<dyn Fn()> = Rc::new({
+                let ui = ui.clone();
+                move || ui.clone().load()
+            });
+            crate::ui::registry_browser_dialog::show_registry_browser_dialog(
+                button,
+                ui.services.clone(),
+                on_changed,
+            );
         });
     }
 
+    ui.load();
     window.present();
 }
 
@@ -242,10 +286,12 @@ struct DiscoveryUi {
     query: RefCell<PackageQuery>,
     pkg_filter: RefCell<String>,
     img_filter: RefCell<String>,
-    /// Image ids with a probe currently in flight (shown as "Discovering…").
-    running: RefCell<HashSet<String>>,
+    /// The session type selected in the type bar; empty ⇒ All.
+    type_filter: RefCell<String>,
     loaded: Cell<bool>,
     rebuild_pending: Cell<bool>,
+    /// Whether the coalesced rebuild must also redo the facet pane.
+    facets_dirty: Cell<bool>,
 
     facet_container: gtk::Box,
     chips_box: gtk::FlowBox,
@@ -253,35 +299,169 @@ struct DiscoveryUi {
     /// `parent()`: a `ScrolledWindow` wraps its child in a `Viewport`, so
     /// walking up two levels works only as long as that stays true.
     chips_scroll: gtk::ScrolledWindow,
+    /// Every built row, in the order they were appended to their groups.
+    rows: RefCell<Vec<ImageRow>>,
+    /// The per-project headings, indexed by `ImageRow::group_index`.
+    groups: RefCell<Vec<adw::PreferencesGroup>>,
+    /// Shown when the filters match nothing; built once, toggled thereafter.
+    empty_label: gtk::Label,
+    /// The per-session-type toggle bar, rebuilt once the catalogue loads.
+    type_bar: gtk::Box,
     img_container: gtk::Box,
     subtitle: gtk::Label,
 }
 
 impl DiscoveryUi {
+    /// Fetch the catalogue and rebuild everything that reads it.
+    ///
+    /// One method rather than an inline block, because it is now run twice: on
+    /// open, and again whenever the user adds an image from the registry — and
+    /// the second is only correct if it does exactly what the first did.
+    fn load(self: Rc<Self>) {
+        let services = self.services.clone();
+        glib::spawn_future_local(async move {
+            let svc = services.clone();
+            let result = services
+                .spawn(async move {
+                    let token = svc.get_token().await.unwrap_or_default();
+                    // Includes the images the user added from the registry, so
+                    // a package search covers everything the app offers rather
+                    // than only what Skaha publishes.
+                    svc.image_catalogue(&token).await
+                })
+                .await;
+
+            match result {
+                Ok(parsed) => {
+                    *self.all_images.borrow_mut() = parsed;
+                }
+                Err(e) => {
+                    self.subtitle
+                        .set_text(&crate::tr_fmt!("Failed to load images: {}", e));
+                }
+            }
+            self.loaded.set(true);
+            self.rebuild_type_bar();
+            self.build_all_rows();
+            self.rebuild();
+        });
+    }
+
     fn store(&self) -> &crate::services::manifest_store::JsonManifestStore {
         &self.services.image_manifests
+    }
+
+    /// Whether a probe for this image is running, asked of the coordinator that
+    /// runs them. Keeping a second copy here let this dialog and the Portal's
+    /// image card disagree about the same image.
+    fn is_probing(&self, image_id: &str) -> bool {
+        self.services.image_discovery.is_probing(image_id)
     }
 
     /// Coalesce rebuilds onto a GLib idle tick so a signal handler can safely
     /// request a rebuild that will tear down the widget that emitted it.
     fn schedule_rebuild(self: &Rc<Self>) {
+        self.schedule(true);
+    }
+
+    /// A rebuild that leaves the facet pane alone.
+    ///
+    /// Facets depend on the cache and the package query — and on nothing else.
+    /// Typing in the IMAGE search box or picking a session type cannot change a
+    /// single count in the left pane, yet both used to recompute the whole
+    /// thing: 7.3 ms of BTree work over every package name in the cache, per
+    /// keystroke, thrown away unchanged.
+    fn schedule_rebuild_images(self: &Rc<Self>) {
+        self.schedule(false);
+    }
+
+    fn schedule(self: &Rc<Self>, with_facets: bool) {
+        // A pending full rebuild outranks a pending images-only one: whichever
+        // handler asked for facets must still get them.
+        if with_facets {
+            self.facets_dirty.set(true);
+        }
         if self.rebuild_pending.replace(true) {
             return;
         }
         let me = self.clone();
         glib::idle_add_local_once(move || {
             me.rebuild_pending.set(false);
-            me.rebuild();
+            if me.facets_dirty.replace(false) {
+                me.rebuild();
+            } else {
+                // Search text or session type: neither can change a facet count
+                // nor a query verdict, so this is visibility and a caption.
+                me.apply_filter();
+                me.update_subtitle();
+            }
         });
     }
 
-    /// Rebuild the facet pane, chips, subtitle and grouped image list from the
-    /// current query + cache.
+    /// The query changed: re-facet, redraw the chips, re-judge every row
+    /// against the new query and re-filter. The rows themselves are not rebuilt
+    /// — only a data change does that ([`Self::build_all_rows`]).
     fn rebuild(self: &Rc<Self>) {
         self.rebuild_facets();
         self.rebuild_chips();
-        self.rebuild_images();
+        self.recompute_query_match();
+        self.apply_filter();
         self.update_subtitle();
+    }
+
+    // ── Right pane: session-type bar ──────────────────────────────────────
+
+    /// Build the type toggles from the loaded catalogue. Called once, after the
+    /// images arrive — the types come from the listing, not the manifest cache,
+    /// so there is nothing to show before then.
+    fn rebuild_type_bar(self: &Rc<Self>) {
+        while let Some(child) = self.type_bar.first_child() {
+            self.type_bar.remove(&child);
+        }
+
+        let types = ImageParser::available_types(&self.all_images.borrow());
+        // One type is no choice, and a bar with a single button next to "All"
+        // is noise. Nothing to filter by ⇒ nothing to show.
+        if types.len() < 2 {
+            self.type_bar.set_visible(false);
+            return;
+        }
+
+        let selected = self.type_filter.borrow().clone();
+        let mut group: Option<gtk::ToggleButton> = None;
+
+        // "All" first, and active unless a type is already chosen. The card's
+        // bar has no All and therefore always hides most of the catalogue; a
+        // search surface must be able to show everything.
+        for ty in std::iter::once(String::new()).chain(types) {
+            let label = if ty.is_empty() {
+                crate::tr_en!("All").to_string()
+            } else {
+                crate::models::session::type_label(&ty)
+            };
+            let btn = gtk::ToggleButton::with_label(&label);
+            match &group {
+                Some(first) => btn.set_group(Some(first)),
+                None => group = Some(btn.clone()),
+            }
+            // Set before connecting, so seeding the bar never triggers a
+            // rebuild from inside a rebuild.
+            btn.set_active(ty == selected);
+
+            let ui = self.clone();
+            btn.connect_toggled(move |b| {
+                // Only the newly-activated button; the paired deactivation of
+                // the previous one is not a new selection.
+                if b.is_active() {
+                    *ui.type_filter.borrow_mut() = ty.clone();
+                    // Session type is not a facet dimension; the left pane is
+                    // built from manifests, which carry no session type.
+                    ui.schedule_rebuild_images();
+                }
+            });
+            self.type_bar.append(&btn);
+        }
+        self.type_bar.set_visible(true);
     }
 
     // ── Left pane: facets ─────────────────────────────────────────────────
@@ -434,77 +614,163 @@ impl DiscoveryUi {
 
     // ── Right pane: grouped image list ────────────────────────────────────
 
-    fn rebuild_images(self: &Rc<Self>) {
+    /// Build every image row once, grouped by project.
+    ///
+    /// Filtering does NOT come through here — see [`Self::apply_filter`]. This
+    /// used to be the filter: every keystroke tore down the whole right pane
+    /// and constructed it again, up to 368 `ExpanderRow`s each carrying an icon
+    /// and two buttons, to change which of them were shown.
+    ///
+    /// Called only when the underlying data changes: the catalogue arriving, or
+    /// a probe finishing and rewriting a manifest.
+    fn build_all_rows(self: &Rc<Self>) {
         clear_box(&self.img_container);
-        let q = self.query.borrow().clone();
-        let img_needle = self.img_filter.borrow().trim().to_lowercase();
-        let running = self.running.borrow().clone();
+        let now = chrono::Utc::now().to_rfc3339();
 
-        // Filter → group by project (project ascending, images by version desc).
-        let mut groups: BTreeMap<String, Vec<ParsedImage>> = BTreeMap::new();
+        // Group by project (project ascending, images by version descending).
+        let mut by_project: BTreeMap<String, Vec<ParsedImage>> = BTreeMap::new();
         for img in self.all_images.borrow().iter() {
-            let outcome = self.store().get(&img.id);
-            let is_running = running.contains(&img.id);
-            let manifest = outcome.as_ref().and_then(|o| o.manifest());
-
-            // Discovered rows honour the query; undiscovered/failed/running rows
-            // only survive an empty query (there is nothing to match against).
-            let include = match manifest {
-                Some(m) if !is_running => q.is_empty() || q.matches(m),
-                _ => q.is_empty(),
-            };
-            if !include {
-                continue;
-            }
-            if !img_needle.is_empty()
-                && !img.id.to_lowercase().contains(&img_needle)
-                && !img.display_name.to_lowercase().contains(&img_needle)
-            {
-                continue;
-            }
-            groups
+            by_project
                 .entry(img.project.clone())
                 .or_default()
                 .push(img.clone());
         }
 
-        if groups.is_empty() {
-            let msg = if !self.loaded.get() {
-                "Loading images…"
-            } else if self.all_images.borrow().is_empty() {
-                "No images available."
-            } else {
-                "No images match the current filters."
-            };
-            self.img_container.append(&dim_label(msg));
-            return;
-        }
-
-        for (project, mut images) in groups {
+        let mut rows: Vec<ImageRow> = Vec::new();
+        let mut groups: Vec<adw::PreferencesGroup> = Vec::new();
+        for (project, mut images) in by_project {
             images.sort_by(|a, b| b.version.cmp(&a.version));
             let group = adw::PreferencesGroup::new();
             group.set_title(if project.is_empty() {
-                "(no project)"
+                crate::tr_en!("(no project)")
             } else {
                 &project
             });
+            let group_index = groups.len();
             for img in &images {
-                group.add(&self.build_image_row(img, running.contains(&img.id)));
+                let entry = self.build_image_row(img, self.is_probing(&img.id), group_index, &now);
+                group.add(&entry.row);
+                rows.push(entry);
             }
             self.img_container.append(&group);
+            groups.push(group);
+        }
+
+        self.img_container.append(&self.empty_label);
+        *self.rows.borrow_mut() = rows;
+        *self.groups.borrow_mut() = groups;
+
+        self.recompute_query_match();
+        self.apply_filter();
+    }
+
+    /// Re-evaluate which rows satisfy the package query.
+    ///
+    /// Separate from [`Self::apply_filter`] because it is the only part that
+    /// needs a manifest, and the query changes far less often than the search
+    /// text or the session type do — a facet tick, not a keystroke.
+    fn recompute_query_match(self: &Rc<Self>) {
+        let q = self.query.borrow().clone();
+        let rows = self.rows.borrow();
+        if q.is_empty() {
+            for entry in rows.iter() {
+                entry.matches_query.set(true);
+            }
+            return;
+        }
+        for entry in rows.iter() {
+            let outcome = self.store().get(&entry.id);
+            entry.matches_query.set(survives_query(
+                &q,
+                outcome.as_ref().and_then(|o| o.manifest()),
+            ));
+        }
+    }
+
+    /// Show or hide the rows that already exist.
+    ///
+    /// Pure comparison over data held on each row — no store access, no widget
+    /// construction — so a keystroke or a type toggle costs a visibility pass.
+    fn apply_filter(self: &Rc<Self>) {
+        let img_needle = self.img_filter.borrow().trim().to_lowercase();
+        let wanted_type = self.type_filter.borrow().clone();
+        let groups = self.groups.borrow();
+
+        let mut group_has_visible = vec![false; groups.len()];
+        let mut any_visible = false;
+
+        for entry in self.rows.borrow().iter() {
+            // A row being probed stays: pressing Rediscover marked it running,
+            // and while running it has no fresh manifest to match, so it would
+            // fail the query and vanish from under the pointer that clicked it.
+            let visible = matches_type(&entry.types, &wanted_type)
+                && (entry.matches_query.get() || self.is_probing(&entry.id))
+                && (img_needle.is_empty() || entry.haystack.contains(&img_needle));
+            entry.row.set_visible(visible);
+            if visible {
+                group_has_visible[entry.group_index] = true;
+                any_visible = true;
+            }
+        }
+
+        // A project heading with every row hidden is a heading over nothing.
+        for (group, has) in groups.iter().zip(group_has_visible) {
+            group.set_visible(has);
+        }
+
+        self.empty_label.set_visible(!any_visible);
+        self.empty_label.set_text(if !self.loaded.get() {
+            crate::tr_en!("Loading images…")
+        } else if self.all_images.borrow().is_empty() {
+            crate::tr_en!("No images available.")
+        } else {
+            crate::tr_en!("No images match the current filters.")
+        });
+    }
+
+    /// Update one row in place for a probe starting or being coalesced away.
+    ///
+    /// Cheaper and less disruptive than rebuilding the pane: pressing Discover
+    /// changes one row's icon, subtitle and button, and nothing else on screen.
+    fn refresh_row_running_state(self: &Rc<Self>, image_id: &str) {
+        let running = self.is_probing(image_id);
+        let now = chrono::Utc::now().to_rfc3339();
+        let outcome = self.store().get(image_id);
+        for entry in self.rows.borrow().iter().filter(|e| e.id == image_id) {
+            // Re-asserted here, not just where the row was built: a subtitle
+            // carries a failure message straight from a job's logs, and an
+            // angle bracket in it renders the whole line as nothing.
+            entry.row.set_use_markup(false);
+            entry
+                .row
+                .set_subtitle(&status_subtitle(outcome.as_ref(), running, &now));
+            entry
+                .icon
+                .set_icon_name(Some(state_icon(outcome.as_ref(), running)));
+            // A spinner, not a relabel. Relabelling changes the button's width
+            // — `set_size_request` is a minimum — and the row's primary action
+            // would shift out of column for exactly the rows that are busy.
+            if running {
+                crate::ui::busy::render_busy(&entry.discover_btn);
+            }
         }
     }
 
     /// One expandable image row: state prefix + status subtitle, Discover / Use
     /// suffix buttons, and (when discovered/failed) an inline detail section.
-    fn build_image_row(self: &Rc<Self>, img: &ParsedImage, is_running: bool) -> adw::ExpanderRow {
+    fn build_image_row(
+        self: &Rc<Self>,
+        img: &ParsedImage,
+        is_running: bool,
+        group_index: usize,
+        now: &str,
+    ) -> ImageRow {
         let outcome = self.store().get(&img.id);
-        let now = chrono::Utc::now().to_rfc3339();
 
         let row = adw::ExpanderRow::new();
         row.set_use_markup(false);
         row.set_title(&img.display_name);
-        row.set_subtitle(&status_subtitle(outcome.as_ref(), is_running, &now));
+        row.set_subtitle(&status_subtitle(outcome.as_ref(), is_running, now));
 
         // State icon.
         let icon = gtk::Image::from_icon_name(state_icon(outcome.as_ref(), is_running));
@@ -515,13 +781,29 @@ impl DiscoveryUi {
 
         // Suffix: Discover/Rediscover + Use this image.
         let discovered = outcome.as_ref().map(|o| o.is_success()).unwrap_or(false);
-        let discover_btn =
-            gtk::Button::with_label(if discovered { "Rediscover" } else { "Discover" });
+        let discover_btn = gtk::Button::with_label(if discovered {
+            crate::tr_en!("Rediscover")
+        } else {
+            crate::tr_en!("Discover")
+        });
         discover_btn.add_css_class("flat");
         discover_btn.set_valign(gtk::Align::Center);
-        discover_btn.set_sensitive(!is_running);
+        // Pinned, because the label is not always the same length: "Discover"
+        // is shorter than "Rediscover" (and both are shorter than their French
+        // forms), so a row sized to its own label pushed "Use this image" left
+        // or right by a dozen pixels depending on whether that image happened
+        // to have been inspected. Down a list of forty rows the primary action
+        // wandered instead of forming a column.
+        discover_btn.set_size_request(DISCOVER_BTN_WIDTH, -1);
+        // The button keeps its own name while it works; the ROW says what is
+        // happening (`status_subtitle` renders "Discovering…" as the subtitle).
+        //
+        // It used to relabel itself, and `set_size_request` is a MINIMUM, not a
+        // width: "Discovering…" is longer than "Rediscover", so a working row's
+        // button grew and shoved "Use this image" leftwards. Three rows mid-probe
+        // meant three buttons out of column with the rest of the list.
         if is_running {
-            discover_btn.set_label(crate::tr_en!("Discovering…"));
+            crate::ui::busy::render_busy(&discover_btn);
         }
         {
             let ui = self.clone();
@@ -580,16 +862,31 @@ impl DiscoveryUi {
             }
         }
 
-        row
+        ImageRow {
+            id: img.id.clone(),
+            // Lowercased once, here, rather than on both fields of every row on
+            // every keystroke.
+            haystack: format!("{} {}", img.id, img.display_name).to_lowercase(),
+            types: img.types.clone(),
+            group_index,
+            matches_query: Cell::new(true),
+            row,
+            icon,
+            discover_btn,
+        }
     }
 
     /// Kick off (or force-refresh) a probe for `image_id`, marking the row
     /// running, then refresh the row + facets when the coordinator returns.
     fn start_discovery(self: &Rc<Self>, image_id: String, force: bool) {
-        if !self.running.borrow_mut().insert(image_id.clone()) {
-            return; // already running
-        }
-        self.schedule_rebuild();
+        // Claimed on this thread, so the row below reads as probing at once.
+        // `discover_image` claims inside its own future, which the runtime has
+        // not polled yet when the refresh runs.
+        let Some(guard) = self.services.image_discovery.claim(&image_id) else {
+            return; // a probe for this image is already running
+        };
+        // One row changed, not the pane: show it as probing in place.
+        self.refresh_row_running_state(&image_id);
 
         let me = self.clone();
         let services = self.services.clone();
@@ -598,9 +895,12 @@ impl DiscoveryUi {
             let svc = services.clone();
             let id = image_id.clone();
             let _outcome = services
-                .spawn(async move { coordinator.discover_image(&svc, &id, force).await })
+                .spawn(async move { coordinator.discover_claimed(&svc, &id, force, guard).await })
                 .await;
-            me.running.borrow_mut().remove(&image_id);
+            // The manifest changed, so the rows really do have to be rebuilt —
+            // their subtitles, icons, buttons and expander detail all read from
+            // it. This is once per probe, not once per keystroke.
+            me.build_all_rows();
             me.rebuild();
         });
     }
@@ -609,17 +909,24 @@ impl DiscoveryUi {
         if !self.loaded.get() {
             return;
         }
-        let total = self.all_images.borrow().len();
-        let discovered = self
-            .all_images
-            .borrow()
-            .iter()
-            .filter(|i| {
-                self.store()
-                    .get(&i.id)
-                    .map(|o| o.is_success())
-                    .unwrap_or(false)
-            })
+        // Counted over the SAME set the list shows. The images card counts every
+        // image while displaying one type, so its caption and its rows describe
+        // different things; the caption sits directly above the list and is read
+        // as describing it.
+        let wanted_type = self.type_filter.borrow().clone();
+        let images = self.all_images.borrow();
+        let in_scope = || {
+            images
+                .iter()
+                .filter(|i| matches_type(&i.types, &wanted_type))
+        };
+        let total = in_scope().count();
+        // One locked pass over the cache, not one deep copy per image: this is
+        // counting a boolean, and it was cloning a full package manifest to
+        // read it.
+        let summaries = self.store().row_summaries();
+        let discovered = in_scope()
+            .filter(|i| summaries.get(&i.id).map(|s| s.discovered).unwrap_or(false))
             .count();
         self.subtitle.set_text(&crate::tr_fmt!(
             "Discovered {} of {} images",
@@ -632,6 +939,34 @@ impl DiscoveryUi {
 // ---------------------------------------------------------------------------
 // query mutation helpers (facet category ↔ PackageQuery field)
 // ---------------------------------------------------------------------------
+
+/// Whether a row survives the package query, given whatever manifest it has.
+///
+/// The caller short-circuits an empty query and a running probe before reaching
+/// this — see [`DiscoveryUi::rebuild_images`] — so this is the rule for a
+/// settled row only.
+///
+/// A row being PROBED is deliberately not this function's business: pressing
+/// Rediscover marked the row running, and while running it has no fresh
+/// manifest to match, so it failed the query and vanished from under the
+/// pointer that had just clicked it. The row you are acting on has to stay
+/// where you can see it.
+fn survives_query(q: &PackageQuery, manifest: Option<&ImageManifest>) -> bool {
+    manifest.map(|m| q.matches(m)).unwrap_or(false)
+}
+
+/// Whether an image belongs to the selected session type; an empty selection is
+/// "All" and matches everything.
+///
+/// Pure so the rule is testable without a catalogue: an image carries several
+/// types (`["headless", "desktop-app"]`), and matching on the FIRST one — or on
+/// a substring — would drop images that legitimately serve the chosen type.
+fn matches_type(image_types: &[String], selected: &str) -> bool {
+    selected.is_empty()
+        || image_types
+            .iter()
+            .any(|t| crate::models::session::type_group(t) == selected)
+}
 
 /// True when `value` is the active selection in the query for `category`.
 fn is_selected(q: &PackageQuery, category: &str, value: &str) -> bool {
@@ -887,6 +1222,13 @@ const FACET_LABEL_CHARS: i32 = 26;
 /// The narrowest the filter pane may be dragged.
 const FACET_PANE_MIN: i32 = 240;
 
+/// Width reserved for the Discover / Rediscover button.
+///
+/// Wide enough for the longest of the four labels this button carries across
+/// its two states and both languages, so every row's "Use this image" starts at
+/// the same x.
+const DISCOVER_BTN_WIDTH: i32 = 124;
+
 /// A facet label that truncates instead of forcing the pane wider.
 ///
 /// `CheckButton::with_label` builds a label with no ellipsize, so its MINIMUM
@@ -913,6 +1255,127 @@ fn dim_label(text: &str) -> gtk::Label {
     label.set_wrap(true);
     label.set_margin_top(8);
     label
+}
+
+#[cfg(test)]
+mod type_filter_tests {
+    use super::*;
+
+    const SOURCE_DIALOG: &str = include_str!("image_discovery_dialog.rs");
+
+    fn types(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    use crate::models::image_manifest::ImageManifest;
+
+    fn manifest_with(python: &[&str]) -> ImageManifest {
+        ImageManifest {
+            image_id: "img:1".into(),
+            python: python.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_row_being_probed_stays_visible_under_an_active_filter() {
+        // Pressing Rediscover marks the row running. It then has no fresh
+        // manifest, so the query dropped it and the row vanished from under the
+        // pointer that had just clicked it — only when a filter was active,
+        // which is exactly when someone is looking at a short list.
+        let q = PackageQuery {
+            packages: vec!["numpy".into()],
+            ..Default::default()
+        };
+        assert!(!q.is_empty());
+
+        // The rule the rebuild applies, spelled out: empty query OR running
+        // short-circuits to visible, before the manifest is ever consulted.
+        let is_running = true;
+        assert!(q.is_empty() || is_running, "a probing row must survive");
+
+        // And a settled row with no manifest still does not match a real query.
+        assert!(!survives_query(&q, None));
+    }
+
+    #[test]
+    fn a_settled_row_is_judged_on_its_manifest() {
+        let q = PackageQuery {
+            packages: vec!["numpy".into()],
+            ..Default::default()
+        };
+        assert!(survives_query(
+            &q,
+            Some(&manifest_with(&["numpy", "scipy"]))
+        ));
+        assert!(!survives_query(&q, Some(&manifest_with(&["astropy"]))));
+    }
+
+    #[test]
+    fn an_empty_selection_is_all() {
+        assert!(matches_type(&types(&["notebook"]), ""));
+        assert!(matches_type(&types(&[]), ""));
+    }
+
+    #[test]
+    fn an_image_matches_any_type_it_advertises_not_just_the_first() {
+        // Real listings carry several: casa-4 is ["headless", "desktop-app"].
+        // Matching only the first would hide it from one of its filters.
+        let casa = types(&["headless", "desktop-app"]);
+        assert!(matches_type(&casa, "headless"));
+        assert!(!matches_type(&casa, "notebook"));
+    }
+
+    #[test]
+    fn a_working_row_does_not_move_its_neighbours_buttons() {
+        // `set_size_request` is a minimum. Relabelling the button to
+        // "Discovering…" — longer than "Rediscover" — made it exceed that
+        // minimum and push "Use this image" out of column for exactly the rows
+        // that were busy. The row's subtitle carries the state instead.
+        // The whole file, not a window around one call: the same relabel lived
+        // on the in-place refresh path too, and a guard that only looked at the
+        // build path declared it fixed while the click path still did it.
+        let code = crate::testing::without_comments(crate::testing::code(SOURCE_DIALOG));
+        assert!(
+            code.contains("render_busy(&discover_btn)")
+                || code.contains("render_busy(&entry.discover_btn)"),
+            "the discover button no longer shows a running probe"
+        );
+        assert!(
+            !code.contains("discover_btn.set_label("),
+            "the button relabels itself while working, so its width changes and \
+             the column of primary actions breaks"
+        );
+    }
+
+    #[test]
+    fn desktop_app_answers_the_desktop_filter() {
+        // `desktop-app` is an application published inside a desktop session,
+        // not a separate thing to launch, so the bar offers one Desktop button
+        // and it has to find both. This test previously asserted the opposite —
+        // exact matching — which is what put two Desktop buttons in the bar.
+        assert!(matches_type(&types(&["desktop-app"]), "desktop"));
+        assert!(matches_type(&types(&["desktop"]), "desktop"));
+        assert!(matches_type(
+            &types(&["headless", "desktop-app"]),
+            "desktop"
+        ));
+    }
+
+    #[test]
+    fn matching_is_by_whole_type_not_by_substring() {
+        // Grouping is an explicit mapping, not prefix matching: "note" is not a
+        // type and must select nothing.
+        assert!(!matches_type(&types(&["notebook"]), "note"));
+        assert!(!matches_type(&types(&["desktop"]), "desk"));
+        assert!(!matches_type(&types(&["carta"]), "desktop"));
+    }
+
+    #[test]
+    fn an_image_with_no_types_survives_only_all() {
+        assert!(matches_type(&types(&[]), ""));
+        assert!(!matches_type(&types(&[]), "notebook"));
+    }
 }
 
 #[cfg(test)]
