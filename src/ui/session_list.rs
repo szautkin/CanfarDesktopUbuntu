@@ -477,6 +477,31 @@ fn differs(old: &[Session], new: &[Session]) -> bool {
             .any(|n| !old.iter().any(|o| o.id == n.id && o.status == n.status))
 }
 
+/// Did this session fail since the last time we looked?
+///
+/// The question has to be asked that way round. Asking "is it Failed, and was
+/// it not Failed before?" answers YES for a session the app has never seen —
+/// and on start-up it has seen nothing, so every session sitting in Failed is
+/// announced as though it had just happened. A session that died yesterday
+/// raised "Session Failed" on every launch of the app, because the dedup set
+/// that would have suppressed the repeat lives in memory and starts empty.
+///
+/// So a session absent from `old` is skipped, exactly as the Batch Jobs card
+/// skips a job it has no previous state for. The cost is that a session which
+/// appears already-Failed — launched elsewhere, failed between two polls — is
+/// never announced. That is the right side to err on: the alternative is
+/// announcing history as news, and there is no way to tell from the listing
+/// which it is.
+fn newly_failed(old: &[Session], session: &Session) -> bool {
+    if !session.status.eq_ignore_ascii_case("failed") {
+        return false;
+    }
+    let Some(previous) = old.iter().find(|s| s.id == session.id) else {
+        return false;
+    };
+    !previous.status.eq_ignore_ascii_case("failed")
+}
+
 /// Check for session state transitions and fire desktop notifications.
 fn check_notifications(
     old: &[Session],
@@ -507,14 +532,9 @@ fn check_notifications(
             );
         }
 
-        // Became Failed (and wasn't already Failed)
-        if session.status.eq_ignore_ascii_case("failed") {
-            let was_failed = old
-                .iter()
-                .any(|s| s.id == session.id && s.status.eq_ignore_ascii_case("failed"));
-            if !was_failed {
-                notifications.notify_session_failed(gio_app, &session.id, &session.name);
-            }
+        // Became Failed — a transition, not a state.
+        if newly_failed(old, session) {
+            notifications.notify_session_failed(gio_app, &session.id, &session.name);
         }
 
         // Expiring within 1 hour
@@ -531,6 +551,68 @@ fn check_notifications(
 
 #[cfg(test)]
 mod tests {
+    use super::newly_failed;
+    use crate::models::Session;
+
+    fn session(id: &str, status: &str) -> Session {
+        Session {
+            id: id.into(),
+            userid: String::new(),
+            image: String::new(),
+            session_type: "notebook".into(),
+            status: status.into(),
+            name: id.into(),
+            start_time: String::new(),
+            expiry_time: String::new(),
+            connect_url: String::new(),
+            requested_ram: String::new(),
+            requested_cpu_cores: String::new(),
+            requested_gpu_cores: String::new(),
+            ram_in_use: String::new(),
+            cpu_cores_in_use: String::new(),
+            is_fixed_resources: true,
+        }
+    }
+
+    #[test]
+    fn a_session_already_failed_on_start_up_is_not_news() {
+        // The bug this function exists for. On start-up nothing has been seen,
+        // so "is Failed and was not Failed before" is true for every failed
+        // session in the listing — and a session that died yesterday raised
+        // "Session Failed" on every launch of the app.
+        let now = [session("vi-astroml-22de8ea2", "Failed")];
+        assert!(!newly_failed(&[], &now[0]));
+    }
+
+    #[test]
+    fn a_session_that_fails_while_watching_is_announced() {
+        let before = [session("s1", "Running")];
+        assert!(newly_failed(&before, &session("s1", "Failed")));
+    }
+
+    #[test]
+    fn a_failure_is_announced_once() {
+        // Every poll re-reads the same listing; without this the notification
+        // repeats for as long as the failed session is listed.
+        let before = [session("s1", "Failed")];
+        assert!(!newly_failed(&before, &session("s1", "Failed")));
+    }
+
+    #[test]
+    fn a_session_that_is_not_failed_is_not_a_failure() {
+        let before = [session("s1", "Pending")];
+        assert!(!newly_failed(&before, &session("s1", "Running")));
+    }
+
+    #[test]
+    fn the_platforms_casing_is_not_load_bearing() {
+        // Skaha has used both "Failed" and "failed".
+        let before = [session("s1", "Running")];
+        assert!(newly_failed(&before, &session("s1", "failed")));
+        let before = [session("s1", "failed")];
+        assert!(!newly_failed(&before, &session("s1", "FAILED")));
+    }
+
     #[test]
     fn starting_a_session_is_reachable_without_finding_the_floating_button() {
         // The floating button carries no label, sits away from anything it
