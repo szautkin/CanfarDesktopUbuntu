@@ -222,7 +222,7 @@ poor reason to refuse to install.
 To install a single version without adding the repository:
 
 ```bash
-sudo pacman -U https://verbinal.com/linux/arch/x86_64/verbinal-1.4.3-1-x86_64.pkg.tar.zst
+sudo pacman -U https://verbinal.com/linux/arch/x86_64/verbinal-1.4.4-1-x86_64.pkg.tar.zst
 ```
 
 ## Installing from .deb

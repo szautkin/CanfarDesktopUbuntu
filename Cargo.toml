@@ -1,6 +1,6 @@
 [package]
 name = "verbinal"
-version = "1.4.3"
+version = "1.4.4"
 edition = "2021"
 # The pinned toolchain (see rust-toolchain.toml) is what the gates run on;
 # this is the floor the code actually needs — `slice::as_chunks` is 1.88.

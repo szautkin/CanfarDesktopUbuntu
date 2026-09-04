@@ -4,6 +4,34 @@ All notable changes to Verbinal (the native Linux CANFAR Science Portal companio
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-09-04
+
+Verbinal installs on Arch and Omarchy now, from its own signed pacman
+repository. AUR registration is closed, and it turns out not to matter: a
+pacman repository is a directory of packages and a database index served over
+HTTPS, which is exactly what Omarchy's own OPR is. Three lines in
+`pacman.conf` and Verbinal updates with the rest of the system; on Omarchy it
+also appears in `omarchy-pkg-install`, which wraps pacman and reads the same
+configuration.
+
+The packages are signed, and pacman is left on its default `SigLevel`, which
+requires signatures. The public key is served from verbinal.com rather than a
+keyserver — `pacman-key --recv-keys` depends on propagation and on port 11371
+being open, and a first command that hangs is where people stop.
+
+The Portal has one way to launch a session instead of two. The floating button
+is gone: it was the primary route and the worst-signposted control on the page,
+with no label and no relationship to anything near it. The Active Sessions
+header button takes the accent and the job.
+
+### Fixed
+
+- Two faults in the Arch build found by running it rather than reading it:
+  makepkg enables LTO for every package, which turns `ring`'s C and assembly
+  into bitcode the Rust link step cannot resolve; and `repo-add` writes the
+  database as a symlink, so copying onto it copied a file onto its own target
+  and ended the release job after building and signing.
+
 ## [1.4.3] - 2026-09-03
 
 A release about the Portal telling you things when they happen, and about
