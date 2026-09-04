@@ -270,6 +270,35 @@ mod tests {
         );
     }
 
+    /// Nothing asks for the `secrets` context where it cannot be read.
+    ///
+    /// GitHub's context-availability rules exclude `secrets` from a step's
+    /// `if`. A workflow that uses it there does not fail at that step — it
+    /// fails to PARSE, so the run has no jobs, no logs, and is listed by
+    /// filename because its `name:` was never read. It also fires against
+    /// whatever event it saw, so a tag-only workflow appears to run on a branch
+    /// push. Nothing about that points at the line responsible.
+    ///
+    /// A secret lifted to job-level `env` is the documented way to ask whether
+    /// it was configured.
+    #[test]
+    fn no_workflow_reads_secrets_from_a_step_condition() {
+        for wf in ["ci.yml", "release.yml"] {
+            let text = read(&format!(".github/workflows/{wf}"));
+            for line in text.lines() {
+                let line = line.trim();
+                if !line.starts_with("if:") {
+                    continue;
+                }
+                assert!(
+                    !line.contains("secrets."),
+                    "{wf} reads the secrets context in `{line}` — a step's `if` \
+                     cannot see it, and the whole workflow fails to parse"
+                );
+            }
+        }
+    }
+
     /// Arch builds with LTO off, on purpose.
     ///
     /// makepkg turns LTO on for every package by default. `ring` compiles its

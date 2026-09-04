@@ -74,6 +74,15 @@ jobs:
     # libraries it will be installed beside. A gtk4 built on Ubuntu is not the
     # gtk4 pacman will resolve to.
     container: archlinux:base-devel
+    # Lifted to the job, because a step's `if` cannot see the `secrets`
+    # context — GitHub's context-availability rules exclude it there, and a
+    # workflow that uses it fails to PARSE rather than to run: no jobs, no
+    # logs, and the run listed by filename because its `name:` was never read.
+    # `env` is available in a step's `if`; a secret routed through it is the
+    # documented way to ask "was this configured?".
+    env:
+      SIGNING_KEY: ${{ secrets.ARCH_SIGNING_KEY }}
+      SIGNING_KEY_PASSPHRASE: ${{ secrets.ARCH_SIGNING_KEY_PASSPHRASE }}
     steps:
       - name: Install build dependencies
         run: |
@@ -100,10 +109,7 @@ jobs:
       # TrustAll` is that trust granted to whoever holds the host. Absent the
       # key the packages are still built — the release simply carries no repo.
       - name: Sign the package
-        if: ${{ secrets.ARCH_SIGNING_KEY != '' }}
-        env:
-          SIGNING_KEY: ${{ secrets.ARCH_SIGNING_KEY }}
-          SIGNING_KEY_PASSPHRASE: ${{ secrets.ARCH_SIGNING_KEY_PASSPHRASE }}
+        if: env.SIGNING_KEY != ''
         run: |
           echo "$SIGNING_KEY" | gpg --batch --import
           cd /home/builder
