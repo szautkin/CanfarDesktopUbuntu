@@ -66,3 +66,74 @@ jobs:
         with:
           files: target/debian/*.deb
           generate_release_notes: true
+
+  build-arch:
+    name: Build Arch package and repo
+    runs-on: ubuntu-latest
+    # Arch's own image, because the package has to be built against the
+    # libraries it will be installed beside. A gtk4 built on Ubuntu is not the
+    # gtk4 pacman will resolve to.
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git rust cargo pkgconf gtk4 libadwaita cfitsio
+
+      - uses: actions/checkout@v7
+
+      # makepkg refuses to run as root, by design.
+      - name: Create a build user
+        run: |
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+      - name: Build the package
+        run: |
+          cp packaging/arch/PKGBUILD /home/builder/
+          chown -R builder:builder /home/builder
+          cd /home/builder
+          sudo -u builder makepkg --syncdeps --noconfirm --clean
+
+      # Signed, because a repo that serves binaries over a URL the user pasted
+      # into pacman.conf is asking to be trusted, and `SigLevel = Optional
+      # TrustAll` is that trust granted to whoever holds the host. Absent the
+      # key the packages are still built — the release simply carries no repo.
+      - name: Sign the package
+        if: ${{ secrets.ARCH_SIGNING_KEY != '' }}
+        env:
+          SIGNING_KEY: ${{ secrets.ARCH_SIGNING_KEY }}
+          SIGNING_KEY_PASSPHRASE: ${{ secrets.ARCH_SIGNING_KEY_PASSPHRASE }}
+        run: |
+          echo "$SIGNING_KEY" | gpg --batch --import
+          cd /home/builder
+          for pkg in *.pkg.tar.zst; do
+            echo "$SIGNING_KEY_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+              --passphrase-fd 0 --detach-sign --no-armor "$pkg"
+          done
+
+      # The database pacman actually reads. `repo-add` writes `.db` and
+      # `.files` as symlinks to the tarballs; a release asset cannot be a
+      # symlink, so both names are uploaded with the same bytes.
+      - name: Build the repository index
+        run: |
+          mkdir -p /tmp/repo
+          cp /home/builder/*.pkg.tar.zst /tmp/repo/
+          cp /home/builder/*.sig /tmp/repo/ 2>/dev/null || true
+          cd /tmp/repo
+          repo-add verbinal.db.tar.gz verbinal-*.pkg.tar.zst
+          cp verbinal.db.tar.gz verbinal.db
+          cp verbinal.files.tar.gz verbinal.files
+          rm -f verbinal.db.tar.gz.old verbinal.files.tar.gz.old
+          ls -la
+
+      - name: Attach the package and repository to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            /tmp/repo/verbinal-*.pkg.tar.zst
+            /tmp/repo/verbinal-*.pkg.tar.zst.sig
+            /tmp/repo/verbinal.db
+            /tmp/repo/verbinal.db.tar.gz
+            /tmp/repo/verbinal.files
+            /tmp/repo/verbinal.files.tar.gz

@@ -219,6 +219,43 @@ mod tests {
         }
     }
 
+    /// The Arch package builds the version this tree is.
+    ///
+    /// `pkgver` and `Cargo.toml`'s version are the same fact written twice, and
+    /// the failure is quiet in the worst way: makepkg happily downloads the tag
+    /// named by the stale `pkgver` and builds it, so the repo serves a package
+    /// labelled with one version containing another.
+    #[test]
+    fn the_arch_package_names_the_version_this_tree_is() {
+        let ours = read("Cargo.toml")
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("version = "))
+            .map(|v| v.trim().trim_matches('"').to_string())
+            .expect("Cargo.toml states a version");
+        let pkgbuild = read("packaging/arch/PKGBUILD");
+        assert!(
+            pkgbuild.contains(&format!("pkgver={ours}")),
+            "the Arch PKGBUILD does not build {ours}; it would fetch and package \
+             whatever tag its own pkgver names"
+        );
+    }
+
+    /// Arch builds with LTO off, on purpose.
+    ///
+    /// makepkg turns LTO on for every package by default. `ring` compiles its
+    /// own C and assembly, and under `-flto` those objects become bitcode the
+    /// Rust link step does not resolve: the build runs to completion and then
+    /// dies with a page of `undefined symbol: ring_core_*`. It cost a full
+    /// container build to find, and nothing about the symptom points at LTO.
+    #[test]
+    fn the_arch_package_keeps_lto_off() {
+        let pkgbuild = read("packaging/arch/PKGBUILD");
+        assert!(
+            pkgbuild.contains("'!lto'"),
+            "the Arch build has LTO back on, which breaks linking against ring"
+        );
+    }
+
     /// Every image the README shows is in the tree.
     ///
     /// GitHub renders a missing `src` as a broken-image icon and says nothing;

@@ -183,6 +183,40 @@ cargo run --release
 
 The release binary will be at `target/release/verbinal`.
 
+## Installing on Arch / Omarchy
+
+Verbinal has its own pacman repository, so updates arrive with the rest of the
+system rather than being something to remember.
+
+```bash
+# Trust the signing key, once
+sudo pacman-key --recv-keys <FINGERPRINT>
+sudo pacman-key --lsign-key <FINGERPRINT>
+
+# Add the repository
+sudo tee -a /etc/pacman.conf <<'EOF'
+
+[verbinal]
+Server = https://verbinal.com/linux/arch/$arch
+EOF
+
+sudo pacman -Sy verbinal
+```
+
+After that, `pacman -Syu` upgrades Verbinal along with everything else. On
+Omarchy it also shows up in `omarchy-pkg-install`, which is a wrapper around
+pacman and reads the same configuration.
+
+`gst-plugins-good` is an optional dependency: it is what plays the agent's
+sound cues. Without it the app is silent and otherwise unchanged, which is a
+poor reason to refuse to install.
+
+To install a single version without adding the repository:
+
+```bash
+sudo pacman -U https://verbinal.com/linux/arch/x86_64/verbinal-1.4.3-1-x86_64.pkg.tar.zst
+```
+
 ## Installing from .deb
 
 Download the latest `.deb` from [Releases](https://github.com/szautkin/CanfarDesktopUbuntu/releases), then:

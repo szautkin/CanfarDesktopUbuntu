@@ -1,0 +1,109 @@
+# Maintainer: Serhii Zautkin <szautkin@gmail.com>
+#
+# Built by CI, not by users. The packages this produces are published to
+# https://verbinal.com/linux/arch/$arch, so an Arch or Omarchy user installs a
+# prebuilt binary with pacman and never compiles anything. Kept in the app's
+# own repository rather than in a packaging repo so a dependency added to
+# Cargo.toml and the dependency line here move in the same commit.
+
+pkgname=verbinal
+pkgver=1.4.3
+pkgrel=1
+pkgdesc="A CANFAR Science Portal companion for Linux"
+arch=('x86_64')
+url="https://verbinal.com"
+license=('AGPL-3.0-only')
+
+# Runtime. glib2 arrives with gtk4 and is not named again here: pacman resolves
+# it transitively, and a version this package does not itself call into is a
+# constraint that can only be wrong later.
+depends=('gtk4' 'libadwaita' 'cfitsio')
+
+# The sound cues, and nothing else. GTK plays them through its GStreamer media
+# backend; without it `ui::sound` is silent and the app is otherwise identical,
+# which is a poor reason to refuse to install.
+optdepends=('gst-plugins-good: sound cues for agent activity')
+
+makedepends=('rust' 'cargo' 'pkgconf')
+
+# Arch turns LTO on for every package by default. `ring` compiles its own C and
+# assembly, and under `-flto` those objects become LLVM bitcode that the Rust
+# link step does not resolve — the build gets all the way through compilation
+# and then fails with a page of `undefined symbol: ring_core_0_17_14__*`. The
+# binary is already built with the profile in Cargo.toml; makepkg's opinion
+# about LTO is not needed and is actively wrong here.
+#
+# `!debug` because the split debug package is not published: the repo carries
+# what people install, and an unpublished half of a split package is a db
+# entry pointing at a file that is not there.
+options=('!lto' '!debug')
+
+source=("$pkgname-$pkgver.tar.gz::https://github.com/szautkin/CanfarDesktopUbuntu/archive/refs/tags/v$pkgver.tar.gz")
+# SKIP because the only consumer is our own CI, building the tag it has just
+# pushed, over HTTPS, from the repository the PKGBUILD lives in. A checksum here
+# would have to be regenerated on every release by the same pipeline that
+# fetches the file it describes, which checks that CI agrees with itself.
+sha256sums=('SKIP')
+
+_srcdir="CanfarDesktopUbuntu-$pkgver"
+
+prepare() {
+    cd "$_srcdir"
+
+    # rust-toolchain.toml pins the exact compiler CI uses, which is the right
+    # answer there and the wrong one here: a user with rustup installed would
+    # have makepkg download a second toolchain mid-build, and one without it
+    # gets the file ignored anyway. Arch's rust is always newer than the pin.
+    rm -f rust-toolchain.toml
+
+    # Vendor now, so build() can run offline — makepkg builds in a sandbox with
+    # no network, and a build that reaches out is one that fails on a clean
+    # chroot and nowhere else.
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$_srcdir"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release
+}
+
+check() {
+    cd "$_srcdir"
+    export RUSTUP_TOOLCHAIN=stable
+    # The GUI tests need no display: every one of them is a pure function or a
+    # scan of the source, deliberately, because GTK cannot be initialised in a
+    # libtest process.
+    cargo test --frozen --release --lib
+}
+
+package() {
+    cd "$_srcdir"
+
+    install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+
+    install -Dm644 data/net.canfar.Verbinal.desktop \
+        "$pkgdir/usr/share/applications/net.canfar.Verbinal.desktop"
+    install -Dm644 data/net.canfar.Verbinal.metainfo.xml \
+        "$pkgdir/usr/share/metainfo/net.canfar.Verbinal.metainfo.xml"
+
+    for size in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "assets/icons/hicolor/${size}x${size}/apps/net.canfar.Verbinal.png" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/net.canfar.Verbinal.png"
+    done
+    install -Dm644 assets/icons/hicolor/scalable/apps/net.canfar.Verbinal.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/net.canfar.Verbinal.svg"
+    install -Dm644 assets/icons/hicolor/symbolic/apps/verbinal-agent-symbolic.svg \
+        "$pkgdir/usr/share/icons/hicolor/symbolic/apps/verbinal-agent-symbolic.svg"
+
+    # ui::sound looks here at runtime; the path is compiled in.
+    install -Dm644 assets/sounds/agent-start.wav \
+        "$pkgdir/usr/share/verbinal/sounds/agent-start.wav"
+    install -Dm644 assets/sounds/agent-stop.wav \
+        "$pkgdir/usr/share/verbinal/sounds/agent-stop.wav"
+
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
