@@ -4,7 +4,6 @@ use crate::ui::batch_jobs_view::BatchJobsView;
 use crate::ui::canfar_images::CanfarImagesView;
 use crate::ui::delete_dialog::show_delete_dialog;
 use crate::ui::launch_dialog::show_launch_dialog;
-use crate::ui::launch_fab::LaunchFab;
 use crate::ui::launch_form::{LaunchFormView, LaunchTab};
 use crate::ui::platform_load::PlatformLoadView;
 use crate::ui::recent_launches::RecentLaunchesView;
@@ -168,15 +167,7 @@ impl DashboardView {
         scrolled.set_vexpand(true);
         scrolled.set_child(Some(&content));
 
-        // The launch button floats over the scroller, so it stays put while the
-        // Portal scrolls under it.
         let launch_modal: Rc<RefCell<Option<adw::Window>>> = Rc::new(RefCell::new(None));
-        let fab = LaunchFab::new(&scrolled, {
-            let form = launch_form.clone();
-            let parent = scrolled.clone();
-            let open = launch_modal.clone();
-            move |tab| show_launch_modal(&parent, &form, tab, &open)
-        });
 
         // Restack below the threshold. A `Grid` has no property that reflows,
         // so this reattaches rather than using `add_setter` the way `panel.rs`
@@ -185,7 +176,7 @@ impl DashboardView {
         bin.set_size_request(PORTAL_FLOOR.0, PORTAL_FLOOR.1);
         bin.set_hexpand(true);
         bin.set_vexpand(true);
-        bin.set_child(Some(fab.widget()));
+        bin.set_child(Some(&scrolled));
 
         let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
             adw::BreakpointConditionLengthType::MaxWidth,

@@ -128,7 +128,6 @@ static HAND_PAIRS: &[(&str, &str)] = &[
      "Lancer une tâche de sondage pour lister les paquets de cette image"),
     ("Working…",                                    "En cours…"),
     (" · showing the first {}, search to narrow",   " · affichage des {} premières, affinez la recherche"),
-    ("Launch a session or batch job",               "Lancer une session ou une tâche par lots"),
     ("Discover",                                    "Découvrir"),
     ("Rediscover",                                  "Redécouvrir"),
     ("(no project)",                                "(aucun projet)"),

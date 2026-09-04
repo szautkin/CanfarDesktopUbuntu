@@ -33,7 +33,6 @@ pub mod image_detail_dialog;
 pub mod image_discovery_dialog;
 pub mod item_list_section;
 pub mod launch_dialog;
-pub mod launch_fab;
 pub mod launch_form;
 pub mod login_dialog;
 pub mod main_window;

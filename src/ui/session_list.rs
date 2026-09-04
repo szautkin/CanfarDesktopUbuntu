@@ -83,12 +83,13 @@ impl SessionListView {
         let loading_spinner = card.spinner.clone();
         let refresh_btn = card.with_refresh();
 
-        // An explicit way to start a session, next to the list of the ones you
-        // have. The floating button over the Portal is the other route, and it
-        // is easy to miss: it carries no label, it sits away from anything it
-        // relates to, and a user who has not noticed it has no way in at all.
-        // Deliberately NOT `suggested-action` — that is spent on the floating
-        // button, and two primaries in one view is neither.
+        // The way to start a session, next to the list of the ones you have.
+        //
+        // It used to share the job with a floating button over the Portal,
+        // which is why it was deliberately understated. The floating button is
+        // gone — it carried no label, sat away from anything it related to, and
+        // a user who had not noticed it had no way in — so this is now the one
+        // primary action on the page and is styled as one.
         let launch_btn = gtk::Button::builder()
             .child(
                 &adw::ButtonContent::builder()
@@ -98,7 +99,11 @@ impl SessionListView {
             )
             .valign(gtk::Align::Center)
             .build();
-        launch_btn.add_css_class("flat");
+        // The accent, which is the one thing on this page asking to be pressed.
+        // `suggested-action` rather than a colour of its own: it takes the
+        // theme's accent, so it stays right when the accent changes and it is
+        // the same red as the rest of the app's primaries.
+        launch_btn.add_css_class("suggested-action");
         launch_btn.set_tooltip_text(Some(crate::tr_en!("Start a new interactive session")));
         header.append(&launch_btn);
 
@@ -615,24 +620,27 @@ mod tests {
     }
 
     #[test]
-    fn starting_a_session_is_reachable_without_finding_the_floating_button() {
-        // The floating button carries no label, sits away from anything it
-        // relates to, and is the kind of control a user can simply not notice —
-        // at which point there is no way into the launch form at all. This card
-        // is where someone looking at their sessions goes to start another.
+    fn the_card_carries_the_pages_one_primary_action() {
+        // There is exactly one way into the launch form now, and this is it.
+        // The floating button that used to be the other one carried no label,
+        // sat away from anything it related to, and was the kind of control a
+        // user can simply not notice — at which point there was no way in at
+        // all. This card is where someone looking at their sessions goes to
+        // start another.
         let code =
             crate::testing::without_comments(crate::testing::code(include_str!("session_list.rs")));
         assert!(
             code.contains("on_launch_requested"),
             "the Active Sessions card no longer offers a way to launch"
         );
-        // Not a second primary: `suggested-action` belongs to the floating
-        // button, and two of them in one view is neither.
+        // And it is THE primary action: the floating button that used to hold
+        // that role is gone, so an understated launch button would leave the
+        // page with nothing asking to be pressed.
         let at = code.find("launch_btn").expect("launch button is gone");
-        let window = &code[at..(at + 600).min(code.len())];
+        let window = &code[at..(at + 700).min(code.len())];
         assert!(
-            !window.contains("suggested-action"),
-            "the header launch button competes with the floating one"
+            window.contains("suggested-action"),
+            "the launch button is not styled as the page's primary action"
         );
     }
 
