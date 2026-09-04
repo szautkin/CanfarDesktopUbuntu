@@ -122,6 +122,11 @@ jobs:
           cp /home/builder/*.sig /tmp/repo/ 2>/dev/null || true
           cd /tmp/repo
           repo-add verbinal.db.tar.gz verbinal-*.pkg.tar.zst
+          # repo-add writes `.db` and `.files` as SYMLINKS to the tarballs, so
+          # copying onto them copies a file onto its own target and fails. The
+          # symlink has to go first — a release asset cannot be one anyway, and
+          # pacman asks for `verbinal.db` by name.
+          rm -f verbinal.db verbinal.files
           cp verbinal.db.tar.gz verbinal.db
           cp verbinal.files.tar.gz verbinal.files
           rm -f verbinal.db.tar.gz.old verbinal.files.tar.gz.old
