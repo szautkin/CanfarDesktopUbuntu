@@ -190,8 +190,8 @@ system rather than being something to remember.
 
 ```bash
 # Trust the signing key, once
-sudo pacman-key --recv-keys <FINGERPRINT>
-sudo pacman-key --lsign-key <FINGERPRINT>
+curl -fsSL https://verbinal.com/linux/arch/verbinal.gpg | sudo pacman-key --add -
+sudo pacman-key --lsign-key 61FBCBA86674EFAF009D49495AD7FD0C3CCCD519
 
 # Add the repository
 sudo tee -a /etc/pacman.conf <<'EOF'
@@ -202,6 +202,14 @@ EOF
 
 sudo pacman -Sy verbinal
 ```
+
+The key is fetched from the site rather than a keyserver, because
+`pacman-key --recv-keys` depends on propagation and on port 11371 being open,
+and a first command that hangs is where people stop. `--lsign-key` is what
+makes it trusted locally; without it pacman knows the signature but not whether
+to believe it. The fingerprint is
+`61FBCBA86674EFAF009D49495AD7FD0C3CCCD519` — check it against the key you just
+added with `pacman-key --finger 61FBCBA86674EFAF009D49495AD7FD0C3CCCD519`.
 
 After that, `pacman -Syu` upgrades Verbinal along with everything else. On
 Omarchy it also shows up in `omarchy-pkg-install`, which is a wrapper around

@@ -240,6 +240,36 @@ mod tests {
         );
     }
 
+    /// The repository the README tells people to add is the one CI publishes.
+    ///
+    /// pacman derives the database filename from the section name: `[verbinal]`
+    /// makes it fetch `verbinal.db` from the Server URL. CI names that file in
+    /// `repo-add`. Rename either and pacman asks for a file that is not there,
+    /// which it reports as "failed retrieving file" — a network-shaped error
+    /// for a naming mistake.
+    #[test]
+    fn the_repository_the_readme_adds_is_the_one_ci_builds() {
+        let readme = read("README.md");
+        let section = readme
+            .lines()
+            .find(|l| l.trim_start().starts_with('[') && l.trim().ends_with(']'))
+            .map(|l| l.trim().trim_matches(['[', ']']).to_string())
+            .expect("the README shows a pacman.conf section");
+
+        let workflow = read(".github/workflows/release.yml");
+        assert!(
+            workflow.contains(&format!("repo-add {section}.db.tar.gz")),
+            "the README adds a repository called `{section}`, but the release \
+             workflow does not build `{section}.db` — pacman would ask for a \
+             database that is not published"
+        );
+        assert!(
+            workflow.contains(&format!("cp {section}.db.tar.gz {section}.db")),
+            "`{section}.db` is not uploaded under the name pacman requests; \
+             repo-add writes it as a symlink, and a release asset cannot be one"
+        );
+    }
+
     /// Arch builds with LTO off, on purpose.
     ///
     /// makepkg turns LTO on for every package by default. `ring` compiles its
