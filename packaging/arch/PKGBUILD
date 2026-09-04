@@ -47,14 +47,19 @@ sha256sums=('SKIP')
 
 _srcdir="CanfarDesktopUbuntu-$pkgver"
 
+# `RUSTUP_TOOLCHAIN=stable` in every function is what keeps the pinned
+# toolchain out of the way. rust-toolchain.toml names the exact compiler CI
+# uses, and rustup would otherwise download it mid-build; the environment
+# variable outranks the file, and on a system with Arch's `rust` and no rustup
+# the file is ignored anyway.
+#
+# Deleting the file instead — which is what this did first — breaks check():
+# the suite contains a guard that reads rust-toolchain.toml to prove CI builds
+# with the compiler the tree pins, and it cannot read a file prepare() removed.
+# Two correct rules, one destroying the other's evidence.
+
 prepare() {
     cd "$_srcdir"
-
-    # rust-toolchain.toml pins the exact compiler CI uses, which is the right
-    # answer there and the wrong one here: a user with rustup installed would
-    # have makepkg download a second toolchain mid-build, and one without it
-    # gets the file ignored anyway. Arch's rust is always newer than the pin.
-    rm -f rust-toolchain.toml
 
     # Vendor now, so build() can run offline — makepkg builds in a sandbox with
     # no network, and a build that reaches out is one that fails on a clean
